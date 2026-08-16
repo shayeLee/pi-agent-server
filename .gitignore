@@ -1,0 +1,7 @@
+.pi
+.codex
+.opencode
+
+node_modules
+dist
+web/test-results
