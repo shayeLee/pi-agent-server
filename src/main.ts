@@ -1,4 +1,4 @@
-// 进程入口：从环境变量读取配置，启动 pi-server，处理优雅关闭信号。
+// 进程入口：从环境变量读取配置，启动 pi-agent-server，处理优雅关闭信号。
 
 import { startServer } from "./server/start.js";
 
@@ -72,7 +72,7 @@ const app = await startServer({
   trustProxy,
 });
 
-app.log.info(`pi-server listening on ${host}:${port}`);
+app.log.info(`pi-agent-server listening on ${host}:${port}`);
 
 // 优雅关闭：停止接收新请求，Fastify close 等在途请求完成（README §4.2 优雅关闭的
 // 完整版——在途任务超时、通知 SSE 客户端重连——在 Worker/SSE 治理步骤补齐）。

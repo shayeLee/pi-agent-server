@@ -1,4 +1,4 @@
-# pi-server
+# pi-agent-server
 
 基于 Fastify 与 Pi SDK 的长期运行 Pi Agent 服务。它提供与具体能力解耦的会话、控制、流式输出、鉴权和安全边界；能力通过显式注册的工具、提示词片段和（可选）后台 Worker 扩展，权限由各能力单独声明。
 
@@ -27,7 +27,7 @@
 客户端/UI
    │ HTTP + SSE
    ▼
-pi-server：Fastify + Pi SDK
+pi-agent-server：Fastify + Pi SDK
    ├── 会话生命周期、控制、流式事件、鉴权与审计
    ├── 能力注册表、提示词组合与工具白名单
    └── AgentSession / SessionManager
@@ -72,11 +72,11 @@ GET    /v1/sessions/:id/events          SSE 订阅回答、工具与状态事件
 GET    /health                          存活与依赖检查
 ```
 
-鉴权与用户标识：所有业务接口经 Bearer Token 鉴权（接入鉴权）；用户身份另由来源 IP（内网）或 pi-server 签发的账号（公网）识别，统一抽象为 `UserIdentity`，Token 与身份分离——Token 校验通过后，身份取自 IP 或账号；每个用户只能访问自己的会话。内网以来源 IP 作为身份的前提是内网设备 IP 固定；NAT、共享出口或伪造 IP 的风险由网络边界控制，不在应用层解决。模型配置：服务端默认提供模型，用户可添加自定义模型（自己的 OpenAI 账号或 API key），默认与自定义模型可灵活选择使用；凭证归属用户（按 `UserIdentity` 隔离）、脱敏返回；自定义模型额度耗尽或凭证删除时回退服务端默认模型，平台总 token/成本配额另设、超限拒绝；存储见 §7。
+鉴权与用户标识：所有业务接口经 Bearer Token 鉴权（接入鉴权）；用户身份另由来源 IP（内网）或 pi-agent-server 签发的账号（公网）识别，统一抽象为 `UserIdentity`，Token 与身份分离——Token 校验通过后，身份取自 IP 或账号；每个用户只能访问自己的会话。内网以来源 IP 作为身份的前提是内网设备 IP 固定；NAT、共享出口或伪造 IP 的风险由网络边界控制，不在应用层解决。模型配置：服务端默认提供模型，用户可添加自定义模型（自己的 OpenAI 账号或 API key），默认与自定义模型可灵活选择使用；凭证归属用户（按 `UserIdentity` 隔离）、脱敏返回；自定义模型额度耗尽或凭证删除时回退服务端默认模型，平台总 token/成本配额另设、超限拒绝；存储见 §7。
 
 **服务端默认模型配置：**可设置 `PI_DEFAULT_MODEL="provider/modelId"`（例如 `openai-codex/gpt-5.5`）与 `PI_DEFAULT_THINKING_LEVEL="medium"`。两者仅作用于未在会话中显式选择配置、且尚未产生 JSONL 历史的新会话；会话级模型/思考级别优先，已有历史会话会恢复其历史配置。配置的模型不存在、没有凭证或思考级别不合法时，服务启动失败而非静默回退。`PI_MODEL_PROVIDER`/`PI_MODEL_API_KEY` 仅用于注入服务端 API 凭证，不选择默认模型。
 
-**系统提示词：**未设置 `PI_SYSTEM_PROMPT` 时使用 Pi SDK 的内置默认提示词；pi-server 仍禁用项目与个人目录的自动发现，因此不会加载个人 `AGENTS.md`、skills 或 extensions。创建会话时按项目 cwd 生成并记录实际提示词，右侧 Inspector 可查看；设置 `PI_SYSTEM_PROMPT` 才会覆盖 Pi 默认提示词。
+**系统提示词：**未设置 `PI_SYSTEM_PROMPT` 时使用 Pi SDK 的内置默认提示词；pi-agent-server 仍禁用项目与个人目录的自动发现，因此不会加载个人 `AGENTS.md`、skills 或 extensions。创建会话时按项目 cwd 生成并记录实际提示词，右侧 Inspector 可查看；设置 `PI_SYSTEM_PROMPT` 才会覆盖 Pi 默认提示词。
 
 同一会话同一时刻只允许一个活动任务：
 
@@ -193,7 +193,7 @@ Worker 无 HTTP `request`，使用 `logger.child({ jobId, capability })` 创建�
 
 ### 6.4 会话存储治理
 
-Pi SDK 不设会话数量或文件体积上限，会话 JSONL 随对话单调增长；`compaction` 只压缩进 LLM 的上下文，不缩小文件。pi-server 须自行制定：
+Pi SDK 不设会话数量或文件体积上限，会话 JSONL 随对话单调增长；`compaction` 只压缩进 LLM 的上下文，不缩小文件。pi-agent-server 须自行制定：
 
 - 活跃会话：有活动即保留，不归档；容量告警时优先归档最旧的不活跃会话，持续不足时进入拒写或人工处置。
 - 不活跃会话：超过 N 天无活动 → 归档到冷存储 → 冷存储再保留 M 天 → 删除（归档 ≠ 立即删除）。
@@ -229,7 +229,7 @@ N、M 天数由部署配置决定。
 
 ## 7. 安全与运维要求
 
-- 默认绑定 `127.0.0.1` 或内网网卡；业务 API 一律经 TLS（内网亦要求），公网部署额外增加 pi-server 账号鉴权与网络边界控制。传输层与鉴权层预留 TLS 与账号签发接入点，不写死内网假设。
+- 默认绑定 `127.0.0.1` 或内网网卡；业务 API 一律经 TLS（内网亦要求），公网部署额外增加 pi-agent-server 账号鉴权与网络边界控制。传输层与鉴权层预留 TLS 与账号签发接入点，不写死内网假设。
 - 所有业务 API 使用 Bearer Token；部署环境增加每用户限流（QPS）、请求体大小限制和 CORS 白名单。
 - 使用独立 `agentDir`、固定 `cwd`、固定系统提示词和固定工具列表，避免继承个人 Pi 配置；工具列表是已启用能力所声明工具的并集；系统提示词与工具列表按会话创建时的已启用能力生成并冻结，配置变更不影响既有会话。禁用项目目录自动发现（`.pi/extensions`、skills、prompts、`AGENTS.md`、themes），只从 manifest 显式注入受控资源，避免仓库中未声明的扩展被加载执行。
 - 服务端默认模型用 API key（环境变量/密钥系统读取）；各能力凭证同理；不得写入仓库、会话或日志。

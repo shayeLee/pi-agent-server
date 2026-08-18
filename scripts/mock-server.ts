@@ -1,4 +1,4 @@
-// E2E 测试用的 mock pi-server：真实 buildApp + buildAuthenticate + MockAgentAdapter。
+// E2E 测试用的 mock pi-agent-server：真实 buildApp + buildAuthenticate + MockAgentAdapter。
 // 不依赖真实 Pi SDK 模型凭证，供 Playwright 端到端验证 HTTP/SSE 完整链路。
 
 import { DatabaseSync } from "node:sqlite";
@@ -38,11 +38,11 @@ const app = buildApp({
       {
         type: "message_update",
         message: {},
-        assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "我是 pi-server 测试助手" },
+        assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "我是 pi-agent-server 测试助手" },
       },
       { type: "agent_end", messages: [], willRetry: false },
     ]),
 });
 
 await app.listen({ port: PORT, host: "127.0.0.1" });
-console.log(`mock pi-server listening on http://127.0.0.1:${PORT}`);
+console.log(`mock pi-agent-server listening on http://127.0.0.1:${PORT}`);

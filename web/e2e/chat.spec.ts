@@ -18,7 +18,7 @@ test("端到端：内网免登录 → 新建会话 → 发消息 → SSE 流式�
   await expect(page.getByTestId("message-list")).toContainText("你好");
 
   // SSE 流式回答（mock 后端推送两段 text_delta）
-  await expect(page.getByTestId("message-list")).toContainText("你好，我是 pi-server 测试助手");
+  await expect(page.getByTestId("message-list")).toContainText("你好，我是 pi-agent-server 测试助手");
 });
 
 test("端到端：会话列表展示与删除", async ({ page }) => {

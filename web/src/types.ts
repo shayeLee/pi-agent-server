@@ -1,4 +1,4 @@
-// 与 pi-server 协议对齐的类型（对应 src/agent/events.ts 的 SseEvent 与 src/storage 的 SessionRecord）。
+// 与 pi-agent-server 协议对齐的类型（对应 src/agent/events.ts 的 SseEvent 与 src/storage 的 SessionRecord）。
 
 export type SseEvent =
   | { type: "text_delta"; text: string }

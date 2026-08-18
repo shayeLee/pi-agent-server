@@ -1,6 +1,6 @@
 // 真实鉴权（README §4.2 鉴权与用户标识）
 // 内网免 token：来源 IP 命中内网网段即按 IP 识别（接入鉴权由网络边界保证，伪造 IP 风险不在应用层解决）。
-// 公网需 Bearer Token：token → accountId 映射来自配置（模拟 pi-server 签发账号）。
+// 公网需 Bearer Token：token → accountId 映射来自配置（模拟 pi-agent-server 签发账号）。
 // 复用 resolveIdentity，不重写身份判定逻辑。
 
 import type { FastifyRequest } from "fastify";
@@ -12,7 +12,7 @@ import type { Authenticate } from "./auth.js";
 export type AuthConfig = {
   /** 内网判定网段表（如 ["10.0.0.0/8", "192.168.0.0/16", "172.16.0.0/12"]） */
   intranetCidrs: string[];
-  /** token → accountId 映射（pi-server 签发账号，仅公网使用） */
+  /** token → accountId 映射（pi-agent-server 签发账号，仅公网使用） */
   tokens: Record<string, string>;
 };
 

@@ -420,7 +420,7 @@ export default function App() {
   if (token === null && !needToken) {
     return (
       <main className="auth-screen">
-        <h1>pi-server</h1>
+        <h1>pi-agent-server</h1>
         <div data-testid="auth-probing">检测访问方式…</div>
       </main>
     );
@@ -429,7 +429,7 @@ export default function App() {
   if (!api) {
     return (
       <main className="auth-screen">
-        <h1>pi-server</h1>
+        <h1>pi-agent-server</h1>
         <form onSubmit={handleTokenSubmit}>
           <input
             data-testid="token-input"
@@ -474,7 +474,7 @@ export default function App() {
         <div className="sidebar-header">
           <div className="brand">
             <span className="brand-dot" />
-            <span className="brand-text">pi-server</span>
+            <span className="brand-text">pi-agent-server</span>
           </div>
           <button
             className="btn-ghost btn-icon"

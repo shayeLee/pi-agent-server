@@ -10,7 +10,7 @@
 
 ### 已完成
 
-- 工程：pnpm workspace（根 pi-server + `web/` 子包）、ESM + TypeScript + Vitest。
+- 工程：pnpm workspace（根 pi-agent-server + `web/` 子包）、ESM + TypeScript + Vitest。
 - 核心纯逻辑：任务状态机（idle→queued→streaming→terminal）、并发控制（每用户/全局上限 + 队列 + 超时 + 队列超时调度器）、幂等去重（三层模型）、身份识别（UserIdentity）、CIDR 内网判定。
 - 存储：`SessionRepository` 抽象 + SQLite（WAL）实现；`IdempotencyRepository` 幂等终态持久化（重启恢复）。
 - Agent 链路：SDK 事件→SSE 事件翻译（9 种）、`AgentAdapter` 接口 + `MockAgentAdapter` + `PiAgentAdapter`（真实 Pi SDK 接入）；adapter 层事件 fencing（abort 后丢弃残余事件）。

@@ -40,11 +40,11 @@ import {
 export type StartConfig = {
   host?: string;
   port: number;
-  /** 服务数据库路径（SQLite）；默认 dataDir/pi-server.db（持久化，重启后会话列表/历史可恢复）。 */
+  /** 服务数据库路径（SQLite）；默认 dataDir/pi-agent-server.db（持久化，重启后会话列表/历史可恢复）。 */
   dbPath?: string;
   /** 内网网段（来源 IP 命中即按 IP 识别身份，免 token）。 */
   intranetCidrs: string[];
-  /** 公网 token → accountId 映射（pi-server 签发账号，仅公网使用）。 */
+  /** 公网 token → accountId 映射（pi-agent-server 签发账号，仅公网使用）。 */
   tokens: Record<string, string>;
   /** Agent 工作目录（工具/仓库根）。 */
   cwd?: string;
@@ -111,7 +111,7 @@ export async function startServer(config: StartConfig) {
 
   // 独立 agentDir + 禁用所有自动发现（README §7）：DefaultResourceLoader 默认会隐式扫描
   // 个人 ~/.pi/agent、项目 .pi/、AGENTS.md 等自动加载 extensions/skills/prompts/themes——
-  // extensions 是代码，隐式加载是安全边界问题，必须关闭。pi-server 自己的 extension/skill
+  // extensions 是代码，隐式加载是安全边界问题，必须关闭。pi-agent-server 自己的 extension/skill
   // 由能力 manifest 显式声明后，经 additionalExtensionPaths / extensionFactories /
   // additionalSkillPaths 受控注入（阶段 2 能力扩展机制），而非自动发现。
   const providerAdapters = new ProviderAdapterRegistry([openAIToolPolicyAdapter]);
@@ -130,7 +130,7 @@ export async function startServer(config: StartConfig) {
     // 服务内置且受控的协议兼容层；noExtensions 不会加载用户/项目扩展。
     extensionFactories: [
       {
-        name: "pi-server-provider-adapters",
+        name: "pi-agent-server-provider-adapters",
         factory: (pi) => {
           // The provider override only wraps direct deepseek/deepseek-v4-flash;
           // every other model delegates to Pi's normal OpenAI-compatible stream.
@@ -207,7 +207,7 @@ export async function startServer(config: StartConfig) {
   // 会话元数据索引（SQLite）：默认落在 dataDir 下持久化，重启后经 piSessionFile 恢复 JSONL 历史。
   // timeout=5000：写锁等待（多连接/多进程并发写冲突时等待而非立即 SQLITE_BUSY）；
   // enableForeignKeyConstraints：开启外键约束检查（sessions.project_id → projects.id ON DELETE CASCADE）。
-  const db = new DatabaseSync(config.dbPath ?? path.join(dataDir, "pi-server.db"), {
+  const db = new DatabaseSync(config.dbPath ?? path.join(dataDir, "pi-agent-server.db"), {
     timeout: 5000,
     enableForeignKeyConstraints: true,
   });

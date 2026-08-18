@@ -1,6 +1,6 @@
 # 知识库问答与钉钉文档同步
 
-这是 pi-server 的首个能力，依托平台提供的会话、控制、SSE、鉴权和工具注册边界。本能力将可见工具限定为只读。平台级约束见[README](../../README.md)。
+这是 pi-agent-server 的首个能力，依托平台提供的会话、控制、SSE、鉴权和工具注册边界。本能力将可见工具限定为只读。平台级约束见[README](../../README.md)。
 
 > 本文是知识库问答能力的需求基线；与平台级 README 一起更新。
 
@@ -86,7 +86,7 @@
 └────────────────────────┘    └────────────┬───────────┘
                                             ▼
                                  ┌──────────────────────┐
-                                 │ pi-server            │
+                                 │ pi-agent-server      │
                                  │ 已启用的知识库工具    │
                                  └────────────┬─────────┘
                                               │ SSE
@@ -108,7 +108,7 @@
 
 本能力注册两类只读能力：
 
-**内置工具**（pi-server 提供，所有项目通用）：
+**内置工具**（pi-agent-server 提供，所有项目通用）：
 
 - `search_knowledge(query, scope?)`：FTS 关键词搜索，返回候选文件路径、片段与行号，按相关度排序；无结果如实返回空。
 - `read_knowledge_file(path, offset?, limit?)`：读取已批准根目录内的文件，返回带行号的内容；路径穿越、越界或超大输出一律拒绝或截断。
@@ -136,7 +136,7 @@
   → 校验链接、元数据与内容哈希
   → 写入同步目录（默认 docs/dingtalk/）
   → 直接 push 到 GitLab 指定分支
-  → push 后调用 pi-server 接口构建网站、重建索引
+  → push 后调用 pi-agent-server 接口构建网站、重建索引
 ```
 
 ### 6.2 规则
@@ -192,7 +192,7 @@ POST /v1/publish                          触发发布（校验 commit 属于配
 
 ### 阶段 3：发布与索引自动化
 
-- 推送到分支后调用 pi-server 接口触发网站构建/部署（onev-ui 文档站 `/Users/mz/workspace/onev`：Vue 2 + webpack，`npm run build:docs` 构建，部署到腾讯云 COS）。
+- 推送到分支后调用 pi-agent-server 接口触发网站构建/部署（onev-ui 文档站 `/Users/mz/workspace/onev`：Vue 2 + webpack，`npm run build:docs` 构建，部署到腾讯云 COS）。
 - 重建检索索引并进行版本切换。
 - 问答服务只查询已发布索引。
 

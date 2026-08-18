@@ -1,5 +1,5 @@
 // 用户身份识别（README §4.2）
-// Token 校验通过后，身份取自来源 IP（内网）或 pi-server 签发账号（公网）。
+// Token 校验通过后，身份取自来源 IP（内网）或 pi-agent-server 签发账号（公网）。
 // NAT / 共享出口 / 伪造 IP 风险由网络边界控制，不在应用层解决。
 
 export type IdentityContext = {
