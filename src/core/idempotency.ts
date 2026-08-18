@@ -1,4 +1,4 @@
-// 消息幂等去重（README §4.2）
+// 消息幂等去重（needs.md §4.2）
 // 客户端生成的 requestId 作为键；首次执行，重复提交返回原结果，不重复执行。
 
 export type IdempotencyResult =

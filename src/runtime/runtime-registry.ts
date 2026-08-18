@@ -1,4 +1,4 @@
-// RuntimeRegistry：管理会话与 runtime/事件总线的绑定（README §4.2 会话生命周期）。
+// RuntimeRegistry：管理会话与 runtime/事件总线的绑定（needs.md §4.2 会话生命周期）。
 // - 构造注入 ConcurrencyController 与 createAdapter(sessionId) => AgentAdapter 工厂；
 // - getOrCreate(sessionId, ownerKey)：首次创建 SessionRuntime（onEvent 接到对应会话的
 //   SessionEventBus.push）与 SessionEventBus，之后复用；返回 { runtime, events }；

@@ -14,7 +14,7 @@ const JSON_HEADERS = { "content-type": "application/json" };
 const authHeader = (token: string) => ({ authorization: `Bearer ${token}` });
 const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
-describe("SSE 帧格式化（README §4.2）", () => {
+describe("SSE 帧格式化（needs.md §4.2）", () => {
   it("按传入 id 生成带 data 的 SSE 帧", () => {
     expect(formatSseEvent(3, { type: "text_delta", text: "hi" })).toBe(
       'id: 3\ndata: {"type":"text_delta","text":"hi"}\n\n',

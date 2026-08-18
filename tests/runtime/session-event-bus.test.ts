@@ -4,7 +4,7 @@ import type { SseEvent } from "../../src/agent/events.js";
 
 const text = (text: string): SseEvent => ({ type: "text_delta", text });
 
-describe("SessionEventBus（README §4.2 事件缓冲与 Last-Event-ID 补发）", () => {
+describe("SessionEventBus（needs.md §4.2 事件缓冲与 Last-Event-ID 补发）", () => {
   describe("push：递增 id 与有界缓冲", () => {
     it("push 分配从 1 开始的递增 id", () => {
       const bus = new SessionEventBus();

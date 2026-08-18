@@ -2,7 +2,7 @@
 
 平台级交付阶段。能力级交付（如知识库问答的检索、同步、发布）见各自能力文档。
 
-> 本文与 README 一起构成需求基线，随需求调整同步更新。实现按[架构文档](architecture.md)的 TDD 骨架执行。
+> 本文与 needs.md 一起构成需求基线，随需求调整同步更新。实现按[架构文档](architecture.md)的 TDD 骨架执行。
 
 ## 实现进度
 
@@ -37,14 +37,14 @@
 - [ ] SSE 事件缓冲持久化（当前仅进程内，重启无法回放）。
 - [ ] 会话列表 `updatedAt` 随消息/终态更新。
 
-**部署环境职责（README §7，非应用核心）**
+**部署环境职责（needs.md §7，非应用核心）**
 
 - [ ] QPS 限流。
 - [ ] CIDR IPv6 支持（当前仅 IPv4）。
 
 ## 阶段 1：平台核心与首个能力
 
-- 初始化 TypeScript/Fastify 工程、配置与日志（按 README §5 日志设计）。
+- 初始化 TypeScript/Fastify 工程、配置与日志（按 needs.md §5 日志设计）。
 - 接入 Pi SDK、服务端默认模型（环境变量/密钥系统配置）、持久化会话（JSONL + 服务侧索引/元数据经 repository 抽象存储，本地 SQLite 起步）、SSE、`steer`、`follow-up` 和 `abort`。
 - 实现 Token 鉴权、用户识别（内网按来源 IP，`UserIdentity` 抽象）与会话按用户隔离、限流、健康检查和基础测试。
 - 会话管理 API：会话列表、删除、重命名、导出（对应 `SessionManager.list/listAll` 等）。

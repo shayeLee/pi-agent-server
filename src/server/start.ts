@@ -1,4 +1,4 @@
-// 启动入口：把真实 Pi SDK、SQLite 存储、真实鉴权、HTTP 层组装起来（README §4.1/§7）。
+// 启动入口：把真实 Pi SDK、SQLite 存储、真实鉴权、HTTP 层组装起来（needs.md §4.1/§7）。
 // 服务端安全边界：
 // - 独立 agentDir（不继承个人 ~/.pi/agent），DefaultResourceLoader 禁用项目/全局自动发现；
 // - 服务端默认模型 API key 从环境变量注入（setRuntimeApiKey，不落盘），不走个人 auth.json。
@@ -48,7 +48,7 @@ export type StartConfig = {
   tokens: Record<string, string>;
   /** Agent 工作目录（工具/仓库根）。 */
   cwd?: string;
-  /** 启用工具列表（README §4.3：默认不启用 bash/edit/write）。 */
+  /** 启用工具列表（needs.md §4.3：默认不启用 bash/edit/write）。 */
   tools?: string[];
   /** 服务数据目录（JSONL 会话 + 服务专用 agentDir + 凭证文件的父目录）。 */
   dataDir?: string;
@@ -80,7 +80,7 @@ export async function startServer(config: StartConfig) {
   const authPath = config.authPath ?? path.join(agentDir, "auth.json");
 
   // 模型运行时：凭证读服务端独立 authPath（不读个人 ~/.pi/agent/auth.json）；
-  // 服务端默认 API key 也可用 setRuntimeApiKey 运行时注入（不持久化，README §7）。
+  // 服务端默认 API key 也可用 setRuntimeApiKey 运行时注入（不持久化，needs.md §7）。
   // 目录关系：dataDir（会话 JSONL）→ agentDir = dataDir/.pi-agent（agent 配置）→ authPath = agentDir/auth.json（凭证），三者均可用环境变量覆盖。
   const modelRuntime = await ModelRuntime.create({
     authPath,
@@ -109,7 +109,7 @@ export async function startServer(config: StartConfig) {
   // TODO(阶段4)：按配置注册已启用能力 manifest；当前无能力，工具清单与提示词片段为空。
   const capabilitySnapshot = capabilityRegistry.snapshot();
 
-  // 独立 agentDir + 禁用所有自动发现（README §7）：DefaultResourceLoader 默认会隐式扫描
+  // 独立 agentDir + 禁用所有自动发现（needs.md §7）：DefaultResourceLoader 默认会隐式扫描
   // 个人 ~/.pi/agent、项目 .pi/、AGENTS.md 等自动加载 extensions/skills/prompts/themes——
   // extensions 是代码，隐式加载是安全边界问题，必须关闭。pi-agent-server 自己的 extension/skill
   // 由能力 manifest 显式声明后，经 additionalExtensionPaths / extensionFactories /

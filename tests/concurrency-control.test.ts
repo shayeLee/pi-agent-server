@@ -12,7 +12,7 @@ const base: ConcurrencyConfig = {
   queueTimeoutMs: 5000,
 };
 
-describe("并发控制（README §4.2）", () => {
+describe("并发控制（needs.md §4.2）", () => {
   describe("直接运行", () => {
     it("未超限时直接运行", () => {
       const c = new ConcurrencyController(base);

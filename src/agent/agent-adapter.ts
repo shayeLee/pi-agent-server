@@ -15,7 +15,7 @@ export type UsageInfo = {
 };
 
 export interface AgentAdapter {
-  /** 空闲时发送输入（README §4.2 的 POST /v1/sessions/:id/messages）；images 可选图片附件。 */
+  /** 空闲时发送输入（needs.md §4.2 的 POST /v1/sessions/:id/messages）；images 可选图片附件。 */
   prompt(text: string, options?: { images?: ImageInput[] }): Promise<void>;
 
   /** 流式生成中插入指令（POST /v1/sessions/:id/steer）。 */
@@ -27,7 +27,7 @@ export interface AgentAdapter {
   /** 中止当前生成或工具调用（POST /v1/sessions/:id/abort）。 */
   abort(): Promise<void>;
 
-  /** 导航到历史树节点，之后 prompt 从该节点重新生成（README §4.2 从历史节点重跑）。 */
+  /** 导航到历史树节点，之后 prompt 从该节点重新生成（needs.md §4.2 从历史节点重跑）。 */
   navigateTree(targetId: string): Promise<void>;
 
   /** 切换模型（provider + modelId）。 */
@@ -36,7 +36,7 @@ export interface AgentAdapter {
   /** 切换思考级别（off/minimal/low/medium/high/xhigh/max）。 */
   setThinkingLevel(level: string): Promise<void>;
 
-  /** 订阅 SDK 事件流；返回退订函数（SSE 事件源，README §4.2）。 */
+  /** 订阅 SDK 事件流；返回退订函数（SSE 事件源，needs.md §4.2）。 */
   subscribe(listener: (event: AgentSdkEvent) => void): () => void;
 
   /** 导出会话消息列表或可序列化数据（GET /v1/sessions/:id/export）。 */

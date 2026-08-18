@@ -3,7 +3,7 @@
 
 export interface SessionRecord {
   id: string;
-  ownerKey: string; // = identityKey(UserIdentity)，用于按 owner 隔离（README §4.2）
+  ownerKey: string; // = identityKey(UserIdentity)，用于按 owner 隔离（needs.md §4.2）
   /** 所属项目 id；默认项目为 "default"（服务端固定工作目录）。 */
   projectId: string;
   title: string;

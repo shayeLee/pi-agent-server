@@ -37,7 +37,7 @@ function makeRecord(overrides: Partial<SessionRecord> = {}): SessionRecord {
   };
 }
 
-describe("会话索引存储（README §4.1 / §4.2，SQLite 实现）", () => {
+describe("会话索引存储（needs.md §4.1 / §4.2，SQLite 实现）", () => {
   describe("create / get", () => {
     it("create 后 get 返回完整记录", async () => {
       const repo = makeRepo();

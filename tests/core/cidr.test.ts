@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { isInCidr, isInAnyCidr } from "../../src/core/cidr.js";
 
-// IPv4 CIDR 匹配（README §4.2 内网判定）
+// IPv4 CIDR 匹配（needs.md §4.2 内网判定）
 describe("isInCidr", () => {
   describe("常见网段命中", () => {
     it("10.0.0.0/8 命中内网 10.x.x.x", () => {

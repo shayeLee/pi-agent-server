@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { DatabaseSync } from "node:sqlite";
 import { SqliteIdempotencyRepository } from "../src/storage/sqlite-idempotency-repository.js";
 
-describe("SqliteIdempotencyRepository（README §4.2 requestId 去重持久化）", () => {
+describe("SqliteIdempotencyRepository（needs.md §4.2 requestId 去重持久化）", () => {
   it("put 后 get 返回结果", async () => {
     const repo = new SqliteIdempotencyRepository(new DatabaseSync(":memory:"));
     await repo.put("s1", "r1", { status: "completed" });

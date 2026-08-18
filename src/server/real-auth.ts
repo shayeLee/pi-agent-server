@@ -1,4 +1,4 @@
-// 真实鉴权（README §4.2 鉴权与用户标识）
+// 真实鉴权（needs.md §4.2 鉴权与用户标识）
 // 内网免 token：来源 IP 命中内网网段即按 IP 识别（接入鉴权由网络边界保证，伪造 IP 风险不在应用层解决）。
 // 公网需 Bearer Token：token → accountId 映射来自配置（模拟 pi-agent-server 签发账号）。
 // 复用 resolveIdentity，不重写身份判定逻辑。

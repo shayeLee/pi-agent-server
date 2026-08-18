@@ -82,7 +82,7 @@ function makeRuntime(opts: {
   return { runtime, events, concurrency, adapter, sessionId };
 }
 
-describe("SessionRuntime（README §4.2 会话任务编排）", () => {
+describe("SessionRuntime（needs.md §4.2 会话任务编排）", () => {
   describe("submitMessage：幂等与状态机", () => {
     it("idle submit 成功进 streaming，SDK 事件翻译输出、完成合成 completed 并回 idle", async () => {
       const adapter = new MockAgentAdapter([

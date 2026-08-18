@@ -1,4 +1,4 @@
-// 幂等记录的 SQLite 实现（README §4.2 requestId 去重跨重启）。
+// 幂等记录的 SQLite 实现（needs.md §4.2 requestId 去重跨重启）。
 // 与会话索引共用同一个 DatabaseSync（WAL 已由会话 repository 启用）。
 
 import { DatabaseSync, type StatementSync } from "node:sqlite";

@@ -1,4 +1,4 @@
-// 鉴权接口（README §4.2 / docs/architecture.md 数据流 ①②）
+// 鉴权接口（needs.md §4.2 / docs/architecture.md 数据流 ①②）
 // 职责：校验 Bearer Token 通过后，从请求提取 UserIdentity——
 // 内网请求按来源 IP 识别，公网请求按 pi-agent-server 签发账号识别。
 // 本步只固定接口签名与依赖注入边界（buildApp 注入 authenticate 桩）；

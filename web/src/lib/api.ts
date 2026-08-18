@@ -1,5 +1,5 @@
-// pi-agent-server HTTP API 客户端（对应 README §4.2 与知识库能力接口）。
-// token 只保存在内存（README §7：不 localStorage 存凭证）。
+// pi-agent-server HTTP API 客户端（对应 needs.md §4.2 与知识库能力接口）。
+// token 只保存在内存（needs.md §7：不 localStorage 存凭证）。
 
 import type { ModelInfo, Project, SessionRecord } from "../types.js";
 

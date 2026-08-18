@@ -1,4 +1,4 @@
-// Agent 事件类型（README §4.2 / docs/pi-sdk-api.md §9）
+// Agent 事件类型（needs.md §4.2 / docs/pi-sdk-api.md §9）
 // SDK 事件：Pi AgentSession.subscribe 产生的 AgentSessionEvent 相关子集，结构定义、不依赖真实 SDK 类型，
 // 便于 mock 与纯逻辑单测（docs/architecture.md §2）。
 // SSE 事件：服务层协议（9 种）。queued / aborted / error 无直接 SDK 事件，由服务层合成；
@@ -84,7 +84,7 @@ export type AgentSdkEvent =
   | SdkTurnStartEvent
   | SdkIgnoredEvent;
 
-/** 从 agent_end 的 messages 中提取最终 assistant 消息的 stopReason/errorMessage（结果权威，README §4.2）。 */
+/** 从 agent_end 的 messages 中提取最终 assistant 消息的 stopReason/errorMessage（结果权威，needs.md §4.2）。 */
 export function extractFinalStop(
   messages: SdkAgentEndEvent["messages"],
 ): { stopReason: string | null; errorMessage: string | null } {
@@ -97,7 +97,7 @@ export function extractFinalStop(
   return { stopReason: null, errorMessage: null };
 }
 
-// --- SSE 事件（README §4.2，9 种） ---
+// --- SSE 事件（needs.md §4.2，9 种） ---
 
 export type SseEvent =
   | { type: "text_delta"; text: string }

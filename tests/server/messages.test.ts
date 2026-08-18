@@ -107,7 +107,7 @@ async function post(
   return { statusCode: res.statusCode, body: res.body ? res.json() : undefined };
 }
 
-describe("HTTP 层：messages / steer / follow-ups / abort（README §4.2）", () => {
+describe("HTTP 层：messages / steer / follow-ups / abort（needs.md §4.2）", () => {
   describe("POST /v1/sessions/:id/messages", () => {
     it("提交消息返回 202 accepted，事件写入事件总线（导出 lastEventId > 0）", async () => {
       const { app } = makeApp(async () => new MockAgentAdapter([

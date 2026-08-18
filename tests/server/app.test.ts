@@ -11,7 +11,7 @@ import { SqliteProjectRepository } from "../../src/storage/sqlite-project-reposi
 import { MockAgentAdapter } from "../../src/agent/mock-agent-adapter.js";
 
 // 可配置假鉴权：按 Authorization header 决定身份（内网按 IP / 公网按账号），
-// 语义对齐 README §4.2——Token 校验通过后身份取自 IP 或账号；无/无效 token 抛错 → 401。
+// 语义对齐 needs.md §4.2——Token 校验通过后身份取自 IP 或账号；无/无效 token 抛错 → 401。
 function buildFakeAuthenticate(users: Record<string, UserIdentity>): Authenticate {
   return async (request) => {
     const header = request.headers.authorization;
@@ -90,7 +90,7 @@ async function createSession(
   return res.json();
 }
 
-describe("HTTP 层：鉴权与会话 CRUD（README §4.2）", () => {
+describe("HTTP 层：鉴权与会话 CRUD（needs.md §4.2）", () => {
   describe("GET /health", () => {
     it("免鉴权返回 { status: ok }", async () => {
       const { app } = makeApp();

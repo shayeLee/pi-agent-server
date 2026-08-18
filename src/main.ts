@@ -74,7 +74,7 @@ const app = await startServer({
 
 app.log.info(`pi-agent-server listening on ${host}:${port}`);
 
-// 优雅关闭：停止接收新请求，Fastify close 等在途请求完成（README §4.2 优雅关闭的
+// 优雅关闭：停止接收新请求，Fastify close 等在途请求完成（needs.md §4.2 优雅关闭的
 // 完整版——在途任务超时、通知 SSE 客户端重连——在 Worker/SSE 治理步骤补齐）。
 async function shutdown(signal: string): Promise<void> {
   app.log.info(`收到 ${signal}，开始优雅关闭`);
@@ -82,7 +82,7 @@ async function shutdown(signal: string): Promise<void> {
     await app.close();
     process.exit(0);
   } catch (error) {
-    // README §5.5：不记录原始异常对象，只记录错误消息摘要
+    // needs.md §5.5：不记录原始异常对象，只记录错误消息摘要
     app.log.error({ err: error instanceof Error ? error.message : String(error) }, "优雅关闭失败");
     process.exit(1);
   }

@@ -1,4 +1,4 @@
-// SessionEventBus：per-session 事件缓冲与分发（README §4.2）。
+// SessionEventBus：per-session 事件缓冲与分发（needs.md §4.2）。
 // - push 为事件分配从 1 开始的递增 id，追加到有界缓冲（超限淘汰最旧），并同步通知所有活跃订阅者；
 // - subscribe(listener, lastEventId?)：携带 lastEventId 时先按序补发缓冲中 id > lastEventId 的事件，
 //   之后实时接收；返回退订函数；

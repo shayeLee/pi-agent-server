@@ -15,7 +15,7 @@ node --input-type=module -e \
 node --input-type=module -e \
   "import('@earendil-works/pi-coding-agent').then(m => console.log(m.getPackageDir()))"
 
-# README 路径
+# Pi SDK README 路径
 node --input-type=module -e \
   "import('@earendil-works/pi-coding-agent').then(m => console.log(m.getReadmePath()))"
 ```
@@ -34,7 +34,7 @@ node --input-type=module -e \
 
 1. 升级 pi 或 `@earendil-works/pi-coding-agent` 后，用上述命令定位最新 `docs` 目录。
 2. 打开 `sdk.md`，对照本文「API 清单」逐项核对签名与导出。
-3. 若签名、导出或默认行为变化，更新本文，并同步修正 README 与实现代码。
+3. 若签名、导出或默认行为变化，更新本文，并同步修正 needs.md 与实现代码。
 4. 更新下方「核对基线」的版本号。
 
 核对基线：`pi 0.84.2`（用 `pi --version` 查当前版本）。
@@ -62,7 +62,7 @@ const { session, extensionsResult, modelFallbackMessage } =
 - `runtime.importFromJsonl(...)`：导入 JSONL
 - 注意：替换后 `runtime.session` 会变化，事件订阅需重新绑定
 
-对应到 README §4.2 的 `POST /v1/sessions`：实现时用 `SessionManager.create(cwd)` 或 `AgentSessionRuntime.newSession()`，而非 `AgentSession` 上的方法。
+对应到 needs.md §4.2 的 `POST /v1/sessions`：实现时用 `SessionManager.create(cwd)` 或 `AgentSessionRuntime.newSession()`，而非 `AgentSession` 上的方法。
 
 ### createAgentSession 关键选项
 
@@ -78,7 +78,7 @@ const { session, extensionsResult, modelFallbackMessage } =
 | `settingsManager` | 设置 |
 | `thinkingLevel` | 思考等级 |
 
-## 3. AgentSession 方法（对应 README §4.2）
+## 3. AgentSession 方法（对应 needs.md §4.2）
 
 ```typescript
 interface AgentSession {
@@ -100,7 +100,7 @@ interface AgentSession {
 }
 ```
 
-与 README 状态机的对应：
+与 needs.md 状态机的对应：
 
 - 空闲时 `messages` → `session.prompt(text)`
 - 流式生成中 `steer` → `session.steer(text)`
@@ -124,7 +124,7 @@ sm.branchWithSummary(entryId, summary);
 sm.createBranchedSession(leafId);     // 提取分支为新会话
 ```
 
-README §4.1「会话存储：Pi JSONL 会话文件」对应 `SessionManager.create` / `open` / `continueRecent`。会话管理 API（README §4.2 的列表/删除/重命名/导出）对应：列表 `list`/`listAll`；删除即删除 `.jsonl` 文件；重命名 `appendSessionInfo(name)`/`getSessionName()`；导出即读取 JSONL 的 `getEntries()`/`getTree()`。历史编辑重跑对应 `navigateTree`（AgentSession）/`branch`（SessionManager）。
+needs.md §4.1「会话存储：Pi JSONL 会话文件」对应 `SessionManager.create` / `open` / `continueRecent`。会话管理 API（needs.md §4.2 的列表/删除/重命名/导出）对应：列表 `list`/`listAll`；删除即删除 `.jsonl` 文件；重命名 `appendSessionInfo(name)`/`getSessionName()`；导出即读取 JSONL 的 `getEntries()`/`getTree()`。历史编辑重跑对应 `navigateTree`（AgentSession）/`branch`（SessionManager）。
 
 ## 5. ModelRuntime
 
@@ -143,7 +143,7 @@ await modelRuntime.setRuntimeApiKey(provider, key); // 运行时密钥（不落�
 await modelRuntime.refresh({ allowNetwork, force, signal }); // 刷新目录
 ```
 
-密钥从环境变量读取后，通过 `setRuntimeApiKey` 注入，不写盘、不落日志；会话结束在 `finally` 中调用 `removeRuntimeApiKey(providerId)` 清除（覆盖异常/abort 路径），避免凭证残留（README §7 安全要求）。`login()` / `logout()`：OAuth 登录/登出（README §7 用户自定义模型的 OAuth 方式，交互式授权、token 入库）。用户 OAuth/API key 必须注入 KMS 加密的 `CredentialStore`，`authPath`（auth.json）不得用于用户凭证，避免明文落盘。
+密钥从环境变量读取后，通过 `setRuntimeApiKey` 注入，不写盘、不落日志；会话结束在 `finally` 中调用 `removeRuntimeApiKey(providerId)` 清除（覆盖异常/abort 路径），避免凭证残留（needs.md §7 安全要求）。`login()` / `logout()`：OAuth 登录/登出（needs.md §7 用户自定义模型的 OAuth 方式，交互式授权、token 入库）。用户 OAuth/API key 必须注入 KMS 加密的 `CredentialStore`，`authPath`（auth.json）不得用于用户凭证，避免明文落盘。
 
 ## 6. 自定义工具（Pi 结构化工具）
 
@@ -170,11 +170,11 @@ const { session } = await createAgentSession({
 });
 ```
 
-README §4.3 的「工具注册表」「读/写/执行类别」在实现时映射为 `defineTool` 的 `description` 与 `execute` 内部约束；能力启用开关决定是否把工具加入 `customTools` 和 `tools`。
+needs.md §4.3 的「工具注册表」「读/写/执行类别」在实现时映射为 `defineTool` 的 `description` 与 `execute` 内部约束；能力启用开关决定是否把工具加入 `customTools` 和 `tools`。
 
 ## 7. ResourceLoader 与系统提示词
 
-README §7「固定系统提示词、不加载个人全局配置」要求只从 manifest 注入受控资源，禁止加载仓库或个人的未声明配置。
+needs.md §7「固定系统提示词、不加载个人全局配置」要求只从 manifest 注入受控资源，禁止加载仓库或个人的未声明配置。
 
 ⚠️ `DefaultResourceLoader` 默认会自动发现 `<cwd>/.pi/extensions`、skills、prompts、`AGENTS.md`、themes，以及 `agentDir` 下的全局资源——直接使用会加载未声明的扩展与上下文文件。必须：
 
@@ -205,7 +205,7 @@ SDK 原生事件（`session.subscribe` 收到的 `AgentSessionEvent`）：
 - `queue_update`（`steering` / `followUp`）
 - `compaction_start` / `compaction_end`、`auto_retry_start` / `auto_retry_end` 等
 
-README §4.2 的 SSE 事件是**服务层协议**，需在 subscribe 回调里翻译：
+needs.md §4.2 的 SSE 事件是**服务层协议**，需在 subscribe 回调里翻译：
 
 | SDK 事件 | SSE 事件 |
 |---|---|
@@ -227,4 +227,4 @@ README §4.2 的 SSE 事件是**服务层协议**，需在 subscribe 回调里�
 - `noTools: "builtin"`：只禁用默认内置，保留扩展与自定义工具
 - `excludeTools`：在 `tools` 白名单之后按名禁用
 
-README §4.3「不启用内置 `bash`/`edit`/`write`」实现为：`noTools: "all"`（或 `tools: [仅自定义工具名]`），并显式列出能力声明的 `customTools`。
+needs.md §4.3「不启用内置 `bash`/`edit`/`write`」实现为：`noTools: "all"`（或 `tools: [仅自定义工具名]`），并显式列出能力声明的 `customTools`。

@@ -7,7 +7,7 @@ import { SqliteSessionRepository } from "../../src/storage/sqlite-session-reposi
 import { SqliteProjectRepository } from "../../src/storage/sqlite-project-repository.js";
 import { MockAgentAdapter } from "../../src/agent/mock-agent-adapter.js";
 
-// 真实鉴权（README §4.2）：内网免 token（按 IP 识别），公网校验 Bearer Token（按账号识别）
+// 真实鉴权（needs.md §4.2）：内网免 token（按 IP 识别），公网校验 Bearer Token（按账号识别）
 const INTRA_CIDRS = ["10.0.0.0/8", "192.168.0.0/16", "172.16.0.0/12"];
 const TOKENS: Record<string, string> = {
   "token-intranet": "acct-1",

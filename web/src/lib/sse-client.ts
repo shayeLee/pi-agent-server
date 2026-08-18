@@ -1,4 +1,4 @@
-// SSE 客户端：fetch 流式读取 + 帧解析 + Last-Event-ID 断线重连（README §4.2）。
+// SSE 客户端：fetch 流式读取 + 帧解析 + Last-Event-ID 断线重连（needs.md §4.2）。
 // 与 EventSource 不同，这里用 fetch 以便携带 Authorization header 与 last-event-id。
 
 import { SseParser } from "./sse.js";

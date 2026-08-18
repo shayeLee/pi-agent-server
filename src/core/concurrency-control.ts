@@ -1,4 +1,4 @@
-// 并发控制（README §4.2）
+// 并发控制（needs.md §4.2）
 // 全局与每用户并发上限、每用户/全局队列长度、排队超时、全局超载拒绝。
 
 export type ConcurrencyConfig = {

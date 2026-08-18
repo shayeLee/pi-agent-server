@@ -1,4 +1,4 @@
-// SessionRuntime：把状态机 / 并发控制 / 幂等 / Agent 适配器串成会话任务生命周期（README §4.2、docs/architecture.md §1 数据流 ④⑤⑥⑦⑧）。
+// SessionRuntime：把状态机 / 并发控制 / 幂等 / Agent 适配器串成会话任务生命周期（needs.md §4.2、docs/architecture.md §1 数据流 ④⑤⑥⑦⑧）。
 // - 外部依赖全部注入（ConcurrencyController / AgentAdapter / now / onEvent），单元测试一律用 MockAgentAdapter，不碰真实 Pi SDK。
 // - SDK 事件经 translateSdkEvent 翻译后输出；queued / completed / aborted / error 由本编排层合成。
 // - 返回决策为判别联合类型（run / queued / rejected / conflict / done；控制接口 ok / conflict）。
@@ -562,7 +562,7 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
       }
 
       if (key !== null) {
-        // 终态都落幂等账，重试同一 requestId 返回同一终态，不重复执行（README §4.2）。
+        // 终态都落幂等账，重试同一 requestId 返回同一终态，不重复执行（needs.md §4.2）。
         // 只有「尚未产生副作用」的路径（reject/conflict/排队取消）才 fail 释放重试资格。
         let result: unknown;
         if (outcome === "completed") {

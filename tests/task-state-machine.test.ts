@@ -11,7 +11,7 @@ function forbidden(state: TaskState, event: TaskEvent): void {
   expect(transition(state, event)).toBeNull();
 }
 
-describe("任务状态机（README §4.2）", () => {
+describe("任务状态机（needs.md §4.2）", () => {
   describe("合法转换", () => {
     it("空闲时提交进入队列", () => ok("idle", "submit", "queued"));
     it("排队任务出队进入流式", () => ok("queued", "dequeue", "streaming"));

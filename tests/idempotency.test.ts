@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { IdempotencyStore } from "../src/core/idempotency.js";
 
-describe("幂等去重（README §4.2 requestId）", () => {
+describe("幂等去重（needs.md §4.2 requestId）", () => {
   it("首次 check 返回 new", () => {
     const s = new IdempotencyStore();
     expect(s.check("req-1")).toEqual({ status: "new" });

@@ -8,7 +8,7 @@ import {
 import type { AgentSdkEvent } from "../../src/agent/events.js";
 
 // 会话导出：AgentAdapter.exportSession() 返回会话消息列表（可序列化数据），
-// HTTP GET /v1/sessions/:id/export 直接透传给客户端（README §4.2）。
+// HTTP GET /v1/sessions/:id/export 直接透传给客户端（needs.md §4.2）。
 
 /** 可设置 messages 的 fake session，用于断言 PiAgentAdapter.exportSession 透传。 */
 class ExportFakeSession implements AgentSessionLike {

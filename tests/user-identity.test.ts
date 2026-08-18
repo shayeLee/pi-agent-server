@@ -5,7 +5,7 @@ import {
   type IdentityContext,
 } from "../src/core/user-identity.js";
 
-describe("身份识别（README §4.2 UserIdentity）", () => {
+describe("身份识别（needs.md §4.2 UserIdentity）", () => {
   describe("resolveIdentity", () => {
     it("内网请求按来源 IP 识别", () => {
       const ctx: IdentityContext = { sourceIp: "10.1.2.3", isIntranet: true };

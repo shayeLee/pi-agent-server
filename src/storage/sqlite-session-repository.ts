@@ -1,4 +1,4 @@
-// 会话索引的 SQLite 实现（README §4.1）
+// 会话索引的 SQLite 实现（needs.md §4.1）
 // 用 Node 内置 node:sqlite 的 DatabaseSync；文件数据库启用 WAL（PRAGMA journal_mode=WAL），
 // :memory: 数据库跳过。WAL 模式下 SQLite 保证单一写者，写操作串行化。
 

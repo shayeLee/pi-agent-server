@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import type { FastifyRequest } from "fastify";
 import { authenticate, type Authenticate } from "../../src/server/auth.js";
 
-// 鉴权接口（README §4.2 / docs/architecture.md ①②）
+// 鉴权接口（needs.md §4.2 / docs/architecture.md ①②）
 // 本步只固定接口签名与依赖注入边界；真实 Token 校验与内网/公网判定后续步骤接入。
 describe("鉴权接口 authenticate", () => {
   it("接口签名：authenticate(request) → Promise<UserIdentity>，假鉴权可替换", async () => {

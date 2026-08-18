@@ -1,4 +1,4 @@
-// IdempotencyStorePort：幂等记录持久化端口（README §4.2 requestId 去重跨重启）。
+// IdempotencyStorePort：幂等记录持久化端口（needs.md §4.2 requestId 去重跨重启）。
 // 进程内 IdempotencyStore 提供快路径；本接口把已完成请求的终态结果持久化，
 // 重启后重复提交同一 requestId 时返回原结果，不重复执行。
 // 作为 application/ports 层的正式契约，storage 实现依赖此接口。

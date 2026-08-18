@@ -1,7 +1,7 @@
-// 能力 manifest 契约（README §1 能力模型）：注册、启用、会话冻结与审计的唯一来源。
+// 能力 manifest 契约（needs.md §1 能力模型）：注册、启用、会话冻结与审计的唯一来源。
 // 核心数据流不感知具体能力；能力只通过此处声明的工具/提示词片段/资源进入执行路径。
 
-/** 工具类别（README §4.3）：读 / 写 / 执行。 */
+/** 工具类别（needs.md §4.3）：读 / 写 / 执行。 */
 export type ToolCategory = "read" | "write" | "execute";
 
 /** 能力声明的受控工具（结构化工具的元数据；执行实现由 composition root 注入 Pi）。 */

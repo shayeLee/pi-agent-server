@@ -1,4 +1,4 @@
-// 任务状态机（README §4.2）
+// 任务状态机（needs.md §4.2）
 // idle → queued → streaming → terminal；completed/aborted/error 后经 release 回到 idle。
 // 非法转换返回 null（HTTP 409）。
 

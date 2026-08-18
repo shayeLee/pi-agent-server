@@ -1,4 +1,4 @@
-// IPv4 CIDR 匹配（README §4.2 内网判定）
+// IPv4 CIDR 匹配（needs.md §4.2 内网判定）
 // 用无符号 32 位整数实现；对非法 IP/CIDR 返回 false 而不是抛错。
 
 // 解析 IPv4 点分十进制为无符号 32 位整数；非法返回 null
