@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 // 进程入口：从环境变量读取配置，启动 pi-agent-server，处理优雅关闭信号。
 
 import { startServer } from "./server/start.js";
