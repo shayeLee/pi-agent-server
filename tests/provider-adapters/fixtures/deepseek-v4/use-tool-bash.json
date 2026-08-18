@@ -1,0 +1,19 @@
+{
+  "source": "Sanitized assistant text captured from a real deepseek/deepseek-v4-flash Pi session",
+  "provider": "deepseek",
+  "modelId": "deepseek-v4-flash",
+  "chunks": [
+    "<use_",
+    "tool name=\"bash\">\n<param name=\"command\">ls -",
+    "al</param>\n</use_tool>"
+  ],
+  "expected": {
+    "toolCalls": [
+      {
+        "name": "bash",
+        "arguments": { "command": "ls -al" }
+      }
+    ],
+    "text": ""
+  }
+}

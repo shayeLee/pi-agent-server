@@ -1,0 +1,61 @@
+{
+  "source": "Sanitized outcomes from isolated real-model Pi sessions; no user sessions or capture data retained",
+  "scenarios": [
+    {
+      "provider": "deepseek",
+      "modelId": "deepseek-v4-flash",
+      "availableTools": ["read"],
+      "request": "bash pwd",
+      "expected": { "kind": "text_refusal", "mentionsUnavailable": "bash" }
+    },
+    {
+      "provider": "deepseek",
+      "modelId": "deepseek-v4-pro",
+      "availableTools": ["read"],
+      "request": "bash pwd",
+      "expected": { "kind": "text_refusal", "mentionsUnavailable": "bash" }
+    },
+    {
+      "provider": "opencode-go",
+      "modelId": "deepseek-v4-flash",
+      "availableTools": ["read"],
+      "request": "bash pwd",
+      "expected": { "kind": "text_refusal", "mentionsUnavailable": "bash" }
+    },
+    {
+      "provider": "opencode-go",
+      "modelId": "deepseek-v4-pro",
+      "availableTools": ["read"],
+      "request": "bash pwd",
+      "expected": { "kind": "text_refusal", "mentionsUnavailable": "bash" }
+    },
+    {
+      "provider": "deepseek",
+      "modelId": "deepseek-v4-flash",
+      "availableTools": ["read"],
+      "request": "read .gitignore",
+      "expected": { "kind": "native_tool_call", "tool": "read" }
+    },
+    {
+      "provider": "deepseek",
+      "modelId": "deepseek-v4-pro",
+      "availableTools": ["read"],
+      "request": "read .gitignore",
+      "expected": { "kind": "native_tool_call", "tool": "read" }
+    },
+    {
+      "provider": "opencode-go",
+      "modelId": "deepseek-v4-flash",
+      "availableTools": ["read"],
+      "request": "read .gitignore",
+      "expected": { "kind": "native_tool_call", "tool": "read" }
+    },
+    {
+      "provider": "opencode-go",
+      "modelId": "deepseek-v4-pro",
+      "availableTools": ["read"],
+      "request": "read .gitignore",
+      "expected": { "kind": "native_tool_call", "tool": "read" }
+    }
+  ]
+}

@@ -3,6 +3,7 @@ import { DatabaseSync } from "node:sqlite";
 import type { FastifyInstance } from "fastify";
 import { buildApp } from "../../src/server/app.js";
 import { SqliteSessionRepository } from "../../src/storage/sqlite-session-repository.js";
+import { SqliteProjectRepository } from "../../src/storage/sqlite-project-repository.js";
 import { MockAgentAdapter } from "../../src/agent/mock-agent-adapter.js";
 import type { AgentAdapter } from "../../src/agent/agent-adapter.js";
 import type { UserIdentity } from "../../src/core/user-identity.js";
@@ -17,10 +18,14 @@ function makeApp(createAdapter: (sessionId: string) => Promise<AgentAdapter>): {
   adapters: Map<string, AgentAdapter>;
 } {
   const db = new DatabaseSync(":memory:");
+  const projects = new SqliteProjectRepository(db);
+  void projects.ensureDefaultProject({ id: "default", name: "默认项目", cwd: "/tmp/default-project", ownerKey: "", createdAt: 0 });
   const sessions = new SqliteSessionRepository(db);
   const adapters = new Map<string, AgentAdapter>();
   const app = buildApp({
     sessions,
+    projects,
+    defaultProjectCwd: "/tmp/default-project",
     authenticate: async (request) => {
       const h = request.headers.authorization;
       if (h === `Bearer ${TOKEN}`) return IDENTITY;
@@ -38,6 +43,7 @@ function makeApp(createAdapter: (sessionId: string) => Promise<AgentAdapter>): {
 
 const JSON_HEADERS = { "content-type": "application/json" };
 const authHeader = (token: string) => ({ authorization: `Bearer ${token}` });
+const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
 async function createSession(app: FastifyInstance, token: string): Promise<string> {
   const res = await app.inject({
@@ -90,6 +96,26 @@ describe("HTTP 层：会话导出（GET /v1/sessions/:id/export）", () => {
 
     expect(res.statusCode).toBe(200);
     expect(res.body).toEqual({ messages: [], lastEventId: 0 });
+  });
+
+  it("发消息后导出：lastEventId 非零（事件游标随事件写入递增）", async () => {
+    const { app } = makeApp(async () => new MockAgentAdapter([
+      { type: "agent_start" },
+      { type: "agent_end", messages: [], willRetry: false },
+    ]));
+    const id = await createSession(app, TOKEN);
+
+    await app.inject({
+      method: "POST",
+      url: `/v1/sessions/${id}/messages`,
+      headers: { ...authHeader(TOKEN), ...JSON_HEADERS },
+      payload: JSON.stringify({ requestId: "r1", prompt: "你好" }),
+    });
+    await flush(); // 等待后台流式完成
+
+    const res = await get(app, `/v1/sessions/${id}/export`, TOKEN);
+    expect(res.statusCode).toBe(200);
+    expect((res.body as { lastEventId: number }).lastEventId).toBeGreaterThan(0);
   });
 
   it("他人的会话导出返回 404（越权不可见）", async () => {

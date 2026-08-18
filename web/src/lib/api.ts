@@ -1,7 +1,7 @@
 // pi-server HTTP API 客户端（对应 README §4.2 与知识库能力接口）。
 // token 只保存在内存（README §7：不 localStorage 存凭证）。
 
-import type { SessionRecord } from "../types.js";
+import type { ModelInfo, Project, SessionRecord } from "../types.js";
 
 export type SendMessageInput = {
   requestId: string;
@@ -48,12 +48,44 @@ export class ApiClient {
     return (await res.json()) as T;
   }
 
-  createSession(title?: string): Promise<SessionRecord> {
-    return this.request("POST", "/v1/sessions", { title });
+  createSession(title?: string, projectId?: string): Promise<SessionRecord> {
+    return this.request("POST", "/v1/sessions", { title, projectId });
   }
 
   listSessions(): Promise<SessionRecord[]> {
     return this.request("GET", "/v1/sessions");
+  }
+
+  listSessionsByProject(projectId: string): Promise<SessionRecord[]> {
+    return this.request("GET", `/v1/sessions?projectId=${encodeURIComponent(projectId)}`);
+  }
+
+  listProjects(): Promise<Project[]> {
+    return this.request("GET", "/v1/projects");
+  }
+
+  createProject(name: string, cwd: string): Promise<Project> {
+    return this.request("POST", "/v1/projects", { name, cwd });
+  }
+
+  deleteProject(id: string): Promise<void> {
+    return this.request("DELETE", `/v1/projects/${id}`);
+  }
+
+  listModels(): Promise<{
+    models: ModelInfo[];
+    thinkingLevels: string[];
+    defaultModel: ModelInfo | null;
+    defaultThinkingLevel: string;
+  }> {
+    return this.request("GET", "/v1/models");
+  }
+
+  updateSessionConfig(
+    id: string,
+    config: { modelProvider?: string; modelId?: string; thinkingLevel?: string },
+  ): Promise<SessionRecord> {
+    return this.request("PATCH", `/v1/sessions/${id}/config`, config);
   }
 
   deleteSession(id: string): Promise<void> {

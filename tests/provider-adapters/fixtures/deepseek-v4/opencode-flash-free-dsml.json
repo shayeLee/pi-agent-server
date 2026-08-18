@@ -1,0 +1,16 @@
+{
+  "source": "Sanitized assistant text captured from a real opencode/deepseek-v4-flash-free Pi session",
+  "provider": "opencode",
+  "modelId": "deepseek-v4-flash-free",
+  "chunks": [
+    "<｜｜DSML｜｜tool_calls>\n<｜｜DSML｜｜invoke name=\"bash\">\n<｜｜DSML｜｜parameter name=\"command\" string=\"true\">ls -al</｜｜DSML｜｜parameter>\n",
+    "<｜｜DSML｜｜parameter name=\"description\" string=\"true\">Test bash tool with ls -al</｜｜DSML｜｜parameter>\n</｜｜DSML｜｜invoke>\n</｜｜DSML｜｜tool_calls>"
+  ],
+  "expected": {
+    "name": "bash",
+    "arguments": {
+      "command": "ls -al",
+      "description": "Test bash tool with ls -al"
+    }
+  }
+}

@@ -1,33 +1,57 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { Chat } from "./Chat.js";
-import type { ChatMessage, ToolCall } from "../types.js";
+import type { SessionRecord, TimelineItem } from "../types.js";
 
-const messages: ChatMessage[] = [
-  { id: "u-0", role: "user", text: "帮我查天气" },
-  { id: "a-1", role: "assistant", text: "好的" },
-];
+const session: SessionRecord = {
+  id: "s1",
+  ownerKey: "k",
+  projectId: "default",
+  title: "测试会话",
+  createdAt: 1000,
+  updatedAt: 2000,
+  modelProvider: null,
+  modelId: null,
+  thinkingLevel: null, systemPrompt: null,
+};
 
-const toolCalls: ToolCall[] = [
+const timeline: TimelineItem[] = [
+  { kind: "message", id: "u-0", role: "user", text: "帮我查天气", streaming: false },
+  { kind: "message", id: "a-1", role: "assistant", text: "好的", streaming: false },
   {
-    toolCallId: "t1",
-    toolName: "weather",
-    args: { city: "beijing" },
-    partialResult: "晴",
-    result: undefined,
-    isError: false,
-    done: false,
+    kind: "tool",
+    id: "t1",
+    call: {
+      toolCallId: "t1",
+      toolName: "weather",
+      args: { city: "beijing" },
+      partialResult: "晴",
+      result: undefined,
+      isError: false,
+      done: false,
+    },
   },
 ];
 
 function setup(partial: Partial<Parameters<typeof Chat>[0]> = {}) {
   const props = {
-    messages,
-    toolCalls,
+    session,
+    timeline,
     streaming: false,
+    queued: false,
+    loadError: null,
+    models: [],
+    thinkingLevels: ["off", "low", "medium", "high"],
+    defaultModel: null,
+    defaultThinkingLevel: "medium",
+    connected: true,
+    stats: null,
     onSend: vi.fn(),
     onSteer: vi.fn(),
+    onFollowUp: vi.fn(),
     onAbort: vi.fn(),
+    onToggleDetails: vi.fn(),
+    onConfigChange: vi.fn(),
     ...partial,
   };
   render(<Chat {...props} />);
@@ -35,13 +59,22 @@ function setup(partial: Partial<Parameters<typeof Chat>[0]> = {}) {
 }
 
 describe("Chat（聊天区）", () => {
-  it("渲染消息列表（user + assistant）与工具调用卡片", () => {
+  it("渲染时间线（user + assistant + 工具卡片）", () => {
     setup();
-    expect(screen.getAllByTestId("message-item")).toHaveLength(2);
     expect(screen.getByText("帮我查天气")).toBeInTheDocument();
     expect(screen.getByText("好的")).toBeInTheDocument();
     expect(screen.getByTestId("tool-call-card")).toBeInTheDocument();
     expect(screen.getByTestId("tool-name")).toHaveTextContent("weather");
+  });
+
+  it("空时间线显示空状态", () => {
+    setup({ timeline: [] });
+    expect(screen.getByTestId("chat-empty")).toBeInTheDocument();
+  });
+
+  it("未选择会话显示提示", () => {
+    setup({ session: null });
+    expect(screen.getByTestId("no-session-hint")).toBeInTheDocument();
   });
 
   it("发送按钮触发 onSend(text) 并清空输入框", () => {
@@ -53,17 +86,23 @@ describe("Chat（聊天区）", () => {
     expect(input).toHaveValue("");
   });
 
-  it("空闲时不显示 steer/abort，流式时显示并向回调传递", () => {
-    const { onSteer, onAbort } = setup({ streaming: true });
-    expect(screen.getByTestId("steer-button")).toBeInTheDocument();
+  it("会话未覆盖配置时显示实际默认模型与思考级别", () => {
+    setup({
+      defaultModel: { provider: "openai-codex", id: "gpt-5.5", name: "GPT-5.5" },
+      defaultThinkingLevel: "medium",
+    });
+    expect(screen.getByRole("option", { name: "openai-codex / gpt-5.5" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "medium" })).toBeInTheDocument();
+  });
+
+  it("流式时显示中止按钮", () => {
+    setup({ streaming: true });
     expect(screen.getByTestId("abort-button")).toBeInTheDocument();
     expect(screen.queryByTestId("send-button")).not.toBeInTheDocument();
+  });
 
-    fireEvent.change(screen.getByTestId("composer-input"), { target: { value: "换个方向" } });
-    fireEvent.click(screen.getByTestId("steer-button"));
-    expect(onSteer).toHaveBeenCalledWith("换个方向");
-
-    fireEvent.click(screen.getByTestId("abort-button"));
-    expect(onAbort).toHaveBeenCalledTimes(1);
+  it("排队状态禁用发送", () => {
+    setup({ queued: true });
+    expect(screen.getByTestId("send-button")).toBeDisabled();
   });
 });

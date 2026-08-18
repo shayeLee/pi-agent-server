@@ -1,11 +1,12 @@
 import { describe, it, expect } from "vitest";
-import { SessionRuntime } from "../../src/runtime/session-runtime.js";
+import { SessionRuntime, getExpireHandler } from "../../src/runtime/session-runtime.js";
 import {
   ConcurrencyController,
   type ConcurrencyConfig,
 } from "../../src/core/concurrency-control.js";
 import { MockAgentAdapter } from "../../src/agent/mock-agent-adapter.js";
 import type { SseEvent } from "../../src/agent/events.js";
+import type { ObservabilityEvent, ObservabilityPort } from "../../src/application/ports/index.js";
 
 const baseConfig: ConcurrencyConfig = {
   globalLimit: 2,
@@ -42,11 +43,27 @@ class ThrowingAdapter extends MockAgentAdapter {
   }
 }
 
+/** prompt 挂起、abort 抛错的 adapter：验证 abort 失败 → poisoned 会话拒绝复用。 */
+class AbortThrowingAdapter extends ManualAdapter {
+  override async abort(): Promise<void> {
+    this.calls.push({ method: "abort" });
+    throw new Error("abort 失败");
+  }
+}
+
+class CollectingObservability implements ObservabilityPort {
+  readonly events: ObservabilityEvent[] = [];
+  observe(event: ObservabilityEvent): void {
+    this.events.push(event);
+  }
+}
+
 function makeRuntime(opts: {
   config?: ConcurrencyConfig;
   concurrency?: ConcurrencyController;
   sessionId?: string;
   adapter?: MockAgentAdapter;
+  observability?: ObservabilityPort;
 } = {}) {
   const events: SseEvent[] = [];
   const concurrency =
@@ -60,6 +77,7 @@ function makeRuntime(opts: {
     adapter,
     now: () => 0,
     onEvent: (e) => events.push(e),
+    observability: opts.observability,
   });
   return { runtime, events, concurrency, adapter, sessionId };
 }
@@ -145,6 +163,7 @@ describe("SessionRuntime（README §4.2 会话任务编排）", () => {
         { type: "tool_update", toolCallId: "c1", toolName: "read", partialResult: { lines: ["a"] } },
         { type: "tool_end", toolCallId: "c1", toolName: "read", result: { text: "内容" }, isError: false },
         { type: "text_delta", text: "你好" },
+        { type: "thinking_delta", text: "思考中" },
         { type: "completed" }, // agent_end 由编排层合成，不重复转发
       ]);
     });
@@ -249,6 +268,7 @@ describe("SessionRuntime（README §4.2 会话任务编排）", () => {
       expect(d).toEqual({ kind: "conflict", reason: "active" });
 
       await runtime.abort();
+      await flush(); // 等 fire-and-forget settle 完成（release→idle）
       adapter.finishStream();
       await run;
       expect(runtime.state).toBe("idle");
@@ -315,6 +335,31 @@ describe("SessionRuntime（README §4.2 会话任务编排）", () => {
       });
       expect(d).toEqual({ kind: "rejected", reason: "global-overload" });
       expect(runtime.state).toBe("idle");
+    });
+
+    it("排队超时：expireQueued 触发 handleExpired，清理排队、合成 error、释放幂等", async () => {
+      const concurrency = new ConcurrencyController({
+        globalLimit: 1,
+        perUserLimit: 1,
+        perUserQueueLimit: 2,
+        globalQueueLimit: 4,
+        queueTimeoutMs: 1000,
+      });
+      const { runtime, events, sessionId } = makeRuntime({ concurrency });
+
+      // 占用唯一槽位
+      concurrency.submit("holder:task", "user-1", 0);
+      await runtime.submitMessage({ requestId: "r1", userId: "user-1", prompt: "排队" });
+      expect(runtime.state).toBe("queued");
+
+      // 时钟前进超过 queueTimeoutMs，扫描出过期任务并触发处理
+      const taskId = `${sessionId}:r1`;
+      expect(concurrency.expireQueued(1000)).toContain(taskId);
+      getExpireHandler(taskId)?.();
+
+      expect(runtime.state).toBe("idle");
+      expect(concurrency.queuedCount()).toBe(0);
+      expect(events).toContainEqual({ type: "error", message: "排队超时" });
     });
   });
 
@@ -386,12 +431,59 @@ describe("SessionRuntime（README §4.2 会话任务编排）", () => {
       const d = await runtime.abort();
       expect(d).toEqual({ kind: "ok" });
       expect(adapter.aborted).toBe(true);
+      await flush(); // 等待 fire-and-forget settle 完成
       expect(runtime.state).toBe("idle");
       expect(events).toEqual([{ type: "aborted" }]);
       expect(concurrency.activeCount()).toBe(0);
 
       adapter.finishStream();
       await run;
+    });
+
+    it("单 turn 工具错误超过预算上限：自动中止并结算为 error（防无限工具循环）", async () => {
+      const adapter = new ManualAdapter();
+      const { runtime, events, concurrency } = makeRuntime({ adapter });
+
+      const run = runtime.submitMessage({ requestId: "r1", userId: "user-1", prompt: "q" });
+      expect(runtime.state).toBe("streaming");
+
+      // 手动投递超过上限（9 > 8）的 tool_execution_end isError 事件
+      for (let i = 0; i < 9; i++) {
+        adapter.emit({
+          type: "tool_execution_end",
+          toolCallId: `t${i}`,
+          toolName: "bash",
+          result: "Tool bash not found",
+          isError: true,
+        });
+      }
+
+      await flush(); // 等待预算触发 abort + settle 完成
+      expect(adapter.aborted).toBe(true);
+      expect(runtime.state).toBe("idle");
+      expect(events).toContainEqual({ type: "error", message: "连续工具调用失败次数超限" });
+      expect(events).not.toContainEqual({ type: "aborted" });
+      expect(concurrency.activeCount()).toBe(0);
+
+      adapter.finishStream();
+      await run;
+    });
+
+    it("abort 抛错 → poisoned：后续提交返回 conflict(poisoned) 且槽位释放", async () => {
+      const adapter = new AbortThrowingAdapter();
+      const { runtime, concurrency } = makeRuntime({ adapter });
+
+      await runtime.submitMessage({ requestId: "r1", userId: "user-1", prompt: "q" });
+      const d = await runtime.abort();
+      expect(d).toEqual({ kind: "ok" });
+      await flush();
+
+      const next = await runtime.submitMessage({ requestId: "r2", userId: "user-1", prompt: "再来" });
+      expect(next).toEqual({ kind: "conflict", reason: "poisoned" });
+      expect(concurrency.activeCount()).toBe(0);
+
+      adapter.finishStream(); // 清理挂起的 prompt
+      await flush();
     });
   });
 
@@ -651,6 +743,37 @@ describe("SessionRuntime（README §4.2 会话任务编排）", () => {
 
       expect(adapterB.calls).toEqual([{ method: "prompt", text: "B看图", images }]);
       expect(rtB.state).toBe("idle");
+    });
+  });
+
+  describe("观测订阅口", () => {
+    it("正常完成时推送 turn(completed) 与 usage 观测事件", async () => {
+      const adapter = new MockAgentAdapter([{ type: "agent_end", messages: [], willRetry: false }]);
+      adapter.lastUsage = { promptTokens: 10, completionTokens: 3, totalTokens: 13 };
+      const observability = new CollectingObservability();
+      const { runtime } = makeRuntime({ adapter, observability });
+
+      await runtime.submitMessage({ requestId: "r1", userId: "user-1", prompt: "hi" });
+      await flush();
+
+      expect(observability.events).toEqual([
+        { type: "turn", sessionId: "session-1", requestId: "r1", outcome: "completed", durationMs: 0, ttftMs: 0 },
+        { type: "usage", sessionId: "session-1", requestId: "r1", promptTokens: 10, completionTokens: 3, totalTokens: 13 },
+      ]);
+    });
+
+    it("失败时推送 turn(error) 与脱敏 error 观测事件", async () => {
+      const observability = new CollectingObservability();
+      const { runtime } = makeRuntime({ adapter: new ThrowingAdapter(), observability });
+
+      await runtime.submitMessage({ requestId: "r2", userId: "user-1", prompt: "hi" });
+      await flush();
+
+      const turn = observability.events.find((e) => e.type === "turn");
+      expect(turn).toMatchObject({ sessionId: "session-1", requestId: "r2", outcome: "error" });
+      expect(observability.events).toContainEqual({
+        type: "error", sessionId: "session-1", requestId: "r2", message: "模型挂了",
+      });
     });
   });
 });

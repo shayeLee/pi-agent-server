@@ -16,16 +16,16 @@ describe("SDK 事件 → SSE 事件翻译（docs/pi-sdk-api.md §9）", () => {
       expect(translateSdkEvent(sdk)).toEqual({ type: "text_delta", text: "你好" });
     });
 
-    it("非 text_delta 的 message_update 被忽略（thinking_delta）", () => {
+    it("thinking_delta → thinking_delta", () => {
       const sdk: AgentSdkEvent = {
         type: "message_update",
         message: {},
         assistantMessageEvent: { type: "thinking_delta", contentIndex: 0, delta: "思考中" },
       };
-      expect(translateSdkEvent(sdk)).toBeNull();
+      expect(translateSdkEvent(sdk)).toEqual({ type: "thinking_delta", text: "思考中" });
     });
 
-    it("非 text_delta 的 message_update 被忽略（text_start / text_end / start）", () => {
+    it("非 text_delta/thinking_delta 的 message_update 被忽略（text_start / text_end / start）", () => {
       const cases: AgentSdkEvent[] = [
         { type: "message_update", message: {}, assistantMessageEvent: { type: "text_start", contentIndex: 0 } },
         { type: "message_update", message: {}, assistantMessageEvent: { type: "text_end", contentIndex: 0, content: "完整文本" } },

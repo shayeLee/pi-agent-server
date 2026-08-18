@@ -5,3 +5,8 @@
 node_modules
 dist
 web/test-results
+
+# pi-server 服务数据（默认 DATA_DIR=项目目录时产生；建议生产用独立 DATA_DIR）
+pi-server.db
+.pi-agent
+sessions/

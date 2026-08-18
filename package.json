@@ -7,13 +7,14 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "dev": "tsx src/main.ts",
-    "dev:real": "PI_AUTH_PATH=$HOME/.pi/agent/auth.json DATA_DIR=/tmp/pi-server tsx src/main.ts",
+    "dev:real": "PI_AUTH_PATH=$HOME/.pi/agent/auth.json DATA_DIR=/tmp/pi-server PI_DEFAULT_MODEL=openai-codex/gpt-5.6-luna PI_DEFAULT_THINKING_LEVEL=medium tsx src/main.ts",
     "mock": "tsx scripts/mock-server.ts",
     "web": "pnpm --filter web dev",
     "web:mock": "VITE_API_TARGET=http://127.0.0.1:8081 pnpm --filter web dev",
     "e2e": "pnpm --filter web exec playwright test"
   },
   "devDependencies": {
+    "@earendil-works/pi-ai": "^0.84.2",
     "@earendil-works/pi-coding-agent": "^0.84.2",
     "@fastify/cors": "^11.3.0",
     "@types/node": "^26.2.0",

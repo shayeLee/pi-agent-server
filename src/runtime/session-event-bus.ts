@@ -38,9 +38,13 @@ export class SessionEventBus {
     if (this.buffer.length > this.maxEvents) {
       this.buffer.shift(); // 淘汰最旧
     }
-    // 迭代快照：通知期间新订阅者不参与本次派发
+    // 迭代快照：通知期间新订阅者不参与本次派发；隔离单个订阅者异常，避免中断其他订阅者分发
     for (const listener of [...this.subscribers]) {
-      listener(item);
+      try {
+        listener(item);
+      } catch {
+        // 单个坏订阅者（如坏 SSE 客户端）不得影响其他订阅者
+      }
     }
     return item.id;
   }
@@ -54,10 +58,16 @@ export class SessionEventBus {
     listener: (item: SseEventBatch) => void,
     lastEventId?: number,
   ): () => void {
-    // 只有显式提供 lastEventId 才补发（不带参数只接收之后的新事件）
+    // 只有显式提供 lastEventId 才补发（不带参数只接收之后的新事件）；隔离单个监听器异常
     if (lastEventId !== undefined) {
       for (const item of this.buffer) {
-        if (item.id > lastEventId) listener(item);
+        if (item.id > lastEventId) {
+          try {
+            listener(item);
+          } catch {
+            // 补发期间监听器异常不得中断后续补发
+          }
+        }
       }
     }
     this.subscribers.add(listener);
@@ -77,7 +87,11 @@ export class SessionEventBus {
   /** 关闭所有关联连接（删除会话/优雅关闭时调用）；幂等。 */
   closeAll(): void {
     for (const handler of [...this.closeHandlers]) {
-      handler();
+      try {
+        handler();
+      } catch {
+        // 隔离单个 close handler 异常，避免一个坏连接阻塞其余关闭（优雅关闭自锁）
+      }
     }
     this.closeHandlers.clear();
     this.subscribers.clear();

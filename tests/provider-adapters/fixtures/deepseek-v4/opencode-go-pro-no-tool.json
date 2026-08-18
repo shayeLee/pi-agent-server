@@ -1,0 +1,10 @@
+{
+  "source": "Sanitized assistant text captured from a real opencode-go/deepseek-v4-pro Pi session",
+  "provider": "opencode-go",
+  "modelId": "deepseek-v4-pro",
+  "scenario": "No Pi tools; user requests bash pwd",
+  "expected": {
+    "kind": "text_refusal",
+    "contains": "没有可用的工具"
+  }
+}

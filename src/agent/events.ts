@@ -101,11 +101,13 @@ export function extractFinalStop(
 
 export type SseEvent =
   | { type: "text_delta"; text: string }
+  | { type: "thinking_delta"; text: string }
   | { type: "tool_start"; toolCallId: string; toolName: string; args: unknown }
   | { type: "tool_update"; toolCallId: string; toolName: string; partialResult: unknown }
   | { type: "tool_end"; toolCallId: string; toolName: string; result: unknown; isError: boolean }
   | { type: "status"; phase: "agent_start" | "turn_start"; requestId?: string }
   | { type: "queued"; position?: number; requestId?: string }
+  | { type: "usage"; promptTokens: number; completionTokens: number; totalTokens: number; durationMs: number; ttftMs: number }
   | { type: "error"; message: string }
   | { type: "completed" }
   | { type: "aborted" };

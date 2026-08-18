@@ -9,16 +9,24 @@ const mocks = vi.hoisted(() => {
     baseUrl: string;
     token: string;
     listSessions: ReturnType<typeof vi.fn>;
+    listSessionsByProject: ReturnType<typeof vi.fn>;
+    listProjects: ReturnType<typeof vi.fn>;
+    listModels: ReturnType<typeof vi.fn>;
     createSession: ReturnType<typeof vi.fn>;
+    createProject: ReturnType<typeof vi.fn>;
     deleteSession: ReturnType<typeof vi.fn>;
+    deleteProject: ReturnType<typeof vi.fn>;
     renameSession: ReturnType<typeof vi.fn>;
+    updateSessionConfig: ReturnType<typeof vi.fn>;
     sendMessage: ReturnType<typeof vi.fn>;
     steer: ReturnType<typeof vi.fn>;
+    followUp: ReturnType<typeof vi.fn>;
     abort: ReturnType<typeof vi.fn>;
   }[] = [];
 
   // 探测行为：false = 内网（无 token 也能访问）；true = 公网（需 token）
   let probeFails = false;
+  const projectList = [{ id: "default", name: "默认项目", cwd: "/tmp/default" }];
 
   class MockApiClient {
     baseUrl: string;
@@ -28,11 +36,52 @@ const mocks = vi.hoisted(() => {
       if (this.token === "" && probeFails) return Promise.reject(new Error("未授权"));
       return Promise.resolve([...sessionList]);
     });
-    createSession = vi.fn();
+    listSessionsByProject = vi.fn(() => Promise.resolve([...sessionList]));
+    listProjects = vi.fn(() => Promise.resolve([...projectList]));
+    createSession = vi.fn((title?: string, projectId?: string) =>
+      Promise.resolve({
+        id: "new-session",
+        ownerKey: "k",
+        projectId: projectId ?? "default",
+        title: title ?? "",
+        createdAt: 1,
+        updatedAt: 1,
+        modelProvider: null,
+        modelId: null,
+        thinkingLevel: null, systemPrompt: null,
+      }),
+    );
+    createProject = vi.fn((name: string, cwd: string) =>
+      Promise.resolve({ id: "new-project", name, cwd }),
+    );
     deleteSession = vi.fn();
+    deleteProject = vi.fn(() => Promise.resolve(undefined));
     renameSession = vi.fn();
+    listModels = vi.fn(() =>
+      Promise.resolve({
+        models: [{ provider: "deepseek", id: "v4-pro", name: "DeepSeek V4 Pro" }],
+        thinkingLevels: ["off", "low", "medium", "high"],
+        defaultModel: { provider: "deepseek", id: "v4-pro", name: "DeepSeek V4 Pro" },
+        defaultThinkingLevel: "medium",
+      }),
+    );
+    updateSessionConfig = vi.fn((id: string, config: unknown) =>
+      Promise.resolve({
+        id,
+        ownerKey: "k",
+        projectId: "default",
+        title: "",
+        createdAt: 1,
+        updatedAt: 1,
+        modelProvider: null,
+        modelId: null,
+        thinkingLevel: null, systemPrompt: null,
+        ...(config as object),
+      }),
+    );
     sendMessage = vi.fn(() => Promise.resolve(undefined));
     steer = vi.fn(() => Promise.resolve(undefined));
+    followUp = vi.fn(() => Promise.resolve(undefined));
     abort = vi.fn(() => Promise.resolve(undefined));
     exportSession = vi.fn(() => Promise.resolve([]));
     constructor(baseUrl: string, token: string) {
@@ -69,8 +118,8 @@ vi.mock("./lib/api.js", () => ({ ApiClient: mocks.MockApiClient }));
 vi.mock("./lib/sse-client.js", () => ({ createSseConnection: mocks.createSseConnection }));
 
 const sessions: SessionRecord[] = [
-  { id: "s1", ownerKey: "k", title: "会话一", createdAt: 1, updatedAt: 1 },
-  { id: "s2", ownerKey: "k", title: "会话二", createdAt: 1, updatedAt: 1 },
+  { id: "s1", ownerKey: "k", projectId: "default", title: "会话一", createdAt: 1, updatedAt: 1, modelProvider: null, modelId: null, thinkingLevel: null, systemPrompt: null },
+  { id: "s2", ownerKey: "k", projectId: "default", title: "会话二", createdAt: 1, updatedAt: 1, modelProvider: null, modelId: null, thinkingLevel: null, systemPrompt: null },
 ];
 
 beforeEach(() => {
@@ -185,15 +234,11 @@ describe("App（顶层流程）", () => {
     await waitFor(() => expect(screen.getByText("好的，今天晴天")).toBeInTheDocument());
   });
 
-  it("流式阶段的 steer/abort 调用 api", async () => {
+  it("流式阶段可中止", async () => {
     const inst = await enterChat();
 
     mocks.sse.onEvent?.({ type: "tool_start", toolCallId: "t1", toolName: "search", args: {} });
     await waitFor(() => expect(screen.getByTestId("abort-button")).toBeInTheDocument());
-
-    fireEvent.change(screen.getByTestId("composer-input"), { target: { value: "换个方向" } });
-    fireEvent.click(screen.getByTestId("steer-button"));
-    expect(inst.steer).toHaveBeenCalledWith("s1", "换个方向");
 
     fireEvent.click(screen.getByTestId("abort-button"));
     expect(inst.abort).toHaveBeenCalledWith("s1");
@@ -229,6 +274,6 @@ describe("App（顶层流程）", () => {
     fireEvent.click(screen.getByTestId("delete-s1"));
     await waitFor(() => expect(mocks.sse.close).toHaveBeenCalled());
     expect(inst.deleteSession).toHaveBeenCalledWith("s1");
-    expect(screen.queryByTestId("chat-view")).not.toBeInTheDocument();
+    expect(screen.getByTestId("no-session-hint")).toBeInTheDocument();
   });
 });

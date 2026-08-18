@@ -3,7 +3,7 @@
 // - 记录调用：calls 按序记录 prompt/steer/followUp/abort 及参数；
 // - 支持 abort：abort() 置 aborted 标记、清空未发射的预设事件（模拟 SDK 中止后不再出流）。
 
-import type { AgentAdapter, ImageInput } from "./agent-adapter.js";
+import type { AgentAdapter, ImageInput, UsageInfo } from "./agent-adapter.js";
 import type { AgentSdkEvent } from "./events.js";
 
 export type AdapterCall =
@@ -12,6 +12,8 @@ export type AdapterCall =
   | { method: "followUp"; text: string }
   | { method: "abort" }
   | { method: "navigateTree"; targetId: string }
+  | { method: "setModel"; provider: string; modelId: string }
+  | { method: "setThinkingLevel"; level: string }
   | { method: "dispose" };
 
 export class MockAgentAdapter implements AgentAdapter {
@@ -71,6 +73,14 @@ export class MockAgentAdapter implements AgentAdapter {
     this.calls.push({ method: "navigateTree", targetId });
   }
 
+  async setModel(provider: string, modelId: string): Promise<void> {
+    this.calls.push({ method: "setModel", provider, modelId });
+  }
+
+  async setThinkingLevel(level: string): Promise<void> {
+    this.calls.push({ method: "setThinkingLevel", level });
+  }
+
   /** 释放资源：清空监听器与待发射事件（dispose 后不再向外投递）。 */
   dispose(): void {
     this.calls.push({ method: "dispose" });
@@ -100,6 +110,13 @@ export class MockAgentAdapter implements AgentAdapter {
   }
 
   /** 导出会话数据：返回可配置的 exportData（默认空消息列表）。 */
+  /** getLastUsage 返回的可配置数据。 */
+  lastUsage: UsageInfo | null = null;
+
+  async getLastUsage(): Promise<UsageInfo | null> {
+    return this.lastUsage;
+  }
+
   async exportSession(): Promise<unknown> {
     return this.exportData;
   }

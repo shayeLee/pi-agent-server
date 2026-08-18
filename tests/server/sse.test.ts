@@ -4,6 +4,7 @@ import type { FastifyInstance } from "fastify";
 import { buildApp } from "../../src/server/app.js";
 import { formatSseEvent } from "../../src/server/sse-format.js";
 import { SqliteSessionRepository } from "../../src/storage/sqlite-session-repository.js";
+import { SqliteProjectRepository } from "../../src/storage/sqlite-project-repository.js";
 import { MockAgentAdapter } from "../../src/agent/mock-agent-adapter.js";
 import type { UserIdentity } from "../../src/core/user-identity.js";
 
@@ -14,7 +15,7 @@ const authHeader = (token: string) => ({ authorization: `Bearer ${token}` });
 const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
 describe("SSE 帧格式化（README §4.2）", () => {
-  it("生成带递增 id 与 JSON data 的帧", () => {
+  it("按传入 id 生成带 data 的 SSE 帧", () => {
     expect(formatSseEvent(3, { type: "text_delta", text: "hi" })).toBe(
       'id: 3\ndata: {"type":"text_delta","text":"hi"}\n\n',
     );
@@ -29,9 +30,13 @@ describe("GET /v1/sessions/:id/events（SSE 订阅与 Last-Event-ID 补发）", 
 
   async function makeListeningApp(serverEpoch?: string) {
     const db = new DatabaseSync(":memory:");
+    const projects = new SqliteProjectRepository(db);
+    void projects.ensureDefaultProject({ id: "default", name: "默认项目", cwd: "/tmp/default-project", ownerKey: "", createdAt: 0 });
     const sessions = new SqliteSessionRepository(db);
     const app = buildApp({
       sessions,
+      projects,
+      defaultProjectCwd: "/tmp/default-project",
       authenticate: async (request) => {
         if (request.headers.authorization !== `Bearer ${TOKEN}`) throw new Error("bad token");
         return IDENTITY;
@@ -91,8 +96,9 @@ describe("GET /v1/sessions/:id/events（SSE 订阅与 Last-Event-ID 补发）", 
         text += decoder.decode(value, { stream: true });
         if (predicate(text)) break;
       }
-    } catch {
-      // 超时中断：返回已读部分
+    } catch (error) {
+      // 仅忽略超时中断（AbortError）；连接错误等应让测试失败而非假通过
+      if ((error as Error)?.name !== "AbortError") throw error;
     } finally {
       clearTimeout(timer);
       reader.cancel().catch(() => {});
@@ -151,6 +157,42 @@ describe("GET /v1/sessions/:id/events（SSE 订阅与 Last-Event-ID 补发）", 
     );
     expect(text).toMatch(/^id: 1\ndata: /); // 从头补发
     expect(text).toContain('data: {"type":"text_delta","text":"你好"}');
+    expect(text).toContain('data: {"type":"completed"}');
+  });
+
+  it("先订阅后实时收到新事件（不补发历史）", async () => {
+    const { app, port } = await makeListeningApp();
+    const id = await createSession(app);
+
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 3000);
+    const res = await fetch(`http://127.0.0.1:${port}/v1/sessions/${id}/events`, {
+      headers: { ...authHeader(TOKEN) },
+      signal: controller.signal,
+    });
+    expect(res.status).toBe(200);
+    const reader = res.body!.getReader();
+    const decoder = new TextDecoder();
+
+    // 连接建立后触发消息（实时事件应推送到已订阅的连接）
+    await app.inject({
+      method: "POST",
+      url: `/v1/sessions/${id}/messages`,
+      headers: { ...authHeader(TOKEN), ...JSON_HEADERS },
+      payload: JSON.stringify({ requestId: "r1", prompt: "你好" }),
+    });
+
+    let text = "";
+    while (!text.includes("completed")) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      text += decoder.decode(value, { stream: true });
+    }
+    clearTimeout(timer);
+    reader.cancel().catch(() => {});
+
+    expect(text).toContain('data: {"type":"text_delta","text":"你好"}');
+    expect(text).toContain('data: {"type":"completed"}');
   });
 
   it("epoch 匹配时按 cursor 续传（不从头）", async () => {
@@ -172,5 +214,6 @@ describe("GET /v1/sessions/:id/events（SSE 订阅与 Last-Event-ID 补发）", 
     );
     expect(text).toMatch(/^id: 2\ndata: /); // 从 id 2 续传
     expect(text).not.toContain('"phase":"agent_start"');
+    expect(text).toContain('data: {"type":"completed"}');
   });
 });

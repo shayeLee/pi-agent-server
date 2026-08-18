@@ -4,8 +4,8 @@ import { SessionList, formatSessionTime } from "./SessionList.js";
 import type { SessionRecord } from "../types.js";
 
 const sessions: SessionRecord[] = [
-  { id: "s1", ownerKey: "k", title: "会话一", createdAt: 1000, updatedAt: 1_700_000_000_000 },
-  { id: "s2", ownerKey: "k", title: "会话二", createdAt: 1000, updatedAt: 1_800_000_000_000 },
+  { id: "s1", ownerKey: "k", projectId: "default", title: "会话一", createdAt: 1000, updatedAt: 1_700_000_000_000, modelProvider: null, modelId: null, thinkingLevel: null, systemPrompt: null },
+  { id: "s2", ownerKey: "k", projectId: "default", title: "会话二", createdAt: 1000, updatedAt: 1_800_000_000_000, modelProvider: null, modelId: null, thinkingLevel: null, systemPrompt: null },
 ];
 
 function setup(overrides: Partial<Parameters<typeof SessionList>[0]> = {}) {
@@ -13,9 +13,9 @@ function setup(overrides: Partial<Parameters<typeof SessionList>[0]> = {}) {
     sessions,
     activeId: null,
     onSelect: vi.fn(),
-    onCreate: vi.fn(),
     onDelete: vi.fn(),
     onRename: vi.fn(),
+    onExport: vi.fn(),
     ...overrides,
   };
   const utils = render(<SessionList {...props} />);
@@ -35,12 +35,6 @@ describe("SessionList（会话列表）", () => {
     const { props } = setup();
     fireEvent.click(screen.getByTestId("session-s2"));
     expect(props.onSelect).toHaveBeenCalledWith("s2");
-  });
-
-  it("新建按钮触发 onCreate", () => {
-    const { props } = setup();
-    fireEvent.click(screen.getByTestId("new-session"));
-    expect(props.onCreate).toHaveBeenCalledTimes(1);
   });
 
   it("删除按钮触发 onDelete(id)", () => {
@@ -66,5 +60,18 @@ describe("SessionList（会话列表）", () => {
   it("空列表显示占位提示", () => {
     setup({ sessions: [] });
     expect(screen.getByTestId("empty-sessions")).toHaveTextContent("暂无会话");
+  });
+
+  it("导出按钮触发 onExport(id)", () => {
+    const { props } = setup();
+    fireEvent.click(screen.getByTestId("export-s2"));
+    expect(props.onExport).toHaveBeenCalledWith("s2");
+  });
+
+  it("搜索过滤会话标题", () => {
+    setup();
+    fireEvent.change(screen.getByTestId("session-search"), { target: { value: "会话一" } });
+    expect(screen.getByText("会话一")).toBeInTheDocument();
+    expect(screen.queryByText("会话二")).not.toBeInTheDocument();
   });
 });

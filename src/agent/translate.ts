@@ -7,6 +7,10 @@ import type { AgentSdkEvent, SseEvent } from "./events.js";
 export function translateSdkEvent(event: AgentSdkEvent): SseEvent | null {
   switch (event.type) {
     case "message_update":
+      // thinking_delta 映射为 SSE thinking_delta
+      if (event.assistantMessageEvent.type === "thinking_delta") {
+        return { type: "thinking_delta", text: event.assistantMessageEvent.delta };
+      }
       // 只有 assistantMessageEvent.type === "text_delta" 映射为 text_delta，其余忽略。
       if (event.assistantMessageEvent.type !== "text_delta") return null;
       return { type: "text_delta", text: event.assistantMessageEvent.delta };

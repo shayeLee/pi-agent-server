@@ -26,6 +26,18 @@ const tools = (process.env.TOOLS ?? "")
   .map((s) => s.trim())
   .filter(Boolean);
 
+// PI_DEFAULT_MODEL="provider/modelId"；模型 id 可包含斜杠，仅第一个斜杠分隔 provider。
+function parseDefaultModel(value: string | undefined): { provider: string; id: string } | undefined {
+  if (!value) return undefined;
+  const slash = value.indexOf("/");
+  const provider = value.slice(0, slash).trim();
+  const id = value.slice(slash + 1).trim();
+  if (slash <= 0 || !provider || !id) {
+    throw new Error("PI_DEFAULT_MODEL 必须为 provider/modelId");
+  }
+  return { provider, id };
+}
+
 // 可信代理 IP 列表（反代部署时配置；默认不信任，只信 TCP 对端）
 const trustProxy = process.env.TRUST_PROXY
   ? process.env.TRUST_PROXY.split(",")
@@ -46,6 +58,16 @@ const app = await startServer({
   authPath: process.env.PI_AUTH_PATH,
   modelProvider: process.env.PI_MODEL_PROVIDER,
   modelApiKey: process.env.PI_MODEL_API_KEY,
+  defaultModel: parseDefaultModel(process.env.PI_DEFAULT_MODEL),
+  defaultThinkingLevel: process.env.PI_DEFAULT_THINKING_LEVEL as
+    | "off"
+    | "minimal"
+    | "low"
+    | "medium"
+    | "high"
+    | "xhigh"
+    | "max"
+    | undefined,
   systemPrompt: process.env.PI_SYSTEM_PROMPT,
   trustProxy,
 });

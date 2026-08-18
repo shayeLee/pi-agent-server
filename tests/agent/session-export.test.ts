@@ -19,6 +19,8 @@ class ExportFakeSession implements AgentSessionLike {
   async followUp(_text: string): Promise<void> {}
   async abort(): Promise<void> {}
   async navigateTree(_targetId: string): Promise<void> {}
+  async setModel(_model: unknown): Promise<void> {}
+  setThinkingLevel(_level: unknown): void {}
   subscribe(_listener: (event: AgentSdkEvent) => void): () => void {
     return () => {};
   }

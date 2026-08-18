@@ -9,7 +9,12 @@ import { SessionRuntime, getExpireHandler, SessionDeletedError } from "./session
 import { SessionEventBus } from "./session-event-bus.js";
 import type { ConcurrencyController } from "../core/concurrency-control.js";
 import type { AgentAdapter } from "../agent/agent-adapter.js";
-import type { IdempotencyRepository } from "../storage/idempotency-repository.js";
+import type {
+  IdempotencyStorePort,
+  ManagedSessionRuntimePort,
+  ObservabilityPort,
+  SessionRuntimePort,
+} from "../application/ports/index.js";
 
 export { SessionDeletedError } from "./session-runtime.js";
 
@@ -22,9 +27,11 @@ export type RuntimeRegistryOptions = {
   /** 排队超时扫描间隔（毫秒，默认 30000）。 */
   expireIntervalMs?: number;
   /** 幂等记录持久化后端（可选，透传给 SessionRuntime）。 */
-  idempotencyRepo?: IdempotencyRepository;
+  idempotencyRepo?: IdempotencyStorePort;
   /** 幂等记录保留时长（毫秒，默认 24 小时）；过期的内存/SQLite 记录被定期清理。 */
   idempotencyTtlMs?: number;
+  /** 观测订阅口（可选，透传给 SessionRuntime）。 */
+  observability?: ObservabilityPort;
 };
 
 /** 默认幂等记录保留时长（24 小时）。 */
@@ -36,9 +43,14 @@ const DELETE_PENDING_TIMEOUT_MS = 10_000;
 /** 删除墓碑保留时长（毫秒，默认 24 小时）；过期后清理，避免无界增长。 */
 const TOMBSTONE_TTL_MS = 24 * 60 * 60 * 1000;
 
-/** 一个会话的绑定：任务编排 runtime + 该会话独占的事件总线。 */
+/** 一个会话的绑定：任务编排 runtime（经 port 接口暴露）+ 该会话独占的事件总线。 */
 export type SessionEntry = {
-  runtime: SessionRuntime;
+  runtime: SessionRuntimePort;
+  events: SessionEventBus;
+};
+
+type ManagedSessionEntry = {
+  runtime: ManagedSessionRuntimePort;
   events: SessionEventBus;
 };
 
@@ -46,14 +58,15 @@ export class RuntimeRegistry {
   private readonly concurrency: ConcurrencyController;
   private readonly createAdapter: (sessionId: string) => Promise<AgentAdapter>;
   private readonly now: () => number;
-  private readonly sessions = new Map<string, SessionEntry>();
+  private readonly sessions = new Map<string, ManagedSessionEntry>();
   /** 初始化中的 Promise 占位，避免同一 session 的并发 getOrCreate 各自创建（竞态）。 */
-  private readonly pending = new Map<string, Promise<SessionEntry>>();
+  private readonly pending = new Map<string, Promise<ManagedSessionEntry>>();
   /** 删除墓碑（sessionId → 删除时间戳）：已删的 sessionId 在此 map，getOrCreate 拒绝重建；TTL 后清理。 */
   private readonly deleted = new Map<string, number>();
   private readonly expiryTimer: ReturnType<typeof setInterval>;
-  private readonly idempotencyRepo?: IdempotencyRepository;
+  private readonly idempotencyRepo?: IdempotencyStorePort;
   private readonly idempotencyTtlMs: number;
+  private readonly observability?: ObservabilityPort;
 
   constructor(options: RuntimeRegistryOptions) {
     this.concurrency = options.concurrency;
@@ -61,6 +74,7 @@ export class RuntimeRegistry {
     this.now = options.now ?? Date.now;
     this.idempotencyRepo = options.idempotencyRepo;
     this.idempotencyTtlMs = options.idempotencyTtlMs ?? DEFAULT_IDEMPOTENCY_TTL_MS;
+    this.observability = options.observability;
     // 队列超时调度器：定期扫描超时排队任务并触发过期处理（unref 不阻止进程退出）
     this.expiryTimer = setInterval(
       () => this.expireQueuedTasks(),
@@ -132,7 +146,7 @@ export class RuntimeRegistry {
     }
   }
 
-  private async create(sessionId: string, ownerKey: string): Promise<SessionEntry> {
+  private async create(sessionId: string, ownerKey: string): Promise<ManagedSessionEntry> {
     const events = new SessionEventBus();
     const runtime = new SessionRuntime({
       sessionId,
@@ -141,6 +155,7 @@ export class RuntimeRegistry {
       adapter: await this.createAdapter(sessionId),
       now: this.now,
       idempotencyRepo: this.idempotencyRepo,
+      observability: this.observability,
       // 会话运行时的所有输出事件写入该会话独占的事件总线（SSE 缓冲/分发）
       onEvent: (event) => events.push(event),
     });

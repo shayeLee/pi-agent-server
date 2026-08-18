@@ -10,6 +10,8 @@ export type ConsumeSseOptions = {
   /** 事件回调；lastEventId 为该事件的最新 id。 */
   onEvent: (event: SseEvent, lastEventId: number) => void;
   onError?: (error: Error) => void;
+  /** 连接建立（响应头到达）后触发。 */
+  onOpen?: () => void;
   /** 服务端启动纪元上报（用于重连检测重启）。 */
   onEpoch?: (epoch: string) => void;
   /** 客户端已知的服务端纪元（重连时携带，供服务端检测重启后忽略旧 cursor）。 */
@@ -36,6 +38,9 @@ export async function consumeSse(options: ConsumeSseOptions): Promise<void> {
   if (!res.ok || !res.body) {
     throw new Error(`SSE 连接失败：HTTP ${res.status}`);
   }
+
+  // 连接已建立（响应头到达），上报以供 UI 展示连接状态
+  options.onOpen?.();
 
   // 上报服务端启动纪元（用于重连时检测重启导致的事件 ID 重置）
   const epoch = res.headers.get("x-server-epoch");
@@ -70,6 +75,8 @@ export type SseConnectionOptions = {
   headers?: Record<string, string>;
   onEvent: (event: SseEvent) => void;
   onError?: (error: Error) => void;
+  /** 连接建立后触发（含重连成功）。 */
+  onOpen?: () => void;
   lastEventId?: number;
   /** 重连延迟（毫秒），默认 1000。 */
   reconnectDelay?: number;
@@ -93,6 +100,7 @@ export function createSseConnection(options: SseConnectionOptions): { close: () 
           lastEventId,
           signal: controller.signal,
           clientEpoch: lastEpoch ?? undefined,
+          onOpen: options.onOpen,
           onEvent: (_event, id) => {
             lastEventId = id;
             options.onEvent(_event);

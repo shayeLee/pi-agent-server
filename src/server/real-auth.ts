@@ -27,13 +27,15 @@ export function buildAuthenticate(config: AuthConfig): Authenticate {
       return resolveIdentity({ sourceIp, isIntranet: true });
     }
 
-    // 公网：校验 Bearer Token，按签发账号识别
+    // 公网：校验 Bearer Token（scheme 大小写不敏感，RFC 7235），按签发账号识别
     const header = request.headers.authorization;
-    if (!header || !header.startsWith("Bearer ")) {
+    const match = /^Bearer[ \t]+(\S+)$/i.exec(header ?? "");
+    if (!match) {
       throw new Error("缺少 Bearer Token");
     }
-    const token = header.slice("Bearer ".length);
-    const accountId = config.tokens[token];
+    const token = match[1]!;
+    // 仅接受 tokens 的自有属性：避免 token 命中 Object.prototype（toString/constructor/__proto__ 等）造成鉴权绕过。
+    const accountId = Object.hasOwn(config.tokens, token) ? config.tokens[token] : undefined;
     if (!accountId) {
       throw new Error("未知 Token");
     }

@@ -27,6 +27,12 @@ class FakeSession implements AgentSessionLike {
   async navigateTree(targetId: string): Promise<void> {
     this.calls.push(`navigateTree:${targetId}`);
   }
+  async setModel(_model: unknown): Promise<void> {
+    this.calls.push("setModel");
+  }
+  setThinkingLevel(_level: unknown): void {
+    this.calls.push("setThinkingLevel");
+  }
   subscribe(listener: (event: AgentSdkEvent) => void): () => void {
     this.listener = listener;
     return () => {

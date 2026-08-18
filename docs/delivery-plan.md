@@ -6,48 +6,41 @@
 
 ## 实现进度
 
-阶段 1 核心已完成（TDD，根 214 测试 + web 51 测试 + Playwright E2E 2 条全绿）。
+阶段 1 核心已完成，并经二十余轮严格 review 收敛（根 245 测试 + web 69 测试 + Playwright E2E 3 条全绿，根/web tsc 干净）。服务端核心、前端交互、安全边界、幂等语义、完成信号、资源生命周期、可观测性、多项目、模型/思考级别选择均通过 reviewer 验证。
 
 ### 已完成
 
 - 工程：pnpm workspace（根 pi-server + `web/` 子包）、ESM + TypeScript + Vitest。
-- 核心纯逻辑：任务状态机（idle→queued→streaming→terminal）、并发控制（每用户/全局上限 + 队列 + 超时）、幂等去重（requestId）、身份识别（UserIdentity）、CIDR 内网判定。
-- 存储：`SessionRepository` 抽象 + SQLite（WAL）实现。
-- Agent 链路：SDK 事件→SSE 事件翻译（9 种）、`AgentAdapter` 接口 + `MockAgentAdapter` + `PiAgentAdapter`（真实 Pi SDK 接入）。
-- 编排：`SessionRuntime`（状态机+并发+幂等+Agent 串成会话任务生命周期）、`SessionEventBus`（SSE 有界缓冲 + `Last-Event-ID` 续传）、`RuntimeRegistry`。
+- 核心纯逻辑：任务状态机（idle→queued→streaming→terminal）、并发控制（每用户/全局上限 + 队列 + 超时 + 队列超时调度器）、幂等去重（三层模型）、身份识别（UserIdentity）、CIDR 内网判定。
+- 存储：`SessionRepository` 抽象 + SQLite（WAL）实现；`IdempotencyRepository` 幂等终态持久化（重启恢复）。
+- Agent 链路：SDK 事件→SSE 事件翻译（9 种）、`AgentAdapter` 接口 + `MockAgentAdapter` + `PiAgentAdapter`（真实 Pi SDK 接入）；adapter 层事件 fencing（abort 后丢弃残余事件）。
+- 编排：`SessionRuntime`、`SessionEventBus`（有界缓冲 + `Last-Event-ID` 续传 + backpressure）、`RuntimeRegistry`（删除墓碑 + pending 占位 + 跨会话接续）。
 - HTTP：会话 CRUD、messages（图片 + `parentId` 历史重跑）、steer/follow-up/abort、SSE（工具流式 `tool_update`）、会话导出、健康检查。
-- 鉴权：Bearer Token + 内网 IP（CIDR）/公网账号识别，会话按 owner 隔离。
-- 优雅关闭：停止接收新请求 → 等在途任务完成或超时 → abort。
-- 启动入口：`start.ts`（`ModelRuntime` + `SessionManager` + `createAgentSession` 组装）+ `main.ts`（环境变量 + 信号）。
-- Web UI：React + Vite；会话管理、聊天、SSE 流式渲染、工具调用流式卡片；token 仅内存（不落 localStorage）。
+- 鉴权：Bearer Token + 内网 IP（CIDR）/公网账号识别，会话按 owner 隔离；`subjectHash` 脱敏聚合。
+- 删除生命周期：删除墓碑阻断重建 + disposed 检查 + 任务所有权（ownsTask）+ settle 绑定 taskKey + 删除顺序一致性（registry → SQLite → JSONL）+ dispose 释放并发槽位并接续排队。
+- 完成信号：以最终 assistant `stopReason` 为结果权威（error/aborted/length→error/stop→completed），prompt resolve/reject 兜底；`agent_end`/`agent_settled` 不直接结算终态。
+- 幂等语义：三层模型——in-flight promise（提交决策阶段合并同 key 并发）+ processing 占位（运行期返回「已接受」）+ done 记录（已完成返回原结果）。
+- 优雅关闭：closeAllEvents → 等在途任务完成或超时 → abortAll（并行）→ dispose。
+- 启动入口：`start.ts` + `main.ts`（环境变量 + 信号）；独立 agentDir/authPath、资源发现禁用（noExtensions/noSkills/noPromptTemplates/noThemes/noContextFiles）、默认禁内置工具（noTools:all）。
+- 多项目：默认项目（服务端固定 `AGENT_CWD`，id="default"，不可删）+ 额外项目（`POST /v1/projects`，cwd 信任登录用户）；会话按 projectId 归属，`?projectId=` 过滤；删除额外项目级联删除其下会话；JSONL 会话目录按项目分（默认项目 `dataDir/sessions/`，额外项目 `dataDir/projects/<pid>/sessions/`）。
+- 模型/思考级别：会话级模型（provider + modelId）与思考级别（off/minimal/low/medium/high/xhigh/max）选择；服务端用 `PI_DEFAULT_MODEL=provider/modelId` 与 `PI_DEFAULT_THINKING_LEVEL` 配置新会话默认值；`GET /v1/models` 暴露可用模型、枚举及 Pi SDK 实际解析出的服务端默认值，`PATCH /v1/sessions/:id/config` 切换并持久化（透传 SDK `setModel`/`setThinkingLevel`）；会话创建可指定，重启后按保存配置恢复。
+- 安全边界：请求体大小限制、CORS 白名单、SSE 连接数上限（全局 100 + 每用户 10）。
+- 可观测：Pino 日志（JSON 单行、LOG_LEVEL、redact 脱敏、subjectHash、异常仅记消息摘要）。
+- Web UI：React + Vite 的 agent harness；参考 ChatGPT/Claude 的居中对话布局：左侧会话列表、中间居中聊天区（最大宽度 860px）+ 底部 docked 输入框、右侧 Inspector 面板（事件流 / 工具 / 配置三 tab）；整体视觉重构（现代暗色主题、圆角卡片、头像气泡、彩色事件徽章、毛玻璃 header、状态指示灯）；多项目切换器；会话配置栏（模型 / 思考级别，放在 Inspector「配置」tab）；Markdown 渲染（react-markdown + GFM）、工具调用流式卡片、SSE 事件日志（按类型过滤/清空）、steer/follow-up/abort 控制、会话搜索/重命名/导出、状态栏；token 仅内存（不落 localStorage）；乐观更新（messageId 绑定 + requestId 服务端确认 + 幂等重试对账）。
 - E2E：Playwright 真实浏览器跑通「填 token → 新建会话 → 发消息 → SSE 流式显示 → 删除」。
 
-### 阶段 1 剩余 TODO
+### 阶段 1 剩余（非阻塞，v1 不交付）
 
-**安全与边界**
-
-- [ ] 删除会话时清理对应 Pi JSONL 文件（持久化与重启恢复已实现：`piSessionFile` 字段 + `SessionManager.open` 恢复）。
-- [ ] 请求体大小限制、图片大小/媒体类型/数量校验、CORS 白名单（README §7）。
+- [ ] 会话历史编辑（`PATCH /v1/sessions/:id/messages/:mid`）：SDK 编辑 API 不公开（仅私有 `_replaceMessageInPlace` + 消息无稳定 id），需 entryId 贯穿 + 消息数组替换，留作阶段 1.5 独立功能。
+- [ ] 图片大小/媒体类型/数量精细校验（bodyLimit 已限总大小）。
 - [ ] token 轮换/过期/撤销/scope（当前是长期静态映射）。
-
-**功能完整性**
-
-- [ ] 会话历史编辑（`PATCH /v1/sessions/:id/messages/:mid`）：SDK 编辑 API 待确认（`parentId` 重跑已支持）。
-- [ ] 队列超时调度器：`expireQueued` 目前无调用方，需定时/提交时触发并回传 runtime 恢复状态。
-- [ ] runtime/事件缓冲/幂等记录 TTL/LRU：避免长期运行内存增长（`RESUME_REGISTRY` 模块级全局 map 同样需要清理）。
-- [ ] SSE 长连接每用户/全局连接数上限 + 慢客户端 backpressure。
 - [ ] SSE 事件缓冲持久化（当前仅进程内，重启无法回放）。
-
-**可观测性与运维**
-
-- [ ] Pino 日志设计（README §5）：JSON 单行、`LOG_LEVEL`、redact 脱敏、`subjectHash`、任务/SSE 生命周期日志。
-- [ ] QPS 限流（README §7 部署环境职责）。
-- [ ] CIDR IPv6 支持（当前仅 IPv4）。
 - [ ] 会话列表 `updatedAt` 随消息/终态更新。
 
-**能力机制（阶段 2）**
+**部署环境职责（README §7，非应用核心）**
 
-- [ ] 版本化能力 manifest + 工具注册表：禁用了内置工具后，知识库问答等能力经 manifest 显式注入（`customTools`/`additionalExtensionPaths`/`extensionFactories`）。
+- [ ] QPS 限流。
+- [ ] CIDR IPv6 支持（当前仅 IPv4）。
 
 ## 阶段 1：平台核心与首个能力
 

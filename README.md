@@ -53,21 +53,30 @@ pi-server：Fastify + Pi SDK
 ### 4.2 API（能力无关，第一版）
 
 ```text
-POST   /v1/sessions                       创建会话
-GET    /v1/sessions                       会话列表
-DELETE /v1/sessions/:id                   删除会话
-PATCH  /v1/sessions/:id                   重命名会话
-GET    /v1/sessions/:id/export            导出会话
-POST   /v1/sessions/:id/messages          发送输入（支持图片与从历史节点重跑）
-PATCH  /v1/sessions/:id/messages/:mid     编辑历史消息
-POST   /v1/sessions/:id/steer             向正在运行的会话插入指令
-POST   /v1/sessions/:id/follow-ups        在当前任务结束后追加指令
-POST   /v1/sessions/:id/abort             中止当前生成或工具调用
-GET    /v1/sessions/:id/events            SSE 订阅回答、工具与状态事件
-GET    /health                            存活与依赖检查
+GET    /v1/models                       可用模型、思考级别枚举与实际服务端默认值
+GET    /v1/projects                     项目列表（默认项目 + 额外项目）
+POST   /v1/projects                     创建项目（name + cwd）
+DELETE /v1/projects/:id                 删除项目（级联删除其下会话；默认项目不可删）
+POST   /v1/sessions                     创建会话（可选 projectId/modelProvider/modelId/thinkingLevel，默认归 default 项目与服务端默认模型）
+GET    /v1/sessions                     会话列表（可选 ?projectId= 过滤）
+DELETE /v1/sessions/:id                 删除会话
+PATCH  /v1/sessions/:id                 重命名会话
+PATCH  /v1/sessions/:id/config          切换模型/思考级别（持久化 + 透传 SDK）
+GET    /v1/sessions/:id/export          导出会话
+POST   /v1/sessions/:id/messages        发送输入（支持图片与从历史节点重跑）
+PATCH  /v1/sessions/:id/messages/:mid   编辑历史消息
+POST   /v1/sessions/:id/steer           向正在运行的会话插入指令
+POST   /v1/sessions/:id/follow-ups      在当前任务结束后追加指令
+POST   /v1/sessions/:id/abort           中止当前生成或工具调用
+GET    /v1/sessions/:id/events          SSE 订阅回答、工具与状态事件
+GET    /health                          存活与依赖检查
 ```
 
 鉴权与用户标识：所有业务接口经 Bearer Token 鉴权（接入鉴权）；用户身份另由来源 IP（内网）或 pi-server 签发的账号（公网）识别，统一抽象为 `UserIdentity`，Token 与身份分离——Token 校验通过后，身份取自 IP 或账号；每个用户只能访问自己的会话。内网以来源 IP 作为身份的前提是内网设备 IP 固定；NAT、共享出口或伪造 IP 的风险由网络边界控制，不在应用层解决。模型配置：服务端默认提供模型，用户可添加自定义模型（自己的 OpenAI 账号或 API key），默认与自定义模型可灵活选择使用；凭证归属用户（按 `UserIdentity` 隔离）、脱敏返回；自定义模型额度耗尽或凭证删除时回退服务端默认模型，平台总 token/成本配额另设、超限拒绝；存储见 §7。
+
+**服务端默认模型配置：**可设置 `PI_DEFAULT_MODEL="provider/modelId"`（例如 `openai-codex/gpt-5.5`）与 `PI_DEFAULT_THINKING_LEVEL="medium"`。两者仅作用于未在会话中显式选择配置、且尚未产生 JSONL 历史的新会话；会话级模型/思考级别优先，已有历史会话会恢复其历史配置。配置的模型不存在、没有凭证或思考级别不合法时，服务启动失败而非静默回退。`PI_MODEL_PROVIDER`/`PI_MODEL_API_KEY` 仅用于注入服务端 API 凭证，不选择默认模型。
+
+**系统提示词：**未设置 `PI_SYSTEM_PROMPT` 时使用 Pi SDK 的内置默认提示词；pi-server 仍禁用项目与个人目录的自动发现，因此不会加载个人 `AGENTS.md`、skills 或 extensions。创建会话时按项目 cwd 生成并记录实际提示词，右侧 Inspector 可查看；设置 `PI_SYSTEM_PROMPT` 才会覆盖 Pi 默认提示词。
 
 同一会话同一时刻只允许一个活动任务：
 
@@ -225,6 +234,8 @@ N、M 天数由部署配置决定。
 - 使用独立 `agentDir`、固定 `cwd`、固定系统提示词和固定工具列表，避免继承个人 Pi 配置；工具列表是已启用能力所声明工具的并集；系统提示词与工具列表按会话创建时的已启用能力生成并冻结，配置变更不影响既有会话。禁用项目目录自动发现（`.pi/extensions`、skills、prompts、`AGENTS.md`、themes），只从 manifest 显式注入受控资源，避免仓库中未声明的扩展被加载执行。
 - 服务端默认模型用 API key（环境变量/密钥系统读取）；各能力凭证同理；不得写入仓库、会话或日志。
 - 用户自定义模型凭证：统一服务端加密存储（KMS）。支持 OAuth 登录（`login()` 授权、token 入库）或 API key 两种方式；不采用浏览器 localStorage 明文保存——XSS 可窃取、明文传输可被抓包、共享设备易残留；凭证不落明文库，按用户/会话独立 ModelRuntime 承载，会话期间经 `setRuntimeApiKey` 注入、结束后清零，禁止在共享实例上可竞争地设置用户密钥；日志按 §5 脱敏。
+- **多项目 cwd 安全边界**：`POST /v1/projects` 允许指定任意 cwd，因此**公网部署不得开放创建项目接口**（应仅内网/管理面开放）。若未来开放公网创建项目，必须先限制 cwd 到服务端配置的项目根目录下（`realpath` 防 `..` 与符号链接逃逸），否则启用文件/命令工具后用户可将 Agent 指向服务账号可访问的任意目录。
+- **内网免 token 与反向代理的组合边界**：内网免 token 依据 `request.ip` 判定来源；服务位于反向代理后且未配置 `TRUST_PROXY` 时，`request.ip` 是代理自身地址（常为 `127.0.0.1` 或私网 IP），会使所有经代理进入的公网请求被误判为内网、绕过 token。因此反向代理部署时**必须**配置 `TRUST_PROXY` 为具体代理 IP（并确保代理覆盖而非透传不可信的 `X-Forwarded-For`）；或将公网入口与内网免 token 入口隔离（不同端口/监听地址），避免公网链路上启用 IP 免鉴权。
 - 日志字段、脱敏与分级遵循 §5 日志设计。
 - 有副作用的流程应使用独立 Worker 或权限受限的 Pi 自定义工具；写仓库、创建 PR、构建和部署等权限必须按能力最小化授予并审计。
 - 审计：有副作用的工具调用与 Job 须记录持久化审计——`UserIdentity`、会话/Job、工具/能力、授权范围、目标、结果、时间与关联 ID；不记录密钥与正文；审计记录单独定义保留期与访问权限，写入失败须告警。

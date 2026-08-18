@@ -1,35 +1,56 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import type { FormEvent } from "react";
 import { ApiClient, ApiError } from "./lib/api.js";
 import { createSseConnection } from "./lib/sse-client.js";
 import { applySseEvent, addUserMessage, createChatState } from "./lib/chat-state.js";
 import type { ChatState } from "./lib/chat-state.js";
-import type { SessionRecord } from "./types.js";
+import type { EventLogEntry, ModelInfo, Project, SessionRecord, SseEvent } from "./types.js";
 import { SessionList } from "./components/SessionList.js";
+import { ProjectSwitcher } from "./components/ProjectSwitcher.js";
 import { Chat } from "./components/Chat.js";
+import { Inspector } from "./components/Inspector.js";
+
+const SIDEBAR_DEFAULT = 260;
+const SIDEBAR_MIN = 180;
+const SIDEBAR_MAX = 400;
+const SIDEBAR_RAIL = 56;
+const DETAILS_DEFAULT = 320;
+const DETAILS_MIN = 240;
+const DETAILS_MAX = 500;
 
 /**
- * 顶层状态机：
- * 未填 token → token 输入（仅内存）→ 加载会话列表 → 选中会话进入聊天并订阅 SSE。
+ * Agent harness 顶层（DeepSeek Harness 风格布局）：
+ * 可折叠/可拖拽的左侧边栏 | 居中聊天区 | 可折叠/可拖拽的右侧 Inspector。
  */
 export default function App() {
-  // token 输入草稿与已提交值分离：只有提交后才创建 ApiClient。
   const [tokenDraft, setTokenDraft] = useState("");
-  // token 为 null 表示「探测内网中」；探测成功置 ""（内网免登录）；失败进入 token 输入（公网）
   const [token, setToken] = useState<string | null>(null);
   const [needToken, setNeedToken] = useState(false);
   const [sessions, setSessions] = useState<SessionRecord[] | null>(null);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  const [projects, setProjects] = useState<Project[] | null>(null);
+  const [activeProjectId, setActiveProjectId] = useState<string>("default");
+  const [models, setModels] = useState<ModelInfo[]>([]);
+  const [thinkingLevels, setThinkingLevels] = useState<string[]>([]);
+  const [defaultModel, setDefaultModel] = useState<ModelInfo | null>(null);
+  const [defaultThinkingLevel, setDefaultThinkingLevel] = useState("medium");
   const [chatState, setChatState] = useState<ChatState>(createChatState);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [eventLog, setEventLog] = useState<EventLogEntry[]>([]);
+  const [connected, setConnected] = useState(false);
 
-  // 保存最新 activeSessionId 供异步回调比对，避免跨会话回滚/报错
+  // 布局状态：折叠 + 宽度
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [detailsCollapsed, setDetailsCollapsed] = useState(false);
+  const [sidebarWidth, setSidebarWidth] = useState(SIDEBAR_DEFAULT);
+  const [detailsWidth, setDetailsWidth] = useState(DETAILS_DEFAULT);
+  const [dragging, setDragging] = useState<"sidebar" | "details" | null>(null);
+
   const activeSessionIdRef = useRef<string | null>(null);
   const prevSessionIdRef = useRef<string | null>(null);
   useEffect(() => {
     const prev = prevSessionIdRef.current;
     if (prev && prev !== activeSessionId) {
-      // 离开旧会话：清理其确认前缀（旧 SSE 已关闭，终态不会再抵达）
       for (const key of [...confirmedRequestsRef.current]) {
         if (key.startsWith(`${prev}:`)) confirmedRequestsRef.current.delete(key);
       }
@@ -38,7 +59,6 @@ export default function App() {
     activeSessionIdRef.current = activeSessionId;
   }, [activeSessionId]);
 
-  // 重试定时器集合：组件卸载时统一清理，避免卸载后继续发请求/ setState
   const retryTimersRef = useRef(new Set<ReturnType<typeof setTimeout>>());
   useEffect(() => {
     const timers = retryTimersRef.current;
@@ -48,14 +68,11 @@ export default function App() {
     };
   }, []);
 
-  // 已收到服务端确认的 `${sessionId}:${requestId}`（SSE queued/status 事件携带），
-  // 用于区分本地乐观排队与服务端已确认，按会话隔离避免跨会话冲突
   const confirmedRequestsRef = useRef(new Set<string>());
+  const eventSeqRef = useRef(0);
 
-  // token 只保存在内存（不落 localStorage）。
   const api = useMemo(() => (token !== null ? new ApiClient("", token) : null), [token]);
 
-  // 探测内网：无 token 能访问会话列表则免登录；否则需要 token（公网）
   useEffect(() => {
     let cancelled = false;
     new ApiClient("", "")
@@ -71,30 +88,80 @@ export default function App() {
     };
   }, []);
 
-  async function refreshSessions(): Promise<void> {
+  async function refreshSessions(projectId = activeProjectId): Promise<void> {
     if (!api) return;
     try {
       setLoadError(null);
-      setSessions(await api.listSessions());
+      setSessions(await api.listSessionsByProject(projectId));
     } catch (err) {
       setLoadError(err instanceof Error ? err.message : String(err));
     }
   }
 
-  // token 确定后加载会话列表。
+  async function refreshProjects(): Promise<void> {
+    if (!api) return;
+    try {
+      const list = await api.listProjects();
+      setProjects(list);
+      if (!list.some((p) => p.id === activeProjectId)) {
+        setActiveProjectId("default");
+      }
+    } catch (err) {
+      setLoadError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function refreshModels(): Promise<void> {
+    if (!api) return;
+    try {
+      const data = await api.listModels();
+      setModels(data.models);
+      setThinkingLevels(data.thinkingLevels);
+      setDefaultModel(data.defaultModel);
+      setDefaultThinkingLevel(data.defaultThinkingLevel);
+    } catch {
+      // 模型列表加载失败不阻塞主流程
+    }
+  }
+
   useEffect(() => {
-    if (api) void refreshSessions();
+    if (api) {
+      void refreshProjects();
+      void refreshSessions();
+      void refreshModels();
+    }
   }, [api]);
 
-  // 选中会话后：先加载历史快照（含事件 cursor），再按 cursor 订阅增量，避免重复/覆盖。
+  useEffect(() => {
+    if (api) {
+      setActiveSessionId(null);
+      void refreshSessions(activeProjectId);
+    }
+  }, [api, activeProjectId]);
+
+  function logEvent(event: SseEvent): void {
+    eventSeqRef.current += 1;
+    const seq = eventSeqRef.current;
+    const { type, ...data } = event;
+    setEventLog((prev) => [
+      ...prev,
+      {
+        seq,
+        time: new Date().toLocaleTimeString("zh-CN", { hour12: false }),
+        type,
+        data,
+      },
+    ]);
+  }
+
   useEffect(() => {
     if (!api || !activeSessionId) return;
     setChatState(createChatState());
+    setEventLog([]);
     let cancelled = false;
     let connection: { close: () => void } | null = null;
 
     void (async () => {
-      // 先拉历史快照 + 事件 cursor（export 返回 { messages, lastEventId }）
       let cursor = 0;
       try {
         const data = (await api.exportSession(activeSessionId)) as {
@@ -111,35 +178,41 @@ export default function App() {
               typeof (m as { text?: unknown }).text === "string",
           )
           .map((m, i) => ({
+            kind: "message" as const,
             id: `hist-${i}`,
             role: (m.role === "user" ? "user" : "assistant") as "user" | "assistant",
             text: m.text,
+            streaming: false,
           }));
         if (history.length > 0) {
-          setChatState((prev) => ({ ...prev, messages: history }));
+          setChatState((prev) => ({ ...prev, timeline: history }));
         }
         if (typeof data?.lastEventId === "number") cursor = data.lastEventId;
       } catch {
-        // 导出失败仅影响历史展示，不阻塞后续 SSE 订阅
+        // 导出失败仅影响历史展示
       }
       if (cancelled) return;
 
-      // 按快照 cursor 订阅增量（> cursor），避免从头补发重复历史
       connection = createSseConnection({
         url: `/v1/sessions/${activeSessionId}/events`,
         headers: token ? { authorization: `Bearer ${token}` } : {},
         lastEventId: cursor,
+        onOpen: () => {
+          if (!cancelled) setConnected(true);
+        },
+        onError: () => {
+          if (!cancelled) setConnected(false);
+        },
         onEvent: (event) => {
-          // 服务端确认（queued/status 携带 requestId）：标记，避免其后 HTTP 响应丢失导致误回滚
           if ((event.type === "queued" || event.type === "status") && event.requestId) {
             confirmedRequestsRef.current.add(`${activeSessionId}:${event.requestId}`);
           }
-          // 任务终态：清理本会话的确认记录（任务已结束，不再需要）
           if (event.type === "completed" || event.type === "error" || event.type === "aborted") {
             for (const key of [...confirmedRequestsRef.current]) {
               if (key.startsWith(`${activeSessionId}:`)) confirmedRequestsRef.current.delete(key);
             }
           }
+          logEvent(event);
           setChatState((prev) => applySseEvent(prev, event));
         },
       });
@@ -148,6 +221,7 @@ export default function App() {
     return () => {
       cancelled = true;
       connection?.close();
+      setConnected(false);
     };
   }, [api, activeSessionId, token]);
 
@@ -165,9 +239,24 @@ export default function App() {
 
   async function handleCreate(): Promise<void> {
     if (!api) return;
-    const session = await api.createSession();
+    const session = await api.createSession(undefined, activeProjectId);
     setSessions((prev) => [...(prev ?? []), session]);
     setActiveSessionId(session.id);
+  }
+
+  async function handleCreateProject(name: string, cwd: string): Promise<void> {
+    if (!api) return;
+    await api.createProject(name, cwd);
+    await refreshProjects();
+  }
+
+  async function handleDeleteProject(id: string): Promise<void> {
+    if (!api) return;
+    await api.deleteProject(id);
+    await refreshProjects();
+    if (id === activeProjectId) {
+      setActiveProjectId("default");
+    }
   }
 
   async function handleDelete(id: string): Promise<void> {
@@ -175,7 +264,6 @@ export default function App() {
     await api.deleteSession(id);
     setSessions((prev) => (prev ?? []).filter((s) => s.id !== id));
     if (id === activeSessionId) setActiveSessionId(null);
-    // 清理该会话的确认记录（无终态事件会再抵达）
     for (const key of [...confirmedRequestsRef.current]) {
       if (key.startsWith(`${id}:`)) confirmedRequestsRef.current.delete(key);
     }
@@ -187,29 +275,56 @@ export default function App() {
     setSessions((prev) => (prev ?? []).map((s) => (s.id === id ? updated : s)));
   }
 
-  /** 控制请求（steer/abort）失败：仅展示错误，不回滚 phase（服务端任务仍在运行，phase 保持）。 */
+  async function handleConfigChange(
+    id: string,
+    config: { modelProvider?: string; modelId?: string; thinkingLevel?: string },
+  ): Promise<void> {
+    if (!api) return;
+    try {
+      const updated = await api.updateSessionConfig(id, config);
+      setSessions((prev) => (prev ?? []).map((s) => (s.id === id ? updated : s)));
+    } catch (err) {
+      reportChatError(id, err);
+    }
+  }
+
+  async function handleExport(id: string): Promise<void> {
+    if (!api) return;
+    try {
+      const data = await api.exportSession(id);
+      const blob = new Blob([JSON.stringify(data, null, 2)], {
+        type: "application/json",
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `session-${id}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      reportChatError(id, err);
+    }
+  }
+
   function reportChatError(sid: string, err: unknown): void {
-    if (activeSessionIdRef.current !== sid) return; // 已切换会话：不展示旧会话错误
+    if (activeSessionIdRef.current !== sid) return;
     setChatState((prev) => ({
       ...prev,
       error: err instanceof Error ? err.message : String(err),
     }));
   }
 
-  /** 消息提交失败：仅当该消息仍是最后一条待确认乐观消息且服务端未确认时回滚；否则整体 no-op。 */
   function reportSendError(sid: string, requestId: string, messageId: string, err: unknown): void {
-    if (activeSessionIdRef.current !== sid) return; // 已切换会话：不回滚新会话状态
-    if (confirmedRequestsRef.current.has(`${sid}:${requestId}`)) return; // 服务端已确认：不回滚
+    if (activeSessionIdRef.current !== sid) return;
+    if (confirmedRequestsRef.current.has(`${sid}:${requestId}`)) return;
     setChatState((prev) => {
-      const last = prev.messages[prev.messages.length - 1];
-      const isPending = last?.id === messageId && prev.phase === "queued";
-      if (!isPending) {
-        // 已非待确认消息：整体 no-op，不删消息也不写错误（旧请求错误不污染当前状态）
-        return prev;
-      }
+      const last = prev.timeline[prev.timeline.length - 1];
+      const isPending =
+        last?.kind === "message" && last.id === messageId && prev.phase === "queued";
+      if (!isPending) return prev;
       return {
         ...prev,
-        messages: prev.messages.filter((m) => m.id !== messageId),
+        timeline: prev.timeline.filter((m) => !(m.kind === "message" && m.id === messageId)),
         phase: "idle",
         error: err instanceof Error ? err.message : String(err),
       };
@@ -225,8 +340,6 @@ export default function App() {
     sendWithRetry(sid, requestId, messageId, text, 0);
   }
 
-  /** 幂等重试确认：传输失败/5xx 用同一 requestId 重试（服务端幂等保证不重复执行）；
-   * 4xx 表示明确拒绝（409=其他任务冲突或 poisoned，400/404/429=真拒绝）→ 回滚。 */
   function sendWithRetry(
     sid: string,
     requestId: string,
@@ -236,11 +349,9 @@ export default function App() {
   ): void {
     api!.sendMessage(sid, { requestId, prompt: text }).catch((err) => {
       if (err instanceof ApiError && err.status < 500) {
-        // 明确拒绝（4xx）→ 回滚
         reportSendError(sid, requestId, messageId, err);
         return;
       }
-      // 网络传输失败或 5xx：幂等重试（已接受则返回 202/200；未收到则重试真正提交）
       if (attempt < 3) {
         const timer = setTimeout(
           () => sendWithRetry(sid, requestId, messageId, text, attempt + 1),
@@ -259,16 +370,57 @@ export default function App() {
     api.steer(sid, text).catch((err) => reportChatError(sid, err));
   }
 
+  function handleFollowUp(text: string): void {
+    if (!api || !activeSessionId) return;
+    const sid = activeSessionId;
+    api.followUp(sid, text).catch((err) => reportChatError(sid, err));
+  }
+
   function handleAbort(): void {
     if (!api || !activeSessionId) return;
     const sid = activeSessionId;
     api.abort(sid).catch((err) => reportChatError(sid, err));
   }
 
+  // 拖拽调整列宽
+  const dragStart = useRef({ x: 0, width: 0 });
+  const handlePointerDown = useCallback(
+    (side: "sidebar" | "details", e: React.PointerEvent) => {
+      e.preventDefault();
+      e.currentTarget.setPointerCapture(e.pointerId);
+      setDragging(side);
+      dragStart.current = {
+        x: e.clientX,
+        width: side === "sidebar" ? sidebarWidth : detailsWidth,
+      };
+    },
+    [sidebarWidth, detailsWidth],
+  );
+  const handlePointerMove = useCallback(
+    (e: React.PointerEvent) => {
+      if (!dragging) return;
+      const dx = e.clientX - dragStart.current.x;
+      if (dragging === "sidebar") {
+        const next = Math.min(SIDEBAR_MAX, Math.max(SIDEBAR_MIN, dragStart.current.width + dx));
+        setSidebarWidth(next);
+        setSidebarCollapsed(next < SIDEBAR_MIN + 40);
+      } else {
+        const next = Math.min(DETAILS_MAX, Math.max(DETAILS_MIN, dragStart.current.width - dx));
+        setDetailsWidth(next);
+        setDetailsCollapsed(next < DETAILS_MIN + 40);
+      }
+    },
+    [dragging],
+  );
+  const handlePointerUp = useCallback((e: React.PointerEvent) => {
+    e.currentTarget.releasePointerCapture(e.pointerId);
+    setDragging(null);
+  }, []);
+
   if (token === null && !needToken) {
     return (
-      <main>
-        <h1>pi-server 控制台</h1>
+      <main className="auth-screen">
+        <h1>pi-server</h1>
         <div data-testid="auth-probing">检测访问方式…</div>
       </main>
     );
@@ -276,12 +428,10 @@ export default function App() {
 
   if (!api) {
     return (
-      <main>
-        <h1>pi-server 控制台</h1>
+      <main className="auth-screen">
+        <h1>pi-server</h1>
         <form onSubmit={handleTokenSubmit}>
-          <label htmlFor="token-input">token</label>
           <input
-            id="token-input"
             data-testid="token-input"
             type="password"
             aria-label="token"
@@ -289,7 +439,7 @@ export default function App() {
             value={tokenDraft}
             onChange={(e) => setTokenDraft(e.target.value)}
           />
-          <button type="submit" data-testid="token-submit">
+          <button className="btn-primary" type="submit" data-testid="token-submit">
             进入
           </button>
         </form>
@@ -301,41 +451,120 @@ export default function App() {
   const streaming = chatState.phase === "streaming" || chatState.phase === "queued";
   const queued = chatState.phase === "queued";
 
+  const shellClass = [
+    "app-shell",
+    sidebarCollapsed ? "sidebar-collapsed" : "",
+    detailsCollapsed ? "details-collapsed" : "",
+    dragging ? "dragging" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+
   return (
-    <main data-testid="app">
-      <h1>pi-server 控制台</h1>
-      {sessions === null ? (
-        <div data-testid="sessions-loading">加载会话中…</div>
-      ) : (
-        <>
-          <SessionList
-            sessions={sessions}
-            activeId={activeSessionId}
-            onSelect={handleSelect}
-            onCreate={handleCreate}
-            onDelete={handleDelete}
-            onRename={handleRename}
-          />
-          {loadError && <div data-testid="load-error">{loadError}</div>}
-          {activeSession ? (
-            <section data-testid="chat-view">
-              <h2>{activeSession.title}</h2>
-              {chatState.phase === "queued" && <div data-testid="phase-queued">排队中…</div>}
-              {chatState.error && <div data-testid="phase-error">{chatState.error}</div>}
-              <Chat
-                messages={chatState.messages}
-                toolCalls={chatState.toolCalls}
-                streaming={streaming}
-                queued={queued}
-                onSend={handleSend}
-                onSteer={handleSteer}
-                onAbort={handleAbort}
+    <main
+      className={shellClass}
+      data-testid="app"
+      style={{
+        ["--ds-sidebar-w" as string]: sidebarCollapsed ? `${SIDEBAR_RAIL}px` : `${sidebarWidth}px`,
+        ["--ds-details-w" as string]: detailsCollapsed ? "0px" : `${detailsWidth}px`,
+      }}
+    >
+      {/* 左侧边栏 */}
+      <aside className="sidebar" data-testid="sidebar">
+        <div className="sidebar-header">
+          <div className="brand">
+            <span className="brand-dot" />
+            <span className="brand-text">pi-server</span>
+          </div>
+          <button
+            className="btn-ghost btn-icon"
+            data-testid="toggle-sidebar"
+            onClick={() => setSidebarCollapsed((v) => !v)}
+            title={sidebarCollapsed ? "展开侧边栏" : "折叠侧边栏"}
+          >
+            {sidebarCollapsed ? "▶" : "◀"}
+          </button>
+        </div>
+        {sessions === null ? (
+          <div className="empty-hint" data-testid="sessions-loading">
+            加载中…
+          </div>
+        ) : (
+          <>
+            <button className="new-session" data-testid="new-session" onClick={handleCreate}>
+              <span>+</span>
+              <span className="new-session-label">新建会话</span>
+            </button>
+            {projects && (
+              <ProjectSwitcher
+                projects={projects}
+                activeId={activeProjectId}
+                onSelect={setActiveProjectId}
+                onCreate={handleCreateProject}
+                onDelete={handleDeleteProject}
               />
-            </section>
-          ) : (
-            <div data-testid="no-session-hint">选择或新建一个会话开始聊天</div>
-          )}
-        </>
+            )}
+            <SessionList
+              sessions={sessions}
+              activeId={activeSessionId}
+              onSelect={handleSelect}
+              onDelete={handleDelete}
+              onRename={handleRename}
+              onExport={handleExport}
+            />
+          </>
+        )}
+      </aside>
+
+      {/* 聊天区 */}
+      <Chat
+        session={activeSession}
+        timeline={chatState.timeline}
+        streaming={streaming}
+        queued={queued}
+        loadError={loadError}
+        models={models}
+        thinkingLevels={thinkingLevels}
+        defaultModel={defaultModel}
+        defaultThinkingLevel={defaultThinkingLevel}
+        connected={connected}
+        stats={chatState.stats}
+        onSend={handleSend}
+        onSteer={handleSteer}
+        onFollowUp={handleFollowUp}
+        onAbort={handleAbort}
+        onToggleDetails={() => setDetailsCollapsed((v) => !v)}
+        onConfigChange={(config) => {
+          if (activeSession) void handleConfigChange(activeSession.id, config);
+        }}
+      />
+
+      {/* 右侧 Inspector */}
+      {!detailsCollapsed && (
+        <Inspector
+          session={activeSession}
+          entries={eventLog}
+          timeline={chatState.timeline}
+          onClearEvents={() => setEventLog([])}
+        />
+      )}
+
+      {/* 拖拽手柄 */}
+      {!sidebarCollapsed && (
+        <div
+          className={`resize-handle sidebar ${dragging === "sidebar" ? "dragging" : ""}`}
+          onPointerDown={(e) => handlePointerDown("sidebar", e)}
+          onPointerMove={handlePointerMove}
+          onPointerUp={handlePointerUp}
+        />
+      )}
+      {!detailsCollapsed && (
+        <div
+          className={`resize-handle details ${dragging === "details" ? "dragging" : ""}`}
+          onPointerDown={(e) => handlePointerDown("details", e)}
+          onPointerMove={handlePointerMove}
+          onPointerUp={handlePointerUp}
+        />
       )}
     </main>
   );

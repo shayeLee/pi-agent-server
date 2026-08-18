@@ -2,29 +2,50 @@
 
 export type SseEvent =
   | { type: "text_delta"; text: string }
+  | { type: "thinking_delta"; text: string }
   | { type: "tool_start"; toolCallId: string; toolName: string; args: unknown }
   | { type: "tool_update"; toolCallId: string; toolName: string; partialResult: unknown }
   | { type: "tool_end"; toolCallId: string; toolName: string; result: unknown; isError: boolean }
   | { type: "status"; phase: "agent_start" | "turn_start"; requestId?: string }
   | { type: "queued"; position?: number; requestId?: string }
+  | { type: "usage"; promptTokens: number; completionTokens: number; totalTokens: number; durationMs: number; ttftMs: number }
   | { type: "error"; message: string }
   | { type: "completed" }
   | { type: "aborted" };
 
+export type UsageStats = {
+  durationMs: number;
+  ttftMs: number;
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+};
+
 export type SessionRecord = {
   id: string;
   ownerKey: string;
+  projectId: string;
   title: string;
   createdAt: number;
   updatedAt: number;
+  modelProvider: string | null;
+  modelId: string | null;
+  thinkingLevel: string | null;
+  systemPrompt: string | null;
 };
 
-/** 一条会话消息（前端渲染模型）。 */
-export type ChatMessage = {
-  /** 消息 id（后端 entry id 或前端生成）。 */
+/** 项目（多项目：默认项目 + 额外项目）。 */
+export type Project = {
   id: string;
-  role: "user" | "assistant";
-  text: string;
+  name: string;
+  cwd: string;
+};
+
+/** 可用模型信息。 */
+export type ModelInfo = {
+  provider: string;
+  id: string;
+  name: string;
 };
 
 /** 一次工具调用的流式卡片状态。 */
@@ -37,4 +58,25 @@ export type ToolCall = {
   isError: boolean;
   /** tool_end 已收到，调用结束。 */
   done: boolean;
+};
+
+/** 聊天区按时间顺序的统一条目：消息、思考或工具调用，按 SSE 事件到达顺序交错排列。 */
+export type TimelineItem =
+  | {
+      kind: "message";
+      id: string;
+      role: "user" | "assistant";
+      text: string;
+      /** 是否仍在流式接收增量（未完成）。 */
+      streaming: boolean;
+    }
+  | { kind: "thinking"; id: string; text: string; streaming: boolean }
+  | { kind: "tool"; id: string; call: ToolCall };
+
+/** 调试面板的一条原始事件日志。 */
+export type EventLogEntry = {
+  seq: number;
+  time: string;
+  type: string;
+  data: unknown;
 };

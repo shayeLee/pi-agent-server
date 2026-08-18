@@ -2,11 +2,11 @@
 // 与会话索引共用同一个 DatabaseSync（WAL 已由会话 repository 启用）。
 
 import { DatabaseSync, type StatementSync } from "node:sqlite";
-import type { IdempotencyRepository } from "./idempotency-repository.js";
+import type { IdempotencyStorePort } from "../application/ports/idempotency-store-port.js";
 
 type IdempotencyRow = { result: string };
 
-export class SqliteIdempotencyRepository implements IdempotencyRepository {
+export class SqliteIdempotencyRepository implements IdempotencyStorePort {
   private readonly getStmt: StatementSync;
   private readonly putStmt: StatementSync;
   private readonly pruneStmt: StatementSync;
