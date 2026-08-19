@@ -227,4 +227,4 @@ needs.md §4.2 的 SSE 事件是**服务层协议**，需在 subscribe 回调里
 - `noTools: "builtin"`：只禁用默认内置，保留扩展与自定义工具
 - `excludeTools`：在 `tools` 白名单之后按名禁用
 
-needs.md §4.3「不启用内置 `bash`/`edit`/`write`」实现为：`noTools: "all"`（或 `tools: [仅自定义工具名]`），并显式列出能力声明的 `customTools`。
+needs.md §4.3「默认只读，不启用内置 `bash`/`edit`/`write`」实现为：未配置时使用 `tools: ["read", "ls", "find", "grep"]`；需要完全禁用内置工具时使用 `noTools: "all"`（或显式传入空白名单），并显式列出能力声明的 `customTools`。

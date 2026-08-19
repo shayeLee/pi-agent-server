@@ -8,5 +8,7 @@ web/test-results
 
 # pi-agent-server 服务数据（默认 DATA_DIR=项目目录时产生；建议生产用独立 DATA_DIR）
 pi-agent-server.db
+pi-agent-server.db-shm
+pi-agent-server.db-wal
 .pi-agent
 sessions/

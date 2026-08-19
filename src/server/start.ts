@@ -48,7 +48,7 @@ export type StartConfig = {
   tokens: Record<string, string>;
   /** Agent 工作目录（工具/仓库根）。 */
   cwd?: string;
-  /** 启用工具列表（needs.md §4.3：默认不启用 bash/edit/write）。 */
+  /** 启用工具列表（未配置时默认只读工具 read/ls/find/grep；bash/edit/write 需显式开启）。 */
   tools?: string[];
   /** 服务数据目录（JSONL 会话 + 服务专用 agentDir + 凭证文件的父目录）。 */
   dataDir?: string;
@@ -151,7 +151,7 @@ export async function startServer(config: StartConfig) {
   });
   await resourceLoader.reload();
 
-  // 工具清单 = 已启用能力 manifest 声明的工具并集 ∪ 内置工具白名单（TOOLS 显式开启，默认全禁）。
+  // 工具清单 = 已启用能力 manifest 声明的工具并集 ∪ 内置工具白名单（未配置时默认只读工具集）。
   const builtinGrant = toolPolicyFromAllowlist(config.tools).resolve();
   const builtinTools = builtinGrant.kind === "allowlist" ? [...builtinGrant.tools] : [];
   const allTools = [...new Set([...capabilitySnapshot.toolNames, ...builtinTools])];
@@ -288,7 +288,7 @@ export async function startServer(config: StartConfig) {
         cwd: projectCwd,
         ...(model ? { model } : {}),
         ...(thinkingLevel ? { thinkingLevel } : {}),
-        // 默认禁用所有内置工具（bash/edit/write/read）；仅当显式配置 TOOLS 时按 allowlist 开放。
+        // 默认只开放只读工具 read/ls/find/grep；bash/edit/write 仅在显式配置 TOOLS 时按 allowlist 开放。
         // 知识库问答等能力工具由 manifest 显式注入（阶段 2），不走内置工具。
         ...agentToolConfig,
       });

@@ -94,7 +94,7 @@ src/provider-adapters/
 - [x] 抽出 `ModelCatalogPort`；`PiModelRuntimeCatalog` 仅映射可展示模型描述，Pi SDK 类型不进入 application/server/app/runtime。
 - [x] 抽出最小 `CredentialPort`；仅 composition root 通过 `PiModelRuntimeCredentials` 注入运行时 API key/校验 provider 凭证，HTTP/runtime 不可见凭证。
 - [x] 抽出 `SystemPromptPort`：server 仅依赖 `resolve(cwd)`，Pi session 解析留在 composition root。
-- [x] 抽出 `ToolAuthorizationPolicyPort`（默认全禁/显式白名单，provider 中立）；工具授权决策经策略解析，Pi SDK 形态映射留在 composition root。cwd/模型/配额已分别由项目存储、会话配置、`ConcurrencyController` 承载，不再重复抽象。
+- [x] 抽出 `ToolAuthorizationPolicyPort`（默认只读 `read`/`ls`/`find`/`grep`/显式白名单，provider 中立）；工具授权决策经策略解析，Pi SDK 形态映射留在 composition root。cwd/模型/配额已分别由项目存储、会话配置、`ConcurrencyController` 承载，不再重复抽象。
 - [x] 抽出 `SessionService`：会话/项目 CRUD、归属校验、配置切换、消息提交、导出、级联删除均移入 application 层；`app.ts` 仅保留鉴权、参数校验、状态码/响应映射与 SSE/CORS/优雅关闭。
   - SSE 连接管理、心跳、背压保留在 app.ts（纯 HTTP transport 关注）。
 
@@ -104,7 +104,7 @@ src/provider-adapters/
 
 - [x] 建立版本化 `CapabilityManifest` 契约（id/version/tools/promptFragments；工具含 category/schema/scope/outputLimit）；HTTP 接口/Worker/数据源字段待首个真实能力实现时补充。
 - [x] `CapabilityRegistry` + `composeCapabilities`：工具清单从已启用能力 manifest 并集计算，重复 id/同名工具定义冲突拒绝；版本快照可冻结。
-- [x] 工具清单接入 `start.ts`：能力工具并集 ∪ 内置工具白名单；当前无能力，行为不变，机制已就位。
+- [x] 工具清单接入 `start.ts`：能力工具并集 ∪ 内置工具白名单；当前无能力时默认提供只读工具 `read`/`ls`/`find`/`grep`，机制已就位。
 - [x] 能力提示词片段经 `prompt-composer` 映射为 Pi `appendSystemPrompt` 条目（inline 文本 / file 路径），组合进系统提示词；skills/AGENTS/extension 仍禁用自动发现，后续按能力 manifest 受控注入。
 - [x] 会话创建时把能力版本快照（id→version）持久化冻结（`SessionRecord.capabilityVersions` + SQLite 列迁移）。
 - [ ] 恢复会话时按冻结版本重建工具清单与资源快照（依赖版本化 manifest 查找，待有真实多版本能力时实现）。
