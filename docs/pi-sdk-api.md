@@ -130,7 +130,7 @@ needs.md §4.1「会话存储：Pi JSONL 会话文件」对应 `SessionManager.c
 
 ```typescript
 const modelRuntime = await ModelRuntime.create({
-  authPath,        // 凭证文件（独立，避免继承个人配置）
+  authPath,        // 凭证文件（默认 $HOME/.pi/agent/auth.json，与 pi CLI 共用；OAuth 刷新会回写；可覆盖）
   modelsPath,      // 模型文件
   credentials,     // 或注入 InMemoryCredentialStore
   allowModelNetwork,

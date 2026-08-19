@@ -30,7 +30,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "dev": "tsx src/main.ts",
-    "dev:real": "PI_AUTH_PATH=$HOME/.pi/agent/auth.json DATA_DIR=/tmp/pi-agent-server PI_DEFAULT_MODEL=openai-codex/gpt-5.6-luna PI_DEFAULT_THINKING_LEVEL=medium tsx src/main.ts",
+    "dev:real": "cross-env DATA_DIR=/tmp/pi-agent-server PI_DEFAULT_MODEL=openai-codex/gpt-5.6-luna PI_DEFAULT_THINKING_LEVEL=medium tsx src/main.ts",
     "mock": "tsx scripts/mock-server.ts",
     "web": "pnpm --filter web dev",
     "web:mock": "VITE_API_TARGET=http://127.0.0.1:8081 pnpm --filter web dev",
@@ -45,6 +45,7 @@
   },
   "devDependencies": {
     "@types/node": "^26.2.0",
+    "cross-env": "^10.1.0",
     "tsx": "^4.23.12",
     "typescript": "^7.0.2",
     "vitest": "^4.1.10"

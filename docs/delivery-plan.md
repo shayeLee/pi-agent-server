@@ -21,7 +21,7 @@
 - 完成信号：以最终 assistant `stopReason` 为结果权威（error/aborted/length→error/stop→completed），prompt resolve/reject 兜底；`agent_end`/`agent_settled` 不直接结算终态。
 - 幂等语义：三层模型——in-flight promise（提交决策阶段合并同 key 并发）+ processing 占位（运行期返回「已接受」）+ done 记录（已完成返回原结果）。
 - 优雅关闭：closeAllEvents → 等在途任务完成或超时 → abortAll（并行）→ dispose。
-- 启动入口：`start.ts` + `main.ts`（环境变量 + 信号）；独立 agentDir/authPath、资源发现禁用（noExtensions/noSkills/noPromptTemplates/noThemes/noContextFiles）、默认禁内置工具（noTools:all）。
+- 启动入口：`start.ts` + `main.ts`（环境变量 + 信号）；独立 agentDir（默认 `dataDir/.pi-agent`，承载 models.json 等）+ authPath 默认个人 `~/.pi/agent/auth.json`（与 pi CLI 共用、OAuth 刷新回写，`PI_AUTH_PATH` 可覆盖）、资源发现禁用（noExtensions/noSkills/noPromptTemplates/noThemes/noContextFiles）、默认禁内置工具（noTools:all）。
 - 多项目：默认项目（服务端固定 `AGENT_CWD`，id="default"，不可删）+ 额外项目（`POST /v1/projects`，cwd 信任登录用户）；会话按 projectId 归属，`?projectId=` 过滤；删除额外项目级联删除其下会话；JSONL 会话目录按项目分（默认项目 `dataDir/sessions/`，额外项目 `dataDir/projects/<pid>/sessions/`）。
 - 模型/思考级别：会话级模型（provider + modelId）与思考级别（off/minimal/low/medium/high/xhigh/max）选择；服务端用 `PI_DEFAULT_MODEL=provider/modelId` 与 `PI_DEFAULT_THINKING_LEVEL` 配置新会话默认值；`GET /v1/models` 暴露可用模型、枚举及 Pi SDK 实际解析出的服务端默认值，`PATCH /v1/sessions/:id/config` 切换并持久化（透传 SDK `setModel`/`setThinkingLevel`）；会话创建可指定，重启后按保存配置恢复。
 - 安全边界：请求体大小限制、CORS 白名单、SSE 连接数上限（全局 100 + 每用户 10）。

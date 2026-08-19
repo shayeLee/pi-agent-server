@@ -1,8 +1,10 @@
 // 启动入口：把真实 Pi SDK、SQLite 存储、真实鉴权、HTTP 层组装起来（needs.md §4.1/§7）。
 // 服务端安全边界：
 // - 独立 agentDir（不继承个人 ~/.pi/agent），DefaultResourceLoader 禁用项目/全局自动发现；
-// - 服务端默认模型 API key 从环境变量注入（setRuntimeApiKey，不落盘），不走个人 auth.json。
+// - 凭证默认指向个人 ~/.pi/agent/auth.json（与 pi CLI 共用；OAuth token 刷新由 SDK 自动回写该文件，
+//   生产部署应通过 PI_AUTH_PATH 指向服务端独立凭证）；服务端默认模型 API key 可从环境变量注入（setRuntimeApiKey，不落盘）。
 
+import { homedir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
 import path from "node:path";
@@ -50,11 +52,11 @@ export type StartConfig = {
   cwd?: string;
   /** 启用工具列表（未配置时默认只读工具 read/ls/find/grep；bash/edit/write 需显式开启）。 */
   tools?: string[];
-  /** 服务数据目录（JSONL 会话 + 服务专用 agentDir + 凭证文件的父目录）。 */
+  /** 服务数据目录（JSONL 会话 + 服务专用 agentDir；凭证默认不落此目录）。 */
   dataDir?: string;
   /** 服务专用 agentDir（默认 dataDir/.pi-agent），不继承个人 ~/.pi/agent。 */
   agentDir?: string;
-  /** 服务端凭证文件路径（默认 agentDir/auth.json），不走个人 ~/.pi/agent/auth.json。 */
+  /** 凭证文件路径（默认 $HOME/.pi/agent/auth.json，与 pi CLI 共用，OAuth 刷新会回写该文件；PI_AUTH_PATH 可覆盖）。 */
   authPath?: string;
   /** 服务端默认模型 provider（如 "openai-codex"/"deepseek"），配合 modelApiKey 注入。 */
   modelProvider?: string;
@@ -72,19 +74,55 @@ export type StartConfig = {
 
 const THINKING_LEVELS = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
 
-export async function startServer(config: StartConfig) {
-  validateTrustProxyConfig(config.trustProxy, config.intranetCidrs);
+/** startServer 默认路径解析所需的配置子集。 */
+export type ServerPathConfig = Pick<
+  StartConfig,
+  "cwd" | "dataDir" | "agentDir" | "authPath" | "dbPath"
+>;
+
+/** startServer 解析后的路径全集。 */
+export type ResolvedServerPaths = {
+  /** Agent 工作目录（工具/仓库根）。 */
+  cwd: string;
+  /** 服务数据目录（JSONL 会话 + 服务专用 agentDir）。 */
+  dataDir: string;
+  /** 服务专用 agentDir（默认 dataDir/.pi-agent），不继承个人 ~/.pi/agent。 */
+  agentDir: string;
+  /** 服务端 agent 配置里的模型文件（agentDir/models.json）。 */
+  modelsPath: string;
+  /** 凭证文件（默认 $HOME/.pi/agent/auth.json，与 pi CLI 共用；PI_AUTH_PATH 可覆盖）。 */
+  authPath: string;
+  /** 服务数据库路径（默认 dataDir/pi-agent-server.db）。 */
+  dbPath: string;
+};
+
+/**
+ * 解析 startServer 的路径默认值。
+ * 约定：agentDir/modelsPath 落在 dataDir 下（服务端独立配置），
+ * authPath 默认个人 $HOME/.pi/agent/auth.json（与 pi CLI 共用，OAuth 刷新回写）；
+ * 显式传入的配置优先，其余均可用对应环境变量覆盖。
+ */
+export function resolveServerPaths(config: ServerPathConfig = {}): ResolvedServerPaths {
   const cwd = config.cwd ?? process.cwd();
   const dataDir = config.dataDir ?? cwd;
   const agentDir = config.agentDir ?? path.join(dataDir, ".pi-agent");
-  const authPath = config.authPath ?? path.join(agentDir, "auth.json");
+  const authPath = config.authPath ?? path.join(homedir(), ".pi", "agent", "auth.json");
+  const dbPath = config.dbPath ?? path.join(dataDir, "pi-agent-server.db");
+  return { cwd, dataDir, agentDir, modelsPath: path.join(agentDir, "models.json"), authPath, dbPath };
+}
 
-  // 模型运行时：凭证读服务端独立 authPath（不读个人 ~/.pi/agent/auth.json）；
+export async function startServer(config: StartConfig) {
+  validateTrustProxyConfig(config.trustProxy, config.intranetCidrs);
+  const { cwd, dataDir, agentDir, authPath, dbPath, modelsPath } = resolveServerPaths(config);
+
+  // 模型运行时：凭证默认读个人 ~/.pi/agent/auth.json（与 pi CLI 共用，OAuth token 临近过期时 SDK 会自动
+  // 刷新并回写该文件，同文件带锁并发安全）；生产部署可用 PI_AUTH_PATH 指向服务端独立凭证。
   // 服务端默认 API key 也可用 setRuntimeApiKey 运行时注入（不持久化，needs.md §7）。
-  // 目录关系：dataDir（会话 JSONL）→ agentDir = dataDir/.pi-agent（agent 配置）→ authPath = agentDir/auth.json（凭证），三者均可用环境变量覆盖。
+  // 目录关系：dataDir（会话 JSONL）→ agentDir = dataDir/.pi-agent（agent 配置：models.json 等）；
+  // authPath 默认 $HOME/.pi/agent/auth.json，三者均可用环境变量覆盖。
   const modelRuntime = await ModelRuntime.create({
     authPath,
-    modelsPath: path.join(agentDir, "models.json"),
+    modelsPath,
   });
   const credentials: CredentialPort = new PiModelRuntimeCredentials(modelRuntime);
   if (config.modelProvider && config.modelApiKey) {
@@ -207,7 +245,7 @@ export async function startServer(config: StartConfig) {
   // 会话元数据索引（SQLite）：默认落在 dataDir 下持久化，重启后经 piSessionFile 恢复 JSONL 历史。
   // timeout=5000：写锁等待（多连接/多进程并发写冲突时等待而非立即 SQLITE_BUSY）；
   // enableForeignKeyConstraints：开启外键约束检查（sessions.project_id → projects.id ON DELETE CASCADE）。
-  const db = new DatabaseSync(config.dbPath ?? path.join(dataDir, "pi-agent-server.db"), {
+  const db = new DatabaseSync(dbPath, {
     timeout: 5000,
     enableForeignKeyConstraints: true,
   });
