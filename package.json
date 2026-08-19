@@ -35,8 +35,7 @@
     "web": "pnpm --filter web dev",
     "web:mock": "VITE_API_TARGET=http://127.0.0.1:8081 pnpm --filter web dev",
     "e2e": "pnpm --filter web exec playwright test",
-    "prepack": "pnpm build",
-    "prepublishOnly": "pnpm test"
+    "release:rc": "pnpm test && pnpm build && npm publish --tag rc"
   },
   "dependencies": {
     "@earendil-works/pi-ai": "^0.84.2",
