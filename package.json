@@ -1,7 +1,16 @@
 {
   "name": "pi-agent-server",
-  "version": "0.1.0-rc.0",
+  "version": "0.1.0-rc.1",
   "description": "A long-running Pi Agent service built with Fastify and the Pi SDK.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/shayeLee/pi-agent-server.git"
+  },
+  "bugs": {
+    "url": "https://github.com/shayeLee/pi-agent-server/issues"
+  },
+  "homepage": "https://github.com/shayeLee/pi-agent-server#readme",
   "type": "module",
   "bin": {
     "pi-agent-server": "./dist/main.js"
