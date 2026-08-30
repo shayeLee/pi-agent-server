@@ -53,7 +53,7 @@
 | 服务身份 | 无 | 业务系统只能用静态 token 冒充个人账号 |
 | 审计 | 工具/Job 级有规划（needs.md §7），无鉴权审计 | 无「谁在何时用什么凭证访问了什么」的统一审计 |
 | 密码学 | token 明文存于环境变量 | 不符合凭证不落明文原则 |
-| PG 验收 | 已通过（Phase 2 全部 45 个扩展 PG 门控用例经 `verify:release`/`PI_TEST_PG_URL` 真实 PG 验证通过，见 [phase-2-execution-plan.md](phase-2-execution-plan.md) 工作包 D/E 与 [database-design.md](database-design.md) §9） | IAM 表要上 PG 前须先完成正式 migration / 备份 / 回滚（RC 阶段仍为删库重建，见 [database-design.md](database-design.md) §7） |
+| PG 验收 | 已通过（Phase 2 全部 45 个扩展 PG 门控用例经 `verify:release`/`PI_TEST_PG_URL` 真实 PG 验证通过，见 [database-design.md](database-design.md) §9） | IAM 表要上 PG 前须先完成正式 migration / 备份 / 回滚（RC 阶段仍为删库重建，见 [database-design.md](database-design.md) §7） |
 
 **结论**：当前机制是 RC 阶段的接入鉴权，**不承诺**任何生产级身份语义；内网免 token 与静态 `TOKENS` 都是过渡机制，最终要逐步退场（见 §4、§7 工作包 1）。
 
@@ -164,7 +164,7 @@
 
 - **内容**：
   - 真实 PG 验收：**已通过（Phase 2 最终发布门禁 `verify:release` 在真实 PG 上验证了全部 45 个扩展门控用例；历史 17 用例基线亦曾在本机通过）**（复跑流程见 [postgres-podman-test.md](postgres-podman-test.md)）；
-  - 数据策略决策：是否开始保留真实用户数据；一旦保留，**冻结 destructive reset**，建立正式 migration / 备份 / 回滚；
+  - 数据策略决策：是否开始保留真实用户数据；一旦保留，**冻结 destructive reset**，建立正式 migration / 备份 / 回滚——Phase 3 数据保留基础（[phase-3-data-retention-plan.md](phase-3-data-retention-plan.md)）已确认「切换前 RC 数据不保留、切换走最终 reset 基线」，其 **WP1–WP5（迁移引擎 / 最终 reset 切换 / 备份恢复 / JSONL 生命周期 / 运维门禁）全部通过是 IAM 数据落地的硬前置**；当前该计划尚未实施，RC 仍无 migration / backup / rollback；
   - IAM schema decision：确定 §6 表集、Access Token 形态、哈希算法、scope 命名（产出决策记录，更新本文档）。
 - **依赖**：PG 验收前置依赖已满足（Phase 2 `verify:release` 真实 PG 门控已通过，见上）；数据策略与 IAM schema 决策是本包自身应完成的内容。
 - **验收**：数据策略与 IAM 决策书面确认；无任何真实库上执行 destructive reset。（PG 验收部分：已通过——`verify:release` 真实 PG 门控（全量 54 文件 / 563 用例与 45 个 PG 门控用例）已验证。）
@@ -255,7 +255,6 @@
 
 - 架构与核心数据流（含鉴权/身份现状）：[architecture.md](architecture.md)
 - 数据库设计与 Schema Manifest 约束：[database-design.md](database-design.md)
-- Phase 2 执行计划（PG/Manifest 交付与验收门槛）：[phase-2-execution-plan.md](phase-2-execution-plan.md)
 - 本地 PostgreSQL 测试流程：[postgres-podman-test.md](postgres-podman-test.md)
 - 平台需求基线（安全与审计要求、交付计划）：[../needs.md](../needs.md)
 - 对外状态与限制说明：[../README.md](../README.md) / [../README.zh-CN.md](../README.zh-CN.md)（Security & Limitations 一节）

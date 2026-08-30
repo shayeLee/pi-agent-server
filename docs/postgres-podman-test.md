@@ -78,7 +78,7 @@ volta run pnpm test:postgres
 volta run pnpm test
 ```
 
-**复跑 PG 门控测试**：设置 `PI_TEST_PG_URL` 后，`tests/postgres/` 两个门控文件的用例将真实连接 PG 执行，不再以 skip 呈现——用于复跑/重新验证真实验收（当前扩展门控共 45 个：`postgres.integration.test.ts` 21 个 + `repository-contract.test.ts` 24 个，已由 `volta run pnpm verify:release`（真实 PG URL）全部通过，结论见 [phase-2-execution-plan.md](phase-2-execution-plan.md) 工作包 E 与 [database-design.md](database-design.md) §9；本流程亦可随时用于重新验证）。用例数以当次 reporter 输出为准，不在本文固定。
+**复跑 PG 门控测试**：设置 `PI_TEST_PG_URL` 后，`tests/postgres/` 两个门控文件的用例将真实连接 PG 执行，不再以 skip 呈现——用于复跑/重新验证真实验收（当前扩展门控共 45 个：`postgres.integration.test.ts` 21 个 + `repository-contract.test.ts` 24 个，已由 `volta run pnpm verify:release`（真实 PG URL）全部通过，结论见 [database-design.md](database-design.md) §9；本流程亦可随时用于重新验证）。用例数以当次 reporter 输出为准，不在本文固定。
 
 **隔离说明**：每个测试文件使用随机 schema（`pi_test_*`）+ `search_path` 隔离；每用例前 `TRUNCATE TABLE idempotency, sessions, projects CASCADE`（用例顺序无关）；Pool 关闭用例自建独立 Pool/Kysely，不销毁共享 fixture；`afterAll` 仅 drop 自己创建的随机 schema。
 

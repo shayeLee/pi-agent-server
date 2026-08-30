@@ -205,4 +205,4 @@ pnpm e2e                # Playwright end-to-end (starts its own mock backend + V
 - [docs/pi-sdk-api.md](docs/pi-sdk-api.md) — Pi SDK usage index (the HTTP surface is defined in `src/server/app.ts`)
 - [docs/postgres-podman-test.md](docs/postgres-podman-test.md) — local PostgreSQL testing with Podman
 
-Internal phase plans and archived documents (`docs/phase-2-execution-plan.md`, `docs/archive/`) are not user-facing entry points.
+Internal phase plans and archived documents (`docs/archive/`) are not user-facing entry points.

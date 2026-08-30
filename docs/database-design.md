@@ -250,7 +250,7 @@ application 层不识别任何 PG code（只依赖存储无关错误）；实现
 
 ### 9.7 最终测试审计补强（H2/H4/H5/H6/M1/M2）
 
-> 详见 [phase-2-execution-plan.md §5E](phase-2-execution-plan.md)。**§5E 的 H2/H4/H5/H6/M1/M2 补强及其全部 45 个扩展 PG 门控用例已由 `volta run pnpm verify:release`（真实 PG `PI_TEST_PG_URL`）验收通过**——全量 `pnpm test` 54 文件 / 563 用例无 skip 全部通过，`pnpm test:postgres` 45 个 PG 门控用例全部通过。
+> **H2/H4/H5/H6/M1/M2 补强及其全部 45 个扩展 PG 门控用例已由 `volta run pnpm verify:release`（真实 PG `PI_TEST_PG_URL`）验收通过**——全量 `pnpm test` 54 文件 / 563 用例无 skip 全部通过，`pnpm test:postgres` 45 个 PG 门控用例全部通过。
 
 - **H4 双库共用契约**：`tests/storage/repository-contract.ts` 为参数化共享测试集（22 用例），SQLite（`repository-contract.sqlite.test.ts`，始终运行）与 PG（`tests/postgres/repository-contract.test.ts`，门控）注册同一契约；核心 CRUD/owner/project 隔离/排序 tie-break/默认项目守卫/ON CONFLICT/idempotency TTL 精确 cutoff/更新不存在均双库对齐。
 - **H4 真实 PG mapper**：隔离 schema 内临时创建非 id/复合唯一约束触发**真实** 23505（非 synthetic），断言原样抛出且 code/constraint 保留；finally DROP 临时索引。

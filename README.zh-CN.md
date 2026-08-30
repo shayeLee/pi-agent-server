@@ -205,4 +205,4 @@ pnpm e2e                # Playwright 端到端（自动启动 mock 后端与 Vit
 - [docs/pi-sdk-api.md](docs/pi-sdk-api.md) —— Pi SDK 使用清单（HTTP 接口形态以 `src/server/app.ts` 为准）
 - [docs/postgres-podman-test.md](docs/postgres-podman-test.md) —— 使用 Podman 进行本地 PostgreSQL 测试
 
-内部阶段计划与归档文档（`docs/phase-2-execution-plan.md`、`docs/archive/`）不是用户入口。
+内部阶段计划与归档文档（`docs/archive/`）不是用户入口。
