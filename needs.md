@@ -244,4 +244,4 @@ N、M 天数由部署配置决定。
 
 ## 8. 交付计划
 
-当前数据库设计见[数据库设计](docs/database-design.md)；Phase 2 执行计划见[Phase 2 执行计划](docs/phase-2-execution-plan.md)；历史平台交付计划见[归档交付计划](docs/archive/delivery-plan.md)；能力级交付见各自能力文档（如[知识库问答](docs/capabilities/knowledge-qa.md)）。
+当前数据库设计见[数据库设计](docs/database-design.md)；Phase 2 执行计划见[Phase 2 执行计划](docs/phase-2-execution-plan.md)；身份与访问管理规划见[身份与访问管理规划](docs/identity-access-plan.md)；历史平台交付计划见[归档交付计划](docs/archive/delivery-plan.md)；能力级交付见各自能力文档（如[知识库问答](docs/capabilities/knowledge-qa.md)）。
