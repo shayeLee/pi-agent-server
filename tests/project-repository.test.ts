@@ -4,14 +4,15 @@ import { identityKey } from "../src/core/user-identity.js";
 import type { ProjectRecord } from "../src/application/ports/project-store-port.js";
 import type { SessionRecord } from "../src/application/ports/session-store-port.js";
 import { SqliteProjectRepository } from "../src/storage/sqlite-project-repository.js";
-import { SqliteSessionRepository } from "../src/storage/sqlite-session-repository.js";
+import { DEFAULT_PROJECT_ID } from "../src/application/ports/project-store-port.js";
+import { initStorage, makeInitializedMemoryDb } from "./helpers/sqlite.js";
 
 function makeDb(): DatabaseSync {
   return new DatabaseSync(":memory:");
 }
 
-function makeRepo(db: DatabaseSync = makeDb()): SqliteProjectRepository {
-  return new SqliteProjectRepository(db);
+async function makeRepo(db: DatabaseSync = makeDb()): Promise<SqliteProjectRepository> {
+  return (await initStorage(db)).projects;
 }
 
 function makeRecord(overrides: Partial<ProjectRecord> = {}): ProjectRecord {
@@ -25,24 +26,42 @@ function makeRecord(overrides: Partial<ProjectRecord> = {}): ProjectRecord {
   };
 }
 
+function makeSession(overrides: Partial<SessionRecord> = {}): SessionRecord {
+  return {
+    id: "s-" + Math.random().toString(36).slice(2),
+    ownerKey: identityKey({ kind: "ip", ip: "10.0.0.1" }),
+    projectId: "p1",
+    title: "",
+    createdAt: 1,
+    updatedAt: 1,
+    piSessionFile: null,
+    modelProvider: null,
+    modelId: null,
+    thinkingLevel: null,
+    systemPrompt: null,
+    capabilityVersions: null,
+    ...overrides,
+  };
+}
+
 describe("项目索引存储（多项目，SQLite 实现）", () => {
   describe("create / get", () => {
     it("create 后 get 返回完整记录", async () => {
-      const repo = makeRepo();
+      const repo = await makeRepo();
       const rec = makeRecord();
       await repo.create(rec);
       expect(await repo.get(rec.id)).toEqual(rec);
     });
 
     it("get 不存在的项目返回 null", async () => {
-      const repo = makeRepo();
+      const repo = await makeRepo();
       expect(await repo.get("no-such-id")).toBeNull();
     });
   });
 
   describe("listByOwner", () => {
     it("只返回该 owner 的项目，按 createdAt 降序", async () => {
-      const repo = makeRepo();
+      const repo = await makeRepo();
       const owner = identityKey({ kind: "account", accountId: "acct-1" });
       const a = makeRecord({ id: "p1", ownerKey: owner, createdAt: 1000 });
       const b = makeRecord({ id: "p2", ownerKey: owner, createdAt: 3000 });
@@ -59,7 +78,7 @@ describe("项目索引存储（多项目，SQLite 实现）", () => {
 
   describe("delete", () => {
     it("delete 返回 true 且 get 变 null", async () => {
-      const repo = makeRepo();
+      const repo = await makeRepo();
       const rec = makeRecord();
       await repo.create(rec);
 
@@ -68,34 +87,16 @@ describe("项目索引存储（多项目，SQLite 实现）", () => {
     });
 
     it("delete 不存在的项目返回 false", async () => {
-      const repo = makeRepo();
+      const repo = await makeRepo();
       expect(await repo.delete("no-such-id")).toBe(false);
     });
   });
 
   describe("deleteProjectWithSessions（事务逻辑删）", () => {
-    function makeSession(overrides: Partial<SessionRecord> = {}): SessionRecord {
-      return {
-        id: "s-" + Math.random().toString(36).slice(2),
-        ownerKey: identityKey({ kind: "ip", ip: "10.0.0.1" }),
-        projectId: "p1",
-        title: "",
-        createdAt: 1,
-        updatedAt: 1,
-        piSessionFile: null,
-        modelProvider: null,
-        modelId: null,
-        thinkingLevel: null,
-        systemPrompt: null,
-        capabilityVersions: null,
-        ...overrides,
-      };
-    }
-
     it("同一事务删除项目及其所有会话", async () => {
-      const db = makeDb();
-      const repo = new SqliteProjectRepository(db);
-      const sessions = new SqliteSessionRepository(db);
+      const storage = await makeInitializedMemoryDb();
+      const repo = storage.projects;
+      const sessions = storage.sessions;
 
       await repo.create(makeRecord({ id: "p1" }));
       const s1 = makeSession({ id: "s1" });
@@ -111,9 +112,8 @@ describe("项目索引存储（多项目，SQLite 实现）", () => {
     });
 
     it("会话 id 列表为空时仍删除项目", async () => {
-      const db = makeDb();
-      const repo = new SqliteProjectRepository(db);
-      new SqliteSessionRepository(db);
+      const storage = await makeInitializedMemoryDb();
+      const repo = storage.projects;
       await repo.create(makeRecord({ id: "p1" }));
 
       await repo.deleteProjectWithSessions("p1", []);
@@ -121,9 +121,9 @@ describe("项目索引存储（多项目，SQLite 实现）", () => {
     });
 
     it("外键 CASCADE：直接删项目自动级联删其会话（数据库层兑底，无需显式删 sessions）", async () => {
-      const db = makeDb();
-      const repo = new SqliteProjectRepository(db);
-      const sessions = new SqliteSessionRepository(db);
+      const storage = await makeInitializedMemoryDb();
+      const repo = storage.projects;
+      const sessions = storage.sessions;
       await repo.create(makeRecord({ id: "p1" }));
       await sessions.create(makeSession({ id: "s1" }));
       await sessions.create(makeSession({ id: "s2" }));
@@ -139,7 +139,7 @@ describe("项目索引存储（多项目，SQLite 实现）", () => {
 
   describe("owner 隔离", () => {
     it("不同 owner 的项目互不串扰", async () => {
-      const repo = makeRepo();
+      const repo = await makeRepo();
       const ownerA = identityKey({ kind: "ip", ip: "10.1.1.1" });
       const ownerB = identityKey({ kind: "account", accountId: "acct-9" });
       await repo.create(makeRecord({ id: "a1", ownerKey: ownerA, name: "A 项目" }));
@@ -153,7 +153,7 @@ describe("项目索引存储（多项目，SQLite 实现）", () => {
 
   describe("默认项目不变量（保留 id 由 ensureDefaultProject 独占）", () => {
     const defaultRecord = (overrides: Partial<ProjectRecord> = {}): ProjectRecord => ({
-      id: "default",
+      id: DEFAULT_PROJECT_ID,
       name: "默认项目",
       cwd: "/tmp/default",
       ownerKey: "",
@@ -162,54 +162,52 @@ describe("项目索引存储（多项目，SQLite 实现）", () => {
     });
 
     it("ensureDefaultProject 拒绝非 default id 或非空 owner", async () => {
-      const repo = makeRepo();
+      const repo = await makeRepo();
       await expect(repo.ensureDefaultProject(defaultRecord({ id: "not-default" }))).rejects.toThrow(/默认项目 id/);
       await expect(repo.ensureDefaultProject(defaultRecord({ ownerKey: "owner-x" }))).rejects.toThrow(/空 owner/);
     });
 
     it("ensureDefaultProject 对既有异常 owner 行显式失败（而非静默 IGNORE）", async () => {
-      const db = makeDb();
-      const repo = makeRepo(db);
-      // 直接插入异常 default 行（绕过 create 的拒绝，模拟历史/直接写入）
-      db.prepare("INSERT INTO projects (id, name, cwd, owner_key, created_at) VALUES (?, ?, ?, ?, ?)")
-        .run("default", "默认项目", "/tmp/default", "owner-x", 0);
+      const { db, projects: repo } = await makeInitializedMemoryDb();
+      // 把默认行 owner 改成异常（模拟历史/直接写入），再触发 ensureDefaultProject
+      db.prepare("UPDATE projects SET owner_key = 'owner-x' WHERE id = ?").run(DEFAULT_PROJECT_ID);
       await expect(repo.ensureDefaultProject(defaultRecord())).rejects.toThrow(/owner 非空/);
     });
 
     it("create 拒绝写入 default id（无论 owner 是否为空）", async () => {
-      const repo = makeRepo();
+      const repo = await makeRepo();
       await expect(repo.create(defaultRecord({ ownerKey: "owner-x" }))).rejects.toThrow(/独占/);
       await expect(repo.create(defaultRecord({ ownerKey: "" }))).rejects.toThrow(/独占/);
     });
 
     it("delete 拒绝删除 default（返回 false，且不触发 CASCADE）", async () => {
-      const db = makeDb();
-      const repo = makeRepo(db);
+      const storage = await makeInitializedMemoryDb();
+      const repo = storage.projects;
+      const sessions = storage.sessions;
       await repo.ensureDefaultProject(defaultRecord());
-      const sessions = new SqliteSessionRepository(db);
       await sessions.create({
-        id: "s-default", ownerKey: "owner", projectId: "default", title: "默认会话",
+        id: "s-default", ownerKey: "owner", projectId: DEFAULT_PROJECT_ID, title: "默认会话",
         createdAt: 1, updatedAt: 1, piSessionFile: null, modelProvider: null,
         modelId: null, thinkingLevel: null, systemPrompt: null, capabilityVersions: null,
       });
 
-      expect(await repo.delete("default")).toBe(false);
-      expect(await repo.get("default")).not.toBeNull(); // 项目仍在
+      expect(await repo.delete(DEFAULT_PROJECT_ID)).toBe(false);
+      expect(await repo.get(DEFAULT_PROJECT_ID)).not.toBeNull(); // 项目仍在
       expect(await sessions.get("s-default")).not.toBeNull(); // 会话未被级联删
     });
 
     it("deleteProjectWithSessions 拒绝删除 default（项目与会话均保留）", async () => {
-      const db = makeDb();
-      const repo = makeRepo(db);
+      const storage = await makeInitializedMemoryDb();
+      const repo = storage.projects;
+      const sessions = storage.sessions;
       await repo.ensureDefaultProject(defaultRecord());
-      const sessions = new SqliteSessionRepository(db);
       await sessions.create({
-        id: "s-default", ownerKey: "owner", projectId: "default", title: "默认会话",
+        id: "s-default", ownerKey: "owner", projectId: DEFAULT_PROJECT_ID, title: "默认会话",
         createdAt: 1, updatedAt: 1, piSessionFile: null, modelProvider: null,
         modelId: null, thinkingLevel: null, systemPrompt: null, capabilityVersions: null,
       });
-      await expect(repo.deleteProjectWithSessions("default", ["s-default"])).rejects.toThrow(/默认项目不可删除/);
-      expect(await repo.get("default")).not.toBeNull();
+      await expect(repo.deleteProjectWithSessions(DEFAULT_PROJECT_ID, ["s-default"])).rejects.toThrow(/默认项目不可删除/);
+      expect(await repo.get(DEFAULT_PROJECT_ID)).not.toBeNull();
       expect(await sessions.get("s-default")).not.toBeNull(); // 会话未被删
     });
   });

@@ -51,7 +51,7 @@ export function ProjectSwitcher({ projects, activeId, onSelect, onCreate, onDele
           >
             +
           </button>
-          {active && active.id !== "default" && (
+          {active && !active.isDefault && (
             <button
               className="btn-danger btn-icon"
               data-testid="delete-project"

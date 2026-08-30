@@ -2,9 +2,7 @@ import { describe, it, expect } from "vitest";
 import { DatabaseSync } from "node:sqlite";
 import type { FastifyInstance } from "fastify";
 import { buildApp } from "../../src/server/app.js";
-import { SqliteSessionRepository } from "../../src/storage/sqlite-session-repository.js";
-import { SqliteProjectRepository } from "../../src/storage/sqlite-project-repository.js";
-import { SqliteIdempotencyRepository } from "../../src/storage/sqlite-idempotency-repository.js";
+import { makeInitializedMemoryDb, initStorage } from "../helpers/sqlite.js";
 import { MockAgentAdapter } from "../../src/agent/mock-agent-adapter.js";
 import type { AgentAdapter } from "../../src/agent/agent-adapter.js";
 import { ConcurrencyController } from "../../src/core/concurrency-control.js";
@@ -40,22 +38,21 @@ class AbortThrowingManualAdapter extends ManualAdapter {
   }
 }
 
-function makeApp(
+async function makeApp(
   createAdapter: (sessionId: string) => Promise<AgentAdapter>,
   options: {
     concurrency?: ConcurrencyController;
     db?: DatabaseSync;
     idempotencyRepo?: IdempotencyStorePort;
   } = {},
-): {
+): Promise<{
   app: FastifyInstance;
   adapters: Map<string, AgentAdapter>;
-} {
-  const db = options.db ?? new DatabaseSync(":memory:");
-  // 外键约束要求 projects 表先于 sessions 且含 'default' 行
-  const projects = new SqliteProjectRepository(db);
-  void projects.ensureDefaultProject({ id: "default", name: "默认项目", cwd: "/tmp/default-project", ownerKey: "", createdAt: 0 });
-  const sessions = new SqliteSessionRepository(db);
+}> {
+  const storage = await (options.db
+    ? initStorage(options.db)
+    : makeInitializedMemoryDb({ cwd: "/tmp/default-project" }));
+  const { projects, sessions } = storage;
   const adapters = new Map<string, AgentAdapter>();
   const app = buildApp({
     sessions,
@@ -110,7 +107,7 @@ async function post(
 describe("HTTP 层：messages / steer / follow-ups / abort（needs.md §4.2）", () => {
   describe("POST /v1/sessions/:id/messages", () => {
     it("提交消息返回 202 accepted，事件写入事件总线（导出 lastEventId > 0）", async () => {
-      const { app } = makeApp(async () => new MockAgentAdapter([
+      const { app } = await makeApp(async () => new MockAgentAdapter([
         { type: "agent_start" },
         { type: "agent_end", messages: [], willRetry: false },
       ]));
@@ -134,7 +131,7 @@ describe("HTTP 层：messages / steer / follow-ups / abort（needs.md §4.2）",
     });
 
     it("重复 requestId（任务完成后）返回 200 done 不重复执行", async () => {
-      const { app, adapters } = makeApp(async () => new MockAgentAdapter([
+      const { app, adapters } = await makeApp(async () => new MockAgentAdapter([
         { type: "agent_end", messages: [], willRetry: false },
       ]));
       const id = await createSession(app, TOKEN);
@@ -158,14 +155,14 @@ describe("HTTP 层：messages / steer / follow-ups / abort（needs.md §4.2）",
     });
 
     it("缺少 requestId 返回 400", async () => {
-      const { app } = makeApp(async () => new MockAgentAdapter());
+      const { app } = await makeApp(async () => new MockAgentAdapter());
       const id = await createSession(app, TOKEN);
       const res = await post(app, `/v1/sessions/${id}/messages`, TOKEN, { prompt: "x" });
       expect(res.statusCode).toBe(400);
     });
 
     it("带 images 提交返回 202 且 adapter 记录 images", async () => {
-      const { app, adapters } = makeApp(async () => new MockAgentAdapter());
+      const { app, adapters } = await makeApp(async () => new MockAgentAdapter());
       const id = await createSession(app, TOKEN);
       const images = [
         { mediaType: "image/png", base64: "aGVsbG8=" },
@@ -186,7 +183,7 @@ describe("HTTP 层：messages / steer / follow-ups / abort（needs.md §4.2）",
     });
 
     it("不存在的会话返回 404", async () => {
-      const { app } = makeApp(async () => new MockAgentAdapter());
+      const { app } = await makeApp(async () => new MockAgentAdapter());
       const res = await post(app, "/v1/sessions/no-such/messages", TOKEN, {
         requestId: "r1",
         prompt: "x",
@@ -195,7 +192,7 @@ describe("HTTP 层：messages / steer / follow-ups / abort（needs.md §4.2）",
     });
 
     it("他人的会话返回 404", async () => {
-      const { app } = makeApp(async () => new MockAgentAdapter());
+      const { app } = await makeApp(async () => new MockAgentAdapter());
       const id = await createSession(app, OTHER_TOKEN);
       const res = await post(app, `/v1/sessions/${id}/messages`, TOKEN, {
         requestId: "r1",
@@ -205,7 +202,7 @@ describe("HTTP 层：messages / steer / follow-ups / abort（needs.md §4.2）",
     });
 
     it("流式中再次提交返回 409", async () => {
-      const { app } = makeApp(async () => new ManualAdapter());
+      const { app } = await makeApp(async () => new ManualAdapter());
       const id = await createSession(app, TOKEN);
 
       const first = await post(app, `/v1/sessions/${id}/messages`, TOKEN, {
@@ -222,7 +219,7 @@ describe("HTTP 层：messages / steer / follow-ups / abort（needs.md §4.2）",
     });
 
     it("同一 requestId 并发提交只执行一次（inFlightSubmits 去重）", async () => {
-      const { app, adapters } = makeApp(async () => new ManualAdapter());
+      const { app, adapters } = await makeApp(async () => new ManualAdapter());
       const id = await createSession(app, TOKEN);
 
       const [r1, r2] = await Promise.all([
@@ -241,7 +238,7 @@ describe("HTTP 层：messages / steer / follow-ups / abort（needs.md §4.2）",
   });
 
   describe("排队与限流（每用户 1 槽位 + 1 队列位）", () => {
-    function makeQueuedApp() {
+    async function makeQueuedApp() {
       const adapters = new Map<string, ManualAdapter>();
       const concurrency = new ConcurrencyController({
         globalLimit: 4,
@@ -250,7 +247,7 @@ describe("HTTP 层：messages / steer / follow-ups / abort（needs.md §4.2）",
         globalQueueLimit: 10,
         queueTimeoutMs: 60_000,
       });
-      const { app } = makeApp(async (sessionId) => {
+      const { app } = await makeApp(async (sessionId) => {
         const adapter = new ManualAdapter();
         adapters.set(sessionId, adapter);
         return adapter;
@@ -259,7 +256,7 @@ describe("HTTP 层：messages / steer / follow-ups / abort（needs.md §4.2）",
     }
 
     it("占满槽位后排队（202 queued），队列满返回 429，前任务完成后出队执行", async () => {
-      const { app, adapters } = makeQueuedApp();
+      const { app, adapters } = await makeQueuedApp();
       const a = await createSession(app, TOKEN);
       const b = await createSession(app, TOKEN);
       const c = await createSession(app, TOKEN);
@@ -295,7 +292,7 @@ describe("HTTP 层：messages / steer / follow-ups / abort（needs.md §4.2）",
 
   describe("steer / follow-ups / abort", () => {
     it("空闲时 steer/follow-up/abort 返回 409", async () => {
-      const { app } = makeApp(async () => new MockAgentAdapter());
+      const { app } = await makeApp(async () => new MockAgentAdapter());
       const id = await createSession(app, TOKEN);
 
       expect((await post(app, `/v1/sessions/${id}/steer`, TOKEN, { text: "改" })).statusCode).toBe(409);
@@ -304,7 +301,7 @@ describe("HTTP 层：messages / steer / follow-ups / abort（needs.md §4.2）",
     });
 
     it("流式中 steer/follow-up 返回 204 并转发 adapter", async () => {
-      const { app, adapters } = makeApp(async () => new ManualAdapter());
+      const { app, adapters } = await makeApp(async () => new ManualAdapter());
       const id = await createSession(app, TOKEN);
 
       const first = await post(app, `/v1/sessions/${id}/messages`, TOKEN, {
@@ -330,7 +327,7 @@ describe("HTTP 层：messages / steer / follow-ups / abort（needs.md §4.2）",
     });
 
     it("流式中 abort 返回 204 并中止", async () => {
-      const { app, adapters } = makeApp(async () => new ManualAdapter());
+      const { app, adapters } = await makeApp(async () => new ManualAdapter());
       const id = await createSession(app, TOKEN);
 
       await post(app, `/v1/sessions/${id}/messages`, TOKEN, { requestId: "r1", prompt: "问题" });
@@ -344,7 +341,7 @@ describe("HTTP 层：messages / steer / follow-ups / abort（needs.md §4.2）",
     });
 
     it("abort 抛错 → poisoned：后续提交返回 409（会话任务异常）", async () => {
-      const { app, adapters } = makeApp(async () => new AbortThrowingManualAdapter());
+      const { app, adapters } = await makeApp(async () => new AbortThrowingManualAdapter());
       const id = await createSession(app, TOKEN);
 
       await post(app, `/v1/sessions/${id}/messages`, TOKEN, { requestId: "r1", prompt: "问题" });
@@ -366,7 +363,7 @@ describe("HTTP 层：messages / steer / follow-ups / abort（needs.md §4.2）",
     });
 
     it("他人会话的 steer 返回 404", async () => {
-      const { app } = makeApp(async () => new MockAgentAdapter());
+      const { app } = await makeApp(async () => new MockAgentAdapter());
       const id = await createSession(app, OTHER_TOKEN);
       const res = await post(app, `/v1/sessions/${id}/steer`, TOKEN, { text: "越权" });
       expect(res.statusCode).toBe(404);
@@ -379,7 +376,7 @@ describe("HTTP 层：messages / steer / follow-ups / abort（needs.md §4.2）",
       const concurrency = new ConcurrencyController({
         globalLimit: 1, perUserLimit: 1, perUserQueueLimit: 1, globalQueueLimit: 4, queueTimeoutMs: 60_000,
       });
-      const { app } = makeApp(async (sessionId) => {
+      const { app } = await makeApp(async (sessionId) => {
         const adapter = new ManualAdapter();
         adapters.set(sessionId, adapter);
         return adapter;
@@ -415,10 +412,11 @@ describe("HTTP 层：messages / steer / follow-ups / abort（needs.md §4.2）",
   describe("持久化幂等（跨 runtime 重建）", () => {
     it("重建 runtime 后同 requestId 返回 done 不重复执行", async () => {
       const db = new DatabaseSync(":memory:");
-      const idempotencyRepo = new SqliteIdempotencyRepository(db);
+      // 初始化 + 建表 + 默认项目；用初始化返回的共享幂等 repo（跨两次 app 复用同一 db）
+      const { idempotency: idempotencyRepo } = await initStorage(db);
 
       // 第一次 app：发消息并完成
-      const { app: app1 } = makeApp(
+      const { app: app1 } = await makeApp(
         async () => new MockAgentAdapter([{ type: "agent_end", messages: [], willRetry: false }]),
         { db, idempotencyRepo },
       );
@@ -430,7 +428,7 @@ describe("HTTP 层：messages / steer / follow-ups / abort（needs.md §4.2）",
       await app1.close();
 
       // 第二次 app（模拟重启）：同 requestId 命中持久化结果，不重复执行
-      const { app: app2, adapters: adapters2 } = makeApp(
+      const { app: app2, adapters: adapters2 } = await makeApp(
         async () => new MockAgentAdapter(),
         { db, idempotencyRepo },
       );

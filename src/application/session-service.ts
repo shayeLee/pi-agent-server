@@ -19,7 +19,8 @@ import {
 export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 
 export type SessionDto = Omit<SessionRecord, "piSessionFile">;
-export type ProjectDto = { id: string; name: string; cwd: string };
+/** 项目 DTO：仅默认项目（id = DEFAULT_PROJECT_ID）为 isDefault: true，其余项目为 false。 */
+export type ProjectDto = { id: string; name: string; cwd: string; isDefault: boolean };
 
 export type SessionServiceDeps = {
   sessions: SessionStorePort;
@@ -318,6 +319,7 @@ export class SessionService {
       id: DEFAULT_PROJECT_ID,
       name: this.deps.defaultProjectName ?? "默认项目",
       cwd: this.deps.defaultProjectCwd,
+      isDefault: true,
     };
   }
 
@@ -366,7 +368,8 @@ function toSessionDto(record: SessionRecord): SessionDto {
 }
 
 function toProjectDto(project: { id: string; name: string; cwd: string }): ProjectDto {
-  return { id: project.id, name: project.name, cwd: project.cwd };
+  // 仅默认项目（defaultProject()）为 isDefault: true；此处均为 owner 私有项目。
+  return { id: project.id, name: project.name, cwd: project.cwd, isDefault: false };
 }
 
 /** 判断是否为 SQLite 外键约束失败（787 = SQLITE_CONSTRAINT_FOREIGNKEY 扩展错误码）。 */

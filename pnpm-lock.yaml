@@ -20,6 +20,9 @@ importers:
       fastify:
         specifier: ^5.12.0
         version: 5.12.0
+      kysely:
+        specifier: 0.29.5
+        version: 0.29.5
     devDependencies:
       '@types/node':
         specifier: ^26.2.0
@@ -2388,6 +2391,11 @@ packages:
     dependencies:
       jwa: 2.0.1
       safe-buffer: 5.2.1
+    dev: false
+
+  /kysely@0.29.5:
+    resolution: {integrity: sha512-ooa+eSbBNPTo3MycPEuW5jdrxQdQwdtB3LC3h43FiXQbIry5tR0C5lDG7eealK0E4D7XjrnOP5DIUg/LyjRMYQ==}
+    engines: {node: '>=22.0.0'}
     dev: false
 
   /light-my-request@6.6.0:

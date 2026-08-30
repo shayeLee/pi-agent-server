@@ -4,7 +4,7 @@
 export interface SessionRecord {
   id: string;
   ownerKey: string; // = identityKey(UserIdentity)，用于按 owner 隔离（needs.md §4.2）
-  /** 所属项目 id；默认项目为 "default"（服务端固定工作目录）。 */
+  /** 所属项目 id；默认项目恒为 DEFAULT_PROJECT_ID（服务端固定工作目录，见 project-store-port.ts）。 */
   projectId: string;
   title: string;
   createdAt: number; // 毫秒时间戳

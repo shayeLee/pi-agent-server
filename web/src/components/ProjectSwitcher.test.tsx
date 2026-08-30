@@ -3,15 +3,18 @@ import { render, screen, fireEvent } from "@testing-library/react";
 import { ProjectSwitcher } from "./ProjectSwitcher.js";
 import type { Project } from "../types.js";
 
+// Web 不硬编码默认项目 id：测试夹具直接引用服务端 DEFAULT_PROJECT_ID 的同一 UUID，
+// 并由 isDefault: true 标记默认项目（与真实列表来源一致）。
+const DEFAULT_PROJECT_ID = "6f1a2b3c-4d5e-4f6a-8b9c-0d1e2f3a4b5c";
 const projects: Project[] = [
-  { id: "default", name: "默认项目", cwd: "/tmp/default" },
-  { id: "p1", name: "我的仓库", cwd: "/path/a" },
+  { id: DEFAULT_PROJECT_ID, name: "默认项目", cwd: "/tmp/default", isDefault: true },
+  { id: "p1", name: "我的仓库", cwd: "/path/a", isDefault: false },
 ];
 
 function setup(overrides: Partial<Parameters<typeof ProjectSwitcher>[0]> = {}) {
   const props = {
     projects,
-    activeId: "default",
+    activeId: DEFAULT_PROJECT_ID,
     onSelect: vi.fn(),
     onCreate: vi.fn(),
     onDelete: vi.fn(),
@@ -25,7 +28,7 @@ describe("ProjectSwitcher（项目切换器）", () => {
   it("渲染项目下拉列表，当前选中项目", () => {
     setup();
     const select = screen.getByTestId("project-select") as HTMLSelectElement;
-    expect(select.value).toBe("default");
+    expect(select.value).toBe(DEFAULT_PROJECT_ID);
     expect(screen.getByText("默认项目")).toBeInTheDocument();
     expect(screen.getByText("我的仓库")).toBeInTheDocument();
   });
@@ -36,8 +39,8 @@ describe("ProjectSwitcher（项目切换器）", () => {
     expect(onSelect).toHaveBeenCalledWith("p1");
   });
 
-  it("默认项目不显示删除按钮；额外项目显示", () => {
-    setup({ activeId: "default" });
+  it("默认项目（isDefault）不显示删除按钮；额外项目显示", () => {
+    setup({ activeId: DEFAULT_PROJECT_ID });
     expect(screen.queryByTestId("delete-project")).not.toBeInTheDocument();
   });
 

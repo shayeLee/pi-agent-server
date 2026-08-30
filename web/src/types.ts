@@ -39,6 +39,11 @@ export type Project = {
   id: string;
   name: string;
   cwd: string;
+  /**
+   * 默认项目（服务端固定 AGENT_CWD：共享、不可删，id 为服务端 DEFAULT_PROJECT_ID 常量）。
+   * Web 不硬编码任何默认项目 id，一律由该字段从项目列表中推导 active project。
+   */
+  isDefault: boolean;
 };
 
 /** 可用模型信息。 */

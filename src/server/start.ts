@@ -15,6 +15,7 @@ import {
   SessionManager,
   SettingsManager,
 } from "@earendil-works/pi-coding-agent";
+import type { FastifyInstance } from "fastify";
 import { buildApp } from "./app.js";
 import {
   DEFAULT_PROJECT_ID,
@@ -24,7 +25,11 @@ import {
 } from "../application/ports/index.js";
 import { buildAuthenticate } from "./real-auth.js";
 import { validateTrustProxyConfig } from "./trust-proxy-policy.js";
+import { createIdempotentStorageCloser } from "./storage-close.js";
 import { SessionDeletedError } from "../runtime/session-runtime.js";
+import { initializeDatabase } from "../storage/bootstrap.js";
+import type { DatabaseSchema } from "../storage/db-schema.js";
+import type { Kysely } from "kysely";
 import { SqliteSessionRepository } from "../storage/sqlite-session-repository.js";
 import { SqliteProjectRepository } from "../storage/sqlite-project-repository.js";
 import { SqliteIdempotencyRepository } from "../storage/sqlite-idempotency-repository.js";
@@ -249,28 +254,40 @@ export async function startServer(config: StartConfig) {
     timeout: 5000,
     enableForeignKeyConstraints: true,
   });
-  // 先 projects 后 sessions：sessions.project_id 外键引用 projects(id)。
-  const projects = new SqliteProjectRepository(db);
-  // 默认项目落库（owner_key 空串 = 所有用户共享），满足外键引用；cwd 由运行时配置覆盖。
-  await projects.ensureDefaultProject({
-    id: DEFAULT_PROJECT_ID,
-    name: "默认项目",
-    cwd,
-    ownerKey: "",
-    createdAt: 0,
-  });
-  const sessions = new SqliteSessionRepository(db);
-  // 历史会话没有可恢复的独立副本；首次升级以 Pi 当前默认提示词补齐一次，
-  // 后续服务端配置变化不会覆盖已写入的会话值。
-  await sessions.backfillSystemPrompt(defaultSystemPrompt);
-  const idempotencyRepo = new SqliteIdempotencyRepository(db);
-
-  const authenticate = buildAuthenticate({
-    intranetCidrs: config.intranetCidrs,
-    tokens: config.tokens,
+  // 幂等 storage close：成功路径（app.close 上的 onClose）与失败路径（schema 初始化后 / listen 抛错）
+  // 共用同一 closer，保证 Kysely/DatabaseSync 在整个生命周期内恰好销毁/关闭一次，不重复、不遗漏。
+  let kysely: Kysely<DatabaseSchema> | null = null;
+  const closeStorage = createIdempotentStorageCloser(async () => {
+    if (kysely) await kysely.destroy();
   });
 
-  const app = buildApp({
+  let app: FastifyInstance;
+  try {
+    // 初始化 Kysely + 空数据库 schema bootstrap（WAL、建表/索引/外键都在 bootstrap.ts 内；
+    // 不写默认项目，也不做任何旧库兼容/版本化迁移——RC 阶段旧数据直接删除）。
+    kysely = await initializeDatabase(db);
+    // 三个 Repository 共享同一 Kysely 实例；默认项目在 schema 初始化后经 ensureDefaultProject 创建
+    // （INSERT OR IGNORE 幂等：不覆盖既有默认项目；异常既有行 fail-fast）。
+    const projects = new SqliteProjectRepository(kysely);
+    await projects.ensureDefaultProject({
+      id: DEFAULT_PROJECT_ID,
+      name: "默认项目",
+      cwd,
+      ownerKey: "",
+      createdAt: 0,
+    });
+    const sessions = new SqliteSessionRepository(kysely);
+    // 已存在会话（同 schema 旧运行）没有可恢复的独立副本；以 Pi 当前默认提示词补齐一次，
+    // 后续服务端配置变化不会覆盖已写入的会话值。
+    await sessions.backfillSystemPrompt(defaultSystemPrompt);
+    const idempotencyRepo = new SqliteIdempotencyRepository(kysely);
+
+    const authenticate = buildAuthenticate({
+      intranetCidrs: config.intranetCidrs,
+      tokens: config.tokens,
+    });
+
+    app = buildApp({
     sessions,
     projects,
     defaultProjectCwd: cwd,
@@ -349,6 +366,20 @@ export async function startServer(config: StartConfig) {
     capabilityVersions: capabilitySnapshot.versions,
   });
 
-  await app.listen({ port: config.port, host: config.host ?? "127.0.0.1" });
-  return app;
+  // 关闭流程：destroy Kysely（经 NodeSqliteAdapter 关闭底层 DatabaseSync）与既有 runtime 清理
+  // （buildApp 注册的 preClose/onClose）一起在 app.close() 时执行，不破坏既有 SSE/并发清理。
+    app.addHook("onClose", closeStorage);
+
+    await app.listen({ port: config.port, host: config.host ?? "127.0.0.1" });
+    return app;
+  } catch (error) {
+    // 初始化成功后的任一 init 或 listen 失败：在此幂等销毁 Kysely/DatabaseSync，再向上抛原始错误。
+    // 清理本身失败只记录、不掩盖原始错误：cleanupError 绝不覆盖原始 error（throw error 是最终退出路径）。
+    try {
+      await closeStorage();
+    } catch (cleanupError) {
+      console.error("启动失败路径 storage close 失败（原始错误仍会向上抛出）:", cleanupError);
+    }
+    throw error;
+  }
 }

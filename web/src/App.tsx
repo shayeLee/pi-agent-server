@@ -29,13 +29,19 @@ export default function App() {
   const [sessions, setSessions] = useState<SessionRecord[] | null>(null);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [projects, setProjects] = useState<Project[] | null>(null);
-  const [activeProjectId, setActiveProjectId] = useState<string>("default");
+  // 初始为 null：项目列表未加载前不选任何项目，避免按硬编码/旧项目 id 请求会话或创建会话；
+  // 默认项目 id 完全由列表里 isDefault 字段推导（Web 不硬编码任何默认项目 id）。
+  const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [thinkingLevels, setThinkingLevels] = useState<string[]>([]);
   const [defaultModel, setDefaultModel] = useState<ModelInfo | null>(null);
   const [defaultThinkingLevel, setDefaultThinkingLevel] = useState("medium");
   const [chatState, setChatState] = useState<ChatState>(createChatState);
   const [loadError, setLoadError] = useState<string | null>(null);
+  // 独立的项目列表加载错误（与 loadError 分开）：GET /v1/projects 失败、或返回的列表中没有
+  // isDefault:true 项目时，侧边栏显示可重试的错误而不是一直停留在「加载中…」；
+  // 成功加载出默认项目后清除。
+  const [projectsError, setProjectsError] = useState<string | null>(null);
   const [eventLog, setEventLog] = useState<EventLogEntry[]>([]);
   const [connected, setConnected] = useState(false);
 
@@ -70,6 +76,8 @@ export default function App() {
 
   const confirmedRequestsRef = useRef(new Set<string>());
   const eventSeqRef = useRef(0);
+  // refreshSessions 的「最新请求保护」序号：快速切换项目时，旧请求的响应/错误不得覆盖当前项目状态。
+  const sessionsRequestSeqRef = useRef(0);
 
   const api = useMemo(() => (token !== null ? new ApiClient("", token) : null), [token]);
 
@@ -88,12 +96,16 @@ export default function App() {
     };
   }, []);
 
-  async function refreshSessions(projectId = activeProjectId): Promise<void> {
+  async function refreshSessions(projectId: string): Promise<void> {
     if (!api) return;
+    const seq = ++sessionsRequestSeqRef.current;
     try {
       setLoadError(null);
-      setSessions(await api.listSessionsByProject(projectId));
+      const list = await api.listSessionsByProject(projectId);
+      if (seq !== sessionsRequestSeqRef.current) return; // 已有更新的请求，丢弃旧响应
+      setSessions(list);
     } catch (err) {
+      if (seq !== sessionsRequestSeqRef.current) return; // 丢弃旧请求的错误，避免覆盖当前项目状态
       setLoadError(err instanceof Error ? err.message : String(err));
     }
   }
@@ -102,13 +114,41 @@ export default function App() {
     if (!api) return;
     try {
       const list = await api.listProjects();
-      setProjects(list);
-      if (!list.some((p) => p.id === activeProjectId)) {
-        setActiveProjectId("default");
+      // 在当前项目不再存在于列表（含初始加载/删除后回退）时，回退到是 isDefault 的默认项目；
+      // 不硬编码任何项目 id，完全由服务端 isDefault 字段推导。
+      const defaultId = list.find((p) => p.isDefault)?.id ?? null;
+      if (defaultId === null) {
+        // 列表中没有 isDefault:true 项目：无法推导默认项目，视为项目加载失败（可重试），
+        // 且不得创建会话或查询特定项目会话。
+        setProjects(list);
+        setProjectsError(
+          "项目列表中没有默认项目（isDefault: true），无法确定默认项目，请检查服务端配置后重试。",
+        );
+        setActiveProjectId(null);
+        setSessions(null);
+        setActiveSessionId(null);
+        return;
       }
+      setProjects(list);
+      setProjectsError(null);
+      setActiveProjectId((prev) =>
+        prev === null || !list.some((p) => p.id === prev) ? defaultId : prev,
+      );
     } catch (err) {
-      setLoadError(err instanceof Error ? err.message : String(err));
+      setProjectsError(
+        `项目列表加载失败：${err instanceof Error ? err.message : String(err)}。请确认服务可用后重试。`,
+      );
+      // 默认项目未能确定：不得创建会话或查询特定项目会话
+      setActiveProjectId(null);
+      setSessions(null);
+      setActiveSessionId(null);
     }
+  }
+
+  async function handleRetryProjects(): Promise<void> {
+    // 清除错误并重新加载项目列表；重新加载期间侧边栏回到「加载中…」状态
+    setProjectsError(null);
+    await refreshProjects();
   }
 
   async function refreshModels(): Promise<void> {
@@ -126,14 +166,14 @@ export default function App() {
 
   useEffect(() => {
     if (api) {
+      // 先加载项目列表确定默认项目 id，项目就绪前不加载会话（sessions 由 activeProjectId 变化的 effect 加载）。
       void refreshProjects();
-      void refreshSessions();
       void refreshModels();
     }
   }, [api]);
 
   useEffect(() => {
-    if (api) {
+    if (api && activeProjectId !== null) {
       setActiveSessionId(null);
       void refreshSessions(activeProjectId);
     }
@@ -238,7 +278,7 @@ export default function App() {
   }
 
   async function handleCreate(): Promise<void> {
-    if (!api) return;
+    if (!api || activeProjectId === null) return;
     const session = await api.createSession(undefined, activeProjectId);
     setSessions((prev) => [...(prev ?? []), session]);
     setActiveSessionId(session.id);
@@ -253,10 +293,9 @@ export default function App() {
   async function handleDeleteProject(id: string): Promise<void> {
     if (!api) return;
     await api.deleteProject(id);
+    // 删除后回退到默认项目：refreshProjects 在当前项目已不在列表时（含删除场景）
+    // 按服务端 isDefault 字段推导默认项目 id，Web 不硬编码任何项目 id。
     await refreshProjects();
-    if (id === activeProjectId) {
-      setActiveProjectId("default");
-    }
   }
 
   async function handleDelete(id: string): Promise<void> {
@@ -485,10 +524,23 @@ export default function App() {
             {sidebarCollapsed ? "▶" : "◀"}
           </button>
         </div>
-        {sessions === null ? (
-          <div className="empty-hint" data-testid="sessions-loading">
-            加载中…
-          </div>
+        {sessions === null || activeProjectId === null ? (
+          projectsError ? (
+            <div className="project-error" role="alert" data-testid="projects-error">
+              <p className="project-error-text">{projectsError}</p>
+              <button
+                className="btn-ghost project-retry"
+                data-testid="retry-projects"
+                onClick={() => void handleRetryProjects()}
+              >
+                重试加载项目
+              </button>
+            </div>
+          ) : (
+            <div className="empty-hint" data-testid="sessions-loading">
+              加载中…
+            </div>
+          )
         ) : (
           <>
             <button className="new-session" data-testid="new-session" onClick={handleCreate}>

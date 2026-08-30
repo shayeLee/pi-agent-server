@@ -1,18 +1,46 @@
 # 交付计划
 
+> **归档提示**：本文是历史平台交付计划，已归档、不再维护更新；不应再作为当前存储计划修改。当前数据库表结构与存储规则见[数据库设计](../database-design.md)。
+
 平台级交付阶段。能力级交付（如知识库问答的检索、同步、发布）见各自能力文档。
 
-> 本文与 needs.md 一起构成需求基线，随需求调整同步更新。实现按[架构文档](architecture.md)的 TDD 骨架执行。
+> 本文与 needs.md 一起构成需求基线，随需求调整同步更新。实现按[架构文档](../architecture.md)的 TDD 骨架执行。
 
 ## 实现进度
 
 阶段 1 核心已完成，并经二十余轮严格 review 收敛（根 245 测试 + web 69 测试 + Playwright E2E 3 条全绿，根/web tsc 干净）。服务端核心、前端交互、安全边界、幂等语义、完成信号、资源生命周期、可观测性、多项目、模型/思考级别选择均通过 reviewer 验证。
 
+### 数据存储演进路线图（RC）
+
+数据存储演进的单一事实来源（含状态与验收）。当前为 RC：schema 变更直接删库重建，不做版本化迁移。
+
+#### 当前决策 / 边界
+
+- 当前为 RC：旧 SQLite 表结构与数据均可直接删除；不支持旧 schema 升级。
+- 当前启动只面向空库或已是当前 schema 的数据库执行 bootstrap；旧库需删除重建。
+- 保留 Kysely + `node:sqlite` 薄适配器与 Port/Repository 分层，为 PostgreSQL、加表、JOIN、动态查询服务。
+- 当前没有 `kysely_migration` / 版本迁移机制（bootstrap 不产生 `kysely_migration`/`kysely_migration_lock` 表）。
+
+#### 阶段表
+
+| 阶段 | 状态 | 目标 | 主要工作 | 验收标准 |
+| --- | --- | --- | --- | --- |
+| Phase 1 | 已完成 | Kysely + SQLite 新库 bootstrap | Kysely 0.29.5 + `node:sqlite` 薄适配器（`NodeSqliteAdapter`）+ `SqliteDialect`；<br>`db-schema.ts` 类型化 schema：projects / sessions（FK `project_id → projects.id` ON DELETE CASCADE）/ idempotency（复合主键 `session_id + request_id`）；<br>索引：`idx_projects_owner`、`idx_sessions_owner_updated`、`idx_sessions_owner_project`、`idx_idempotency_created_at`；<br>文件库 WAL（`:memory:` 跳过）；<br>Repositories：`SqliteProjectRepository` / `SqliteSessionRepository` / `SqliteIdempotencyRepository`（Port/Repository 分层）；<br>测试：建表/索引/FK、WAL、幂等多启动、不产生 `kysely_migration` 表。<br>仅 bootstrap，**无**迁移机制。 | 全新库初始化出当前 schema（表/索引/FK 就位、WAL 生效）；不产生 `kysely_migration` 表；bootstrap/Repository 测试全绿。 |
+| Phase 2 | 下一阶段 | PostgreSQL 空库支持 | `DATABASE_URL` / provider 配置（SQLite 默认、PG 可选）；`pg` 连接池 + Kysely `PostgresDialect`；SQLite/PG 共用 `db-schema.ts`（类型语义一致）；SQLite 与 PG 两套 bootstrap（同一 schema 描述、各自方言）；PG 集成测试。<br>边界：RC 下不做 SQLite→PG 数据迁移。 | 空 PG 库可启动并初始化出与 SQLite 一致的当前 schema；两类库共用 Repository 接口与测试；无数据迁移路径。 |
+| Phase 3 | 未开始 | 扩展功能的数据模型和实现 | 开始前产出：实体/字段/关系、查询清单（JOIN / filter / sort / page / aggregation）、索引/权限、Port/Repository 草案；实现顺序：schema → bootstrap → repository/port → service → API → test。 | 新数据模型按草案落地并通过 SQLite/PG 两套 bootstrap 与 Repository 测试；查询清单各项均有测试覆盖。 |
+| Phase 4 | 暂缓（临近正式发布） | 数据保留与正式迁移 | 暂缓：只有开始保留用户数据后才引入正式 schema migration、备份、回滚与数据迁移；当前**不**列为工作项。 | 进入 Phase 4 时定义（先冻结 destructive reset）。 |
+
+#### 调整规则
+
+- RC 结构变更可删库重建；每次变更同步更新 `db-schema`、对应 SQLite/PG bootstrap、Repository 与测试。
+- 数据保留成为承诺时：先立刻冻结 destructive reset，再进入 Phase 4；不能继续用 `IF NOT EXISTS` 充当迁移。
+- 本节是数据存储计划的单一事实来源；计划调整需同步更新状态/验收。
+
 ### 已完成
 
 - 工程：pnpm workspace（根 pi-agent-server + `web/` 子包）、ESM + TypeScript + Vitest。
 - 核心纯逻辑：任务状态机（idle→queued→streaming→terminal）、并发控制（每用户/全局上限 + 队列 + 超时 + 队列超时调度器）、幂等去重（三层模型）、身份识别（UserIdentity）、CIDR 内网判定。
-- 存储：`SessionRepository` 抽象 + SQLite（WAL）实现；`IdempotencyRepository` 幂等终态持久化（重启恢复）。
+- 存储：Kysely（0.29.5）+ `node:sqlite` 薄适配器 + `SqliteDialect`；`db-schema.ts` 类型化 schema（projects / sessions / idempotency + 索引 + FK）；`ProjectRepository` / `SessionRepository` / `IdempotencyRepository` Port 分层 + SQLite 实现；文件库 WAL（`:memory:` 跳过）；启动仅对空库/当前 schema 执行 bootstrap，RC 阶段不做旧库迁移（旧库删除重建）。
 - Agent 链路：SDK 事件→SSE 事件翻译（9 种）、`AgentAdapter` 接口 + `MockAgentAdapter` + `PiAgentAdapter`（真实 Pi SDK 接入）；adapter 层事件 fencing（abort 后丢弃残余事件）。
 - 编排：`SessionRuntime`、`SessionEventBus`（有界缓冲 + `Last-Event-ID` 续传 + backpressure）、`RuntimeRegistry`（删除墓碑 + pending 占位 + 跨会话接续）。
 - HTTP：会话 CRUD、messages（图片 + `parentId` 历史重跑）、steer/follow-up/abort、SSE（工具流式 `tool_update`）、会话导出、健康检查。
@@ -53,7 +81,7 @@
 - SSE 心跳与断线重连：`Last-Event-ID` 续传，长连接掉线可恢复；SSE 长连接设每用户/全局连接数上限。
 - 优雅关闭：停止接收新请求 → 等在途任务完成或超时 → 通知 SSE 客户端重连 → 退出。
 - 落地最小能力 manifest 与工具注册表（知识库问答能力据此接入，不硬编码）。
-- 实现知识库问答能力；具体范围与验收见[能力文档](capabilities/knowledge-qa.md)。
+- 实现知识库问答能力；具体范围与验收见[能力文档](../capabilities/knowledge-qa.md)。
 
 **验收：**客户端可创建会话、获取增量回答、在生成期间 steer 或停止；会话可列表/删除、历史可编辑重跑；支持图片输入；SSE 断线可重连；会话按用户隔离；并发受上限控制、消息幂等去重、违反状态约束返回 409；问答 Agent 无法调用通用 Bash 或写文件。
 

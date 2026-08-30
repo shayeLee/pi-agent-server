@@ -11,7 +11,7 @@ const models: ModelInfo[] = [
 const session: SessionRecord = {
   id: "s1",
   ownerKey: "k",
-  projectId: "default",
+  projectId: "6f1a2b3c-4d5e-4f6a-8b9c-0d1e2f3a4b5c",
   title: "会话",
   createdAt: 1,
   updatedAt: 1,

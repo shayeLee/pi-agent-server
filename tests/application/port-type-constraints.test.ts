@@ -114,7 +114,9 @@ describe("端口类型约束（编译型）", () => {
     expectTypeOf<Parameters<SessionStorePort["update"]>[1]>().toEqualTypeOf<SessionRecordPatch>();
   });
 
-  it("DEFAULT_PROJECT_ID 为固定字面量", () => {
-    expectTypeOf<typeof DEFAULT_PROJECT_ID>().toEqualTypeOf<"default">();
+  it("DEFAULT_PROJECT_ID 为固定合法 UUID 字面量", () => {
+    expectTypeOf<typeof DEFAULT_PROJECT_ID>().toEqualTypeOf<
+      "6f1a2b3c-4d5e-4f6a-8b9c-0d1e2f3a4b5c"
+    >();
   });
 });

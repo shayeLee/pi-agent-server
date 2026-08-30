@@ -4,8 +4,10 @@ test("多项目：创建额外项目 → 建会话归属项目 → 切换项目�
   await page.goto("/");
   await expect(page.getByTestId("new-session")).toBeVisible();
 
+  // 与 mock 后端 seed 一致：默认项目 id = 服务端 DEFAULT_PROJECT_ID（Web 由 isDefault 字段推导）
+  const DEFAULT_PROJECT_ID = "6f1a2b3c-4d5e-4f6a-8b9c-0d1e2f3a4b5c";
   const select = page.getByTestId("project-select");
-  await expect(select).toHaveValue("default");
+  await expect(select).toHaveValue(DEFAULT_PROJECT_ID);
 
   // 创建额外项目
   await page.getByTestId("new-project").click();

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import App from "./App.js";
-import type { SseEvent, SessionRecord } from "./types.js";
+import type { Project, SseEvent, SessionRecord } from "./types.js";
 
 // —— 基础设施 mock（不碰真实网络）——
 const mocks = vi.hoisted(() => {
@@ -26,7 +26,61 @@ const mocks = vi.hoisted(() => {
 
   // 探测行为：false = 内网（无 token 也能访问）；true = 公网（需 token）
   let probeFails = false;
-  const projectList = [{ id: "default", name: "默认项目", cwd: "/tmp/default" }];
+
+  // 默认项目 id 的测试写照（与 src/application/ports/project-store-port.ts 的 DEFAULT_PROJECT_ID
+  // 同值）：Web 不硬编码任何项目 id，默认项目由 isDefault: true 字段从列表推导。
+  const DEFAULT_PROJECT_ID = "6f1a2b3c-4d5e-4f6a-8b9c-0d1e2f3a4b5c";
+  const defaultProjectFixture: Project = {
+    id: DEFAULT_PROJECT_ID,
+    name: "默认项目",
+    cwd: "/tmp/default",
+    isDefault: true,
+  };
+  let projectList: Project[] = [defaultProjectFixture];
+  // 项目列表 pending 门闩：用于验证「项目未加载完成前不加载会话、不启用新建」
+  let projectListPending = false;
+  let releaseProjectList: (() => void) | null = null;
+
+  function setProjects(list: Project[]): void {
+    projectList = [...list];
+  }
+  function resetProjects(): void {
+    projectList = [defaultProjectFixture];
+  }
+  function removeProject(id: string): void {
+    projectList = projectList.filter((p) => p.id !== id);
+  }
+  function setProjectListPending(v: boolean): void {
+    projectListPending = v;
+    if (!v) {
+      releaseProjectList?.();
+      releaseProjectList = null;
+    }
+  }
+
+  // 项目列表主动失败（模拟 GET /v1/projects 报错）
+  let projectsFail = false;
+  function setProjectsFail(v: boolean): void {
+    projectsFail = v;
+  }
+
+  // 「单个项目的会话请求挂起」：用于陈旧响应测试。deferSessionsFor 指定要挂起的项目，
+  // releaseDeferredSessions 以传入的列表放行（此时才会触发旧响应覆盖新选择的问题）。
+  let deferredSessionsProject: string | null = null;
+  const deferredSessionsResolvers = new Map<string, (list: SessionRecord[]) => void>();
+  function deferSessionsFor(projectId: string): void {
+    deferredSessionsProject = projectId;
+  }
+  function releaseDeferredSessions(projectId: string, list: SessionRecord[]): void {
+    const resolve = deferredSessionsResolvers.get(projectId);
+    if (!resolve) throw new Error(`no pending deferred session request for ${projectId}`);
+    deferredSessionsResolvers.delete(projectId);
+    resolve([...list]);
+  }
+  function resetDeferredSessions(): void {
+    deferredSessionsProject = null;
+    deferredSessionsResolvers.clear();
+  }
 
   class MockApiClient {
     baseUrl: string;
@@ -36,13 +90,28 @@ const mocks = vi.hoisted(() => {
       if (this.token === "" && probeFails) return Promise.reject(new Error("未授权"));
       return Promise.resolve([...sessionList]);
     });
-    listSessionsByProject = vi.fn(() => Promise.resolve([...sessionList]));
-    listProjects = vi.fn(() => Promise.resolve([...projectList]));
+    listSessionsByProject = vi.fn((projectId: string) => {
+      if (projectId === deferredSessionsProject) {
+        return new Promise<SessionRecord[]>((resolve) => {
+          deferredSessionsResolvers.set(projectId, (list) => resolve([...list]));
+        });
+      }
+      return Promise.resolve([...sessionList]);
+    });
+    listProjects = vi.fn(() =>
+      projectsFail
+        ? Promise.reject(new Error("连接服务失败"))
+        : projectListPending
+          ? new Promise<Project[]>((resolve) => {
+              releaseProjectList = () => resolve([...projectList]);
+            })
+          : Promise.resolve([...projectList]),
+    );
     createSession = vi.fn((title?: string, projectId?: string) =>
       Promise.resolve({
         id: "new-session",
         ownerKey: "k",
-        projectId: projectId ?? "default",
+        projectId: projectId ?? DEFAULT_PROJECT_ID,
         title: title ?? "",
         createdAt: 1,
         updatedAt: 1,
@@ -52,10 +121,14 @@ const mocks = vi.hoisted(() => {
       }),
     );
     createProject = vi.fn((name: string, cwd: string) =>
-      Promise.resolve({ id: "new-project", name, cwd }),
+      Promise.resolve({ id: "new-project", name, cwd, isDefault: false }),
     );
     deleteSession = vi.fn();
-    deleteProject = vi.fn(() => Promise.resolve(undefined));
+    deleteProject = vi.fn((id: string) => {
+      // 与真实删除联动：从项目列表移除，供 refreshProjects 回退默认项目
+      removeProject(id);
+      return Promise.resolve(undefined);
+    });
     renameSession = vi.fn();
     listModels = vi.fn(() =>
       Promise.resolve({
@@ -69,7 +142,7 @@ const mocks = vi.hoisted(() => {
       Promise.resolve({
         id,
         ownerKey: "k",
-        projectId: "default",
+        projectId: DEFAULT_PROJECT_ID,
         title: "",
         createdAt: 1,
         updatedAt: 1,
@@ -111,15 +184,30 @@ const mocks = vi.hoisted(() => {
     probeFails = v;
   }
 
-  return { instances, MockApiClient, createSseConnection, sse, setSessions, setProbeFails };
+  return {
+    instances,
+    MockApiClient,
+    createSseConnection,
+    sse,
+    setSessions,
+    setProbeFails,
+    setProjects,
+    resetProjects,
+    setProjectListPending,
+    setProjectsFail,
+    deferSessionsFor,
+    releaseDeferredSessions,
+    resetDeferredSessions,
+    DEFAULT_PROJECT_ID,
+  };
 });
 
 vi.mock("./lib/api.js", () => ({ ApiClient: mocks.MockApiClient }));
 vi.mock("./lib/sse-client.js", () => ({ createSseConnection: mocks.createSseConnection }));
 
 const sessions: SessionRecord[] = [
-  { id: "s1", ownerKey: "k", projectId: "default", title: "会话一", createdAt: 1, updatedAt: 1, modelProvider: null, modelId: null, thinkingLevel: null, systemPrompt: null },
-  { id: "s2", ownerKey: "k", projectId: "default", title: "会话二", createdAt: 1, updatedAt: 1, modelProvider: null, modelId: null, thinkingLevel: null, systemPrompt: null },
+  { id: "s1", ownerKey: "k", projectId: mocks.DEFAULT_PROJECT_ID, title: "会话一", createdAt: 1, updatedAt: 1, modelProvider: null, modelId: null, thinkingLevel: null, systemPrompt: null },
+  { id: "s2", ownerKey: "k", projectId: mocks.DEFAULT_PROJECT_ID, title: "会话二", createdAt: 1, updatedAt: 1, modelProvider: null, modelId: null, thinkingLevel: null, systemPrompt: null },
 ];
 
 beforeEach(() => {
@@ -128,6 +216,10 @@ beforeEach(() => {
   mocks.instances.length = 0;
   mocks.sse.onEvent = null;
   mocks.setProbeFails(false);
+  mocks.resetProjects();
+  mocks.setProjectListPending(false);
+  mocks.setProjectsFail(false);
+  mocks.resetDeferredSessions();
 });
 
 /** 内网场景：探测成功（无 token 可访问），直接进入会话列表。 */
@@ -275,5 +367,116 @@ describe("App（顶层流程）", () => {
     await waitFor(() => expect(mocks.sse.close).toHaveBeenCalled());
     expect(inst.deleteSession).toHaveBeenCalledWith("s1");
     expect(screen.getByTestId("no-session-hint")).toBeInTheDocument();
+  });
+
+  it("项目列表加载完成前不加载会话、不启用新建；默认项目 id 仅从 isDefault 推导", async () => {
+    mocks.setProjectListPending(true);
+    render(<App />);
+
+    // 项目列表请求已发起但仍 pending：会话保持加载中，无新建按钮，未请求任何项目会话
+    await waitFor(() => expect(mocks.instances.at(-1)!.listProjects).toHaveBeenCalled());
+    expect(screen.getByTestId("sessions-loading")).toBeInTheDocument();
+    expect(screen.queryByTestId("new-session")).not.toBeInTheDocument();
+    expect(mocks.instances.at(-1)!.listSessionsByProject).not.toHaveBeenCalled();
+
+    // 放行后：按 isDefault 推导的默认项目 id 加载会话
+    mocks.setProjectListPending(false);
+    await waitFor(() => expect(screen.getByText("会话一")).toBeInTheDocument());
+    expect(mocks.instances.at(-1)!.listSessionsByProject).toHaveBeenCalledWith(mocks.DEFAULT_PROJECT_ID);
+    expect(screen.getByTestId("new-session")).toBeInTheDocument();
+  });
+
+  it("删除当前额外项目后回退到服务端 isDefault 标示的默认项目", async () => {
+    mocks.setProjects([
+      { id: mocks.DEFAULT_PROJECT_ID, name: "默认项目", cwd: "/tmp/default", isDefault: true },
+      { id: "p1", name: "我的仓库", cwd: "/path/a", isDefault: false },
+    ]);
+    const inst = await enterIntranet();
+
+    // 切到额外项目
+    fireEvent.change(screen.getByTestId("project-select"), { target: { value: "p1" } });
+    await waitFor(() => expect(inst.listSessionsByProject).toHaveBeenCalledWith("p1"));
+
+    // 删除当前额外项目：确认后回到 isDefault 标示的默认项目
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    fireEvent.click(screen.getByTestId("delete-project"));
+    await waitFor(() => {
+      const select = screen.getByTestId("project-select") as HTMLSelectElement;
+      expect(select.value).toBe(mocks.DEFAULT_PROJECT_ID);
+    });
+    expect(inst.deleteProject).toHaveBeenCalledWith("p1");
+    expect(inst.listSessionsByProject).toHaveBeenLastCalledWith(mocks.DEFAULT_PROJECT_ID);
+    vi.restoreAllMocks();
+  });
+
+  it("项目列表失败：侧边栏显示可重试错误、不加载项目会话、不启用新建；重试后推导默认项目并加载", async () => {
+    mocks.setProjectsFail(true);
+    render(<App />);
+
+    // 项目列表请求已发出但失败：不再是永久「加载中…」，而是可重试的错误提示
+    await waitFor(() => expect(screen.getByTestId("projects-error")).toBeInTheDocument());
+    expect(screen.getByRole("alert")).toHaveTextContent("项目列表加载失败");
+    expect(screen.queryByTestId("sessions-loading")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("new-session")).not.toBeInTheDocument();
+    const inst = mocks.instances.at(-1)!;
+    expect(inst.listSessionsByProject).not.toHaveBeenCalled();
+
+    // 点击重试：服务恢复后按 isDefault 推导默认项目并正常加载会话，错误消失
+    mocks.setProjectsFail(false);
+    fireEvent.click(screen.getByTestId("retry-projects"));
+    await waitFor(() => expect(screen.getByText("会话一")).toBeInTheDocument());
+    expect(screen.queryByTestId("projects-error")).not.toBeInTheDocument();
+    expect(inst.listSessionsByProject).toHaveBeenCalledWith(mocks.DEFAULT_PROJECT_ID);
+    expect(screen.getByTestId("new-session")).toBeInTheDocument();
+  });
+
+  it("项目列表不含 isDefault 项目：显示可重试错误且不请求项目会话，而非永久加载中", async () => {
+    mocks.setProjects([{ id: "pa", name: "项目A", cwd: "/path/a", isDefault: false }]);
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByTestId("projects-error")).toBeInTheDocument());
+    expect(screen.getByRole("alert")).toHaveTextContent("默认项目");
+    expect(screen.queryByTestId("sessions-loading")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("new-session")).not.toBeInTheDocument();
+    expect(mocks.instances.at(-1)!.listSessionsByProject).not.toHaveBeenCalled();
+  });
+
+  it("陈旧的项目会话响应不会覆盖后选择项目的会话（快速切换项目）", async () => {
+    mocks.setProjects([
+      { id: mocks.DEFAULT_PROJECT_ID, name: "默认项目", cwd: "/tmp/default", isDefault: true },
+      { id: "p1", name: "仓库一", cwd: "/path/a", isDefault: false },
+    ]);
+    // p1 的会话请求挂起，稍后以陈旧数据放行
+    mocks.deferSessionsFor("p1");
+    const inst = await enterIntranet();
+
+    // 切到 p1：请求已发出但仍挂起
+    fireEvent.change(screen.getByTestId("project-select"), { target: { value: "p1" } });
+    await waitFor(() => expect(inst.listSessionsByProject).toHaveBeenLastCalledWith("p1"));
+
+    // 快速切回默认项目：该请求立即成功（展示会话一/会话二）
+    fireEvent.change(screen.getByTestId("project-select"), {
+      target: { value: mocks.DEFAULT_PROJECT_ID },
+    });
+    await waitFor(() => expect(inst.listSessionsByProject).toHaveBeenCalledTimes(3));
+
+    // p1 的陈旧响应最后才返回：不得覆盖当前默认项目的会话
+    mocks.releaseDeferredSessions("p1", [
+      {
+        id: "p1-old",
+        ownerKey: "k",
+        projectId: "p1",
+        title: "p1 的陈旧会话",
+        createdAt: 1,
+        updatedAt: 1,
+        modelProvider: null,
+        modelId: null,
+        thinkingLevel: null,
+        systemPrompt: null,
+      },
+    ]);
+    expect(screen.queryByText("p1 的陈旧会话")).not.toBeInTheDocument();
+    expect(screen.getByText("会话一")).toBeInTheDocument();
+    expect(screen.getByText("会话二")).toBeInTheDocument();
   });
 });

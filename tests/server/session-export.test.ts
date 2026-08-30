@@ -1,26 +1,21 @@
 import { describe, it, expect } from "vitest";
-import { DatabaseSync } from "node:sqlite";
 import type { FastifyInstance } from "fastify";
 import { buildApp } from "../../src/server/app.js";
-import { SqliteSessionRepository } from "../../src/storage/sqlite-session-repository.js";
-import { SqliteProjectRepository } from "../../src/storage/sqlite-project-repository.js";
 import { MockAgentAdapter } from "../../src/agent/mock-agent-adapter.js";
 import type { AgentAdapter } from "../../src/agent/agent-adapter.js";
 import type { UserIdentity } from "../../src/core/user-identity.js";
+import { makeInitializedMemoryDb } from "../helpers/sqlite.js";
 
 const IDENTITY: UserIdentity = { kind: "account", accountId: "u1" };
 const TOKEN = "token-1";
 const OTHER_IDENTITY: UserIdentity = { kind: "account", accountId: "u2" };
 const OTHER_TOKEN = "token-2";
 
-function makeApp(createAdapter: (sessionId: string) => Promise<AgentAdapter>): {
+async function makeApp(createAdapter: (sessionId: string) => Promise<AgentAdapter>): Promise<{
   app: FastifyInstance;
   adapters: Map<string, AgentAdapter>;
-} {
-  const db = new DatabaseSync(":memory:");
-  const projects = new SqliteProjectRepository(db);
-  void projects.ensureDefaultProject({ id: "default", name: "默认项目", cwd: "/tmp/default-project", ownerKey: "", createdAt: 0 });
-  const sessions = new SqliteSessionRepository(db);
+}> {
+  const { projects, sessions } = await makeInitializedMemoryDb({ cwd: "/tmp/default-project" });
   const adapters = new Map<string, AgentAdapter>();
   const app = buildApp({
     sessions,
@@ -75,7 +70,7 @@ describe("HTTP 层：会话导出（GET /v1/sessions/:id/export）", () => {
       { role: "user", content: [{ type: "text", text: "hi" }] },
       { role: "assistant", content: [{ type: "text", text: "hello" }] },
     ];
-    const { app } = makeApp(async () => {
+    const { app } = await makeApp(async () => {
       const adapter = new MockAgentAdapter();
       adapter.exportData = messages;
       return adapter;
@@ -89,7 +84,7 @@ describe("HTTP 层：会话导出（GET /v1/sessions/:id/export）", () => {
   });
 
   it("未发送过消息的会话导出默认返回空消息列表", async () => {
-    const { app } = makeApp(async () => new MockAgentAdapter());
+    const { app } = await makeApp(async () => new MockAgentAdapter());
     const id = await createSession(app, TOKEN);
 
     const res = await get(app, `/v1/sessions/${id}/export`, TOKEN);
@@ -99,7 +94,7 @@ describe("HTTP 层：会话导出（GET /v1/sessions/:id/export）", () => {
   });
 
   it("发消息后导出：lastEventId 非零（事件游标随事件写入递增）", async () => {
-    const { app } = makeApp(async () => new MockAgentAdapter([
+    const { app } = await makeApp(async () => new MockAgentAdapter([
       { type: "agent_start" },
       { type: "agent_end", messages: [], willRetry: false },
     ]));
@@ -119,7 +114,7 @@ describe("HTTP 层：会话导出（GET /v1/sessions/:id/export）", () => {
   });
 
   it("他人的会话导出返回 404（越权不可见）", async () => {
-    const { app } = makeApp(async () => new MockAgentAdapter());
+    const { app } = await makeApp(async () => new MockAgentAdapter());
     const id = await createSession(app, OTHER_TOKEN);
 
     const res = await get(app, `/v1/sessions/${id}/export`, TOKEN);
@@ -128,7 +123,7 @@ describe("HTTP 层：会话导出（GET /v1/sessions/:id/export）", () => {
   });
 
   it("不存在的会话导出返回 404", async () => {
-    const { app } = makeApp(async () => new MockAgentAdapter());
+    const { app } = await makeApp(async () => new MockAgentAdapter());
 
     const res = await get(app, "/v1/sessions/no-such/export", TOKEN);
 
@@ -136,7 +131,7 @@ describe("HTTP 层：会话导出（GET /v1/sessions/:id/export）", () => {
   });
 
   it("未鉴权导出返回 401", async () => {
-    const { app } = makeApp(async () => new MockAgentAdapter());
+    const { app } = await makeApp(async () => new MockAgentAdapter());
     const id = await createSession(app, TOKEN);
 
     const res = await get(app, `/v1/sessions/${id}/export`);

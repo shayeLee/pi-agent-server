@@ -7,8 +7,9 @@ import { identityKey, type UserIdentity } from "../../src/core/user-identity.js"
 import type { SessionRecord, SessionStorePort } from "../../src/application/ports/session-store-port.js";
 import type { ModelCatalogPort } from "../../src/application/ports/model-catalog-port.js";
 import { SqliteSessionRepository } from "../../src/storage/sqlite-session-repository.js";
-import { SqliteProjectRepository } from "../../src/storage/sqlite-project-repository.js";
 import { MockAgentAdapter } from "../../src/agent/mock-agent-adapter.js";
+import { DEFAULT_PROJECT_ID } from "../../src/application/ports/project-store-port.js";
+import { makeInitializedMemoryDb } from "../helpers/sqlite.js";
 
 // 可配置假鉴权：按 Authorization header 决定身份（内网按 IP / 公网按账号），
 // 语义对齐 needs.md §4.2——Token 校验通过后身份取自 IP 或账号；无/无效 token 抛错 → 401。
@@ -30,17 +31,13 @@ const TOKEN_ACCT = "token-public";
 const IP_IDENTITY: UserIdentity = { kind: "ip", ip: "10.0.0.1" };
 const ACCT_IDENTITY: UserIdentity = { kind: "account", accountId: "acct-42" };
 
-function makeApp(defaults: {
+async function makeApp(defaults: {
   defaultModel?: { provider: string; id: string; name: string } | null;
   defaultThinkingLevel?: string;
   resolveSystemPrompt?: (cwd: string) => Promise<string>;
   modelCatalog?: ModelCatalogPort;
-} = {}): { app: FastifyInstance; sessions: SessionStorePort; adapters: Map<string, MockAgentAdapter> } {
-  const db = new DatabaseSync(":memory:");
-  // 外键约束要求 projects 表先于 sessions 且含 'default' 行（与 start.ts 初始化顺序一致）
-  const projects = new SqliteProjectRepository(db);
-  void projects.ensureDefaultProject({ id: "default", name: "默认项目", cwd: "/tmp/default-project", ownerKey: "", createdAt: 0 });
-  const sessions = new SqliteSessionRepository(db);
+} = {}): Promise<{ app: FastifyInstance; sessions: SessionStorePort; adapters: Map<string, MockAgentAdapter> }> {
+  const { sessions, projects } = await makeInitializedMemoryDb({ cwd: "/tmp/default-project" });
   const adapters = new Map<string, MockAgentAdapter>();
   const app = buildApp({
     sessions,
@@ -93,7 +90,7 @@ async function createSession(
 describe("HTTP 层：鉴权与会话 CRUD（needs.md §4.2）", () => {
   describe("GET /health", () => {
     it("免鉴权返回 { status: ok }", async () => {
-      const { app } = makeApp();
+      const { app } = await makeApp();
       const res = await app.inject({ method: "GET", url: "/health" });
       expect(res.statusCode).toBe(200);
       expect(res.json()).toEqual({ status: "ok" });
@@ -102,13 +99,13 @@ describe("HTTP 层：鉴权与会话 CRUD（needs.md §4.2）", () => {
 
   describe("鉴权边界", () => {
     it("无 token 访问 /v1/sessions 返回 401", async () => {
-      const { app } = makeApp();
+      const { app } = await makeApp();
       const res = await app.inject({ method: "GET", url: "/v1/sessions" });
       expect(res.statusCode).toBe(401);
     });
 
     it("无效 token 访问 /v1/sessions 返回 401", async () => {
-      const { app } = makeApp();
+      const { app } = await makeApp();
       const res = await app.inject({
         method: "GET",
         url: "/v1/sessions",
@@ -120,7 +117,7 @@ describe("HTTP 层：鉴权与会话 CRUD（needs.md §4.2）", () => {
 
   describe("POST /v1/sessions", () => {
     it("创建会话返回 201 且字段完整", async () => {
-      const { app } = makeApp();
+      const { app } = await makeApp();
       const res = await app.inject({
         method: "POST",
         url: "/v1/sessions",
@@ -138,13 +135,13 @@ describe("HTTP 层：鉴权与会话 CRUD（needs.md §4.2）", () => {
     });
 
     it("公网账号创建会话 ownerKey 为 account: 前缀", async () => {
-      const { app } = makeApp();
+      const { app } = await makeApp();
       const created = await createSession(app, TOKEN_ACCT, "公网会话");
       expect(created.ownerKey).toBe(identityKey(ACCT_IDENTITY));
     });
 
     it("未传 title 时默认空标题", async () => {
-      const { app } = makeApp();
+      const { app } = await makeApp();
       const created = await createSession(app, TOKEN_IP);
       expect(created.title).toBe("");
     });
@@ -152,15 +149,15 @@ describe("HTTP 层：鉴权与会话 CRUD（needs.md §4.2）", () => {
 
   describe("GET /v1/sessions", () => {
     it("只返回当前用户会话，且按 updatedAt 降序", async () => {
-      const { app, sessions } = makeApp();
+      const { app, sessions } = await makeApp();
       // 直接经注入的 repository 预置不同 updatedAt 的记录，验证排序与用户隔离
       const owner = identityKey(IP_IDENTITY);
       const other = identityKey(ACCT_IDENTITY);
       for (const rec of [
-        { id: "s-old", ownerKey: owner, projectId: "default", title: "旧", createdAt: 1000, updatedAt: 1000, piSessionFile: null, modelProvider: null, modelId: null, thinkingLevel: null, systemPrompt: null, capabilityVersions: null },
-        { id: "s-new", ownerKey: owner, projectId: "default", title: "新", createdAt: 3000, updatedAt: 3000, piSessionFile: null, modelProvider: null, modelId: null, thinkingLevel: null, systemPrompt: null, capabilityVersions: null },
-        { id: "s-mid", ownerKey: owner, projectId: "default", title: "中", createdAt: 2000, updatedAt: 2000, piSessionFile: null, modelProvider: null, modelId: null, thinkingLevel: null, systemPrompt: null, capabilityVersions: null },
-        { id: "s-other", ownerKey: other, projectId: "default", title: "他人", createdAt: 9999, updatedAt: 9999, piSessionFile: null, modelProvider: null, modelId: null, thinkingLevel: null, systemPrompt: null, capabilityVersions: null },
+        { id: "s-old", ownerKey: owner, projectId: DEFAULT_PROJECT_ID, title: "旧", createdAt: 1000, updatedAt: 1000, piSessionFile: null, modelProvider: null, modelId: null, thinkingLevel: null, systemPrompt: null, capabilityVersions: null },
+        { id: "s-new", ownerKey: owner, projectId: DEFAULT_PROJECT_ID, title: "新", createdAt: 3000, updatedAt: 3000, piSessionFile: null, modelProvider: null, modelId: null, thinkingLevel: null, systemPrompt: null, capabilityVersions: null },
+        { id: "s-mid", ownerKey: owner, projectId: DEFAULT_PROJECT_ID, title: "中", createdAt: 2000, updatedAt: 2000, piSessionFile: null, modelProvider: null, modelId: null, thinkingLevel: null, systemPrompt: null, capabilityVersions: null },
+        { id: "s-other", ownerKey: other, projectId: DEFAULT_PROJECT_ID, title: "他人", createdAt: 9999, updatedAt: 9999, piSessionFile: null, modelProvider: null, modelId: null, thinkingLevel: null, systemPrompt: null, capabilityVersions: null },
       ]) {
         await sessions.create(rec);
       }
@@ -177,7 +174,7 @@ describe("HTTP 层：鉴权与会话 CRUD（needs.md §4.2）", () => {
     });
 
     it("不同用户各自只能看到自己的会话", async () => {
-      const { app } = makeApp();
+      const { app } = await makeApp();
       await createSession(app, TOKEN_IP, "我的");
       await createSession(app, TOKEN_ACCT, "别人的");
 
@@ -201,7 +198,7 @@ describe("HTTP 层：鉴权与会话 CRUD（needs.md §4.2）", () => {
 
   describe("DELETE /v1/sessions/:id", () => {
     it("删除自己的会话返回 204，列表不再包含且存储已删除", async () => {
-      const { app, sessions } = makeApp();
+      const { app, sessions } = await makeApp();
       const { id } = await createSession(app, TOKEN_IP, "待删除");
 
       const res = await app.inject({
@@ -221,7 +218,7 @@ describe("HTTP 层：鉴权与会话 CRUD（needs.md §4.2）", () => {
     });
 
     it("删除不存在的会话返回 404", async () => {
-      const { app } = makeApp();
+      const { app } = await makeApp();
       const res = await app.inject({
         method: "DELETE",
         url: "/v1/sessions/no-such-id",
@@ -231,7 +228,7 @@ describe("HTTP 层：鉴权与会话 CRUD（needs.md §4.2）", () => {
     });
 
     it("删除他人的会话返回 404 且记录保留", async () => {
-      const { app, sessions } = makeApp();
+      const { app, sessions } = await makeApp();
       const { id } = await createSession(app, TOKEN_ACCT, "别人的");
 
       const res = await app.inject({
@@ -246,7 +243,7 @@ describe("HTTP 层：鉴权与会话 CRUD（needs.md §4.2）", () => {
 
   describe("PATCH /v1/sessions/:id", () => {
     it("重命名自己的会话返回 200 并反映新 title", async () => {
-      const { app, sessions } = makeApp();
+      const { app, sessions } = await makeApp();
       const { id } = await createSession(app, TOKEN_IP, "旧标题");
       const before = await sessions.get(id);
 
@@ -266,7 +263,7 @@ describe("HTTP 层：鉴权与会话 CRUD（needs.md §4.2）", () => {
     });
 
     it("重命名不存在的会话返回 404", async () => {
-      const { app } = makeApp();
+      const { app } = await makeApp();
       const res = await app.inject({
         method: "PATCH",
         url: "/v1/sessions/no-such-id",
@@ -277,7 +274,7 @@ describe("HTTP 层：鉴权与会话 CRUD（needs.md §4.2）", () => {
     });
 
     it("重命名他人的会话返回 404 且 title 不变", async () => {
-      const { app, sessions } = makeApp();
+      const { app, sessions } = await makeApp();
       const { id } = await createSession(app, TOKEN_ACCT, "别人的");
 
       const res = await app.inject({
@@ -309,7 +306,7 @@ describe("HTTP 层：鉴权与会话 CRUD（needs.md §4.2）", () => {
     }
 
     it("GET /v1/projects 返回默认项目 + 该用户项目", async () => {
-      const { app } = makeApp();
+      const { app } = await makeApp();
       await createProject(app, TOKEN_IP, "我的仓库", "/path/a");
       await createProject(app, TOKEN_ACCT, "他人项目", "/path/b");
 
@@ -319,21 +316,26 @@ describe("HTTP 层：鉴权与会话 CRUD（needs.md §4.2）", () => {
         headers: authHeader(TOKEN_IP),
       });
       expect(res.statusCode).toBe(200);
-      const body = res.json() as Array<{ id: string; name: string; cwd: string }>;
-      expect(body[0]).toMatchObject({ id: "default", name: "默认项目", cwd: "/tmp/default-project" });
+      const body = res.json() as Array<{ id: string; name: string; cwd: string; isDefault: boolean }>;
+      expect(body[0]).toMatchObject({
+        id: DEFAULT_PROJECT_ID,
+        name: "默认项目",
+        cwd: "/tmp/default-project",
+        isDefault: true,
+      });
       expect(body.some((p) => p.name === "我的仓库")).toBe(true);
       expect(body.some((p) => p.name === "他人项目")).toBe(false);
     });
 
     it("创建会话时不带 projectId 归默认项目", async () => {
-      const { app, sessions } = makeApp();
+      const { app, sessions } = await makeApp();
       const created = await createSession(app, TOKEN_IP, "默认项目会话");
-      expect(created.projectId).toBe("default");
-      expect((await sessions.get(created.id))?.projectId).toBe("default");
+      expect(created.projectId).toBe(DEFAULT_PROJECT_ID);
+      expect((await sessions.get(created.id))?.projectId).toBe(DEFAULT_PROJECT_ID);
     });
 
     it("创建会话带 projectId 归到指定项目；无效 projectId 返回 404", async () => {
-      const { app } = makeApp();
+      const { app } = await makeApp();
       const project = await createProject(app, TOKEN_IP, "仓库", "/path/a");
 
       const ok = await app.inject({
@@ -355,7 +357,7 @@ describe("HTTP 层：鉴权与会话 CRUD（needs.md §4.2）", () => {
     });
 
     it("删除额外项目级联删除其下会话；默认项目不可删", async () => {
-      const { app, sessions } = makeApp();
+      const { app, sessions } = await makeApp();
       const project = await createProject(app, TOKEN_IP, "仓库", "/path/a");
 
       // 该项目下建两个会话
@@ -387,14 +389,14 @@ describe("HTTP 层：鉴权与会话 CRUD（needs.md §4.2）", () => {
       // 默认项目不可删
       const delDefault = await app.inject({
         method: "DELETE",
-        url: "/v1/projects/default",
+        url: `/v1/projects/${DEFAULT_PROJECT_ID}`,
         headers: authHeader(TOKEN_IP),
       });
       expect(delDefault.statusCode).toBe(400);
     });
 
     it("GET /v1/sessions?projectId= 按项目过滤", async () => {
-      const { app } = makeApp();
+      const { app } = await makeApp();
       const project = await createProject(app, TOKEN_IP, "仓库", "/path/a");
       const a = await createSession(app, TOKEN_IP, "默认会话");
       const b = await app.inject({
@@ -418,7 +420,7 @@ describe("HTTP 层：鉴权与会话 CRUD（needs.md §4.2）", () => {
 
   describe("模型与思考级别", () => {
     it("GET /v1/models 返回可用模型 + 思考级别枚举", async () => {
-      const { app } = makeApp();
+      const { app } = await makeApp();
       const res = await app.inject({ method: "GET", url: "/v1/models", headers: authHeader(TOKEN_IP) });
       expect(res.statusCode).toBe(200);
       const body = res.json() as {
@@ -435,7 +437,7 @@ describe("HTTP 层：鉴权与会话 CRUD（needs.md §4.2）", () => {
     });
 
     it("GET /v1/models 返回配置的实际服务端默认值", async () => {
-      const { app } = makeApp({
+      const { app } = await makeApp({
         defaultModel: { provider: "openai-codex", id: "gpt-5", name: "GPT-5" },
         defaultThinkingLevel: "high",
       });
@@ -448,7 +450,7 @@ describe("HTTP 层：鉴权与会话 CRUD（needs.md §4.2）", () => {
     });
 
     it("创建会话写入按项目解析的系统提示词", async () => {
-      const { app, sessions } = makeApp({
+      const { app, sessions } = await makeApp({
         resolveSystemPrompt: async (cwd) => `Pi 默认提示词：${cwd}`,
       });
       const created = await createSession(app, TOKEN_IP);
@@ -458,7 +460,7 @@ describe("HTTP 层：鉴权与会话 CRUD（needs.md §4.2）", () => {
     });
 
     it("创建会话可指定模型与思考级别并持久化", async () => {
-      const { app, sessions } = makeApp();
+      const { app, sessions } = await makeApp();
       const res = await app.inject({
         method: "POST",
         url: "/v1/sessions",
@@ -479,7 +481,7 @@ describe("HTTP 层：鉴权与会话 CRUD（needs.md §4.2）", () => {
     });
 
     it("创建会话时模型不成对或非法 thinkingLevel 返回 400（与 PATCH 语义一致）", async () => {
-      const { app } = makeApp();
+      const { app } = await makeApp();
 
       const half = await app.inject({
         method: "POST",
@@ -499,7 +501,7 @@ describe("HTTP 层：鉴权与会话 CRUD（needs.md §4.2）", () => {
     });
 
     it("创建会话时无效模型返回 400（不静默回退默认）", async () => {
-      const { app } = makeApp();
+      const { app } = await makeApp();
       const res = await app.inject({
         method: "POST",
         url: "/v1/sessions",
@@ -510,7 +512,7 @@ describe("HTTP 层：鉴权与会话 CRUD（needs.md §4.2）", () => {
     });
 
     it("创建会话时模型可用性检查失败（catalog 抛错）返回 503 且不创建会话", async () => {
-      const { app, sessions } = makeApp({
+      const { app, sessions } = await makeApp({
         modelCatalog: {
           getAvailable: async () => [],
           isAvailable: async () => { throw new Error("凭证读取失败"); },
@@ -528,7 +530,7 @@ describe("HTTP 层：鉴权与会话 CRUD（needs.md §4.2）", () => {
     });
 
     it("PATCH /v1/sessions/:id/config 切换模型与思考级别并透传 adapter", async () => {
-      const { app, sessions, adapters } = makeApp();
+      const { app, sessions, adapters } = await makeApp();
       const { id } = await createSession(app, TOKEN_IP, "切模型");
 
       const res = await app.inject({
@@ -550,7 +552,7 @@ describe("HTTP 层：鉴权与会话 CRUD（needs.md §4.2）", () => {
     });
 
     it("PATCH config 部分更新：仅改 thinkingLevel 保留已有模型", async () => {
-      const { app, sessions } = makeApp();
+      const { app, sessions } = await makeApp();
       const { id } = await createSession(app, TOKEN_IP, "部分更新");
 
       // 先设置完整配置
@@ -577,7 +579,7 @@ describe("HTTP 层：鉴权与会话 CRUD（needs.md §4.2）", () => {
     });
 
     it("PATCH config 模型不成对返回 400；非法 thinkingLevel 返回 400", async () => {
-      const { app } = makeApp();
+      const { app } = await makeApp();
       const { id } = await createSession(app, TOKEN_IP, "校验");
 
       const half = await app.inject({
@@ -598,7 +600,7 @@ describe("HTTP 层：鉴权与会话 CRUD（needs.md §4.2）", () => {
     });
 
     it("PATCH config 不可用模型返回 400，且不调用 setModel、不持久化", async () => {
-      const { app, sessions, adapters } = makeApp();
+      const { app, sessions, adapters } = await makeApp();
       const { id } = await createSession(app, TOKEN_IP, "切到坏模型");
 
       const res = await app.inject({
@@ -613,7 +615,7 @@ describe("HTTP 层：鉴权与会话 CRUD（needs.md §4.2）", () => {
     });
 
     it("PATCH config 模型可用性检查失败（catalog 抛错）返回 503，且不持久化", async () => {
-      const { app, sessions, adapters } = makeApp({
+      const { app, sessions, adapters } = await makeApp({
         modelCatalog: {
           getAvailable: async () => [],
           isAvailable: async () => { throw new Error("凭证读取失败"); },
@@ -662,7 +664,7 @@ describe("HTTP 层：鉴权与会话 CRUD（needs.md §4.2）", () => {
         : authHeader(TOKEN_IP);
 
       it(`${op.name} 访问他人会话返回 404 且无副作用`, async () => {
-        const { app, sessions } = makeApp();
+        const { app, sessions } = await makeApp();
         const other = await createSession(app, TOKEN_ACCT, "他人");
         const before = await sessions.get(other.id);
 
@@ -678,7 +680,7 @@ describe("HTTP 层：鉴权与会话 CRUD（needs.md §4.2）", () => {
       });
 
       it(`${op.name} 访问不存在会话返回 404`, async () => {
-        const { app } = makeApp();
+        const { app } = await makeApp();
         const res = await app.inject({
           method: op.method,
           url: op.path("no-such-session"),
@@ -690,7 +692,7 @@ describe("HTTP 层：鉴权与会话 CRUD（needs.md §4.2）", () => {
     }
 
     it("删除他人项目返回 404 且项目保留", async () => {
-      const { app } = makeApp();
+      const { app } = await makeApp();
       const created = await app.inject({
         method: "POST",
         url: "/v1/projects",
@@ -716,7 +718,7 @@ describe("HTTP 层：鉴权与会话 CRUD（needs.md §4.2）", () => {
     });
 
     it("用他人 projectId 创建会话返回 404", async () => {
-      const { app } = makeApp();
+      const { app } = await makeApp();
       const created = await app.inject({
         method: "POST",
         url: "/v1/projects",

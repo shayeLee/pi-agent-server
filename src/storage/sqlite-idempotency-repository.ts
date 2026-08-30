@@ -1,44 +1,26 @@
-// 幂等记录的 SQLite 实现（needs.md §4.2 requestId 去重跨重启）。
-// 与会话索引共用同一个 DatabaseSync（WAL 已由会话 repository 启用）。
+// 幂等记录的 Kysely 实现（needs.md §4.2 requestId 去重跨重启）。
+// 与项目/会话 repository 共用同一个 Kysely/数据库实例；建表由 bootstrap.ts 的 initializeDatabase 负责。
 
-import { DatabaseSync, type StatementSync } from "node:sqlite";
+import type { Kysely } from "kysely";
+import type { DatabaseSchema } from "./db-schema.js";
 import type { IdempotencyStorePort } from "../application/ports/idempotency-store-port.js";
 
 type IdempotencyRow = { result: string };
 
 export class SqliteIdempotencyRepository implements IdempotencyStorePort {
-  private readonly getStmt: StatementSync;
-  private readonly putStmt: StatementSync;
-  private readonly pruneStmt: StatementSync;
+  private readonly db: Kysely<DatabaseSchema>;
 
-  constructor(db: DatabaseSync) {
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS idempotency (
-        session_id TEXT NOT NULL,
-        request_id TEXT NOT NULL,
-        result TEXT NOT NULL,
-        created_at INTEGER NOT NULL,
-        PRIMARY KEY (session_id, request_id)
-      );
-    `);
-    // 迁移：旧表补 created_at 列（CREATE TABLE IF NOT EXISTS 不会给已有表加列）；
-    // 旧记录用迁移时刻作为时间戳，避免 DEFAULT 0 在启动 prune 时被立即删除（破坏升级期幂等语义）
-    const cols = db.prepare("PRAGMA table_info(idempotency)").all() as { name: string }[];
-    if (!cols.some((c) => c.name === "created_at")) {
-      db.exec(`ALTER TABLE idempotency ADD COLUMN created_at INTEGER NOT NULL DEFAULT ${Date.now()}`);
-    }
-    db.exec("CREATE INDEX IF NOT EXISTS idx_idempotency_created_at ON idempotency (created_at)");
-    this.getStmt = db.prepare(
-      "SELECT result FROM idempotency WHERE session_id = ? AND request_id = ?",
-    );
-    this.putStmt = db.prepare(
-      "INSERT OR REPLACE INTO idempotency (session_id, request_id, result, created_at) VALUES (?, ?, ?, ?)",
-    );
-    this.pruneStmt = db.prepare("DELETE FROM idempotency WHERE created_at < ?");
+  constructor(db: Kysely<DatabaseSchema>) {
+    this.db = db;
   }
 
   async get(sessionId: string, requestId: string): Promise<unknown | null> {
-    const row = this.getStmt.get(sessionId, requestId) as IdempotencyRow | undefined;
+    const row = await this.db
+      .selectFrom("idempotency")
+      .select("result")
+      .where("session_id", "=", sessionId)
+      .where("request_id", "=", requestId)
+      .executeTakeFirst() as IdempotencyRow | undefined;
     if (!row) return null;
     try {
       return JSON.parse(row.result) as unknown;
@@ -48,12 +30,30 @@ export class SqliteIdempotencyRepository implements IdempotencyStorePort {
   }
 
   async put(sessionId: string, requestId: string, result: unknown): Promise<void> {
-    this.putStmt.run(sessionId, requestId, JSON.stringify(result), Date.now());
+    const resultJson = JSON.stringify(result);
+    const createdAt = Date.now();
+    await this.db
+      .insertInto("idempotency")
+      .values({
+        session_id: sessionId,
+        request_id: requestId,
+        result: resultJson,
+        created_at: createdAt,
+      })
+      .onConflict((oc) =>
+        oc
+          .columns(["session_id", "request_id"])
+          .doUpdateSet({ result: resultJson, created_at: createdAt }),
+      )
+      .execute();
   }
 
   /** 清理 before 之前的记录（TTL），返回清理条数。 */
   async prune(before: number): Promise<number> {
-    const result = this.pruneStmt.run(before);
-    return Number(result.changes);
+    const result = await this.db
+      .deleteFrom("idempotency")
+      .where("created_at", "<", before)
+      .executeTakeFirst();
+    return Number(result?.numDeletedRows ?? 0);
   }
 }

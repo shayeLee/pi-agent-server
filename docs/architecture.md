@@ -44,9 +44,9 @@ HTTP 路由在 `app.ts`，应用逻辑在 `session-service.ts`，编排在 `sess
 - **日志（pino）** — `src/server/app.ts` 的 `logger` 配置：异步写 stdout，内部 buffer + 背压，不阻塞业务。
 - **会话 JSONL** — `src/server/start.ts` 的 `createAdapter`：只记录 `piSessionFile` 路径，不直接读写文件；同会话由状态机串行保证单文件无并发写。
 - **数据库（SQLite）** — 读代码顺序：
-  1. `src/server/start.ts` 初始化：`timeout: 5000` + `enableForeignKeyConstraints: true` + `ensureDefaultProject`（默认项目落库，`owner_key=''` 共享）
-  2. `src/storage/sqlite-session-repository.ts`：WAL（`PRAGMA journal_mode=WAL`）+ 外键 `ON DELETE CASCADE` + 事务化重建迁移（`BEGIN IMMEDIATE`）
-  3. `src/storage/sqlite-project-repository.ts`：删除项目 `BEGIN IMMEDIATE` 事务 + `ensureDefaultProject` 不变量（拒绝 create/delete 保留 id）
+  1. `src/server/start.ts` 创建 `DatabaseSync`（`timeout: 5000` + `enableForeignKeyConstraints: true`），初始化后 `ensureDefaultProject`（默认项目落库，`owner_key=''` 共享）
+  2. `src/storage/bootstrap.ts`：文件库启用 WAL（`:memory:` 跳过）+ Kysely schema builder 幂等 bootstrap（全部 `IF NOT EXISTS`，只面向新库/已是当前 schema 的库；RC 阶段无旧库兼容/版本化迁移，演进走完整重建）
+  3. 三个 Repository（`sqlite-session-repository.ts` / `sqlite-project-repository.ts` / `sqlite-idempotency-repository.ts`）仅 CRUD；项目删除由 Kysely `transaction` 与 FK `ON DELETE CASCADE` 兜底（`sessions.project_id → projects.id`）
   - **本质**：`DatabaseSync` 同步 API + 单线程事件循环 → 进程内天然串行（一个 `db.run()` 返回前事件循环不切走）；并发风险只在多实例（WAL 单写者 + busy timeout 兑底）。
 
 ## 二、目录职责
@@ -58,7 +58,7 @@ HTTP 路由在 `app.ts`，应用逻辑在 `session-service.ts`，编排在 `sess
 | `src/runtime/` | 会话任务编排（状态机+并发+幂等+执行+事件） | `session-runtime.ts`、`runtime-registry.ts`、`session-event-bus.ts` |
 | `src/server/` | HTTP 层 + composition root | `app.ts`、`start.ts`、`auth.ts`/`real-auth.ts`、`sse-format.ts`、`sse-backpressure.ts`、`sse-socket.ts`、`trust-proxy-policy.ts` |
 | `src/agent/` | Agent 适配边界 | `agent-adapter.ts`（接口）、`pi-agent-adapter.ts`（Pi 实现）、`mock-agent-adapter.ts`（测试）、`events.ts`、`translate.ts` |
-| `src/storage/` | SQLite 适配器（实现 ports） | `sqlite-session-repository.ts`、`sqlite-project-repository.ts`、`sqlite-idempotency-repository.ts` |
+| `src/storage/` | SQLite 适配器（实现 ports） | `bootstrap.ts`、`node-sqlite-adapter.ts`、`db-schema.ts`、`sqlite-session-repository.ts`、`sqlite-project-repository.ts`、`sqlite-idempotency-repository.ts` |
 | `src/model-adapters/` | Pi ModelRuntime → ports 适配 | `pi-model-runtime-catalog.ts`、`pi-model-runtime-credentials.ts` |
 | `src/provider-adapters/` | 厂商协议适配（与核心数据流解耦） | `registry.ts`、`types.ts`、`openai-tool-policy.ts`、`deepseek-v4/` |
 

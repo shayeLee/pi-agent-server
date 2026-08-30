@@ -1,12 +1,10 @@
 import { describe, it, expect, afterEach } from "vitest";
-import { DatabaseSync } from "node:sqlite";
 import type { FastifyInstance } from "fastify";
 import { buildApp } from "../../src/server/app.js";
 import { formatSseEvent } from "../../src/server/sse-format.js";
-import { SqliteSessionRepository } from "../../src/storage/sqlite-session-repository.js";
-import { SqliteProjectRepository } from "../../src/storage/sqlite-project-repository.js";
 import { MockAgentAdapter } from "../../src/agent/mock-agent-adapter.js";
 import type { UserIdentity } from "../../src/core/user-identity.js";
+import { makeInitializedMemoryDb } from "../helpers/sqlite.js";
 
 const IDENTITY: UserIdentity = { kind: "account", accountId: "u1" };
 const TOKEN = "token-1";
@@ -29,10 +27,7 @@ describe("GET /v1/sessions/:id/events（SSE 订阅与 Last-Event-ID 补发）", 
   });
 
   async function makeListeningApp(serverEpoch?: string) {
-    const db = new DatabaseSync(":memory:");
-    const projects = new SqliteProjectRepository(db);
-    void projects.ensureDefaultProject({ id: "default", name: "默认项目", cwd: "/tmp/default-project", ownerKey: "", createdAt: 0 });
-    const sessions = new SqliteSessionRepository(db);
+    const { projects, sessions } = await makeInitializedMemoryDb({ cwd: "/tmp/default-project" });
     const app = buildApp({
       sessions,
       projects,

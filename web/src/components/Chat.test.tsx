@@ -6,7 +6,7 @@ import type { SessionRecord, TimelineItem } from "../types.js";
 const session: SessionRecord = {
   id: "s1",
   ownerKey: "k",
-  projectId: "default",
+  projectId: "6f1a2b3c-4d5e-4f6a-8b9c-0d1e2f3a4b5c", // 服务端 DEFAULT_PROJECT_ID（默认项目）
   title: "测试会话",
   createdAt: 1000,
   updatedAt: 2000,

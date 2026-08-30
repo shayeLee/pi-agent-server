@@ -57,7 +57,7 @@ GET    /v1/models                       可用模型、思考级别枚举与实�
 GET    /v1/projects                     项目列表（默认项目 + 额外项目）
 POST   /v1/projects                     创建项目（name + cwd）
 DELETE /v1/projects/:id                 删除项目（级联删除其下会话；默认项目不可删）
-POST   /v1/sessions                     创建会话（可选 projectId/modelProvider/modelId/thinkingLevel，默认归 default 项目与服务端默认模型）
+POST   /v1/sessions                     创建会话（可选 projectId/modelProvider/modelId/thinkingLevel，未指定 projectId 时归默认项目；默认项目 id 为服务端固定常量 DEFAULT_PROJECT_ID，详见 docs/database-design.md）
 GET    /v1/sessions                     会话列表（可选 ?projectId= 过滤）
 DELETE /v1/sessions/:id                 删除会话
 PATCH  /v1/sessions/:id                 重命名会话
@@ -244,4 +244,4 @@ N、M 天数由部署配置决定。
 
 ## 8. 交付计划
 
-平台级交付阶段见[交付计划](docs/delivery-plan.md)；能力级交付见各自能力文档（如[知识库问答](docs/capabilities/knowledge-qa.md)）。
+当前数据库设计见[数据库设计](docs/database-design.md)；历史平台交付计划见[归档交付计划](docs/archive/delivery-plan.md)；能力级交付见各自能力文档（如[知识库问答](docs/capabilities/knowledge-qa.md)）。

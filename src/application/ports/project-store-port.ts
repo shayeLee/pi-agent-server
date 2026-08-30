@@ -2,8 +2,13 @@
 // 默认项目也落库（owner_key 为空串表示所有用户共享），以便 sessions.project_id 外键 CASCADE 引用它；
 // 额外项目按 owner 隔离，删除时由应用层处理关联会话。
 
-/** 默认项目 id（固定，服务端 AGENT_CWD 对应的工作目录）。 */
-export const DEFAULT_PROJECT_ID = "default";
+/**
+ * 默认项目 id（固定合法 UUID，服务端 AGENT_CWD 对应的工作目录；共享、不可删）。
+ * 该 id 是唯一事实来源，由同一常量统一引用：bootstrap 的 sessions.project_id 默认值
+ * （defaultTo(DEFAULT_PROJECT_ID)）、ensureDefaultProject 种子、服务端默认 cwd 解析、
+ * DELETE 防护与 Web 侧默认项目推导均不得硬编码字符串。
+ */
+export const DEFAULT_PROJECT_ID = "6f1a2b3c-4d5e-4f6a-8b9c-0d1e2f3a4b5c";
 
 export interface ProjectRecord {
   id: string;

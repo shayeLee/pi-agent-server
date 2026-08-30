@@ -1,15 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { DatabaseSync } from "node:sqlite";
 import {
   SSE_BACKPRESSURE_THRESHOLD,
   nextBackpressureState,
 } from "../../src/server/sse-backpressure.js";
 import { buildApp } from "../../src/server/app.js";
-import { SqliteSessionRepository } from "../../src/storage/sqlite-session-repository.js";
-import { SqliteProjectRepository } from "../../src/storage/sqlite-project-repository.js";
 import { MockAgentAdapter } from "../../src/agent/mock-agent-adapter.js";
 import type { SseSocket } from "../../src/server/sse-socket.js";
 import type { UserIdentity } from "../../src/core/user-identity.js";
+import { makeInitializedMemoryDb } from "../helpers/sqlite.js";
 
 describe("SSE 背压判定（纯逻辑）", () => {
   it("write 成功重置背压计数", () => {
@@ -41,14 +39,12 @@ describe("SSE 背压判定（纯逻辑）", () => {
 describe("SSE 背压集成（fake socket）", () => {
   const IDENTITY: UserIdentity = { kind: "ip", ip: "127.0.0.1" };
 
-  function makeAppWithSlowSocket() {
-    const db = new DatabaseSync(":memory:");
+  async function makeAppWithSlowSocket() {
+    const { projects, sessions } = await makeInitializedMemoryDb({ cwd: "/tmp/backpressure" });
     let ended = false;
     let writeCalls = 0;
-    const projects = new SqliteProjectRepository(db);
-    void projects.ensureDefaultProject({ id: "default", name: "默认项目", cwd: "/tmp/backpressure", ownerKey: "", createdAt: 0 });
     const app = buildApp({
-      sessions: new SqliteSessionRepository(db),
+      sessions,
       projects,
       defaultProjectCwd: "/tmp/backpressure",
       authenticate: async () => IDENTITY,
@@ -80,7 +76,7 @@ describe("SSE 背压集成（fake socket）", () => {
   }
 
   it("write 连续失败超阈值后主动关闭连接", async () => {
-    const { app, getEnded } = makeAppWithSlowSocket();
+    const { app, getEnded } = await makeAppWithSlowSocket();
 
     const created = await app.inject({
       method: "POST",

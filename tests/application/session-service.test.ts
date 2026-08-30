@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { SessionService, type CreateSessionResult } from "../../src/application/session-service.js";
+import { DEFAULT_PROJECT_ID } from "../../src/application/ports/project-store-port.js";
 import type {
   ModelCatalogPort,
   ProjectRecord,
@@ -42,22 +43,22 @@ class MemoryProjects implements ProjectStorePort {
   constructor(private readonly sessions: SessionStorePort) {}
   async create(record: ProjectRecord) {
     // 与真实 SQLite 实现一致：默认项目 id 由 ensureDefaultProject 独占
-    if (record.id === "default") throw new Error("默认项目 id 由 ensureDefaultProject 独占");
+    if (record.id === DEFAULT_PROJECT_ID) throw new Error("默认项目 id 由 ensureDefaultProject 独占");
     this.records.set(record.id, { ...record });
   }
   async get(id: string) { return this.records.get(id) ?? null; }
   async listByOwner(ownerKey: string) { return [...this.records.values()].filter((r) => r.ownerKey === ownerKey); }
   async delete(id: string) {
-    if (id === "default") return false;
+    if (id === DEFAULT_PROJECT_ID) return false;
     return this.records.delete(id);
   }
   async deleteProjectWithSessions(projectId: string, sessionIds: string[]): Promise<void> {
-    if (projectId === "default") throw new Error("默认项目不可删除");
+    if (projectId === DEFAULT_PROJECT_ID) throw new Error("默认项目不可删除");
     for (const sessionId of sessionIds) await this.sessions.delete(sessionId);
     this.records.delete(projectId);
   }
   async ensureDefaultProject(record: ProjectRecord): Promise<void> {
-    if (record.id !== "default" || record.ownerKey !== "") throw new Error("默认项目不变量违反");
+    if (record.id !== DEFAULT_PROJECT_ID || record.ownerKey !== "") throw new Error("默认项目不变量违反");
     const existing = this.records.get(record.id);
     if (existing && existing.ownerKey !== "") throw new Error("默认项目既有记录异常");
     if (!this.records.has(record.id)) this.records.set(record.id, { ...record });
@@ -82,7 +83,7 @@ function makeService(
 ) {
   const projects = new MemoryProjects(sessions);
   // 默认项目落库（与真实 SQLite 实现的 ensureDefaultProject 对齐）：resolveProject 现按查库判定。
-  void projects.ensureDefaultProject({ id: "default", name: "默认项目", cwd: "/workspace/default", ownerKey: "", createdAt: 0 });
+  void projects.ensureDefaultProject({ id: DEFAULT_PROJECT_ID, name: "默认项目", cwd: "/workspace/default", ownerKey: "", createdAt: 0 });
   const adapters = new Map<string, MockAgentAdapter>();
   const registry = new RuntimeRegistry({
     concurrency: new ConcurrencyController({

@@ -1,11 +1,9 @@
 import { describe, it, expect } from "vitest";
-import { DatabaseSync } from "node:sqlite";
 import Fastify, { type FastifyRequest } from "fastify";
 import { buildAuthenticate } from "../../src/server/real-auth.js";
 import { buildApp } from "../../src/server/app.js";
-import { SqliteSessionRepository } from "../../src/storage/sqlite-session-repository.js";
-import { SqliteProjectRepository } from "../../src/storage/sqlite-project-repository.js";
 import { MockAgentAdapter } from "../../src/agent/mock-agent-adapter.js";
+import { makeInitializedMemoryDb } from "../helpers/sqlite.js";
 
 // 真实鉴权（needs.md §4.2）：内网免 token（按 IP 识别），公网校验 Bearer Token（按账号识别）
 const INTRA_CIDRS = ["10.0.0.0/8", "192.168.0.0/16", "172.16.0.0/12"];
@@ -117,11 +115,8 @@ describe("buildAuthenticate 经 Fastify（remoteAddress → request.ip）", () =
 });
 
 describe("buildAuthenticate 接入 buildApp 完整链路", () => {
-  function makeApp(trustProxy?: string | string[] | boolean) {
-    const db = new DatabaseSync(":memory:");
-    const projects = new SqliteProjectRepository(db);
-    void projects.ensureDefaultProject({ id: "default", name: "默认项目", cwd: "/tmp/default-project", ownerKey: "", createdAt: 0 });
-    const sessions = new SqliteSessionRepository(db);
+  async function makeApp(trustProxy?: string | string[] | boolean) {
+    const { projects, sessions } = await makeInitializedMemoryDb({ cwd: "/tmp/default-project" });
     const app = buildApp({
       sessions,
       projects,
@@ -134,7 +129,7 @@ describe("buildAuthenticate 接入 buildApp 完整链路", () => {
   }
 
   it("内网 remoteAddress 无 token → 创建会话，ownerKey 为 ip 身份", async () => {
-    const { app } = makeApp();
+    const { app } = await makeApp();
     const res = await app.inject({
       method: "POST",
       url: "/v1/sessions",
@@ -147,7 +142,7 @@ describe("buildAuthenticate 接入 buildApp 完整链路", () => {
   });
 
   it("公网 remoteAddress + 有效 token → 创建会话，ownerKey 为 account 身份", async () => {
-    const { app } = makeApp();
+    const { app } = await makeApp();
     const res = await app.inject({
       method: "POST",
       url: "/v1/sessions",
@@ -160,7 +155,7 @@ describe("buildAuthenticate 接入 buildApp 完整链路", () => {
   });
 
   it("公网 IP 无 token → 401", async () => {
-    const { app } = makeApp();
+    const { app } = await makeApp();
     const res = await app.inject({
       method: "GET",
       url: "/v1/sessions",
@@ -170,7 +165,7 @@ describe("buildAuthenticate 接入 buildApp 完整链路", () => {
   });
 
   it("公网未知 token → 401", async () => {
-    const { app } = makeApp();
+    const { app } = await makeApp();
     const res = await app.inject({
       method: "GET",
       url: "/v1/sessions",
@@ -181,7 +176,7 @@ describe("buildAuthenticate 接入 buildApp 完整链路", () => {
   });
 
   it("公网原型链 token → 401（不得通过鉴权创建会话）", async () => {
-    const { app } = makeApp();
+    const { app } = await makeApp();
     for (const token of ["toString", "constructor", "__proto__"]) {
       const res = await app.inject({
         method: "POST",
@@ -195,7 +190,7 @@ describe("buildAuthenticate 接入 buildApp 完整链路", () => {
   });
 
   it("trustProxy 关闭（默认）时忽略 X-Forwarded-For：公网对端仍需 token", async () => {
-    const { app } = makeApp();
+    const { app } = await makeApp();
     const res = await app.inject({
       method: "GET",
       url: "/v1/sessions",
@@ -207,7 +202,7 @@ describe("buildAuthenticate 接入 buildApp 完整链路", () => {
 
   it("trustProxy 配置代理白名单时按 X-Forwarded-For 识别内网免 token", async () => {
     // 信任来自 127.0.0.1 的代理透传的 XFF（安全用法，替代危险的 trustProxy=true）
-    const { app } = makeApp("127.0.0.1");
+    const { app } = await makeApp("127.0.0.1");
     const res = await app.inject({
       method: "GET",
       url: "/v1/sessions",
@@ -219,7 +214,7 @@ describe("buildAuthenticate 接入 buildApp 完整链路", () => {
 
   it("trustProxy 白名单下，非可信对端伪造 X-Forwarded-For 内网 → 仍按公网处理（401）", async () => {
     // 只信任 127.0.0.1 代理；公网对端伪造内网 XFF 不得绕过 token
-    const { app } = makeApp("127.0.0.1");
+    const { app } = await makeApp("127.0.0.1");
     const res = await app.inject({
       method: "POST",
       url: "/v1/sessions",
@@ -231,7 +226,7 @@ describe("buildAuthenticate 接入 buildApp 完整链路", () => {
   });
 
   it("trustProxy 白名单下，非可信对端伪造 XFF 且带 token → account 身份（不误判为内网）", async () => {
-    const { app } = makeApp("127.0.0.1");
+    const { app } = await makeApp("127.0.0.1");
     const res = await app.inject({
       method: "POST",
       url: "/v1/sessions",

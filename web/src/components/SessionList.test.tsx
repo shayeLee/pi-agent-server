@@ -4,8 +4,8 @@ import { SessionList, formatSessionTime } from "./SessionList.js";
 import type { SessionRecord } from "../types.js";
 
 const sessions: SessionRecord[] = [
-  { id: "s1", ownerKey: "k", projectId: "default", title: "会话一", createdAt: 1000, updatedAt: 1_700_000_000_000, modelProvider: null, modelId: null, thinkingLevel: null, systemPrompt: null },
-  { id: "s2", ownerKey: "k", projectId: "default", title: "会话二", createdAt: 1000, updatedAt: 1_800_000_000_000, modelProvider: null, modelId: null, thinkingLevel: null, systemPrompt: null },
+  { id: "s1", ownerKey: "k", projectId: "6f1a2b3c-4d5e-4f6a-8b9c-0d1e2f3a4b5c", title: "会话一", createdAt: 1000, updatedAt: 1_700_000_000_000, modelProvider: null, modelId: null, thinkingLevel: null, systemPrompt: null },
+  { id: "s2", ownerKey: "k", projectId: "6f1a2b3c-4d5e-4f6a-8b9c-0d1e2f3a4b5c", title: "会话二", createdAt: 1000, updatedAt: 1_800_000_000_000, modelProvider: null, modelId: null, thinkingLevel: null, systemPrompt: null },
 ];
 
 function setup(overrides: Partial<Parameters<typeof SessionList>[0]> = {}) {
