@@ -1,17 +1,33 @@
-// 空数据库初始化（Phase 1 存储层演进：Kysely 0.29.5 + node:sqlite 薄适配器）：
+// SQLite 空数据库初始化（工作包 B/C：消费运行时 Schema Manifest 生成 SQLite 方言 bootstrap）：
+//   - 本文件是 SQLite 方言入口：逻辑列类型 → SQLite 物理类型映射（SQLITE_LOGICAL_TYPE）+ WAL 行为，
+//     实际的 Manifest→DDL 流程在 schema-builder.ts（与 PG bootstrap 共用，Manifest 仍是唯一来源）；
 //   - WAL（文件数据库启用，:memory: 跳过，与外键/5s timeout 选项在 start.ts 的 DatabaseSync
 //     创建时一并设置）；
-//   - 用 Kysely schema builder 幂等创建当前 projects / sessions / idempotency 表与索引/FK
-//     （全部 CREATE TABLE/INDEX IF NOT EXISTS），仅面向全新或已是当前 schema 的数据库；
-//   - 不做任何旧库兼容/版本化迁移：RC 阶段旧表/旧数据直接删除，schema 演进走完整重建。
-//   - 默认项目不在此处写入：由 start.ts / mock 在初始化后经 Repository.ensureDefaultProject 创建，
-//     保证「不得用配置错误的默认 cwd 覆盖已存在默认项目」。
+//   - 表/列/主键/外键/索引的全部声明来自 schema-manifest.ts 的 schemaManifest（唯一来源）；
+//   - 仅面向全新或已是当前 schema 的数据库：不做任何旧库兼容/版本化迁移（RC 阶段旧表
+//     直接删除，schema 演进走完整重建），不产生 kysely_migration 表；
+//   - 默认项目不在此处写入：由 start.ts / mock 在初始化后经 Repository.ensureDefaultProject
+//     创建，保证「不得用配置错误的默认 cwd 覆盖已存在默认项目」。
 
 import { DatabaseSync } from "node:sqlite";
 import { Kysely, SqliteDialect } from "kysely";
-import { DEFAULT_PROJECT_ID } from "../application/ports/project-store-port.js";
+import {
+  bootstrapSchemaFromManifest,
+  type LogicalTypeMap,
+} from "./schema-builder.js";
+import { assertSchemaCompatible } from "./schema-compatibility.js";
 import { NodeSqliteAdapter } from "./node-sqlite-adapter.js";
 import type { DatabaseSchema } from "./db-schema.js";
+
+/** 逻辑列类型 → SQLite 物理类型（uuid/text/json → TEXT、integer/bigint → INTEGER）。
+ *  PG 映射（uuid → UUID、integer/bigint → BIGINT、json 保持 TEXT）见 postgres-bootstrap.ts。 */
+export const SQLITE_LOGICAL_TYPE: LogicalTypeMap = {
+  uuid: "text",
+  text: "text",
+  integer: "integer",
+  bigint: "integer",
+  json: "text",
+};
 
 export function isMemoryDatabase(db: DatabaseSync): boolean {
   const row = db.prepare("PRAGMA database_list").get() as { file?: unknown } | undefined;
@@ -19,9 +35,14 @@ export function isMemoryDatabase(db: DatabaseSync): boolean {
 }
 
 /**
- * 启用 WAL（文件数据库；:memory: 保持 memory 模式）并以 Kysely schema builder 幂等创建
- * 当前 schema（表/索引/外键）。可安全多次启动（全部 IF NOT EXISTS），
- * 但只适用于全新或已是当前 schema 的数据库。
+ * 启用 WAL（文件数据库；:memory: 保持 memory 模式）并初始化 SQLite 方言存储。
+ *
+ * 启动路径（严格 schema preflight，**在任何建表/建索引 DDL 之前**）：
+ * 1. assertSchemaCompatible 检查数据库现状：
+ *    - 无任何 managed 表（全新库 / 只有无关表）→ bootstrap 正常建库；
+ *    - 已含任一 managed 表 → 要求完整 schema 与 Manifest 物理契约一致（列名/物理类型/
+ *      nullable/DEFAULT/PK/FK/显式索引），否则 fail-fast，不执行任何 ALTER/补列/建索引；
+ *    - 已完整一致 → 跳过 DDL（不重建，数据保留）。
  * 返回共享的 Kysely 实例；调用方负责在关闭时 destroy 它（会关闭底层 DatabaseSync）。
  */
 export async function initializeDatabase(db: DatabaseSync): Promise<Kysely<DatabaseSchema>> {
@@ -34,76 +55,24 @@ export async function initializeDatabase(db: DatabaseSync): Promise<Kysely<Datab
   });
 
   try {
-    // projects（sessions 外键目标，必须先建）
-    await kysely.schema
-      .createTable("projects")
-      .ifNotExists()
-      .addColumn("id", "text", (col) => col.primaryKey())
-      .addColumn("name", "text", (col) => col.notNull())
-      .addColumn("cwd", "text", (col) => col.notNull())
-      .addColumn("owner_key", "text", (col) => col.notNull())
-      .addColumn("created_at", "integer", (col) => col.notNull())
-      .execute();
-    await kysely.schema
-      .createIndex("idx_projects_owner")
-      .ifNotExists()
-      .on("projects")
-      .column("owner_key")
-      .execute();
-
-    // sessions + 外键（project_id → projects.id ON DELETE CASCADE）+ 查询索引
-    await kysely.schema
-      .createTable("sessions")
-      .ifNotExists()
-      .addColumn("id", "text", (col) => col.primaryKey())
-      .addColumn("owner_key", "text", (col) => col.notNull())
-      .addColumn("project_id", "text", (col) => col.notNull().defaultTo(DEFAULT_PROJECT_ID))
-      .addColumn("title", "text", (col) => col.notNull())
-      .addColumn("created_at", "integer", (col) => col.notNull())
-      .addColumn("updated_at", "integer", (col) => col.notNull())
-      .addColumn("pi_session_file", "text")
-      .addColumn("model_provider", "text")
-      .addColumn("model_id", "text")
-      .addColumn("thinking_level", "text")
-      .addColumn("system_prompt", "text")
-      .addColumn("capability_versions", "text")
-      .addForeignKeyConstraint("sessions_project_id_fk", ["project_id"], "projects", ["id"], (cb) =>
-        cb.onDelete("cascade"),
-      )
-      .execute();
-    await kysely.schema
-      .createIndex("idx_sessions_owner_updated")
-      .ifNotExists()
-      .on("sessions")
-      .columns(["owner_key", "updated_at desc"])
-      .execute();
-    await kysely.schema
-      .createIndex("idx_sessions_owner_project")
-      .ifNotExists()
-      .on("sessions")
-      .columns(["owner_key", "project_id"])
-      .execute();
-
-    // idempotency（复合主键 session_id + request_id）+ 清理索引
-    await kysely.schema
-      .createTable("idempotency")
-      .ifNotExists()
-      .addColumn("session_id", "text", (col) => col.notNull())
-      .addColumn("request_id", "text", (col) => col.notNull())
-      .addColumn("result", "text", (col) => col.notNull())
-      .addColumn("created_at", "integer", (col) => col.notNull())
-      .addPrimaryKeyConstraint("idempotency_pk", ["session_id", "request_id"])
-      .execute();
-    await kysely.schema
-      .createIndex("idx_idempotency_created_at")
-      .ifNotExists()
-      .on("idempotency")
-      .column("created_at")
-      .execute();
-
+    const verdict = await assertSchemaCompatible(kysely, "SQLite", SQLITE_LOGICAL_TYPE);
+    if (verdict === "empty") {
+      await bootstrapSchemaFromManifest(kysely, SQLITE_LOGICAL_TYPE);
+    }
     return kysely;
   } catch (error) {
     await kysely.destroy();
     throw error;
   }
 }
+
+// 兼容既有 import：Manifest→DDL builder 流程、类型映射类型与严格兼容性 preflight 各自
+// 再导出，避免既有测试 import 路径大面积改名（签名已从 2 参改为显式传入 typeMap）。
+export {
+  createTableFromManifest,
+  createIndexFromManifest,
+  bootstrapSchemaFromManifest,
+  type LogicalTypeMap,
+} from "./schema-builder.js";
+export { assertSchemaCompatible } from "./schema-compatibility.js";
+export type { SchemaCompatVerdict, SchemaDialect } from "./schema-compatibility.js";

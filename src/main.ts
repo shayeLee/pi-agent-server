@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // 进程入口：从环境变量读取配置，启动 pi-agent-server，处理优雅关闭信号。
 
-import { startServer } from "./server/start.js";
+import { startServer, type StorageDialect } from "./server/start.js";
 
 const port = Number(process.env.PORT ?? 8080);
 const host = process.env.HOST ?? "127.0.0.1";
@@ -49,7 +49,12 @@ const trustProxy = process.env.TRUST_PROXY
 const app = await startServer({
   port,
   host,
+  // 存储方言（默认 sqlite，向后兼容）：PG 需显式 PI_STORAGE_DIALECT=postgres + PI_DATABASE_URL，
+  // 否则走 SQLite；空/空白 PI_STORAGE_DIALECT 归一化为未配置（SQLite 默认），未知非空值 /
+  // PG 缺 URL 在 startServer 内 fail-fast（不静默回退）。
+  storageDialect: process.env.PI_STORAGE_DIALECT as StorageDialect | undefined,
   dbPath: process.env.DB_PATH,
+  databaseUrl: process.env.PI_DATABASE_URL,
   intranetCidrs,
   tokens,
   cwd: process.env.AGENT_CWD,

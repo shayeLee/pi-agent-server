@@ -27,25 +27,31 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:postgres": "tsx scripts/test-postgres.ts",
+    "verify": "npm run typecheck && npm run test",
+    "verify:release": "npm run typecheck && npm run test && npm run test:postgres && npm run build",
     "dev": "tsx src/main.ts",
     "dev:real": "cross-env DATA_DIR=/tmp/pi-agent-server PI_DEFAULT_MODEL=openai-codex/gpt-5.6-luna PI_DEFAULT_THINKING_LEVEL=medium tsx src/main.ts",
     "mock": "tsx scripts/mock-server.ts",
     "web": "pnpm --filter web dev",
     "web:mock": "VITE_API_TARGET=http://127.0.0.1:8081 pnpm --filter web dev",
     "e2e": "pnpm --filter web exec playwright test",
-    "release:rc": "pnpm test && pnpm build && npm publish --tag rc"
+    "release:rc": "npm run verify:release && npm publish --tag rc"
   },
   "dependencies": {
     "@earendil-works/pi-ai": "^0.84.2",
     "@earendil-works/pi-coding-agent": "^0.84.2",
     "@fastify/cors": "^11.3.0",
     "fastify": "^5.12.0",
-    "kysely": "0.29.5"
+    "kysely": "0.29.5",
+    "pg": "^8"
   },
   "devDependencies": {
     "@types/node": "^26.2.0",
+    "@types/pg": "^8",
     "cross-env": "^10.1.0",
     "tsx": "^4.23.12",
     "typescript": "^7.0.2",

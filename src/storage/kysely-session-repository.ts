@@ -1,5 +1,7 @@
-// 会话索引的 Kysely 实现（needs.md §4.1）。与 SqliteProjectRepository 共用同一个 Kysely/数据库实例。
-// 建表统一由 bootstrap.ts 的 initializeDatabase 负责，本类仅负责查询与行映射。
+// 会话索引的中立 Kysely 实现（needs.md §4.1，方言无关：SQLite/PG 共用）。
+// 与 KyselyProjectRepository 共用同一个 Kysely/数据库实例；建表统一由各方言 bootstrap
+// 消费同一 Manifest 负责，本类仅负责查询与行映射。方言约束错误映射由构造函数注入
+// ConstraintErrorMapper（SQLite/PG 各自实现），本类不识别任何底层错误码。
 
 import type { Kysely } from "kysely";
 import type { DatabaseSchema } from "./db-schema.js";
@@ -8,21 +10,10 @@ import type {
   SessionRecordPatch,
   SessionStorePort,
 } from "../application/ports/session-store-port.js";
+import type { ConstraintErrorMapper } from "./constraint-error-mapper.js";
 
-type SessionRow = {
-  id: string;
-  owner_key: string;
-  project_id: string;
-  title: string;
-  created_at: number;
-  updated_at: number;
-  pi_session_file: string | null;
-  model_provider: string | null;
-  model_id: string | null;
-  thinking_level: string | null;
-  system_prompt: string | null;
-  capability_versions: string | null;
-};
+// 表行形态直接引用由 Schema Manifest 推导的 DatabaseSchema（无第二份手工声明）。
+type SessionRow = DatabaseSchema["sessions"];
 
 function toRecord(row: SessionRow): SessionRecord {
   return {
@@ -41,31 +32,42 @@ function toRecord(row: SessionRow): SessionRecord {
   };
 }
 
-export class SqliteSessionRepository implements SessionStorePort {
+export class KyselySessionRepository implements SessionStorePort {
   private readonly db: Kysely<DatabaseSchema>;
+  private readonly constraintMapper: ConstraintErrorMapper;
 
-  constructor(db: Kysely<DatabaseSchema>) {
+  constructor(db: Kysely<DatabaseSchema>, constraintMapper: ConstraintErrorMapper) {
     this.db = db;
+    this.constraintMapper = constraintMapper;
   }
 
   async create(record: SessionRecord): Promise<void> {
-    await this.db
-      .insertInto("sessions")
-      .values({
-        id: record.id,
-        owner_key: record.ownerKey,
-        project_id: record.projectId,
-        title: record.title,
-        created_at: record.createdAt,
-        updated_at: record.updatedAt,
-        pi_session_file: record.piSessionFile,
-        model_provider: record.modelProvider,
-        model_id: record.modelId,
-        thinking_level: record.thinkingLevel,
-        system_prompt: record.systemPrompt,
-        capability_versions: record.capabilityVersions,
-      })
-      .execute();
+    try {
+      await this.db
+        .insertInto("sessions")
+        .values({
+          id: record.id,
+          owner_key: record.ownerKey,
+          project_id: record.projectId,
+          title: record.title,
+          created_at: record.createdAt,
+          updated_at: record.updatedAt,
+          pi_session_file: record.piSessionFile,
+          model_provider: record.modelProvider,
+          model_id: record.modelId,
+          thinking_level: record.thinkingLevel,
+          system_prompt: record.systemPrompt,
+          capability_versions: record.capabilityVersions,
+        })
+        .execute();
+    } catch (error) {
+      // FK（并发删除项目竞态）→ 存储无关 ProjectForeignKeyError；
+      // 撞 id 主键/唯一约束 → 存储无关 DuplicateIdError（应用层有界重试）；其余错误原样抛出
+      if (this.constraintMapper.isForeignKeyError(error)) {
+        this.constraintMapper.throwProjectForeignKeyOrOriginal(error);
+      }
+      this.constraintMapper.throwDuplicateIdOrOriginal(error, "sessions");
+    }
   }
 
   async get(id: string): Promise<SessionRecord | null> {
@@ -136,7 +138,7 @@ export class SqliteSessionRepository implements SessionStorePort {
       .where("id", "=", id)
       .executeTakeFirst();
     if (Number(result.numUpdatedRows) > 0) return true;
-    // SQLite 相同值更新时 changes=0，行仍存在 → 按存在性判定
+    // 相同值更新时 numAffected=0，行仍存在 → 按存在性判定（SQLite 是 changes=0；PG 同语义）
     return (await this.get(id)) !== null;
   }
 

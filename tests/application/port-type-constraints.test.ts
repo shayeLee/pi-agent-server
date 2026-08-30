@@ -3,8 +3,8 @@
 import { describe, it, expectTypeOf } from "vitest";
 import type { SessionRuntime } from "../../src/runtime/session-runtime.js";
 import type { SessionEntry } from "../../src/runtime/runtime-registry.js";
-import type { SqliteSessionRepository } from "../../src/storage/sqlite-session-repository.js";
-import type { SqliteProjectRepository } from "../../src/storage/sqlite-project-repository.js";
+import type { KyselySessionRepository } from "../../src/storage/kysely-session-repository.js";
+import type { KyselyProjectRepository } from "../../src/storage/kysely-project-repository.js";
 import { DEFAULT_PROJECT_ID } from "../../src/application/ports/index.js";
 import type {
   IdempotencyStorePort,
@@ -106,8 +106,8 @@ describe("端口类型约束（编译型）", () => {
   });
 
   it("SQLite adapters 实现 SessionStorePort / ProjectStorePort", () => {
-    expectTypeOf<SqliteSessionRepository>().toMatchTypeOf<SessionStorePort>();
-    expectTypeOf<SqliteProjectRepository>().toMatchTypeOf<ProjectStorePort>();
+    expectTypeOf<KyselySessionRepository>().toMatchTypeOf<SessionStorePort>();
+    expectTypeOf<KyselyProjectRepository>().toMatchTypeOf<ProjectStorePort>();
   });
 
   it("SessionStorePort 的 update 使用正式 patch 类型", () => {

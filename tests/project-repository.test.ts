@@ -1,18 +1,34 @@
-import { describe, it, expect } from "vitest";
+import { afterEach, describe, it, expect } from "vitest";
 import { DatabaseSync } from "node:sqlite";
 import { identityKey } from "../src/core/user-identity.js";
 import type { ProjectRecord } from "../src/application/ports/project-store-port.js";
 import type { SessionRecord } from "../src/application/ports/session-store-port.js";
-import { SqliteProjectRepository } from "../src/storage/sqlite-project-repository.js";
+import { KyselyProjectRepository } from "../src/storage/kysely-project-repository.js";
 import { DEFAULT_PROJECT_ID } from "../src/application/ports/project-store-port.js";
-import { initStorage, makeInitializedMemoryDb } from "./helpers/sqlite.js";
+import { DuplicateIdError } from "../src/application/ports/store-errors.js";
+import { initStorage, makeInitializedMemoryDb, type SqliteTestStorage } from "./helpers/sqlite.js";
 
 function makeDb(): DatabaseSync {
   return new DatabaseSync(":memory:");
 }
 
-async function makeRepo(db: DatabaseSync = makeDb()): Promise<SqliteProjectRepository> {
-  return (await initStorage(db)).projects;
+// M2 资源所有权：所有已初始化 fixture 在 afterEach 按真实所有权关闭（统一 Kysely destroy close，
+// 不直接 db.close() 绕过 Kysely）。
+const openStorages: Array<{ close: () => Promise<void> }> = [];
+afterEach(async () => {
+  while (openStorages.length) await openStorages.pop()!.close();
+});
+
+async function makeRepo(db: DatabaseSync = makeDb()): Promise<KyselyProjectRepository> {
+  const storage = await initStorage(db);
+  openStorages.push(storage);
+  return storage.projects;
+}
+
+async function trackedInitializedMemoryDb(): Promise<SqliteTestStorage> {
+  const storage = await makeInitializedMemoryDb();
+  openStorages.push(storage);
+  return storage;
 }
 
 function makeRecord(overrides: Partial<ProjectRecord> = {}): ProjectRecord {
@@ -57,6 +73,51 @@ describe("项目索引存储（多项目，SQLite 实现）", () => {
       const repo = await makeRepo();
       expect(await repo.get("no-such-id")).toBeNull();
     });
+
+    it("create 撞主键（重复 id）时转换为存储无关的 DuplicateIdError 并保留原始 cause", async () => {
+      const repo = await makeRepo();
+      const rec = makeRecord({ id: "p-dup" });
+      await repo.create(rec);
+
+      const err = await repo.create(rec).then(() => null, (e: unknown) => e);
+      expect(err).toBeInstanceOf(DuplicateIdError);
+      expect((err as DuplicateIdError).message).toMatch(/主键/);
+      // 原始 SQLite 约束错误保留在 cause（1555 = SQLITE_CONSTRAINT_PRIMARYKEY）
+      expect((((err as DuplicateIdError).cause) as { errcode?: number }).errcode).toBe(1555);
+    });
+
+    it("非 id 列的 2067 唯一约束冲突原样抛出（不映射为 DuplicateIdError）", async () => {
+      const { db, projects: repo } = await trackedInitializedMemoryDb();
+      // 在已有非 id 列上创建唯一索引，模拟未来新增唯一约束
+      db.exec("CREATE UNIQUE INDEX idx_test_owner ON projects(owner_key)");
+      const owner = identityKey({ kind: "ip", ip: "10.99.99.99" });
+      await repo.create(makeRecord({ id: "p-nid1", ownerKey: owner }));
+
+      const err = await repo
+        .create(makeRecord({ id: "p-nid2", ownerKey: owner }))
+        .then(() => null, (e: unknown) => e);
+      // 非 id 唯一约束错误必须原样抛出，不映射为 DuplicateIdError
+      expect(err).toBeDefined();
+      expect(err).not.toBeInstanceOf(DuplicateIdError);
+      expect((err as { errcode?: number }).errcode).toBe(2067);
+      expect((err as Error).message).toMatch(/projects\.owner_key/);
+    });
+
+    it("复合唯一索引（owner_key + name）冲突原样抛出（含逗号的 2067 消息不误转）", async () => {
+      const { db, projects: repo } = await trackedInitializedMemoryDb();
+      // 复合唯一约束：冲突消息为 "UNIQUE constraint failed: projects.owner_key, projects.name"
+      db.exec("CREATE UNIQUE INDEX idx_test_owner_name ON projects(owner_key, name)");
+      const owner = identityKey({ kind: "ip", ip: "10.99.99.99" });
+      await repo.create(makeRecord({ id: "p-c1", ownerKey: owner, name: "同名" }));
+
+      const err = await repo
+        .create(makeRecord({ id: "p-c2", ownerKey: owner, name: "同名" }))
+        .then(() => null, (e: unknown) => e);
+      expect(err).toBeDefined();
+      expect(err).not.toBeInstanceOf(DuplicateIdError);
+      expect((err as { errcode?: number }).errcode).toBe(2067);
+      expect((err as Error).message).toMatch(/projects\.owner_key,\s*projects\.name/);
+    });
   });
 
   describe("listByOwner", () => {
@@ -94,7 +155,7 @@ describe("项目索引存储（多项目，SQLite 实现）", () => {
 
   describe("deleteProjectWithSessions（事务逻辑删）", () => {
     it("同一事务删除项目及其所有会话", async () => {
-      const storage = await makeInitializedMemoryDb();
+      const storage = await trackedInitializedMemoryDb();
       const repo = storage.projects;
       const sessions = storage.sessions;
 
@@ -112,7 +173,7 @@ describe("项目索引存储（多项目，SQLite 实现）", () => {
     });
 
     it("会话 id 列表为空时仍删除项目", async () => {
-      const storage = await makeInitializedMemoryDb();
+      const storage = await trackedInitializedMemoryDb();
       const repo = storage.projects;
       await repo.create(makeRecord({ id: "p1" }));
 
@@ -121,7 +182,7 @@ describe("项目索引存储（多项目，SQLite 实现）", () => {
     });
 
     it("外键 CASCADE：直接删项目自动级联删其会话（数据库层兑底，无需显式删 sessions）", async () => {
-      const storage = await makeInitializedMemoryDb();
+      const storage = await trackedInitializedMemoryDb();
       const repo = storage.projects;
       const sessions = storage.sessions;
       await repo.create(makeRecord({ id: "p1" }));
@@ -168,7 +229,7 @@ describe("项目索引存储（多项目，SQLite 实现）", () => {
     });
 
     it("ensureDefaultProject 对既有异常 owner 行显式失败（而非静默 IGNORE）", async () => {
-      const { db, projects: repo } = await makeInitializedMemoryDb();
+      const { db, projects: repo } = await trackedInitializedMemoryDb();
       // 把默认行 owner 改成异常（模拟历史/直接写入），再触发 ensureDefaultProject
       db.prepare("UPDATE projects SET owner_key = 'owner-x' WHERE id = ?").run(DEFAULT_PROJECT_ID);
       await expect(repo.ensureDefaultProject(defaultRecord())).rejects.toThrow(/owner 非空/);
@@ -181,7 +242,7 @@ describe("项目索引存储（多项目，SQLite 实现）", () => {
     });
 
     it("delete 拒绝删除 default（返回 false，且不触发 CASCADE）", async () => {
-      const storage = await makeInitializedMemoryDb();
+      const storage = await trackedInitializedMemoryDb();
       const repo = storage.projects;
       const sessions = storage.sessions;
       await repo.ensureDefaultProject(defaultRecord());
@@ -197,7 +258,7 @@ describe("项目索引存储（多项目，SQLite 实现）", () => {
     });
 
     it("deleteProjectWithSessions 拒绝删除 default（项目与会话均保留）", async () => {
-      const storage = await makeInitializedMemoryDb();
+      const storage = await trackedInitializedMemoryDb();
       const repo = storage.projects;
       const sessions = storage.sessions;
       await repo.ensureDefaultProject(defaultRecord());

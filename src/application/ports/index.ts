@@ -28,6 +28,7 @@ export type {
 export {
   DEFAULT_PROJECT_ID,
 } from "./project-store-port.js";
+export { DuplicateIdError, ProjectForeignKeyError } from "./store-errors.js";
 export type {
   ProjectRecord,
   ProjectStorePort,

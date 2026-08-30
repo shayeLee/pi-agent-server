@@ -9,7 +9,7 @@ import type {
   SessionStorePort,
   SystemPromptPort,
 } from "./ports/index.js";
-import { DEFAULT_PROJECT_ID } from "./ports/index.js";
+import { DEFAULT_PROJECT_ID, DuplicateIdError, ProjectForeignKeyError } from "./ports/index.js";
 import {
   RuntimeRegistry,
   SessionDeletedError,
@@ -17,6 +17,12 @@ import {
 } from "../runtime/runtime-registry.js";
 
 export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+
+/**
+ * 主键/唯一 ID 冲突的有界重试上限：INSERT 撞库后用新 ID 最多再重试 MAX_ID_RETRIES 次
+ * （共 MAX_ID_RETRIES + 1 次尝试）；同一上限也作为项目保留值连续命中的防御性 bound。
+ */
+export const MAX_ID_RETRIES = 3;
 
 export type SessionDto = Omit<SessionRecord, "piSessionFile">;
 /** 项目 DTO：仅默认项目（id = DEFAULT_PROJECT_ID）为 isDefault: true，其余项目为 false。 */
@@ -96,15 +102,30 @@ export class SessionService {
     const name = input.name.trim();
     const cwd = input.cwd.trim();
     if (!name || !cwd) return null;
-    const record: ProjectRecord = {
-      id: this.deps.createId(),
-      name,
-      cwd,
-      ownerKey,
-      createdAt: this.deps.now(),
-    };
-    await this.deps.projects.create(record);
-    return toProjectDto(record);
+    // 撞库是极低概率事件；仅对存储无关的 DuplicateIdError（仓库层已转换）用新 ID 有界重试，
+    // 其余错误（仓库守卫/约束）原样抛出，不静默吞掉。createdAt 在重试循环外冻结（与 createSession 一致）。
+    const createdAt = this.deps.now();
+    for (let attempt = 0; ; attempt++) {
+      const record: ProjectRecord = {
+        id: this.nextProjectId(),
+        name,
+        cwd,
+        ownerKey,
+        createdAt,
+      };
+      try {
+        await this.deps.projects.create(record);
+        return toProjectDto(record);
+      } catch (error) {
+        if (!(error instanceof DuplicateIdError)) throw error;
+        if (attempt >= MAX_ID_RETRIES) {
+          throw new Error(
+            `创建项目失败：主键/唯一 ID 冲突超过重试上限（共 ${MAX_ID_RETRIES + 1} 次尝试）`,
+            { cause: error },
+          );
+        }
+      }
+    }
   }
 
   /** @returns default / not-found / deleted, preserving HTTP's existing outcome distinctions. */
@@ -169,8 +190,7 @@ export class SessionService {
     }
 
     const now = this.deps.now();
-    const record: SessionRecord = {
-      id: this.deps.createId(),
+    const base: Omit<SessionRecord, "id"> = {
       ownerKey,
       projectId,
       title: input.title ?? "",
@@ -191,15 +211,27 @@ export class SessionService {
     if (this.deletingProjects.has(projectId) || !(await this.resolveProject(ownerKey, projectId))) {
       return { kind: "project-not-found" };
     }
-    try {
-      await this.deps.sessions.create(record);
-    } catch (error) {
-      // 并发删除项目导致 project_id 失效（SQLite 外键约束失败，787 = SQLITE_CONSTRAINT_FOREIGNKEY）：
-      // 外键约束兑底，把竞态窗口的脏数据风险变成明确的 404「项目不存在」，而非 500。
-      if (isForeignKeyConstraintError(error)) return { kind: "project-not-found" };
-      throw error;
+    // 撞库是极低概率事件；仅对存储无关的 DuplicateIdError（仓库层已转换）用新 ID 有界重试，
+    // 其余错误原样抛出。
+    for (let attempt = 0; ; attempt++) {
+      const record: SessionRecord = { ...base, id: this.deps.createId() };
+      try {
+        await this.deps.sessions.create(record);
+        return { kind: "created", session: toSessionDto(record) };
+      } catch (error) {
+        // 并发删除项目导致 project_id 失效（仓库层已转换为存储无关 ProjectForeignKeyError）：
+        // 外键约束兑底，把竞态窗口的脏数据风险变成明确的 404「项目不存在」，而非 500。
+        // 外键错误属「非重复 ID」错误，不做重试/转换，仍按既有语义处理。
+        if (error instanceof ProjectForeignKeyError) return { kind: "project-not-found" };
+        if (!(error instanceof DuplicateIdError)) throw error;
+        if (attempt >= MAX_ID_RETRIES) {
+          throw new Error(
+            `创建会话失败：主键/唯一 ID 冲突超过重试上限（共 ${MAX_ID_RETRIES + 1} 次尝试）`,
+            { cause: error },
+          );
+        }
+      }
     }
-    return { kind: "created", session: toSessionDto(record) };
   }
 
   async listSessions(ownerKey: string, projectId?: string): Promise<SessionDto[]> {
@@ -314,6 +346,23 @@ export class SessionService {
     return this.findEntry(ownerKey, id);
   }
 
+  /**
+   * 生成普通项目 ID：DEFAULT_PROJECT_ID 是 projects 表保留值（由 ensureDefaultProject 独占），
+   * 普通项目生成到该值应跳过并重新生成，绝不可交给 repository.create 写入（避免暴露 500）；
+   * 循环有界，防止损坏/测试用的 createId 恒返回保留值而死循环。
+   */
+  private nextProjectId(): string {
+    for (let attempt = 0; ; attempt++) {
+      const id = this.deps.createId();
+      if (id !== DEFAULT_PROJECT_ID) return id;
+      if (attempt >= MAX_ID_RETRIES) {
+        throw new Error(
+          `无法生成普通项目 ID：连续命中保留值 DEFAULT_PROJECT_ID（超过 ${MAX_ID_RETRIES + 1} 次）`,
+        );
+      }
+    }
+  }
+
   private defaultProject(): ProjectDto {
     return {
       id: DEFAULT_PROJECT_ID,
@@ -370,14 +419,4 @@ function toSessionDto(record: SessionRecord): SessionDto {
 function toProjectDto(project: { id: string; name: string; cwd: string }): ProjectDto {
   // 仅默认项目（defaultProject()）为 isDefault: true；此处均为 owner 私有项目。
   return { id: project.id, name: project.name, cwd: project.cwd, isDefault: false };
-}
-
-/** 判断是否为 SQLite 外键约束失败（787 = SQLITE_CONSTRAINT_FOREIGNKEY 扩展错误码）。 */
-function isForeignKeyConstraintError(error: unknown): boolean {
-  return (
-    typeof error === "object" &&
-    error !== null &&
-    "errcode" in error &&
-    (error as { errcode?: unknown }).errcode === 787
-  );
 }

@@ -1,17 +1,20 @@
-// 项目索引的 Kysely 实现（多项目）。与 SqliteSessionRepository 共用同一个 Kysely/数据库实例。
-// 建表统一由 bootstrap.ts 的 initializeDatabase 负责，本类仅负责查询与行映射。
+// 项目索引的中立 Kysely 实现（多项目，方言无关：SQLite/PG 共用）。
+// 与 KyselySessionRepository 共用同一个 Kysely/数据库实例；建表统一由各方言 bootstrap
+// （bootstrap.ts / postgres-bootstrap.ts 消费同一 Manifest）负责，本类仅负责查询与行映射。
+// 方言约束错误映射由构造函数注入 ConstraintErrorMapper（SQLite/PG 各自实现），
+// 本类不识别任何底层错误码。
 
 import type { Kysely } from "kysely";
-import { DEFAULT_PROJECT_ID, type ProjectRecord, type ProjectStorePort } from "../application/ports/project-store-port.js";
+import {
+  DEFAULT_PROJECT_ID,
+  type ProjectRecord,
+  type ProjectStorePort,
+} from "../application/ports/project-store-port.js";
 import type { DatabaseSchema } from "./db-schema.js";
+import type { ConstraintErrorMapper } from "./constraint-error-mapper.js";
 
-type ProjectRow = {
-  id: string;
-  name: string;
-  cwd: string;
-  owner_key: string;
-  created_at: number;
-};
+// 表行形态直接引用由 Schema Manifest 推导的 DatabaseSchema（无第二份手工声明）。
+type ProjectRow = DatabaseSchema["projects"];
 
 function toRecord(row: ProjectRow): ProjectRecord {
   return {
@@ -23,11 +26,13 @@ function toRecord(row: ProjectRow): ProjectRecord {
   };
 }
 
-export class SqliteProjectRepository implements ProjectStorePort {
+export class KyselyProjectRepository implements ProjectStorePort {
   private readonly db: Kysely<DatabaseSchema>;
+  private readonly constraintMapper: ConstraintErrorMapper;
 
-  constructor(db: Kysely<DatabaseSchema>) {
+  constructor(db: Kysely<DatabaseSchema>, constraintMapper: ConstraintErrorMapper) {
     this.db = db;
+    this.constraintMapper = constraintMapper;
   }
 
   async create(record: ProjectRecord): Promise<void> {
@@ -35,16 +40,21 @@ export class SqliteProjectRepository implements ProjectStorePort {
     if (record.id === DEFAULT_PROJECT_ID) {
       throw new Error("默认项目 id 由 ensureDefaultProject 独占，不可通过 create 写入");
     }
-    await this.db
-      .insertInto("projects")
-      .values({
-        id: record.id,
-        name: record.name,
-        cwd: record.cwd,
-        owner_key: record.ownerKey,
-        created_at: record.createdAt,
-      })
-      .execute();
+    try {
+      await this.db
+        .insertInto("projects")
+        .values({
+          id: record.id,
+          name: record.name,
+          cwd: record.cwd,
+          owner_key: record.ownerKey,
+          created_at: record.createdAt,
+        })
+        .execute();
+    } catch (error) {
+      // 撞主键/唯一约束 → 存储无关 DuplicateIdError（应用层有界重试）；其余错误原样抛出
+      this.constraintMapper.throwDuplicateIdOrOriginal(error, "projects");
+    }
   }
 
   async get(id: string): Promise<ProjectRecord | null> {
@@ -108,7 +118,7 @@ export class SqliteProjectRepository implements ProjectStorePort {
       throw new Error("默认项目不可删除");
     }
     // 同一事务内逻辑删除：项目与会话要么全删、要么全保留（避免半删留下孤儿会话），
-    // 数据库层另有外键 ON DELETE CASCADE 兑底。
+    // 数据库层另有外键 ON DELETE CASCADE 兑底（SQLite/PG 同语义）。
     await this.db.transaction().execute(async (trx) => {
       if (sessionIds.length > 0) {
         await trx.deleteFrom("sessions").where("id", "in", sessionIds).execute();

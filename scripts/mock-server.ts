@@ -10,11 +10,12 @@ import type { Kysely } from "kysely";
 import { buildApp } from "../src/server/app.js";
 import { buildAuthenticate } from "../src/server/real-auth.js";
 import { initializeDatabase } from "../src/storage/bootstrap.js";
+import { sqliteConstraintErrorMapper } from "../src/storage/sqlite-constraint-errors.js";
 import type { DatabaseSchema } from "../src/storage/db-schema.js";
 import { createIdempotentStorageCloser } from "../src/server/storage-close.js";
-import { SqliteSessionRepository } from "../src/storage/sqlite-session-repository.js";
-import { SqliteProjectRepository } from "../src/storage/sqlite-project-repository.js";
-import { SqliteIdempotencyRepository } from "../src/storage/sqlite-idempotency-repository.js";
+import { KyselySessionRepository } from "../src/storage/kysely-session-repository.js";
+import { KyselyProjectRepository } from "../src/storage/kysely-project-repository.js";
+import { KyselyIdempotencyRepository } from "../src/storage/kysely-idempotency-repository.js";
 import { DEFAULT_PROJECT_ID } from "../src/application/ports/project-store-port.js";
 import { MockAgentAdapter } from "../src/agent/mock-agent-adapter.js";
 
@@ -39,10 +40,11 @@ const closeStorage = createIdempotentStorageCloser(async () => {
 let app;
 try {
   kysely = await initializeDatabase(db);
-  const projects = new SqliteProjectRepository(kysely);
+  // mock 保持 SQLite memory（与生产 start.ts 的 dialect 组合根同一套中立 Repository + SQLite mapper）。
+  const projects = new KyselyProjectRepository(kysely, sqliteConstraintErrorMapper);
   await projects.ensureDefaultProject(MOCK_SEED);
-  const sessions = new SqliteSessionRepository(kysely);
-  const idempotencyRepo = new SqliteIdempotencyRepository(kysely);
+  const sessions = new KyselySessionRepository(kysely, sqliteConstraintErrorMapper);
+  const idempotencyRepo = new KyselyIdempotencyRepository(kysely);
 
   app = buildApp({
     sessions,

@@ -1,5 +1,7 @@
-// 幂等记录的 Kysely 实现（needs.md §4.2 requestId 去重跨重启）。
-// 与项目/会话 repository 共用同一个 Kysely/数据库实例；建表由 bootstrap.ts 的 initializeDatabase 负责。
+// 幂等记录的中立 Kysely 实现（needs.md §4.2 requestId 去重跨重启，方言无关：SQLite/PG 共用）。
+// 与项目/会话 repository 共用同一个 Kysely/数据库实例；建表由各方言 bootstrap 消费同一
+// Manifest 负责。put 使用 ON CONFLICT（Kysely 方言无关抽象，SQLite/PG 均可编译执行），
+// 正常路径不产生约束错误，故无需注入约束错误 mapper。
 
 import type { Kysely } from "kysely";
 import type { DatabaseSchema } from "./db-schema.js";
@@ -7,7 +9,7 @@ import type { IdempotencyStorePort } from "../application/ports/idempotency-stor
 
 type IdempotencyRow = { result: string };
 
-export class SqliteIdempotencyRepository implements IdempotencyStorePort {
+export class KyselyIdempotencyRepository implements IdempotencyStorePort {
   private readonly db: Kysely<DatabaseSchema>;
 
   constructor(db: Kysely<DatabaseSchema>) {

@@ -28,11 +28,14 @@ import { validateTrustProxyConfig } from "./trust-proxy-policy.js";
 import { createIdempotentStorageCloser } from "./storage-close.js";
 import { SessionDeletedError } from "../runtime/session-runtime.js";
 import { initializeDatabase } from "../storage/bootstrap.js";
+import { sqliteConstraintErrorMapper } from "../storage/sqlite-constraint-errors.js";
+import { pgConstraintErrorMapper } from "../storage/pg-constraint-errors.js";
+import { createPostgresPool, initializePostgresDatabase } from "../storage/postgres-bootstrap.js";
 import type { DatabaseSchema } from "../storage/db-schema.js";
 import type { Kysely } from "kysely";
-import { SqliteSessionRepository } from "../storage/sqlite-session-repository.js";
-import { SqliteProjectRepository } from "../storage/sqlite-project-repository.js";
-import { SqliteIdempotencyRepository } from "../storage/sqlite-idempotency-repository.js";
+import { KyselySessionRepository } from "../storage/kysely-session-repository.js";
+import { KyselyProjectRepository } from "../storage/kysely-project-repository.js";
+import { KyselyIdempotencyRepository } from "../storage/kysely-idempotency-repository.js";
 import { PiAgentAdapter, type AgentSessionLike } from "../agent/pi-agent-adapter.js";
 import { PiModelRuntimeCatalog } from "../model-adapters/pi-model-runtime-catalog.js";
 import { PiModelRuntimeCredentials } from "../model-adapters/pi-model-runtime-credentials.js";
@@ -47,8 +50,20 @@ import {
 export type StartConfig = {
   host?: string;
   port: number;
+  /**
+   * 存储方言：sqlite（默认，向后兼容）或 postgres（需显式开启）。
+   * 未配置/空白或 "sqlite" → SQLite（DatabaseSync + WAL）；"postgres" → PG Pool（需 databaseUrl）。
+   * 未知**非空**值 fail-fast，绝不静默回退。
+   */
+  storageDialect?: StorageDialect;
   /** 服务数据库路径（SQLite）；默认 dataDir/pi-agent-server.db（持久化，重启后会话列表/历史可恢复）。 */
   dbPath?: string;
+  /**
+   * PostgreSQL 连接串（仅 storageDialect=postgres 时必填，缺失 fail-fast）。
+   * 进程入口由 PI_DATABASE_URL 提供；单独设置该变量而未设 PI_STORAGE_DIALECT=postgres 时
+   * 仍按 SQLite 默认（向后兼容，绝不隐式启用 PG）。
+   */
+  databaseUrl?: string;
   /** 内网网段（来源 IP 命中即按 IP 识别身份，免 token）。 */
   intranetCidrs: string[];
   /** 公网 token → accountId 映射（pi-agent-server 签发账号，仅公网使用）。 */
@@ -75,9 +90,53 @@ export type StartConfig = {
   systemPrompt?: string;
   /** 可信代理 IP 列表（反代部署时配置；默认 false 只信 TCP 对端，避免伪造 IP 绕过内网免登录）。 */
   trustProxy?: string | string[] | boolean;
+  /**
+   * 测试注入点（生产不配置，恒定无操作）：存储初始化完成（Kysely + 三个 Repository + 默认项目
+   * + backfill）之后、buildApp 之前回调。供测试观测/注入启动中段失败，验证启动失败/成功路径的
+   * 幂等 storage close（见 tests/server/start-server-lifecycle.test.ts）。回调抛错走与生产一致的
+   * 启动失败清理路径（closeStorage 幂等销毁 + 原始错误向上抛），不改变生产行为。
+   */
+  onStorageReady?: (kysely: Kysely<DatabaseSchema>) => Promise<void> | void;
 };
 
 const THINKING_LEVELS = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+
+/** 支持的存储方言：sqlite（默认）/ postgres（显式开启）。 */
+export type StorageDialect = "sqlite" | "postgres";
+
+/** startServer 解析后的存储形态：SQLite（dbPath）或 PostgreSQL（数据库连接串）。 */
+export type ResolvedStorage =
+  | { dialect: "sqlite"; dbPath: string }
+  | { dialect: "postgres"; databaseUrl: string };
+
+/**
+ * 解析并校验存储配置（fail-fast，不静默回退）：
+ * - 未指定 storageDialect、空串或仅空白（如进程入口 PI_STORAGE_DIALECT= 或 "   "）→
+ *   归一化为未配置 → SQLite（默认，向后兼容；即便配置了 databaseUrl 也不启用 PG）；
+ * - 显式 "sqlite" → SQLite；
+ * - "postgres" → 必须提供非空 databaseUrl，否则抛错拒绝启动；
+ * - 未知**非空**方言值 → 抛错拒绝启动（空/空白不 fail-fast，未知有内容的值 fail-fast）。
+ */
+export function resolveStorageConfig(
+  config: Pick<StartConfig, "storageDialect" | "databaseUrl" | "dbPath">,
+  defaultDbPath: string,
+): ResolvedStorage {
+  // 空/空白（含 '   '）归一化为未配置：不抛错、走 SQLite 默认；未知且非空的值仍 fail-fast。
+  const rawDialect = config.storageDialect;
+  const dialect = rawDialect === undefined || rawDialect.trim() === "" ? "sqlite" : rawDialect;
+  if (dialect !== "sqlite" && dialect !== "postgres") {
+    throw new Error(`未知存储方言：${String(dialect)}（仅支持 sqlite / postgres，不静默回退）`);
+  }
+  if (dialect === "sqlite") {
+    return { dialect: "sqlite", dbPath: config.dbPath ?? defaultDbPath };
+  }
+  if (config.databaseUrl === undefined || config.databaseUrl.trim() === "") {
+    throw new Error(
+      "storageDialect=postgres 需要非空 databaseUrl（环境变量 PI_DATABASE_URL），缺失时拒绝启动（不静默回退 SQLite）",
+    );
+  }
+  return { dialect: "postgres", databaseUrl: config.databaseUrl };
+}
 
 /** startServer 默认路径解析所需的配置子集。 */
 export type ServerPathConfig = Pick<
@@ -119,6 +178,8 @@ export function resolveServerPaths(config: ServerPathConfig = {}): ResolvedServe
 export async function startServer(config: StartConfig) {
   validateTrustProxyConfig(config.trustProxy, config.intranetCidrs);
   const { cwd, dataDir, agentDir, authPath, dbPath, modelsPath } = resolveServerPaths(config);
+  // 存储方言 + 连接配置先于任何资源创建/网络访问解析（fail-fast：PG URL 缺失/未知方言在此抛错）。
+  const storage = resolveStorageConfig(config, dbPath);
 
   // 模型运行时：凭证默认读个人 ~/.pi/agent/auth.json（与 pi CLI 共用，OAuth token 临近过期时 SDK 会自动
   // 刷新并回写该文件，同文件带锁并发安全）；生产部署可用 PI_AUTH_PATH 指向服务端独立凭证。
@@ -250,12 +311,10 @@ export async function startServer(config: StartConfig) {
   // 会话元数据索引（SQLite）：默认落在 dataDir 下持久化，重启后经 piSessionFile 恢复 JSONL 历史。
   // timeout=5000：写锁等待（多连接/多进程并发写冲突时等待而非立即 SQLITE_BUSY）；
   // enableForeignKeyConstraints：开启外键约束检查（sessions.project_id → projects.id ON DELETE CASCADE）。
-  const db = new DatabaseSync(dbPath, {
-    timeout: 5000,
-    enableForeignKeyConstraints: true,
-  });
+  // 上述 SQLite 专有选项仅在该方言分支生效；PG 用 Pool（PostgresDialect），FK/并发语义由 PG 自身保证。
   // 幂等 storage close：成功路径（app.close 上的 onClose）与失败路径（schema 初始化后 / listen 抛错）
-  // 共用同一 closer，保证 Kysely/DatabaseSync 在整个生命周期内恰好销毁/关闭一次，不重复、不遗漏。
+  // 共用同一 closer，保证 Kysely/底层存储在整个生命周期内恰好销毁/关闭一次，不重复、不遗漏。
+  // PG 场景 destroy 会调用 pool.end()（Kysely PostgresDriver.destroy → pool.end）。
   let kysely: Kysely<DatabaseSchema> | null = null;
   const closeStorage = createIdempotentStorageCloser(async () => {
     if (kysely) await kysely.destroy();
@@ -263,12 +322,28 @@ export async function startServer(config: StartConfig) {
 
   let app: FastifyInstance;
   try {
-    // 初始化 Kysely + 空数据库 schema bootstrap（WAL、建表/索引/外键都在 bootstrap.ts 内；
-    // 不写默认项目，也不做任何旧库兼容/版本化迁移——RC 阶段旧数据直接删除）。
-    kysely = await initializeDatabase(db);
+    // 按存储方言构造 DatabaseSync+SQLite 或 Pool+PG bootstrap，再注入同一中立 Repository
+    // （KyselyProjectRepository / KyselySessionRepository / KyselyIdempotencyRepository）；
+    // 方言约束错误 mapper 随方言注入，Repository 本身不识别任何底层错误码。
+    if (storage.dialect === "postgres") {
+      const pool = createPostgresPool(storage.databaseUrl);
+      // 初始化 Kysely + 空数据库 schema bootstrap（建表/索引/外键都由 postgres-bootstrap 消费同一 Manifest）；
+      // 失败路径内部先 destroy（同时释放 Pool）再抛原始错误。
+      kysely = await initializePostgresDatabase(pool);
+    } else {
+      const db = new DatabaseSync(storage.dbPath, {
+        timeout: 5000,
+        enableForeignKeyConstraints: true,
+      });
+      // 初始化 Kysely + 空数据库 schema bootstrap（WAL、建表/索引/外键都在 bootstrap.ts 内；
+      // 不写默认项目，也不做任何旧库兼容/版本化迁移——RC 阶段旧数据直接删除）。
+      kysely = await initializeDatabase(db);
+    }
+    const constraintMapper =
+      storage.dialect === "postgres" ? pgConstraintErrorMapper : sqliteConstraintErrorMapper;
     // 三个 Repository 共享同一 Kysely 实例；默认项目在 schema 初始化后经 ensureDefaultProject 创建
-    // （INSERT OR IGNORE 幂等：不覆盖既有默认项目；异常既有行 fail-fast）。
-    const projects = new SqliteProjectRepository(kysely);
+    // （INSERT … ON CONFLICT DO NOTHING 幂等：不覆盖既有默认项目；异常既有行 fail-fast）。
+    const projects = new KyselyProjectRepository(kysely, constraintMapper);
     await projects.ensureDefaultProject({
       id: DEFAULT_PROJECT_ID,
       name: "默认项目",
@@ -276,11 +351,14 @@ export async function startServer(config: StartConfig) {
       ownerKey: "",
       createdAt: 0,
     });
-    const sessions = new SqliteSessionRepository(kysely);
+    const sessions = new KyselySessionRepository(kysely, constraintMapper);
     // 已存在会话（同 schema 旧运行）没有可恢复的独立副本；以 Pi 当前默认提示词补齐一次，
     // 后续服务端配置变化不会覆盖已写入的会话值。
     await sessions.backfillSystemPrompt(defaultSystemPrompt);
-    const idempotencyRepo = new SqliteIdempotencyRepository(kysely);
+    const idempotencyRepo = new KyselyIdempotencyRepository(kysely);
+    // 测试注入点（生产不传，无操作）：存储初始化完成后、buildApp 前回调，用于验证
+    // 启动失败/成功路径的幂等 storage close（抛错即进入下方 catch 的统一清理路径）。
+    await config.onStorageReady?.(kysely);
 
     const authenticate = buildAuthenticate({
       intranetCidrs: config.intranetCidrs,

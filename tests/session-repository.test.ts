@@ -1,21 +1,31 @@
-import { describe, it, expect } from "vitest";
+import { afterEach, describe, it, expect } from "vitest";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { identityKey } from "../src/core/user-identity.js";
 import type { SessionRecord } from "../src/application/ports/session-store-port.js";
-import { SqliteSessionRepository } from "../src/storage/sqlite-session-repository.js";
+import { KyselySessionRepository } from "../src/storage/kysely-session-repository.js";
 import { DEFAULT_PROJECT_ID } from "../src/application/ports/project-store-port.js";
-import { initStorage, makeInitializedMemoryDb } from "./helpers/sqlite.js";
+import { DuplicateIdError, ProjectForeignKeyError } from "../src/application/ports/store-errors.js";
+import { initStorage, makeInitializedMemoryDb, type SqliteTestStorage } from "./helpers/sqlite.js";
 
 function makeDb(): DatabaseSync {
   return new DatabaseSync(":memory:");
 }
 
-async function makeRepo(db: DatabaseSync = makeDb()): Promise<SqliteSessionRepository> {
-  // 真实初始化路径负责建表/索引/外键/默认项目；测试不绕过初始化。
-  return (await initStorage(db)).sessions;
+// M2 资源所有权：所有已初始化 fixture 在 afterEach 按真实所有权关闭（统一 Kysely destroy close，
+// 不直接 db.close() 绕过 Kysely）。
+const openStorages: Array<{ close: () => Promise<void> }> = [];
+afterEach(async () => {
+  while (openStorages.length) await openStorages.pop()!.close();
+});
+
+async function makeRepo(db: DatabaseSync = makeDb()): Promise<KyselySessionRepository> {
+  // 真实初始化路径负责建表/索引/外键/默认项目；测试不绕过初始化。fixture 由 afterEach 统一 close。
+  const storage = await initStorage(db);
+  openStorages.push(storage);
+  return storage.sessions;
 }
 
 function makeRecord(overrides: Partial<SessionRecord> = {}): SessionRecord {
@@ -49,6 +59,36 @@ describe("会话索引存储（needs.md §4.1 / §4.2，SQLite 实现）", () =>
       const repo = await makeRepo();
       expect(await repo.get("no-such-id")).toBeNull();
     });
+
+    it("create 撞主键（重复 id）时转换为存储无关的 DuplicateIdError 并保留原始 cause", async () => {
+      const repo = await makeRepo();
+      const rec = makeRecord({ id: "s-dup" });
+      await repo.create(rec);
+
+      const err = await repo.create(rec).then(() => null, (e: unknown) => e);
+      expect(err).toBeInstanceOf(DuplicateIdError);
+      expect((err as DuplicateIdError).message).toMatch(/主键/);
+      // 原始 SQLite 约束错误保留在 cause（1555 = SQLITE_CONSTRAINT_PRIMARYKEY）
+      expect((((err as DuplicateIdError).cause) as { errcode?: number }).errcode).toBe(1555);
+    });
+
+    it("非 id 列的 2067 唯一约束冲突原样抛出（不映射为 DuplicateIdError）", async () => {
+      const storage = await makeInitializedMemoryDb();
+      openStorages.push(storage);
+      const { db, sessions: repo } = storage;
+      // 在已有非 id 列上创建唯一索引，模拟未来新增唯一约束
+      db.exec("CREATE UNIQUE INDEX idx_test_title ON sessions(title)");
+      await repo.create(makeRecord({ id: "s-nid1", title: "唯一标题" }));
+
+      const err = await repo
+        .create(makeRecord({ id: "s-nid2", title: "唯一标题" }))
+        .then(() => null, (e: unknown) => e);
+      // 非 id 唯一约束错误必须原样抛出，不映射为 DuplicateIdError
+      expect(err).toBeDefined();
+      expect(err).not.toBeInstanceOf(DuplicateIdError);
+      expect((err as { errcode?: number }).errcode).toBe(2067);
+      expect((err as Error).message).toMatch(/sessions\.title/);
+    });
   });
 
   describe("listByOwner", () => {
@@ -74,6 +114,7 @@ describe("会话索引存储（needs.md §4.1 / §4.2，SQLite 实现）", () =>
     it("按 owner + project 双重过滤", async () => {
       const db = makeDb();
       const storage = await initStorage(db);
+      openStorages.push(storage);
       const owner = identityKey({ kind: "account", accountId: "acct-1" });
       const projects = storage.projects;
       await projects.create({ id: "p1", name: "P1", cwd: "/tmp/p1", ownerKey: owner, createdAt: 1 });
@@ -193,39 +234,41 @@ describe("会话索引存储（needs.md §4.1 / §4.2，SQLite 实现）", () =>
       const dir = mkdtempSync(join(tmpdir(), "pi-session-repo-"));
       const dbFile = join(dir, "sessions.db");
       const db = new DatabaseSync(dbFile);
+      const storage = await initStorage(db);
       try {
-        await initStorage(db);
         const row = db.prepare("PRAGMA journal_mode").get() as { journal_mode?: string };
         expect(row?.journal_mode).toBe("wal");
       } finally {
-        db.close();
+        await storage.close(); // 按真实所有权经 Kysely destroy 关闭（不直接 db.close() 绕过）
         rmSync(dir, { recursive: true, force: true });
       }
     });
 
     it(":memory: 数据库不启用 WAL（保持 memory 模式）", async () => {
       const db = makeDb();
+      const storage = await initStorage(db);
       try {
-        await initStorage(db);
         const row = db.prepare("PRAGMA journal_mode").get() as { journal_mode?: string };
         expect(row?.journal_mode).toBe("memory");
       } finally {
-        db.close();
+        await storage.close();
       }
     });
   });
 
   describe("外键约束（由初始化建立）", () => {
-    it("插入 project_id 指向不存在项目时抛真实 errcode 787（SQLITE_CONSTRAINT_FOREIGNKEY）", async () => {
-      const { sessions: repo } = await makeInitializedMemoryDb();
-      let caught: unknown;
-      try {
-        await repo.create(makeRecord({ id: "s-ghost", projectId: "ghost-project" }));
-      } catch (error) {
-        caught = error;
-      }
-      expect(caught).toBeDefined();
-      expect((caught as { errcode?: number }).errcode).toBe(787);
+    it("create 撞 project_id 外键（项目已被删）时转换为存储无关 ProjectForeignKeyError 并保留原始 cause（errcode=787）", async () => {
+      const repo = await makeRepo();
+
+      const err = await repo
+        .create(makeRecord({ id: "s-ghost", projectId: "ghost-project" }))
+        .then(() => null, (e: unknown) => e);
+
+      expect(err).toBeInstanceOf(ProjectForeignKeyError);
+      expect(err).not.toBeInstanceOf(DuplicateIdError);
+      expect((err as Error).message).toMatch(/外键/);
+      // 原始 SQLite 外键约束错误保留在 cause（787 = SQLITE_CONSTRAINT_FOREIGNKEY）
+      expect((((err as ProjectForeignKeyError).cause) as { errcode?: number }).errcode).toBe(787);
     });
   });
 });

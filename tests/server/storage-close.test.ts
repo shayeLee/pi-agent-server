@@ -25,8 +25,10 @@ describe("幂等 storage close（createIdempotentStorageCloser / startServer 存
 
   it("并发两次 close 共享同一个 destroy 完成结果（destroy 只执行一次）", async () => {
     let destroys = 0;
-    let releaseDestroy: (() => void) | null = null;
-    const gate = new Promise<void>((resolve) => (releaseDestroy = resolve));
+    // 初值用 no-op：Promise executor 同步执行，随后被 resolve 替换（保持可空语义的同时
+    // 避免 let/null-only-闭包赋值的类型收窄问题）。
+    let releaseDestroy: () => void = () => {};
+    const gate = new Promise<void>((resolve) => { releaseDestroy = resolve; });
     const close = createIdempotentStorageCloser(async () => {
       destroys += 1;
       await gate;
@@ -38,7 +40,7 @@ describe("幂等 storage close（createIdempotentStorageCloser / startServer 存
     // 两个并发 caller 拿到的是同一个 in-flight Promise，等待同一次 destroy 完成
     expect(second).toBe(first);
 
-    releaseDestroy?.();
+    releaseDestroy();
     await Promise.all([first, second]);
     expect(destroys).toBe(1);
     // 完成后再次调用是 no-op，不触发第二次 destroy

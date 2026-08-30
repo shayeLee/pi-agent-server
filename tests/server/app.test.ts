@@ -6,7 +6,6 @@ import type { Authenticate } from "../../src/server/auth.js";
 import { identityKey, type UserIdentity } from "../../src/core/user-identity.js";
 import type { SessionRecord, SessionStorePort } from "../../src/application/ports/session-store-port.js";
 import type { ModelCatalogPort } from "../../src/application/ports/model-catalog-port.js";
-import { SqliteSessionRepository } from "../../src/storage/sqlite-session-repository.js";
 import { MockAgentAdapter } from "../../src/agent/mock-agent-adapter.js";
 import { DEFAULT_PROJECT_ID } from "../../src/application/ports/project-store-port.js";
 import { makeInitializedMemoryDb } from "../helpers/sqlite.js";
