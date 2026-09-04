@@ -166,11 +166,11 @@ describe("逻辑列类型 → 方言物理类型映射（同一 Manifest，SQLit
 });
 
 describe("bootstrapSchemaFromManifest（spy Kysely，PG 类型映射）", () => {
-  it("按 Manifest 顺序建 3 张表：列物理类型（uuid/text→TEXT 同构、integer→BIGINT、json→TEXT）、FK、复合主键、索引", async () => {
+  it("按 Manifest 顺序建 4 张表：列物理类型（uuid/text→TEXT 同构、integer→BIGINT、json→TEXT）、FK、复合主键、索引", async () => {
     const { kysely, tables, indexes } = createSpyKysely();
     await bootstrapSchemaFromManifest(kysely, POSTGRES_LOGICAL_TYPE);
 
-    expect(tables.map((t) => t.name)).toEqual(["projects", "sessions", "idempotency"]);
+    expect(tables.map((t) => t.name)).toEqual(["projects", "sessions", "idempotency", "file_operations"]);
 
     const projects = tables[0]!;
     expect(projects.columns).toEqual([
@@ -221,12 +221,14 @@ describe("bootstrapSchemaFromManifest（spy Kysely，PG 类型映射）", () => 
       ["created_at", "bigint"],
     ]);
 
-    // 4 个索引：名称/表/列（含 updated_at DESC 排序语义）/unique
+    // 6 个索引：名称/表/列（含 updated_at DESC）/unique
     expect(indexes.map((i) => [i.name, i.table, i.columns, i.unique])).toEqual([
       ["idx_projects_owner", "projects", ["owner_key"], false],
       ["idx_sessions_owner_updated", "sessions", ["owner_key", "updated_at desc"], false],
       ["idx_sessions_owner_project", "sessions", ["owner_key", "project_id"], false],
       ["idx_idempotency_created_at", "idempotency", ["created_at"], false],
+      ["idx_file_operations_key", "file_operations", ["operation_key"], true],
+      ["idx_file_operations_claim", "file_operations", ["state", "available_at"], false],
     ]);
   });
 
@@ -277,8 +279,8 @@ describe("createTableFromManifest 防御性 PK notNull（schema-builder 方言�
 
   it("Manifest 声明仍是唯一来源：schemaManifest 表/索引数量与 DDL builder 消费的完全一致", () => {
     const manifest = schemaManifest.tables;
-    expect(manifest).toHaveLength(3);
+    expect(manifest).toHaveLength(4);
     const indexCount = manifest.reduce((n, t) => n + (t.indexes?.length ?? 0), 0);
-    expect(indexCount).toBe(4);
+    expect(indexCount).toBe(6);
   });
 });

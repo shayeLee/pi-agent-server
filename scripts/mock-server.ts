@@ -16,6 +16,8 @@ import { createIdempotentStorageCloser } from "../src/server/storage-close.js";
 import { KyselySessionRepository } from "../src/storage/kysely-session-repository.js";
 import { KyselyProjectRepository } from "../src/storage/kysely-project-repository.js";
 import { KyselyIdempotencyRepository } from "../src/storage/kysely-idempotency-repository.js";
+import { KyselyFileOperationRepository } from "../src/storage/kysely-file-operation-repository.js";
+import { relativeWhitelistedPath } from "../src/storage/file-operation-policy.js";
 import { DEFAULT_PROJECT_ID } from "../src/application/ports/project-store-port.js";
 import { MockAgentAdapter } from "../src/agent/mock-agent-adapter.js";
 
@@ -41,9 +43,14 @@ let app;
 try {
   kysely = await initializeDatabase(db);
   // mock 保持 SQLite memory（与生产 start.ts 的 dialect 组合根同一套中立 Repository + SQLite mapper）。
-  const projects = new KyselyProjectRepository(kysely, sqliteConstraintErrorMapper);
+  const fileOperations = new KyselyFileOperationRepository(kysely, "sqlite");
+  const fileOperationOptions = {
+    fileOperations,
+    relativePath: (filePath: string) => relativeWhitelistedPath(MOCK_CWD, filePath),
+  } as const;
+  const projects = new KyselyProjectRepository(kysely, sqliteConstraintErrorMapper, fileOperationOptions);
   await projects.ensureDefaultProject(MOCK_SEED);
-  const sessions = new KyselySessionRepository(kysely, sqliteConstraintErrorMapper);
+  const sessions = new KyselySessionRepository(kysely, sqliteConstraintErrorMapper, fileOperationOptions);
   const idempotencyRepo = new KyselyIdempotencyRepository(kysely);
 
   app = buildApp({

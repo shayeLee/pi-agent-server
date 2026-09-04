@@ -8,7 +8,7 @@
 // - Manifest 仍是 schema 的唯一手工来源（schema-manifest.ts）；本文件并不是第二份 DDL。
 
 import { Kysely, type ColumnDefinitionBuilder, type CreateTableBuilder, type ForeignKeyConstraintBuilder } from "kysely";
-import { schemaManifest, type LogicalColumnType, type TableManifest } from "./schema-manifest.js";
+import { schemaManifest, type LogicalColumnType, type SchemaManifest, type TableManifest } from "./schema-manifest.js";
 import type { DatabaseSchema } from "./db-schema.js";
 
 /**
@@ -20,6 +20,19 @@ export type PhysicalColumnType = "text" | "integer" | "uuid" | "bigint";
 
 /** 逻辑列类型 → 物理类型名（方言特定），由 SQLite/PG 各自的 bootstrap 提供。 */
 export type LogicalTypeMap = Readonly<Record<LogicalColumnType, PhysicalColumnType>>;
+
+/**
+ * 可选 bootstrap 覆盖（SQLite bootstrap.ts 与 PostgreSQL postgres-bootstrap.ts 共用）。
+ */
+export interface SchemaBootstrapOptions {
+  /**
+   * 测试/诊断 seam：preflight 与 DDL 阶段都用该 Manifest 代替生产的 schemaManifest。
+   * 注入一份「DDL 中途必失败」的 Manifest（例如某张表的索引引用不存在的列）即可验证
+   * bootstrap 的原子性：失败后整个事务回滚、数据库保持空库，换回生产 Manifest 重试成功。
+   * 生产调用方不传。
+   */
+  readonly manifest?: SchemaManifest;
+}
 
 /** 由 Manifest 表声明构建 CREATE TABLE IF NOT EXISTS（列、主键、外键）。
  *  导出：bootstrap 复用 + 测试直接验证对任意单表/任意方言类型映射的建表行为（含 PK 防御性 notNull）。 */
@@ -95,9 +108,10 @@ export async function createIndexFromManifest(
 export async function bootstrapSchemaFromManifest(
   kysely: Kysely<DatabaseSchema>,
   typeMap: LogicalTypeMap,
+  manifest: SchemaManifest = schemaManifest,
 ): Promise<void> {
   // Manifest 保留字面量类型供 DatabaseSchema 推导；bootstrap 只需表/列/约束的宽化契约。
-  const tables: readonly TableManifest[] = schemaManifest.tables;
+  const tables: readonly TableManifest[] = manifest.tables;
   for (const table of tables) {
     await createTableFromManifest(kysely, table, typeMap);
     for (const index of table.indexes ?? []) {

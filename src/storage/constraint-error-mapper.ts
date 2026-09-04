@@ -6,6 +6,8 @@
 // （DuplicateIdError / ProjectForeignKeyError，见 application/ports/store-errors.ts）。
 
 export interface ConstraintErrorMapper {
+  /** Optional dialect hint for repository transaction locking; error mapping remains the primary contract. */
+  readonly dialect?: "sqlite" | "postgres";
   /** 该错误是否为「外键约束失败」（Repository 依此先映射外键再映射 id）。 */
   isForeignKeyError(error: unknown): boolean;
   /**

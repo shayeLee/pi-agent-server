@@ -42,5 +42,7 @@ export interface SessionStorePort {
   /** 为历史会话补写首次启用此字段时的系统提示词；已有记录不可覆盖。 */
   backfillSystemPrompt(systemPrompt: string): Promise<number>;
   update(id: string, patch: SessionRecordPatch): Promise<boolean>;
+  /** 更新返回 false 表示行已被删除；lazy JSONL 创建方必须据此将已创建路径幂等 enqueue 到 file_operations。 */
+  /** 删除与 file_operations enqueue 在 repository 的同一数据库事务内完成；不执行文件副作用。 */
   delete(id: string): Promise<boolean>;
 }

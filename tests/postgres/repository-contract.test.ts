@@ -9,10 +9,12 @@
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import { Pool } from "pg";
+import { assertRequiredPgTestEnvironment } from "../../scripts/pg-test-gate.js";
 import { randomUUID } from "node:crypto";
 import { KyselyProjectRepository } from "../../src/storage/kysely-project-repository.js";
 import { KyselySessionRepository } from "../../src/storage/kysely-session-repository.js";
 import { KyselyIdempotencyRepository } from "../../src/storage/kysely-idempotency-repository.js";
+import { KyselyFileOperationRepository } from "../../src/storage/kysely-file-operation-repository.js";
 import { initializePostgresDatabase } from "../../src/storage/postgres-bootstrap.js";
 import { createPgInt8SafeTypes } from "../../src/storage/pg-int8.js";
 import { pgConstraintErrorMapper, PG_UNIQUE_VIOLATION } from "../../src/storage/pg-constraint-errors.js";
@@ -23,6 +25,7 @@ import type { Kysely } from "kysely";
 import type { DatabaseSchema } from "../../src/storage/db-schema.js";
 
 const pgUrl = process.env.PI_TEST_PG_URL?.trim() || undefined;
+assertRequiredPgTestEnvironment("tests/postgres/repository-contract", pgUrl, false);
 if (!pgUrl) {
   console.warn(
     "[postgres repository-contract] PI_TEST_PG_URL 未配置：PG 共用契约整组跳过（不尝试连接、不静默通过）；复跑见 docs/postgres-podman-test.md",
@@ -54,6 +57,7 @@ describePg("共用 Repository 行为契约（PostgreSQL，PI_TEST_PG_URL 门控�
   let projects: KyselyProjectRepository;
   let sessions: KyselySessionRepository;
   let idempotency: KyselyIdempotencyRepository;
+  let fileOperations: KyselyFileOperationRepository;
   let truncateAndReseed: () => Promise<void>;
 
   beforeAll(async () => {
@@ -61,11 +65,13 @@ describePg("共用 Repository 行为契约（PostgreSQL，PI_TEST_PG_URL 门控�
     pool = new Pool({ connectionString: withSchemaSearchPath(pgUrl!, schema), types: createPgInt8SafeTypes() });
     await pool.query(`CREATE SCHEMA ${schema}`);
     kysely = await initializePostgresDatabase(pool);
-    projects = new KyselyProjectRepository(kysely, pgConstraintErrorMapper);
-    sessions = new KyselySessionRepository(kysely, pgConstraintErrorMapper);
+    fileOperations = new KyselyFileOperationRepository(kysely, "postgres");
+    const fileOperationOptions = { fileOperations, relativePath: (filePath: string) => filePath } as const;
+    projects = new KyselyProjectRepository(kysely, pgConstraintErrorMapper, fileOperationOptions);
+    sessions = new KyselySessionRepository(kysely, pgConstraintErrorMapper, fileOperationOptions);
     idempotency = new KyselyIdempotencyRepository(kysely);
     truncateAndReseed = async () => {
-      await pool.query(`TRUNCATE TABLE idempotency, sessions, projects CASCADE`);
+      await pool.query(`TRUNCATE TABLE file_operations, idempotency, sessions, projects CASCADE`);
       await projects.ensureDefaultProject(DEFAULT_PROJECT_RECORD);
     };
   });

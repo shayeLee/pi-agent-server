@@ -4,6 +4,9 @@
 
 import { describe, it, expect } from "vitest";
 import { DatabaseSync } from "node:sqlite";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { Kysely, SqliteDialect } from "kysely";
 import { NodeSqliteAdapter } from "../../src/storage/node-sqlite-adapter.js";
 
@@ -36,6 +39,28 @@ describe("NodeSqliteAdapter（Kysely ↔ node:sqlite 兼容层）", () => {
     expect(readerOf("DELETE FROM t WHERE a = 999")).toBe(false);
     expect(readerOf("CREATE TABLE t2 (x INTEGER)")).toBe(false);
     db.close();
+  });
+
+  it("BEGIN 周围的真实空白会被改写为 BEGIN IMMEDIATE；两个独立连接竞争同一写锁", () => {
+    const root = mkdtempSync(path.join(tmpdir(), "pi-node-sqlite-lock-"));
+    const filename = path.join(root, "database.sqlite");
+    const first = new DatabaseSync(filename, { timeout: 0 });
+    const second = new DatabaseSync(filename, { timeout: 0 });
+    try {
+      const firstAdapter = new NodeSqliteAdapter(first);
+      const secondAdapter = new NodeSqliteAdapter(second);
+      firstAdapter.prepare("  BEGIN  ").run([]);
+      // If the adapter accidentally matched literal \\s instead of whitespace,
+      // this would be a deferred BEGIN and the lock would not be held yet.
+      expect(() => secondAdapter.prepare("\n\t BEGIN \r\n").run([])).toThrow(/locked|busy/i);
+      firstAdapter.prepare("ROLLBACK").run([]);
+      expect(() => secondAdapter.prepare("\n BEGIN\t").run([])).not.toThrow();
+      secondAdapter.prepare("ROLLBACK").run([]);
+    } finally {
+      first.close();
+      second.close();
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("带参数 SELECT：展开数组参数并返回行", async () => {

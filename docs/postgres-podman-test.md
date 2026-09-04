@@ -4,7 +4,8 @@
 
 ## 适用范围
 
-- **仅用于真实 PG 集成测试**（`tests/postgres/`：`postgres.integration.test.ts` + `repository-contract.test.ts`，均 `PI_TEST_PG_URL` 门控）。
+- **仅用于真实 PG 集成测试**（所有 `tests/postgres/` 测试均由 `PI_TEST_PG_URL` 门控）。
+- 本任务的三个独立 PG 门控文件是：`tests/postgres/migration-engine.test.ts`（真实 v0 migration）、`tests/postgres/migration-prebackup.test.ts`（真实 prebackup→apply→verify）和 `tests/postgres/pg-backup.test.ts`（真实 pg_dump→age→pg_restore）。
 - 适用于本地临时测试库或专用测试库场景。
 - **严禁使用生产数据库连接串。** 容器数据随容器销毁，不可用于任何需要持久化的场景。
 
@@ -25,6 +26,27 @@ podman ps            # 应显示空列表（无运行中容器）
 
 > **macOS Podman machine 与 localhost 端口转发**：Podman 在 macOS 上通过 Linux VM 运行，`-p 127.0.0.1:54329:5432` 会自动配置 VM → host 的端口转发，测试代码通过 `localhost:54329` 即可访问容器内的 PG。
 
+## WP3B2 前置：PostgreSQL client tools 与数据库权限
+
+`pnpm test:pg-backup` 会运行真实 `pg_dump`/`pg_restore`，并在 `PI_TEST_PG_URL` 指向的实例中创建、使用并删除随机命名的 source/target 临时数据库（如 `pi_w3b2_src_*` 与 `pi_restore_*`）。因此只能使用专用、可销毁的测试 PG，以及拥有 `CREATE DATABASE` / `DROP DATABASE` 权限的连接 URL；严禁使用生产或含真实数据的数据库 URL。
+
+**libpq client 的 major 必须与测试 PostgreSQL server major 完全一致**。门禁会安全执行 `SHOW server_version_num`，并解析 `pg_dump --version` 与 `pg_restore --version`；不匹配会在创建 dump 或运行 restore 前 fail-fast，不会过滤或篡改 dump。
+
+先选择要测试的 server major（下面的 16 只是示例，不是固定要求），并按同一 major 安装 client：
+
+```bash
+export PG_TEST_PG_MAJOR=16
+brew search libpq                         # 确认该 major 的 formula 是否可用
+brew install "libpq@${PG_TEST_PG_MAJOR}" # 若 Homebrew 提供版本化 formula
+export PATH="$(brew --prefix "libpq@${PG_TEST_PG_MAJOR}")/bin:$PATH"
+pg_dump --version
+pg_restore --version
+```
+
+若 Homebrew 没有对应的 `libpq@<major>` formula，请使用发行版/官方 PostgreSQL client package 安装同一 major，或把匹配版本的 `bin` 目录放在 `PATH` 前面；不要因为宿主机默认安装了更新 major 就强行使用它。
+
+两个版本命令都必须成功且 major 相同；若只在当前 shell 临时设置 `PATH`，每次复跑前都要重新执行 `export`。
+
 ## 安全启动 PostgreSQL 容器
 
 ```bash
@@ -42,7 +64,7 @@ podman run \
   -e POSTGRES_DB="$PG_TEST_DB" \
   -e POSTGRES_PASSWORD="$PG_TEST_PASSWORD" \
   -p 127.0.0.1:54329:5432 \
-  docker.io/library/postgres:16-alpine
+  docker.io/library/postgres:${PG_TEST_PG_MAJOR}-alpine
 ```
 
 **参数说明：**
@@ -53,12 +75,17 @@ podman run \
 | 无 `-v`（无 volume） | 数据仅存于容器内，随 `--rm` 销毁，不污染宿主机 |
 | `-p 127.0.0.1:54329:5432` | 仅绑定 loopback 地址，外部网络无法访问；端口 54329 避免与宿主机已有 PG 冲突 |
 
-## 就绪检查
+## 就绪检查与安全版本查询
 
 ```bash
 podman exec pi-agent-postgres-test pg_isready
 # 期望输出：localhost:5432 - accepting connections
+
+# 只输出 server_version_num（例如 160006），不需要也不打印连接串或密码
+podman exec pi-agent-postgres-test psql -U "$PG_TEST_USER" -d "$PG_TEST_DB" -Atc 'SHOW server_version_num'
 ```
+
+查询结果的 major 是 `server_version_num / 10000` 的整数部分；它必须与上面的 `pg_dump --version` 和 `pg_restore --version` major 相同。`test:pg-backup` 会再次执行同样的安全 preflight；若输出 mismatch，按错误中提示安装 matching client，而不是修改 dump。
 
 若未就绪，等待几秒后重试。PG 首次启动需要初始化，通常 2-5 秒。
 
@@ -74,13 +101,38 @@ cd /Users/mz/pi-agent-server
 # 仅运行 PG 门控测试（推荐：发布门禁 `pnpm test:postgres` 在无 URL 时非零失败，有 URL 时只跑 tests/postgres/**）
 volta run pnpm test:postgres
 
+# WP3B2 真实 pg_dump/pg_restore + age backup gate
+volta run pnpm test:pg-backup
+
 # 或者跑全量测试（设置 PI_TEST_PG_URL 后 tests/postgres 也真实执行，不再以 skip 呈现）
 volta run pnpm test
 ```
 
-**复跑 PG 门控测试**：设置 `PI_TEST_PG_URL` 后，`tests/postgres/` 两个门控文件的用例将真实连接 PG 执行，不再以 skip 呈现——用于复跑/重新验证真实验收（当前扩展门控共 45 个：`postgres.integration.test.ts` 21 个 + `repository-contract.test.ts` 24 个，已由 `volta run pnpm verify:release`（真实 PG URL）全部通过，结论见 [database-design.md](database-design.md) §9；本流程亦可随时用于重新验证）。用例数以当次 reporter 输出为准，不在本文固定。
+**复跑 PG 门控测试**：设置 `PI_TEST_PG_URL` 后，`tests/postgres/` 下的存储、migration、prebackup 与 backup 门控会真实连接执行，不再以 skip 呈现；用例数以当次 reporter 输出为准，不在本文固定。历史存储集成门控（`postgres.integration.test.ts` + `repository-contract.test.ts`）曾由 `volta run pnpm verify:release` 在真实 PG URL 下通过，结论见 [database-design.md](database-design.md) §9；本流程亦可随时重新验证。
 
-**隔离说明**：每个测试文件使用随机 schema（`pi_test_*`）+ `search_path` 隔离；每用例前 `TRUNCATE TABLE idempotency, sessions, projects CASCADE`（用例顺序无关）；Pool 关闭用例自建独立 Pool/Kysely，不销毁共享 fixture；`afterAll` 仅 drop 自己创建的随机 schema。
+**三个 PG 门控的独立命令**（均要求 `PI_TEST_PG_URL`；缺失 URL 或 age/`pg_dump`/`pg_restore` 等必需依赖时必须非零失败，不能把 skip 称为通过）：`test:postgres` 覆盖 `tests/postgres/` 全部 PG 文件，因此同样执行完整工具门禁；runner 会向子进程设置 required 标志，并用 Vitest reporter 证据确认实际用例执行，普通 root `pnpm test` 不设置该标志、仍可条件 skip。
+
+```bash
+cd /Users/mz/pi-agent-server
+export PI_TEST_PG_URL="postgresql://${PG_TEST_USER}:${PG_TEST_PASSWORD}@127.0.0.1:54329/${PG_TEST_DB}"
+
+# migration engine（包含 migration-engine.test.ts；同时运行 tests/postgres 下全部 PG 集成门控）
+volta run pnpm test:postgres
+# WP3C：migration-prebackup.test.ts
+volta run pnpm test:migration-prebackup
+# WP3B2：pg-backup.test.ts
+volta run pnpm test:pg-backup
+```
+
+`test:migration-prebackup` 会先检查 age、`pg_dump`、`pg_restore` 与 server major，然后在专用数据库的随机 schema（仅 schema 隔离）的从未迁移状态执行真实 prebackup→v0 apply→verify；测试断言 prebackup manifest 的 ledger version 为 null/empty，之后数据库 ledger 为 v0/pending=0。该命令只创建并清理自己创建的随机 schema 和临时备份目录，不创建 source/target database；失败后请确认测试 PG 是专用可销毁实例，再检查残留 schema。需要完整当前发布门禁时运行 `volta run pnpm verify:release`。
+
+**隔离与清理说明（按测试类型分别适用）**：
+
+- **storage integration**（`postgres.integration.test.ts`、`repository-contract.test.ts` 等）：在测试 URL 指定的专用数据库内使用每文件/fixture 的随机 schema 与 `search_path`；测试按约定清理自己创建的 schema，绝不 drop `public` 或任意外部 schema。普通 root `pnpm test` 未配置 URL 时仍可条件 skip。
+- **migration prebackup**（`migration-prebackup.test.ts`）：在专用数据库中创建随机 schema，并将连接限定到该 schema；用例结束后只 `DROP SCHEMA ... CASCADE` 自己创建的 schema，同时关闭 Pool/Kysely 和临时备份目录。schema 初始不含业务表，用来验证 prebackup→apply→verify 的真实顺序。
+- **backup/restore**（`pg-backup.test.ts`）：由 fixture/运维连接创建随机命名的 source DB（`pi_w3b2_src_*`）和 target DB（`pi_restore_*`）；source 用于真实 `pg_dump`，target 必须是新建且为空的安全目标，恢复完成或失败后由 runner/test 的 `afterAll`/`finally` 删除各自数据库并清理临时 age、dump、JSONL 目录。core 不自动 drop 或创建数据库，也不触碰 public/外部数据库。
+
+失败后请确认测试 URL 指向专用可销毁实例，再检查是否有残留随机 schema/database；不要把生产库用于任何一个门控。
 
 ## 清理
 
@@ -109,7 +161,7 @@ podman run \
   -e POSTGRES_DB="$PG_TEST_DB" \
   -e POSTGRES_PASSWORD="$PG_TEST_PASSWORD" \
   -p 127.0.0.1:54330:5432 \
-  docker.io/library/postgres:16-alpine
+  docker.io/library/postgres:${PG_TEST_PG_MAJOR}-alpine
 
 # URL 同步修改
 export PI_TEST_PG_URL="postgresql://${PG_TEST_USER}:${PG_TEST_PASSWORD}@127.0.0.1:54330/${PG_TEST_DB}"

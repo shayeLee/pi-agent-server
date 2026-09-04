@@ -49,3 +49,5 @@ type _AssertSessionsPiSessionFile = Assert<Equal<DatabaseSchema["sessions"]["pi_
 type _AssertSessionsProjectId = Assert<Equal<DatabaseSchema["sessions"]["project_id"], string>>;
 type _AssertIdempotencyResult = Assert<Equal<DatabaseSchema["idempotency"]["result"], string>>;
 type _AssertIdempotencyPkCols = Assert<Equal<keyof DatabaseSchema["idempotency"], "session_id" | "request_id" | "result" | "created_at">>;
+type _AssertFileOperationRelativePath = Assert<Equal<DatabaseSchema["file_operations"]["relative_path"], string>>;
+type _AssertFileOperationLeaseUntil = Assert<Equal<DatabaseSchema["file_operations"]["lease_until"], number | null>>;

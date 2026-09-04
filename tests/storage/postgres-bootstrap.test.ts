@@ -14,6 +14,7 @@ import {
   initializePostgresDatabase,
 } from "../../src/storage/postgres-bootstrap.js";
 import type { DatabaseSchema } from "../../src/storage/db-schema.js";
+import type { SchemaManifest } from "../../src/storage/schema-manifest.js";
 import type { Pool } from "pg";
 
 describe("PG Pool 生命周期（无网络：用 fake Pool/Client 驱动完整 init→query→destroy 链）", () => {
@@ -70,5 +71,88 @@ describe("PG Pool 生命周期（无网络：用 fake Pool/Client 驱动完整 i
     expect(() => parser("9223372036854775807")).toThrow(/超出 JS 安全整数范围/);
     // 非 int8（int4）仍用默认解析
     expect(types!.getTypeParser!(23)("42")).toBe(42);
+  });
+});
+
+// -------------------------------------------------------------------------
+// 原子 bootstrap（P1）：preflight + 完整 DDL 在同一个 transaction 内执行；事务先取
+// transaction-scoped advisory lock（按当前数据库键控）。中途 DDL 失败 → ROLLBACK（绝无
+// COMMIT），数据库保持空库；重试（生产 Manifest）成功并 COMMIT。
+// -------------------------------------------------------------------------
+
+/** 注入一份 DDL 中途必失败的 Manifest（索引引用不存在的列；raw 字面量绕过 defineSchema 校验）。 */
+function brokenBootstrapManifest(): SchemaManifest {
+  return {
+    tables: [
+      {
+        name: "t_first",
+        columns: [{ name: "id", type: "uuid", nullable: false }],
+        primaryKey: { columns: ["id"] },
+        foreignKeys: [],
+        indexes: [],
+      },
+      {
+        name: "t_second",
+        columns: [{ name: "id", type: "uuid", nullable: false }],
+        primaryKey: { columns: ["id"] },
+        foreignKeys: [],
+        indexes: [{ name: "idx_t_second_missing", columns: [{ name: "missing_column" }] }],
+      },
+    ],
+  };
+}
+
+/** fake Pool/Client：记录全部 SQL，可指定「CREATE INDEX 必失败」以注入 DDL 中途失败。 */
+function recordingPool(options: { failOnCreateIndex?: boolean } = {}): {
+  pool: Pool;
+  queries: string[];
+} {
+  const queries: string[] = [];
+  const client = {
+    async query(text: string) {
+      queries.push(text);
+      if (options.failOnCreateIndex && /create index/i.test(text)) {
+        throw new Error('column "missing_column" does not exist');
+      }
+      return { rows: [] };
+    },
+    release() {},
+  };
+  const pool = {
+    options: {},
+    connect: () => Promise.resolve(client),
+    end: async () => {},
+  } as unknown as Pool;
+  return { pool, queries };
+}
+
+describe("PG 原子 bootstrap：advisory lock + 事务回滚 + 重试", () => {
+  it("中途 DDL 失败 → 事务回滚（无 COMMIT）、先取 advisory lock（按当前库键控）才 preflight", async () => {
+    const recording = recordingPool({ failOnCreateIndex: true });
+    await expect(initializePostgresDatabase(recording.pool, { manifest: brokenBootstrapManifest() }))
+      .rejects.toThrow(/missing_column/);
+
+    // 事务内先 begin、再 advisory lock、再 catalog preflight：
+    const beginIndex = recording.queries.findIndex((q) => q.startsWith("begin"));
+    const lockIndex = recording.queries.findIndex((q) => q.includes("pg_advisory_xact_lock"));
+    const catalogIndex = recording.queries.findIndex((q) => q.includes("information_schema.tables"));
+    expect(beginIndex).toBeGreaterThanOrEqual(0);
+    expect(beginIndex).toBeLessThan(lockIndex);
+    expect(lockIndex).toBeLessThan(catalogIndex);
+    // 锁 scope 按当前数据库名键控（不跨库互锁）：
+    expect(recording.queries[lockIndex]).toMatch(/current_database\(\)/);
+    // 失败事务：回滚且绝不 COMMIT：
+    expect(recording.queries).toContain("rollback");
+    expect(recording.queries).not.toContain("commit");
+  });
+
+  it("回滚后可用生产 Manifest 重试成功（COMMIT、无 ROLLBACK）", async () => {
+    const retry = recordingPool();
+    const kysely = await initializePostgresDatabase(retry.pool);
+    expect(retry.queries).toContain("commit");
+    expect(retry.queries).not.toContain("rollback");
+    // 完整 DDL 跑过（含生产 schema 的显式索引）：
+    expect(retry.queries.some((q) => /create index/i.test(q) && q.includes("idx_projects_owner"))).toBe(true);
+    await kysely.destroy();
   });
 });

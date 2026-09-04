@@ -4,7 +4,7 @@
 // 方言约束错误映射由构造函数注入 ConstraintErrorMapper（SQLite/PG 各自实现），
 // 本类不识别任何底层错误码。
 
-import type { Kysely } from "kysely";
+import { sql, type Kysely } from "kysely";
 import {
   DEFAULT_PROJECT_ID,
   type ProjectRecord,
@@ -12,6 +12,9 @@ import {
 } from "../application/ports/project-store-port.js";
 import type { DatabaseSchema } from "./db-schema.js";
 import type { ConstraintErrorMapper } from "./constraint-error-mapper.js";
+import { KyselyFileOperationRepository, type FileOperationTransactionWriter } from "./kysely-file-operation-repository.js";
+import { relativeWhitelistedPath, sessionDeleteOperationKey } from "./file-operation-policy.js";
+import { withSqliteWriteLock } from "./sqlite-write-lock.js";
 
 // 表行形态直接引用由 Schema Manifest 推导的 DatabaseSchema（无第二份手工声明）。
 type ProjectRow = DatabaseSchema["projects"];
@@ -26,13 +29,30 @@ function toRecord(row: ProjectRow): ProjectRecord {
   };
 }
 
+export interface KyselyProjectRepositoryOptions {
+  /** 共享的 file_operations writer；必须与本 repository 使用同一 Kysely/事务。 */
+  readonly fileOperations?: FileOperationTransactionWriter;
+  /** 将 DB 中的历史绝对 pi_session_file 转为 DATA_DIR 下的相对白名单路径。 */
+  readonly relativePath?: (filePath: string) => string;
+  /** PG must use FOR UPDATE; SQLite storage uses BEGIN IMMEDIATE in its adapter. */
+  readonly dialect?: "sqlite" | "postgres";
+}
+
 export class KyselyProjectRepository implements ProjectStorePort {
   private readonly db: Kysely<DatabaseSchema>;
   private readonly constraintMapper: ConstraintErrorMapper;
+  private readonly fileOperations: FileOperationTransactionWriter;
+  private readonly relativePath: (filePath: string) => string;
+  private readonly dialect: "sqlite" | "postgres";
 
-  constructor(db: Kysely<DatabaseSchema>, constraintMapper: ConstraintErrorMapper) {
+  constructor(db: Kysely<DatabaseSchema>, constraintMapper: ConstraintErrorMapper, options: KyselyProjectRepositoryOptions = {}) {
     this.db = db;
     this.constraintMapper = constraintMapper;
+    this.fileOperations = options.fileOperations ?? new KyselyFileOperationRepository(db);
+    this.relativePath = options.relativePath ?? ((filePath) => relativeWhitelistedPath("/", filePath));
+    this.dialect = options.dialect ??
+      (options.fileOperations instanceof KyselyFileOperationRepository ? options.fileOperations.dialect : undefined) ??
+      constraintMapper.dialect ?? "sqlite";
   }
 
   async create(record: ProjectRecord): Promise<void> {
@@ -40,21 +60,23 @@ export class KyselyProjectRepository implements ProjectStorePort {
     if (record.id === DEFAULT_PROJECT_ID) {
       throw new Error("默认项目 id 由 ensureDefaultProject 独占，不可通过 create 写入");
     }
-    try {
-      await this.db
-        .insertInto("projects")
-        .values({
-          id: record.id,
-          name: record.name,
-          cwd: record.cwd,
-          owner_key: record.ownerKey,
-          created_at: record.createdAt,
-        })
-        .execute();
-    } catch (error) {
-      // 撞主键/唯一约束 → 存储无关 DuplicateIdError（应用层有界重试）；其余错误原样抛出
-      this.constraintMapper.throwDuplicateIdOrOriginal(error, "projects");
-    }
+    await this.withWriteLock(async () => {
+      try {
+        await this.db
+          .insertInto("projects")
+          .values({
+            id: record.id,
+            name: record.name,
+            cwd: record.cwd,
+            owner_key: record.ownerKey,
+            created_at: record.createdAt,
+          })
+          .execute();
+      } catch (error) {
+        // 撞主键/唯一约束 → 存储无关 DuplicateIdError（应用层有界重试）；其余错误原样抛出
+        this.constraintMapper.throwDuplicateIdOrOriginal(error, "projects");
+      }
+    });
   }
 
   async get(id: string): Promise<ProjectRecord | null> {
@@ -78,10 +100,20 @@ export class KyselyProjectRepository implements ProjectStorePort {
   }
 
   async delete(id: string): Promise<boolean> {
-    // 保留 id 不可删：防止绕过应用层误删默认项目（外键 CASCADE 会级联删其所有会话）
+    // 保留 id 不可删：防止绕过应用层误删默认项目（外键 CASCADE 会级联删其所有会话）。
     if (id === DEFAULT_PROJECT_ID) return false;
-    const result = await this.db.deleteFrom("projects").where("id", "=", id).executeTakeFirst();
-    return Number(result?.numDeletedRows ?? 0) > 0;
+    return this.withWriteLock(() => this.db.transaction().execute(async (transaction) => {
+      const tx = transaction as unknown as Kysely<DatabaseSchema>;
+      // Lock the parent before reading children.  PostgreSQL's FK insert
+      // takes a KEY SHARE lock on this row and therefore cannot slip between
+      // this lock and the delete; SQLite's adapter starts this transaction as
+      // BEGIN IMMEDIATE, so the same critical section is writer-exclusive.
+      if (!(await this.lockProject(tx, id))) return false;
+      const sessions = await this.listProjectSessionsForDelete(tx, id);
+      await this.enqueueSessionDeletes(tx, sessions);
+      const result = await tx.deleteFrom("projects").where("id", "=", id).executeTakeFirst();
+      return Number(result?.numDeletedRows ?? 0) > 0;
+    }));
   }
 
   async ensureDefaultProject(record: ProjectRecord): Promise<void> {
@@ -92,38 +124,97 @@ export class KyselyProjectRepository implements ProjectStorePort {
     if (record.ownerKey !== "") {
       throw new Error("默认项目必须为空 owner（所有用户共享）");
     }
-    const existing = await this.db
-      .selectFrom("projects")
-      .selectAll()
-      .where("id", "=", record.id)
-      .executeTakeFirst();
-    if (existing && existing.owner_key !== "") {
-      throw new Error("默认项目既有记录异常（owner 非空），拒绝覆盖");
-    }
-    await this.db
-      .insertInto("projects")
-      .values({
-        id: record.id,
-        name: record.name,
-        cwd: record.cwd,
-        owner_key: record.ownerKey,
-        created_at: record.createdAt,
-      })
-      .onConflict((oc) => oc.column("id").doNothing())
-      .execute();
+    await this.withWriteLock(async () => {
+      const existing = await this.db
+        .selectFrom("projects")
+        .selectAll()
+        .where("id", "=", record.id)
+        .executeTakeFirst();
+      if (existing && existing.owner_key !== "") {
+        throw new Error("默认项目既有记录异常（owner 非空），拒绝覆盖");
+      }
+      await this.db
+        .insertInto("projects")
+        .values({
+          id: record.id,
+          name: record.name,
+          cwd: record.cwd,
+          owner_key: record.ownerKey,
+          created_at: record.createdAt,
+        })
+        .onConflict((oc) => oc.column("id").doNothing())
+        .execute();
+    });
   }
 
   async deleteProjectWithSessions(projectId: string, sessionIds: string[]): Promise<void> {
+    await this.deleteProjectWithSessionsAndReturnSessionIds(projectId, sessionIds);
+  }
+
+  async deleteProjectWithSessionsAndReturnSessionIds(projectId: string, sessionIds: string[]): Promise<readonly string[]> {
     if (projectId === DEFAULT_PROJECT_ID) {
       throw new Error("默认项目不可删除");
     }
-    // 同一事务内逻辑删除：项目与会话要么全删、要么全保留（避免半删留下孤儿会话），
-    // 数据库层另有外键 ON DELETE CASCADE 兑底（SQLite/PG 同语义）。
-    await this.db.transaction().execute(async (trx) => {
-      if (sessionIds.length > 0) {
-        await trx.deleteFrom("sessions").where("id", "in", sessionIds).execute();
-      }
-      await trx.deleteFrom("projects").where("id", "=", projectId).execute();
-    });
+    // sessionIds 保留在 port 兼容签名中；事务内重新按 project_id 读取，避免调用方快照
+    // 漏掉并发已存在会话。FK 仍是 CASCADE 兑底，但 file_operations 没有任何 FK。
+    void sessionIds;
+    return this.withWriteLock(() => this.db.transaction().execute(async (transaction) => {
+      const tx = transaction as unknown as Kysely<DatabaseSchema>;
+      // The parent lock, child listing, outbox enqueue, and both deletes are
+      // deliberately one critical section.  Do not use the caller's
+      // sessionIds snapshot: it is only a compatibility argument.
+      if (!(await this.lockProject(tx, projectId))) return [];
+      const sessions = await this.listProjectSessionsForDelete(tx, projectId);
+      await this.enqueueSessionDeletes(tx, sessions);
+      await tx.deleteFrom("sessions").where("project_id", "=", projectId).execute();
+      await tx.deleteFrom("projects").where("id", "=", projectId).execute();
+      return sessions.map((session) => session.id);
+    }));
+  }
+
+  private withWriteLock<T>(action: () => Promise<T>): Promise<T> {
+    return this.dialect === "sqlite" ? withSqliteWriteLock(this.db, action) : action();
+  }
+
+  private async lockProject(transaction: Kysely<DatabaseSchema>, projectId: string): Promise<boolean> {
+    if (this.dialect === "postgres") {
+      const result = await sql<{ id: string }>`SELECT id FROM "projects" WHERE id = ${projectId} FOR UPDATE`.execute(transaction);
+      return result.rows.length !== 0;
+    }
+    const row = await transaction.selectFrom("projects").select("id").where("id", "=", projectId).executeTakeFirst();
+    return row !== undefined;
+  }
+
+  private async listProjectSessionsForDelete(transaction: Kysely<DatabaseSchema>, projectId: string): Promise<Array<{ id: string; project_id: string; pi_session_file: string | null }>> {
+    if (this.dialect === "postgres") {
+      const result = await sql<{ id: string; project_id: string; pi_session_file: string | null }>`
+        SELECT id, project_id, pi_session_file FROM "sessions" WHERE project_id = ${projectId} ORDER BY id FOR UPDATE
+      `.execute(transaction);
+      return result.rows;
+    }
+    return transaction
+      .selectFrom("sessions")
+      .select(["id", "project_id", "pi_session_file"])
+      .where("project_id", "=", projectId)
+      .orderBy("id", "asc")
+      .execute();
+  }
+
+  private async enqueueSessionDeletes(
+    transaction: Kysely<DatabaseSchema>,
+    sessions: ReadonlyArray<{ id: string; project_id: string; pi_session_file: string | null }>,
+  ): Promise<void> {
+    for (const session of sessions) {
+      if (session.pi_session_file === null) continue;
+      const relativePath = this.relativePath(session.pi_session_file);
+      await this.fileOperations.enqueueInTransaction(transaction, {
+        operationKey: sessionDeleteOperationKey(session.id, relativePath),
+        kind: "delete",
+        relativePath,
+        sessionId: session.id,
+        projectId: session.project_id,
+        createdAt: Date.now(),
+      });
+    }
   }
 }

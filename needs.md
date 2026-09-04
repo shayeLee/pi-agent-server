@@ -46,7 +46,7 @@ pi-agent-server：Fastify + Pi SDK
 - HTTP 框架：Fastify，使用内置 Pino 日志（详见 §5 日志设计）。
 - Agent：Pi SDK 的 `AgentSession` 与 `SessionManager`；用到的 SDK API 清单与官方文档定位方法见 [Pi SDK API 使用清单](docs/pi-sdk-api.md)。
 - 流式输出：Server-Sent Events（SSE）。
-- 会话存储：Pi JSONL 会话文件；服务数据库另存会话索引、任务状态和业务元数据。服务侧索引/元数据经存储访问层抽象（repository）读写，本地 SQLite/文件起步（SQLite 用 WAL 模式 + 写串行化，应对多用户写并发），预留外部数据库迁移。JSONL 与服务库写入按固定顺序（先 JSONL 后索引），启动时对账修复孤儿 JSONL 与无 owner 会话；跨存储非原子写入用状态标记避免重复任务。
+- 会话存储：Pi JSONL 会话文件；服务数据库另存会话索引、任务状态和业务元数据。服务侧索引/元数据经存储访问层抽象（repository）读写，本地 SQLite/文件起步（SQLite 用 WAL 模式 + 写串行化，应对多用户写并发），预留外部数据库迁移。JSONL 与服务库是跨存储边界：lazy 创建先持久预留路径，再由 SDK 写文件；删除通过持久 file_operations outbox 入队，状态转移、租约与重试由 Worker 负责。启动 reconcile/worker 尚未安装，不能把该能力表述为已完成。
 - 后台任务：独立 Worker 处理经授权的异步任务；Job 进入持久化队列，按 Worker 并发数消费，超出排队；Job 需持久化状态机、幂等键、重试退避、租约/心跳与崩溃恢复，避免重启后重复执行副作用。
 - 能力扩展：工具经统一注册表接入，系统提示词按已启用能力组合生成；核心不感知具体能力。
 
@@ -244,4 +244,4 @@ N、M 天数由部署配置决定。
 
 ## 8. 交付计划
 
-当前数据库设计见[数据库设计](docs/database-design.md)；Phase 3 数据保留计划见[Phase 3 数据保留计划](docs/phase-3-data-retention-plan.md)（当前仅计划、未实施）；身份与访问管理规划见[身份与访问管理规划](docs/identity-access-plan.md)；历史平台交付计划见[归档交付计划](docs/archive/delivery-plan.md)；能力级交付见各自能力文档（如[知识库问答](docs/capabilities/knowledge-qa.md)）。
+当前数据库设计见[数据库设计](docs/database-design.md)；Phase 3 数据保留计划见[Phase 3 数据保留计划](docs/phase-3-data-retention-plan.md)（WP0 决策冻结已完成，WP1 离线迁移基础已完成；WP3（备份/恢复/pre-migration/runbook）基础工作包已完成，真实 PG/age gate 仅在当前环境提供 URL 与二进制并实际运行时计为验收证据；服务级正式 backup/rollback/运行时接入仍未实施，WP3 为离线工具，未接入服务启动；WP2 受控 reset 仍未开始）；身份与访问管理规划见[身份与访问管理规划](docs/identity-access-plan.md)；历史平台交付计划见[归档交付计划](docs/archive/delivery-plan.md)；能力级交付见各自能力文档（如[知识库问答](docs/capabilities/knowledge-qa.md)）。

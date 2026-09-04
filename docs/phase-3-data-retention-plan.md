@@ -2,11 +2,11 @@
 
 > 本文是 Phase 3 的可独立阅读**计划**文档，仅记录已确认决策、推荐方案、目标架构与工作包划分，**不是实现承诺**；除 §2 标注「已确认」的条目外，其余均为计划/推荐/待定，未拍板、未实现。
 >
-> **当前基线（如实分账）**：Phase 2 已全部完成并通过最终发布门禁——`volta run pnpm verify:release`（typecheck + test + test:postgres + build，设置真实 PG `PI_TEST_PG_URL`）全部通过：全量 `pnpm test` = 54 文件 / 563 用例、无 skip，`pnpm test:postgres` = 45 个 PG 门控用例真实执行且全部通过（见 [database-design.md](database-design.md) §9）。
+> **Phase 2 历史基线（当时门禁，如实分账）**：Phase 2 已全部完成并通过当时的最终发布门禁——`volta run pnpm verify:release`（typecheck + test + test:postgres + build，设置真实 PG `PI_TEST_PG_URL`）全部通过：全量 `pnpm test` = 54 文件 / 563 用例、无 skip，`pnpm test:postgres` = 45 个 PG 门控用例真实执行且全部通过（见 [database-design.md](database-design.md) §9）。
 >
-> **RC 现状**：当前仍是 Release Candidate 阶段——**无正式 migration / 备份 / 回滚**：bootstrap 仅面向空库/当前 schema（`IF NOT EXISTS` + 严格 preflight `assertSchemaCompatible`，见 database-design.md §7 与 §9.7），无版本化迁移、无备份恢复、无 SQLite→PG 数据迁移、无 JSONL 自动对账；RC 旧库删除重建仍是允许的心智（§2.1 切换窗口内继续有效）。
+> **RC 现状**：当前仍是 Release Candidate 阶段——**无服务级正式 migration / 备份 / 回滚**：bootstrap 仅面向空库/当前 v1 schema（`IF NOT EXISTS` + 严格 preflight `assertSchemaCompatible`，见 database-design.md §7 与 §9.7），离线 migration 与 WP3A/WP3B backup/restore 工具不接入服务，亦无 SQLite→PG 数据迁移、无 JSONL 自动对账；RC 旧库删除重建仍是允许的心智（§2.1 切换窗口内继续有效）。
 >
-> **Phase 3 未开始**：本文档全部内容均为计划阶段产物，当前只写计划、不实施（§1.4）。
+> **Phase 3 当前状态**：WP0 决策冻结、WP1 离线迁移基础、WP3A SQLite 在线备份核心、WP3B1 SQLite restore drill、WP3B2 PG backup/restore 与 WP3C migration prebackup/runbook 基础实现已完成；真实 PG/age 只有在当前环境提供 URL/二进制并实际运行对应 gate 时才计为验收证据，没有这些前置条件不宣称通过。WP2A 受控 cutover 实现与 reviewer 复审修复已落地，但实际 reset 从未执行。WP4A（v1 migration + `file_operations` outbox + 删除事务）已依据用户提供的真实 PG16+age `verify:release` 成功证据验收通过；WP4B 执行器/retry/quarantine 与 WP4C reconcile 尚未开始，WP5/WP6 也尚未开始。正式常驻服务仍未接入这些离线工具，整体仍非生产就绪。
 >
 > 关联文档：[数据库设计](database-design.md)、[IAM 规划](identity-access-plan.md)、[PG 测试流程](postgres-podman-test.md)、[架构](architecture.md)、[需求基线](../needs.md)。
 
@@ -31,23 +31,28 @@
 
 | 维度 | 状态 |
 | --- | --- |
-| Phase 2（Manifest 单一来源 + SQLite/PG 双库） | ✅ 已完成，`verify:release`（真实 PG）全量 54 文件 / 563 用例 + 45 个 PG 门控用例全部通过 |
-| 正式 migration | ❌ 无（RC 无 `kysely_migration` 或任何版本化迁移机制，旧库删库重建） |
-| 备份 / 回滚 | ❌ 无（无备份任务、无恢复流程、无回滚机制） |
-| JSONL/DB 数据生命周期 | ❌ 无自动对账（仅有固定的写入顺序与残余边界，见 database-design.md §2；无 outbox / reconcile / quarantine） |
+| Phase 2（Manifest 单一来源 + SQLite/PG 双库） | ✅ 已完成；真实 PG 结果仅以当前环境实际运行 `PI_TEST_PG_URL` 门控为准 |
+| 正式 migration | ⚠️ WP1 离线 Manifest-driven migration CLI + WP2A 可选严格启动门禁（`migrationGate="verify"`，只读校验、不自动迁移）；默认启动行为仍为 RC bootstrap，正式 migration 尚未成为默认启动路径 |
+| 备份 / 回滚 | ✅ WP3A/WP3B1/WP3B2/WP3C 离线基础实现已完成；真实 PG/age gate 需当前环境实际提供前置条件并运行，未接入服务启动 |
+| JSONL/DB 数据生命周期 | ✅ WP4A（v1 migration、`file_operations` 持久 outbox、删除事务）已验收；WP4B 执行器/retry/quarantine 与 WP4C reconcile 尚未开始 |
 | SQLite→PG 数据迁移 | ❌ 无（PG 仅要求空库可 bootstrap） |
-| Phase 3 | ⬜ 未开始（本文档为计划产物，零实现） |
+| Phase 3（WP0） | ✅ 已完成/已冻结（仅决策文档，零实现） |
+| Phase 3 WP1 | ✅ 离线迁移核心已完成；真实 PG 验收需当前环境实际提供 URL 并运行门禁（未接入服务启动） |
+| Phase 3 WP3A | ✅ SQLite 在线备份核心与显式 CLI 已完成；真实 age/PG release gate 需当前环境实际运行（不接入服务启动） |
+| Phase 3（WP2 及以后） | 🟡 进行中（WP3 基础工作包已完成；WP2A 受控 cutover 实现与干净 SQLite 基线初始化已完成；当前目标无旧 RC 数据，破坏性 WP2B reset 不适用；WP4A 已验收，WP4B/WP4C/WP5/WP6 尚未开始，正式常驻服务未启用） |
 
-### 1.4 明确不实施的内容（本计划阶段）
+### 1.4 明确不实施的内容（WP2B 及 WP3C 之外的后续工作包）
 
-本计划阶段**不做任何代码、数据或文档状态变更**，包括但不限于：
+> **WP2A 状态修正（本次更新）**：原 §1.4 写明「不实现 WP2 reset」；该限制随用户对 WP2A 的明确授权解除：**WP2A 已交付受控 cutover 实现**（离线 CLI、严格授权链、pre-reset 加密备份、受控 reset、migration 建基线、严格 verify、脱敏报告、可选严格启动门禁、runbook、真实 age/PG 演练门禁），全部破坏性演练仅在临时目录与随机 `pi_cutover_*` schema 内进行。**对真实用户 SQLite/PG/JSONL 的破坏性 cutover 从未执行**；当前正式 SQLite 目标没有旧 RC 数据，已通过干净基线初始化替代该动作，因此不需要其目标授权。若未来其他目标存在待丢弃 RC 数据，实际 cutover 仍属禁止项，除非获得用户/运维对该目标的明确授权。reviewer 复审修复已落地并通过真实 PG16+age verify:release 门禁验收。
 
-- 不实现任何迁移引擎，不改 `src/storage/*`（`schema-manifest.ts` / `schema-types.ts` / `bootstrap.ts` / `postgres-bootstrap.ts` / `schema-builder.ts` / `schema-compatibility.ts` 及 Repository）和任何生产代码/测试；
-- 不编写备份脚本、不执行备份或恢复演练、不部署任何备份任务；
-- 不实现 JSONL/DB 对账、outbox、逻辑删除队列、quarantine 等任何生命周期代码；
+WP1、WP3A/WP3B1/WP3B2/WP3C 与 WP2A 的 cutover CLI 均为**离线开发期工具**，不自动接入 `startServer`（启动门禁为显式 opt-in，默认 off），不启动服务、不安装 scheduler/timer。已完成工作包的后续限制如下：
+
+- 不执行真实用户数据 cutover/reset：实际切换需要用户/运维后续对目标的明确授权（[cutover-runbook.md](cutover-runbook.md)）；
+- 不实现 WP4B 执行器/retry/quarantine、WP4C reconcile、IAM 或 readiness；WP4A 已验收的 outbox 基础不包含这些后续能力；
+- 不执行真实用户数据备份或恢复演练、不部署任何备份任务；
+- 不实现 JSONL/DB 对账、quarantine 或自动清理 worker；WP4A 的持久 outbox、删除事务 enqueue 与 claim 预留已验收，执行器/retry/quarantine 留给 WP4B，对账留给 WP4C；
 - 不新增用户/token/角色/审计等 IAM 表，不实施 IAM 功能（只定义进入条件）；
-- 不执行任何 destructive reset（含不做真实库的删库重建）；本阶段仅允许在文档中定义切换窗口与切换动作；
-- **不修改 README**：当前实现未落地，README 的「无正式 migration / backup / rollback」现状描述仍然准确（见 §10）。
+- README 的“尚非生产就绪”边界保持不变：可说明 WP3（备份/恢复/pre-migration/runbook）基础工作包已完成且 WP2A 受控 cutover 工具已实现（真实 age/PG 演练门禁通过），当前 SQLite 目标的破坏性 cutover 不适用、正式启动迁移门禁默认关闭，不能宣称生产 backup/rollback 已完成或 Phase 3 整体已生产就绪（见 §10）。
 
 ## 2. 已确认决策表
 
@@ -56,24 +61,27 @@
 | # | 决策 | 已确认内容 |
 | --- | --- | --- |
 | 1 | 数据保留起点 | **当前 RC 数据不保留；切换时执行一次最终 reset 基线（DB + JSONL 全清空），不做 Baseline Adoption** |
-| 2 | 备份方向 | **每日完整备份 + 每次 migration 前强制备份 + 定期恢复演练** |
+| 2 | 备份方向与执行时机 | **每日完整备份 + 每次 migration 前强制备份 + 定期恢复演练；每日备份在线执行，不要求每日停服务** |
 | 3 | 部署形态 | **当前按单实例运行；设计必须预留未来多实例改造路径** |
-| 4 | 阶段属性 | **当前只要计划，不实施**（见 §1.4） |
+| 4 | 阶段属性 | WP0 为计划/决策冻结；WP1、WP3A 与 WP3B1 仅实施离线工具，不接入服务启动；WP2、WP3B 后续及以后仍按计划执行（见 §1.4） |
 | 5 | Migration 引擎选型 | **采用自定义 Manifest-driven migration 引擎（候选 B），不采用 Kysely Migrator（候选 A）**——详见 §3 |
+| 6 | 备份加密与初始存储 | **正式采用 age 公钥加密；备份先存本机绝对目录**；具体备份根路径、age recipient 与私钥托管仍待定 |
+| 7 | Migration 前置门禁 | **每次 migration 前必须严格停服务，并强制执行 pre-migration backup**；当前没有全局写冻结，不能以写冻结替代停服 |
 
 ### 2.1 决策 1：当前数据 reset 的含义与切换窗口
 
 - **reset 的含义**：一次性清空 DB（删库重建或清空全部 managed 表）**并**清空 JSONL 会话目录（含 `agentDir` 下 Pi 会话文件），随后从空库经迁移引擎重新建立基线。由于 RC 数据无保留义务，本次清空**不迁移旧数据、不把既有 RC 文件标记为有效会话**——即明确**不做 Baseline Adoption**（不采纳既有 RC 库/文件为基线，避免脏数据迁移成本与双存储一致性风险）。
 - **切换窗口**：从「当前（Phase 2 完成）」到「WP2 最终 reset 切换完成」之间的时间区间。
   - **窗口内**：RC 数据随时可丢弃，旧库删除重建仍是允许的（database-design.md §7 的 RC 心智继续有效）；任何破坏性 reset 不违反任何数据承诺。
-  - **切换动作（WP2）**：执行最后一次 reset（DB + JSONL 全清空）→ 空库经迁移引擎建立基线 → 立即做**基线备份** → 此后**进入数据保留承诺**：冻结 destructive reset，schema 演进只走 migration，业务删除只走生命周期策略，意外丢失/损坏只靠备份恢复。
+  - **切换动作（WP2）**：若目标存在旧 RC 数据，执行最后一次 reset（DB + JSONL 全清空）→ 空库经迁移引擎建立基线 → 立即做**基线备份**；若目标为空，则以同一迁移与备份流程直接建立干净基线。当前正式 SQLite 目标属于后者，已完成空库 pre-migration 加密备份、v1 migration apply 与 strict verify，未发生破坏性 reset。开始保留真实用户数据后，冻结 destructive reset，schema 演进只走 migration，业务删除只走生命周期策略，意外丢失/损坏只靠备份恢复。
 - **前置保障**：切换必须在 WP1（迁移引擎）与 WP3（备份恢复）就绪之后执行——「开始保留数据」必须先有兜底（见 §8.2 依赖链）。
 
 ### 2.2 决策 2：备份策略
 
-- **已确认方向**：每日完整备份；每次 migration 前强制备份；定期恢复演练。「每日完整备份」即当前承诺粒度（增量/差异备份留给未来，不承诺）。
-- **未确认（待决策，见 §9）**：RPO/RTO 取值、加密/KMS 选型、备份介质、强制备份的形态（自动触发 vs 运维 checklist）等细节。
-- 对齐 needs.md §6.4：JSONL 不可重建，须与 DB 业务元数据（owner 映射、凭证元数据、Job 状态）同等或更高优先级对待；备份介质与生产磁盘分离；备份须加密、受访问控制，并定期恢复演练校验。
+- **已确认方向**：每日完整备份；每日备份在线执行，**不要求每日停服务**；每次 migration 前强制备份；定期恢复演练。「每日完整备份」即当前承诺粒度（增量/差异备份留给未来，不承诺）。
+- **migration 前置**：每次 migration 前必须先严格停服务，再执行强制 pre-migration backup；当前没有全局写冻结，因此停服务不可由写冻结标记或其他软门禁替代。只有备份完成并通过完整性复核后才允许继续 migration。
+- **已确认加密与初始存储**：正式采用 age 公钥加密，备份先存本机绝对目录；具体备份根路径、age recipient、私钥托管以及访问控制细节仍待决策（见 §9）。
+- 对齐 needs.md §6.4：JSONL 不可重建，须与 DB 业务元数据（owner 映射、凭证元数据、Job 状态）同等或更高优先级对待；备份须受访问控制，并定期恢复演练校验。最终是否独立挂载/介质隔离仍需结合备份根路径决策，当前不预设已完成介质分离。
 
 ### 2.3 决策 3：单实例 / 多实例约束
 
@@ -82,11 +90,11 @@
 
 ### 2.4 决策 4：本阶段仅计划
 
-本计划只产出文档（本文件 + 三处同步链接），不产生任何实现、数据变更或破坏性操作。
+WP0 只产出决策冻结 ADR 与本文档状态同步；WP1 离线核心、WP3A 备份核心、WP3B1 SQLite restore drill、WP3B2 PG backup/restore 与 WP3C migration prebackup/runbook 已完成并通过各自验收；WP3B2 的真实 PG16 `pg_dump` → age → `pg_restore` gate 已通过，WP3C 通过真实 PG+age `verify:release` 全量通过及 `test:migration-prebackup` 独立门禁通过；WP3 基础工作包已完成；工具均不自动接入服务启动（WP2A 起含显式 opt-in 的只读启动门禁，默认 off）；WP2A cutover 实现已完成并通过真实 age/PG 演练门禁，但**实际 reset 从未执行**。
 
 ## 3. Migration 引擎选型决策记录（已确认）
 
-> 本节是**决策记录（ADR）**：列出候选、确认依据与适用情形。**决策已确认：采用自定义 Manifest-driven migration 引擎（候选 B），不采用 Kysely Migrator（候选 A）**——选型已拍板，不再处于推荐/待确认状态；但引擎本身尚未实现（见 §1.4 与 §8.1 WP1）。
+> 本节是**决策记录（ADR）**：列出候选、确认依据与适用情形。**决策已确认：采用自定义 Manifest-driven migration 引擎（候选 B），不采用 Kysely Migrator（候选 A）**——选型已拍板；WP1 离线核心已完成并通过真实 PG 验收，未接入服务启动。
 
 ### 3.1 候选
 
@@ -106,15 +114,15 @@
 - 从零开始、以迁移脚本为 schema 唯一历史、无 Manifest 中心的项目；
 - 需要框架提供的 up/down 现成能力、团队偏好约定式现成组件；
 - schema 演进以「脚本文件」而非「运行时声明」为真相，且不需要与既有严格 preflight / 双库契约深度集成；
-- 若后续自定义引擎被判定过度工程（成本/复杂度不可控），Kysely Migrator 是明确备选（fallback），届时在 WP0 决策记录中说明。
+- 若后续自定义引擎被判定过度工程（成本/复杂度不可控），Kysely Migrator 是明确备选（fallback），届时在后续决策记录中说明。
 
 ### 3.4 状态
 
-- **已确认：选型 B（自定义 Manifest-driven migration 引擎）**。引擎选型已拍板，不再属于待决策项；WP0 中该条目已关闭。引擎实现仍待 WP1 落地（见 §8.1）。
+- **已确认：选型 B（自定义 Manifest-driven migration 引擎）**。引擎选型已拍板，不再属于待决策项；WP0 中该条目已关闭。WP1 离线核心已完成并通过真实 PG 验收（见 §8.1）。
 
 ## 4. 目标架构：迁移与版本管理
 
-> 本节描述 WP1 的目标设计（均为计划，未实现）：引擎形态为 §3 已确认的自定义 Manifest-driven 引擎。
+> 本节描述 WP1 已完成的离线核心边界：引擎形态为 §3 已确认的自定义 Manifest-driven 引擎；正常服务启动接入、备份联动等仍属后续工作包。
 
 ### 4.1 version ledger
 
@@ -124,7 +132,7 @@
 ### 4.2 checksum
 
 - 每个已发布 migration 必须有稳定校验和（内容即代码）；启动时对 ledger 中已应用版本逐条校验，任一不符 → fail-fast（防篡改、防本地修改后伪装成已发布）。
-- checksum 计算对象与「分方言校验 or 统一校验」的细节在 WP1 设计时确定；本篇只定方向：已应用 migration 的校验与篡改检测必须存在。
+- WP1 已补齐稳定 canonical serialization；checksum 覆盖版本/name、Manifest、双方言物理类型映射、DDL/operation format 及显式数据变换 descriptor；SQLite/PG 共用同一 checksum，已应用 migration checksum 改变即 fail-fast。
 
 ### 4.3 migration lock
 
@@ -133,22 +141,22 @@
 
 ### 4.4 版本快照 / manifest head 校验
 
-- 启动时序（在任何业务可用之前）：读 ledger 当前版本 vs manifest head：
+- 离线 CLI 时序（当前不接入服务启动）：读 ledger 当前版本 vs manifest head：
   - **空库**（无 ledger 且无业务表）→ 依序应用全部迁移（等效于建立最新基线）；
   - **版本 < head** → 依序应用未应用迁移（升级）；
   - **版本 > head** → fail-fast，禁止在「未来版本」库上运行当前代码（禁止降级）；
   - **版本 = head 但 checksum 不符** → fail-fast。
-- **既有 RC 未迁移库**（无 ledger 但有业务表）：先跑 `assertSchemaCompatible` preflight——物理契约一致 → 打基线版本（写入 ledger，数据保留）；不一致 → fail-fast，不自动改库（与既有 M1 语义一致，见 database-design.md §7/§9.7）。
+- **既有 RC 未迁移库**（无 ledger 但有业务表）：无论物理契约是否一致，均明确拒绝自动 baseline adoption，返回「需要受控 reset/adopt」；不写/改 DDL、不删除数据。当前 D1 仍要求由后续切换流程显式处理。
 
 ### 4.5 SQLite / PG 事务
 
-- 迁移在事务内执行（SQLite 注意 DDL 事务性与 `PRAGMA` 语义，PG 用显式事务）；失败回滚并使 ledger 保持一致；迁移失败即启动失败（§4.6），不做部分迁移。
+- WP1 迁移在事务内执行：SQLite 使用显式 raw connection `BEGIN IMMEDIATE`，PG 使用 advisory lock 所在的显式 transaction；失败回滚并使 ledger 保持一致，不做部分迁移。
 
-### 4.6 启动时迁移门禁
+### 4.6 启动时迁移门禁（后续 WP5，不在 WP1）
 
-- 迁移与校验发生在服务监听之前，失败 → **拒绝启动**（fail-fast），绝不静默降级、跳过迁移继续服务。
-- 与备份门禁联动：检测到有待应用迁移时，按 §2.2「每次 migration 前强制备份」要求确保最近备份存在（自动触发备份或要求运维确认，形态在 WP0/WP3 确定）。
-- 迁移过程写审计日志（版本、checksum、耗时、结果）。
+- 目标行为：迁移与校验发生在服务监听之前，失败 → **拒绝启动**（fail-fast），绝不静默降级、跳过迁移继续服务；WP1 不实现此接入。
+- 已确认的 migration 前置顺序：严格停服务 → 强制 pre-migration backup → 备份完整性复核通过 → 执行 migration；当前没有全局写冻结，停服务是强制要求。WP1 不实现启动门禁或备份联动；备份前置与正常服务启动接入留给 WP3/WP5。
+- WP1 离线 CLI 已输出版本/checksum；源码开发使用 `pnpm migrate`，发布构建同时产出 `dist-migrate/scripts/migrate.js` 与 `pi-agent-server-migrate`，迁移审计日志与服务启动门禁留给后续 WP5。
 
 ### 4.7 migration 不可变
 
@@ -160,14 +168,14 @@
 - 回滚流程 = 停服 → 从最近完整备份恢复（DB 快照 + JSONL 对齐，见 §6）→ 启动门禁重新校验（ledger 与 manifest 版本重对齐）→ 验证 → 恢复服务。
 - 恢复演练（WP3）必须覆盖「迁移出错后的回滚」，保证该流程可用。
 
-## 5. JSONL / DB 双存储数据生命周期（计划，未实现）
+## 5. JSONL / DB 双存储数据生命周期（WP4A 已验收，WP4B/WP4C 后续仍为计划）
 
-> 现状：写入顺序已固定（先建 DB 记录 → 创建 JSONL → 回写路径；删除先逻辑删 → 清 runtime → 删物理文件），但**无自动对账**：删除文件失败会留物理残留、回写中断留残余边界（database-design.md §2）。以下为本计划的目标机制，**全部未实现**。
+> WP4A（v1 migration + `file_operations` outbox + 删除事务）已依据用户提供的真实 PG16+age `verify:release` 成功证据验收通过：删除事务内 enqueue，DELETE 请求只清理 runtime、绝不 unlink；相对路径白名单、状态机、脱敏 error 与 SQLite/PG 原子 claim 预留均已实现。WP4B 执行器/retry/quarantine 与 WP4C reconcile 尚未开始，创建侧回写中断与文件最终清理由后续工作包处理。
 
 ### 5.1 一致性模型与 outbox
 
 - 双存储非单事务；跨存储操作（建会话 + 建 JSONL + 回写路径、删会话 + 删文件）需要**崩溃后可补偿**的持久化记录。
-- 目标：持久化 outbox（写前/写后状态记录 + 状态标记），服务重启或定时补偿任务据此补齐/修复残留操作，避免重复执行副作用（对齐 needs.md §4.1「启动时对账修复孤儿 JSONL 与无 owner 会话…跨存储非原子写入用状态标记避免重复任务」）。
+- **WP4A 交付**：持久化 outbox（状态记录 + operation key 幂等），服务重启或后续 worker 可据此补偿；当前只提供原子 claim 预留，不启动 worker、不执行文件副作用。删除业务行与 enqueue 在同一 DB 事务内完成，避免删除后丢任务。
 
 ### 5.2 逻辑删除与持久化待删队列
 
@@ -185,23 +193,24 @@
 
 - orphan：先隔离评估（可能曾是崩溃前的有效会话），确认后按保留策略处理；
 - lost-file：不可重建——记录审计 + DB 索引标记缺失状态，不静默删除索引；
-- 处置均需审计且保留期与审计策略对齐（§9 待决策项 4）。
+- 处置均需审计且保留期与审计策略对齐（§9 待决策项 3）。
 
 ### 5.5 quarantine
 
 - 异常 / 不可判定文件入隔离区（隔离目录或隔离状态），人工复核；quarantine 内容**同样受备份与访问控制约束**，不因隔离而免于备份。
 
-### 5.6 明确
+### 5.6 WP4A 边界
 
-- 本节全部为目标设计，当前**均未实现**；实现归属 WP4；在 WP4 落地前，现有残余边界（database-design.md §2）仍是人工/降级处理状态。
+- 已实现：v1 Manifest/migration、SQLite/PG 同构 `file_operations`、相对 JSONL 白名单、状态转移与 lease claim、错误脱敏、删除同事务 enqueue、操作幂等。
+- 未实现：claim 后的文件执行器/retry/quarantine、启动/定时 reconcile、orphan/lost-file 处置与审计保留策略；前者属于 WP4B，后者属于尚未开始的 WP4C。
 
 ## 6. 备份与恢复
 
 ### 6.1 备份内容与一致性
 
 - 备份集 = **DB 快照 + JSONL 会话目录**（双存储必须一起备份：任一侧缺失都会导致会话不完整；JSONL 不可重建，DB 业务元数据不可重建）。
-- 双存储非原子，备份需要「对齐点」设计（先 DB 快照再 JSONL 快照，或接受小窗口由 reconcile 兜底）——WP3 设计要点。
-- 介质与生产磁盘分离（needs.md §6.4/§6.6）；至少三项卷隔离（日志 / JSONL / DB）前提下备份落独立介质。
+- 每日备份在线执行，不要求每日停服务；当前没有全局写冻结。DB 快照与 JSONL 复制之间**不是全局原子操作**，因此不宣称二者天然对应同一瞬间的全局一致点，备份集必须通过逐项完整性复核后才能发布。
+- 初始存储已确认先落本机绝对目录；具体备份根路径、是否独立挂载/介质隔离及访问控制仍待定（见 §9）。
 
 ### 6.2 SQLite：VACUUM INTO + JSONL
 
@@ -210,25 +219,52 @@
 
 ### 6.3 PostgreSQL：pg_dump + JSONL
 
-- `pg_dump`（事务一致性）+ JSONL 目录快照；文件级 `pg_basebackup` 为更高成本备选，不承诺。
-- 与 §6.2 相同的对齐点设计。
+- WP3B2 的离线 PostgreSQL backup core 实现已完成并通过真实 PG16 release gate：仅接受显式 `PI_STORAGE_DIALECT=postgres` + `PI_DATABASE_URL`，通过安全 libpq 环境与临时 0600 `PGPASSFILE` 调用 `pg_dump`，生产 adapter 将 stdout 直接接入私有 dump 文件，并始终传入显式 `--schema=<effective schema>`；zero-byte dump 在 age 前 fail，URL、用户名、密码不进入子进程 argv、日志或 manifest。public source schema 被拒绝。
+- 包沿用 age 加密、稳定 JSONL/models 白名单、逐项 hash/size、`COMPLETE` 最后写入与原子 publish；manifest 保存 `PostgreSQL` 方言、database/schema 脱敏 identity、`pg_dump` 版本和 ledger summary。PG restore 只接受显式绝对 target root、显式临时 target PG URL 与 canonical safety contract：target DB 必须是 `pi_restore_*` 且为空，authenticated source schema 与显式 authenticated target schema 不得是 public，也不得命中 source identity；未配置的 libpq 默认 `public` namespace 只作为创建 non-public source schema 的 bootstrap target；不再接受可绕过检查的 nonblank safety token，不自动创建或删除数据库。target URL 无需预设 `search_path`；restore 后从 catalog 唯一定位 manifest authenticated non-public source schema，显式复核 schema/ledger/FK，并只报告安全 schema 摘要。
+- `pg_dump`（事务一致性）+ JSONL 目录快照；文件级 `pg_basebackup` 为更高成本备选，不承诺。与 §6.2 相同：DB 快照与 JSONL 复制不构成全局原子快照。真实 PG16 `pg_dump` → age → `pg_restore` gate 已通过；确认匹配 PG16 客户端后，`volta run pnpm verify:release` 成功返回 shell，真实 `test:pg-backup` 先于截图尾部的 `build`/`build:migrate`/`build:backup` 完成。
+
+### 6.3.1 JSONL 在线复制后的强制复核
+
+- 每个复制后的 JSONL 文件都必须复核 `size`、`mtime`、hash 以及逐行 JSON 解析；副本应与复制时稳定的源文件元数据/hash 对齐，末行半行视为无效。
+- 若源文件在复制期间发生变化、源/副本的 `size`/`mtime`/hash 不稳定或出现半行，必须重试复制并重新完成全部复核。
+- 重试后仍无法获得稳定副本时，备份必须失败，且不得发布 `COMPLETE` 标记。
 
 ### 6.4 恢复演练
 
-- 定期（频率待定，建议每季度 + 每次重大 migration 前）在隔离/临时实例执行：加载备份 → 启动门禁（preflight + ledger 校验）→ 抽查会话数据完整性 → 产出演练报告。
+- **WP3B1 SQLite drill 已完成并通过 release gate 验收**：显式输入 backup package、临时 target root 与一次性 age identity；在 target root 外私有 staging 解密，校验 COMPLETE、加密 manifest、payload hash/size/白名单、migration verify、外键、JSON/JSONL 与 Pi `SessionManager` 结构，再将 `pi_session_file` 安全映射到唯一恢复目录；不启动服务、不发模型请求、不读取生产源文件，CLI 只输出机器可读 counts/version 报告。
+- 定期（频率待定，建议每季度 + 每次重大 migration 前）在隔离/临时实例执行：加载备份 → 启动门禁（preflight + ledger 校验）→ 抽查会话数据完整性 → 产出演练报告。WP3B2 的 PG 演练使用运维/测试 fixture 预先创建和最终销毁临时 database/schema；core 只在空 target DB 上执行 `pg_restore`，不默默创建、drop 真实数据库。migration prebackup、生产回滚门禁仍留给后续工作包。
 - 备份「有效」的唯一证明是恢复演练通过；演练同样覆盖 §4.8 的迁移出错回滚。
 
 ### 6.5 RPO / RTO（待定）
 
-- 每日完整备份对应的最大数据丢失窗口是 RPO 上限的参考，但**具体取值未定**（§9 待决策项 2），本计划不编造数字；RTO 由演练实测的恢复时长决定。
+- 每日完整备份对应的最大数据丢失窗口是 RPO 上限的参考，但**具体取值未定**（§9 待决策项 2），本计划不编造数字；RTO 目标值及其验收口径同样待定，不能以当前演练时长代替目标承诺。
 
-### 6.6 加密 / KMS / 权限（待定）
+### 6.6 加密 / 密钥托管 / 权限
 
-- 方向：备份必须加密（at-rest）、受访问控制、与生产密钥分离管理；选型（KMS、介质策略）待决策（§9 待决策项 3）。
+- **已确认**：备份正式采用 age 公钥加密。
+- **仍待定**：age recipient、私钥托管（包括是否接入 KMS）及具体访问控制策略（§9）。在这些事项确定前，不声称密钥托管或访问隔离已经实现。
 
 ### 6.7 凭证不进入备份
 
 - 凭证（模型/钉钉/Git 等 API key、OAuth token）不落库明文，来自环境变量 / KMS / `PI_AUTH_PATH` 独立凭证文件（needs.md §7），故备份集**天然不含明文凭证**；备份介质访问权限按 secrets 权限基线控制，并在恢复演练中校验「恢复后的环境不含旧凭证」。
+
+### 6.8 WP3A 验收状态（已完成）
+
+- `src/backup/backup-core.ts` 与 `scripts/backup.ts` 已完成显式 SQLite 备份核心与 CLI：白名单、稳定读取、只读/WAL、staging/publish、真实 age 加密及发布包门禁均已验收。真实 age 流程在临时目录生成一次性 identity、提取 recipient，完成加密→解密→hash/内容校验；任一 binary 缺失时安全非零失败，不读取用户密钥配置。
+- WP3A 已通过真实 `verify:release` PG release gate（PG 门控 3 文件 / 59 用例）；验收证据还包括 build、compiled migration CLI、compiled backup CLI，以及 installed npm backup bin smoke。CLI 要求绝对 `AGENT_CWD`、`--backup-root`、age recipient 文件；支持 `create` 与 `--dry-run`。失败不会发布 `COMPLETE`，也不接入服务启动或内置 timer。
+- 当前策略对缺失但位于白名单根内的 `pi_session_file` 做加密 manifest 状态记录；白名单根外引用直接失败。PostgreSQL backup 由 WP3B2 提供实现且 reviewer P0/P1 修复已完成，真实 PG16 `pg_dump` → age → `pg_restore` gate 已通过；retention、migration-prebackup/runbook 与外部 scheduler 接入留给后续工作包；外部 scheduler 只能在运维层显式调用 CLI。
+
+### 6.9 WP3B1 验收状态（已完成，release gate 验收通过）
+
+- `src/backup/restore-core.ts` 与 `scripts/restore.ts` 仅支持 SQLite：要求绝对输入包、目标根和显式 age identity；拒绝 PG、路径重叠、symlink/traversal、缺 COMPLETE、manifest/payload/ciphertext 完整性错误，并保证失败不发布部分恢复目录。
+- 此前 WP3B1 `verify:release` 验收截图显示：root test 64 files passed；630 passed / 2 skipped；真实 age encryption/decryption/hash 通过；restore-core 16 passed；compiled 与 npm-installed backup/restore E2E 及 safe-failure smoke 通过；命令成功返回 shell。此前真实 PG migration gate 也已通过。WP3B2 新增的真实 PG backup describe 在普通 root test 中按 binary/URL 条件 skip，由独立 `test:pg-backup` 强制 gate 负责。
+- root test 的条件 skip 不等于发布门禁遗漏：PG migration、PG backup、真实 age 与 restore 均有独立的强制 gate；相关 gate 未执行时 release gate 非零失败。WP3B1 仍仅是离线 SQLite restore drill，不实现 scheduler、retention、migration prebackup、reset、outbox/IAM；报告不包含 cwd、凭证、URL 或完整源路径。
+
+### 6.10 WP3B2 验收状态（已完成，真实 PG16 release gate 验收通过）
+
+- `src/backup/postgres-backup-core.ts` 与 `src/backup/postgres-restore-core.ts` 已有实现，reviewer P0/P1 修复已完成：复用 age 包、稳定 JSONL/models 白名单、external-reference/path 安全和原子 publish；fake-process/受控 executable 测试覆盖 stdout 实际写入、zero-byte fail、argv 不含 URL/password、显式 schema、PGPASSFILE 0600/cleanup、binary/version/失败无 COMPLETE、manifest/hash、public/source target 拒绝、空临时 target、catalog schema 唯一定位、schema/ledger/FK 校验与 DB→JSONL remap。
+- CLI 仍保持 SQLite 行为，并新增 PG backup path 与 `--target-pg-url` restore path；日常 `build:backup` 不依赖 PG 系统工具。PG restore 要求 canonical safety contract：显式空 `pi_restore_*` target、拒绝 authenticated public/source schema（未配置的默认 `public` namespace 仅作 bootstrap target），且不接受 nonblank safety token 绕过检查。`pnpm test:pg-backup` 已在匹配 PG16 客户端与真实 PG 上通过：使用随机专用 source/target database，fixture/运维负责创建和销毁；真实 `pg_dump` → age → `pg_restore` → ledger/JSONL 恢复 gate 通过。
+- 真实验收证据：确认匹配 PG16 客户端后，`volta run pnpm verify:release` 成功结束并返回 shell；因命令以 `&&` 串行，真实 `test:pg-backup` 先于截图尾部的 `build`/`build:migrate`/`build:backup` 完成，可作为 PG dump → age → restore 真实 gate 通过的证据。本次未执行生产用户 DB 操作。
 
 ## 7. 单实例到多实例路径（当前不实现）
 
@@ -238,33 +274,37 @@
   - 会话历史：JSONL 从本地盘迁移到共享 / 对象存储（含版本管理）；
   - migration lock：PG advisory lock / ledger 行锁（§4.3 预留接口）；
   - 会话任务 / 事件协调：会话级租约/心跳、Worker Job 队列消费协调（needs.md §4.1 的 Worker 租约/心跳已规划）、SSE 跨实例路由或会话亲和性。
-- **当前不实现**：多实例只在明确需求出现后启动（列入 §9 待决策项 5），且必须先完成 WP1/WP3（迁移 + 备份）；设计预留点已列于 §2.3。
+- **当前不实现**：多实例只在明确需求出现后启动（列入 §9 待决策项 6），且必须先完成 WP1/WP3（迁移 + 备份）；设计预留点已列于 §2.3。
 
 ## 8. 工作包、依赖、验收与回滚点
 
 ### 8.1 工作包列表
 
-| WP | 名称 | 内容 | 依赖 | 验收 | 回滚点 |
-| --- | --- | --- | --- | --- | --- |
-| WP0 | 决策冻结 | 冻结数据保留起点与切换窗口；migration 引擎最终选型（§3，已确认：Manifest-driven）；备份参数（频率/保留/介质）；RPO/RTO 初值；加密/KMS 选型；数据删除与审计保留期；静态 token 退场节奏 | 无（纯文档） | 各项决策书面确认并更新本文档与 IAM 待决策项；零代码/零数据变更 | 纯决策，无回滚需求 |
-| WP1 | 迁移引擎 | §4 目标架构：ledger / checksum / lock / manifest head 校验 / 双库事务 / 启动门禁 / immutable 约束；与 `assertSchemaCompatible` 集成；迁移前强制备份联动 | WP0 | 单测 + 集成：空库迁移、滞后库升级、超前库 fail-fast、checksum 篡改 fail-fast、事务回滚、双库契约、既有 RC 未迁移库基线判定；`pnpm verify` 全绿 | 未切换时撤回代码即可；已切换后靠备份恢复 |
-| WP2 | 最终 reset 切换 | 最后一次 reset（DB + JSONL 全清空）流程/脚本/checklist；空库迁移建基线 + 立即基线备份；此后冻结 destructive reset；切换记录写入决策文档 | WP1 + WP3 就绪 | 切换后空库基线可启动、全量测试通过、基线备份存在；切换后无任何 destructive reset 路径 | 切换前可随时重来（RC 心智）；切换后只可恢复备份，不可回滚 |
-| WP3 | 备份恢复 | §6：SQLite VACUUM INTO + JSONL、PG pg_dump + JSONL、迁移前强制备份、恢复流程与演练、备份完整性校验、凭证不进入备份 | WP0（可与 WP1 部分并行） | 至少一次成功恢复演练（含迁移出错回滚）；备份文件校验通过；强制备份在迁移门禁生效 | 演练在隔离环境执行，生产无风险 |
-| WP4 | JSONL 生命周期 | §5：outbox、逻辑删除/待删队列、reconcile、orphan/lost-file 处置、quarantine | WP1 | 崩溃补偿测试（中断回写 → 重启对账修复）；删除幂等；异常文件入 quarantine 而非自动删除；审计记录齐全 | 对账/清理逻辑可开关；异常文件不进自动删除 |
-| WP5 | 运维门禁 | 启动迁移门禁 fail-fast；备份缺失/过期告警（对齐 needs.md §6.6 分级阈值）；审计保留衔接；恢复演练节奏化 | WP1、WP3 | 故障注入测试（坏库/滞后库/缺备份 → 拒绝启动或告警）；门禁与告警清单落文档 | 门禁规则配置化，可降级为告警（需决策） |
-| WP6 | IAM 进入条件 | 确认 IAM（identity-access-plan.md 工作包 0–5）数据落地门槛 = WP1–5 全部通过；在此之前 IAM 仅做设计（schema decision、待决策项），不落地真实表/迁移 | WP1–5 全部通过 | WP1–5 各自验收全绿；触发 IAM 启动评审并记录决策 | IAM 未开始，无回滚 |
+| WP | 状态 | 名称 | 内容 | 依赖 | 验收 | 回滚点 |
+| --- | --- | --- | --- | --- | --- | --- |
+| WP0 | ✅ 已完成/已冻结 | 决策冻结 | 冻结数据保留起点与切换窗口；migration 引擎最终选型（§3，已确认：Manifest-driven）；备份策略方向；明确 RPO/RTO、保留期、备份根路径、age recipient 与私钥托管等后续待定项 | 无（纯文档） | 已完成：决策记录于 [ADR 0001](decisions/0001-phase-3-data-retention-baseline.md)，并同步本文档状态；零代码/零数据变更 | 纯决策，无回滚需求 |
+| WP1 | ✅ 已完成，真实 PG 验收通过 | 迁移引擎基础（离线） | 不可变 v0 descriptor/DDL snapshot、schema_migrations ledger、稳定 checksum、SQLite `BEGIN IMMEDIATE` 原子 DDL、PG advisory lock + transaction、schema compatibility 校验、离线 CLI；不接入 `startServer`，不做备份联动 | WP0 | `volta run pnpm verify:release`（真实 `PI_TEST_PG_URL`，含 migration-engine PG 门控）全部通过；WP1 仍为离线工具，不接入 `startServer`；本文不列不可靠的最终总计数 | 未切换时撤回代码即可；已切换后靠备份恢复 |
+| WP2 | ✅ 当前 SQLite 目标的干净基线已建立（WP2A 实现与 reviewer 复审修复已完成并通过真实 PG16+age verify:release 门禁验收；无旧 RC 数据，破坏性 reset 不适用） | 最终 reset 切换 | WP2A（已实现）：受控 cutover 离线 CLI（`pnpm cutover` / bin `pi-agent-server-cutover`，确认链 `--reset-rc-data` + `--confirm-reset DELETE_RC_DATA` + `--maintenance-window CONFIRMED`，dry-run 零写入）；pre-reset 加密备份（kind=pre-reset，legacy 库无 ledger 也可备份并在 manifest/报告如实标注）；受控 reset（SQLite：DB/WAL/SHM + sessions//projects/ 根，保留 models.json、永不触凭证；PG：仅 allowlisted `pi_cutover_*` schema DROP/CREATE + 最小授权，绝不 DROP DATABASE/public）；Manifest-driven migration apply + 严格 verify head + 脱敏 machine report；可选严格启动门禁（`migrationGate="verify"`/`PI_MIGRATION_GATE`，空/legacy/落后库 fail-fast，默认 off 不改变 RC 行为）；runbook（[cutover-runbook.md](cutover-runbook.md)）；门禁 `test:cutover`/`test:cutover-pg`/`build:cutover` 接入 `verify:release`。**当前 SQLite 目标：没有旧 RC 数据，已通过空库 pre-migration 加密备份、migration apply 与 strict verify 建立干净基线；未执行破坏性 reset。若未来存在待丢弃 RC 数据的其他目标，仍须经用户明确授权执行受控 cutover。正式服务启用、数据保留承诺与切换记录仍待 WP5 运维就绪后另行确认。** | WP1 + WP3B 就绪（WP2B 另需用户授权） | WP2A：真实 age SQLite 全链路演练门禁、真实 PG 随机 schema 演练门禁、compiled/npm bin E2E 与 safe-failure smoke 全部通过并接入 `verify:release`；实际 cutover 后：空库基线可启动、全量测试通过、基线备份存在（未发生） | WP2B 切换前可随时重来（RC 心智）；切换后只可恢复备份，不可回滚 |
+| WP3A | ✅ 已完成，真实 age 与真实 PG release gate 验收通过（SQLite） | 备份核心 | SQLite `VACUUM INTO` + 白名单 JSONL/config 收集；逐文件 size/mtime/hash/逐行 JSON 复核与有限重试；age 每 payload/manifest 加密；staging、`COMPLETE` 最后写入、同 FS 原子发布；显式 CLI 与 dry-run；不接入服务/timer | WP1 + WP0 | 真实 age 加密/解密/hash/内容校验、真实 `verify:release` PG gate（PG 门控 3 文件 / 59 用例）、build、compiled migration CLI、compiled backup CLI、installed npm backup bin smoke 均通过；失败不发布 `COMPLETE` | 撤回离线工具代码即可；未触碰服务/数据 |
+| WP3B | ✅ 已完成，真实 PG16 dump/restore release gate 验收通过 | 恢复与运维门禁 | WP3B1 SQLite restore drill；WP3B2 PG backup/restore、恢复流程与演练、完整性复核；不接入服务启动 | WP1 + WP3A + WP0 | WP3B1 与 WP3B2 已通过各自 release gate | 演练在隔离环境执行，生产无风险 |
+| WP3C | ✅ 已完成，真实 PG+age `verify:release` 全通过及 `test:migration-prebackup` 门禁通过 | migration 前强制加密备份 + 离线 runbook | `--apply` 强制绝对 backup root、age recipient 与维护窗口确认；`pre-migration` backup → COMPLETE/manifest/age 输出复核 → migration → verify/head check；SQLite/PG 共用 backup core；不接入服务、scheduler、retention、outbox 或 IAM | WP1 + WP3A + WP3B | 真实 PG+age `verify:release` 全量通过；`test:migration-prebackup` 真实 PG 门禁通过；失败不迁移、不自动 down/restore | 备份失败不发布成功；migration 失败保留备份，人工按 runbook 决定恢复 |
+| WP4A | ✅ 已验收 | v1 file_operations outbox 基础 | v1 Manifest migration；SQLite/PG 同构表；relative 白名单 path；pending/processing/completed/failed 状态机与脱敏 error；session/project 删除同事务 enqueue；operation key 幂等；双库 repository + 原子 claim 预留；DELETE 只 enqueue、不 unlink | WP1 | 已依据用户提供的真实 PG16+age `verify:release` 成功证据验收；本文不列测试数量 | 执行器/retry/quarantine/reconcile 留后续；outbox 无 FK 级联丢失 |
+| WP4B | ⬜ 未开始 | JSONL 生命周期执行器/retry/quarantine | claim 后受控文件清理、执行器、retry、quarantine | WP4A | 崩溃补偿、失败重试、异常文件不自动删除、审计完整 | 仅处理已 claim 的相对路径 |
+| WP4C | ⬜ 未开始 | JSONL/DB reconcile | 启动/定时 reconcile、orphan/lost-file 识别与处置 | WP4A、WP4B | 对账与异常处置安全、不可重建文件不自动删除 | 仅处理白名单路径并保留审计 |
+| WP5 | ⬜ 未开始 | 运维门禁 | 启动迁移门禁 fail-fast；备份缺失/过期告警（对齐 needs.md §6.6 分级阈值）；审计保留衔接；恢复演练节奏化 | WP1、WP3B | 故障注入测试（坏库/滞后库/缺备份 → 拒绝启动或告警）；门禁与告警清单落文档 | 门禁规则配置化，可降级为告警（需决策） |
+| WP6 | ⬜ 未开始 | IAM 进入条件 | 确认 IAM（identity-access-plan.md 工作包 0–5）数据落地门槛 = WP1–5 全部通过；在此之前 IAM 仅做设计（schema decision、待决策项），不落地真实表/迁移 | WP1–5 全部通过 | WP1–5 各自验收全绿；触发 IAM 启动评审并记录决策 | IAM 未开始，无回滚 |
 
 ### 8.2 依赖链
 
 ```text
 WP0 决策冻结
- └─→ WP1 迁移引擎 ──→ WP3 备份恢复 ──→ WP2 最终 reset 切换（== 数据保留起点）
-     └─→ WP4 JSONL 生命周期 ─┐
-     └─→ WP5 运维门禁 ───────┴─→ WP6 IAM 进入条件（仅当 WP1–5 全部通过）
+ └─→ WP1 迁移引擎 ──→ WP3A 备份核心 ──→ WP3B1 SQLite drill ──→ WP3B 后续恢复/门禁 ──→ WP2 最终 reset 切换（== 数据保留起点）
+     └─→ WP4A outbox 基础 ──→ WP4B 执行器/retry/quarantine ──→ WP4C reconcile ──┐
+     └─→ WP5 运维门禁 ───────────────────────────────────────────────────────────┴─→ WP6 IAM 进入条件（仅当 WP1–5 全部通过）
 ```
 
-- **关键门槛**：只有 WP1–5 全部通过，才能进入 WP6（IAM 数据落地）——对应 identity-access-plan.md 工作包 0 的「数据策略决策 + 正式 migration / 备份 / 回滚」前置。
-- WP4/WP5 依赖 WP1，可与 WP3 交错；**WP2 必须在 WP1 + WP3 就绪后执行**（原因见 §2.1：开始保留数据必须先有迁移与备份兜底）。
+- **关键门槛**：只有 WP1–5 全部通过，才能进入 WP6（IAM 数据落地）——WP3 基础工作包（WP3A/WP3B1/WP3B2/WP3C）已完成各自真实 gate；WP4A 已验收，WP4B/WP4C/WP5 尚未开始，WP6 也尚未开始。WP2A 工具已实现并通过真实 PG16+age `verify:release` 门禁；当前 SQLite 目标已完成干净基线初始化，破坏性 WP2B reset 不适用。
+- WP3 基础工作包已完成不将 WP2、WP4–WP5 或其他后续工作包视为已完成；后续依赖关系仍按原计划保留，WP2 必须在 WP3 备份恢复完成后执行。
 
 ### 8.3 回滚点原则
 
@@ -279,11 +319,12 @@ WP0 决策冻结
 | # | 待决策项 | 影响面 | 当前状态 |
 | --- | --- | --- | --- |
 | 1 | ~~migration 引擎最终选型~~ | ~~WP0/WP1~~ | **已决策（§3）：采用自定义 Manifest-driven 引擎；Kysely Migrator 不选** |
-| 2 | RPO / RTO 取值 | WP3 | 未定（每日全量备份为方向，数值未定） |
-| 3 | 加密 / KMS / 备份介质访问控制选型 | WP3 | 方向已确认（必须加密、凭证不进入备份），具体选型未定 |
-| 4 | 数据删除与审计保留：会话 TTL 归档/删除参数（needs.md §6.4 的 N/M 天数）、审计保留期、quarantine 保留期 | WP4/WP5 | 未定 |
-| 5 | 多实例 / 共享存储：何时启动、PG + 对象存储形态、会话亲和策略 | 未来（§7） | 未定（当前不实现） |
-| 6 | 静态 token 退场：迁移窗口、强制切换 deadline | IAM WP1（见 identity-access-plan.md §8 待决策项 7） | 未定 |
+| 2 | RPO / RTO 取值 | WP3 | 未定（每日在线全量备份为方向，具体数值与验收口径未定） |
+| 3 | 备份及数据/审计保留期 | WP3/WP4/WP5 | 未定（包括备份保留、会话 TTL 归档/删除参数、审计保留期、quarantine 保留期） |
+| 4 | 备份根路径及介质访问控制 | WP3 | 本机绝对目录已确认，具体绝对路径、是否独立挂载/介质隔离及访问控制未定 |
+| 5 | age recipient / 私钥托管 | WP3 | age 公钥加密已确认；recipient、私钥托管（包括是否接入 KMS）未定 |
+| 6 | 多实例 / 共享存储：何时启动、PG + 对象存储形态、会话亲和策略 | 未来（§7） | 未定（当前不实现） |
+| 7 | 静态 token 退场：迁移窗口、强制切换 deadline | IAM WP1（见 identity-access-plan.md §8 待决策项 7） | 未定 |
 
 决策流程：每项决策须在对应工作包落地前书面记录（更新本文档与相关设计文档），并附验收口径（对齐 identity-access-plan.md §8 的约定）。
 
@@ -294,4 +335,4 @@ WP0 决策冻结
 - 本地 PostgreSQL 测试流程：[postgres-podman-test.md](postgres-podman-test.md)
 - 架构速览（单实例并发模型、SQLite 锁语义、目录/端口边界）：[architecture.md](architecture.md)
 - 平台需求基线（交付计划、备份/保留/审计要求、存储分卷与容量治理）：[../needs.md](../needs.md)
-- 对外状态与限制：[../README.md](../README.md) / [../README.zh-CN.md](../README.zh-CN.md)（Security & Limitations：本计划落地实现前，「无正式 migration / backup / rollback」描述保持准确，不修改）
+- 对外状态与限制：[../README.md](../README.md) / [../README.zh-CN.md](../README.zh-CN.md)（Security & Limitations：迁移核心当前仅为 WP1 离线开发工具，尚未接入服务；README 的正式能力限制保持准确，不修改）

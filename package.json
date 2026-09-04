@@ -13,14 +13,21 @@
   "homepage": "https://github.com/shayeLee/pi-agent-server#readme",
   "type": "module",
   "bin": {
-    "pi-agent-server": "./dist/main.js"
+    "pi-agent-server": "./dist/main.js",
+    "pi-agent-server-migrate": "./dist-migrate/scripts/migrate.js",
+    "pi-agent-server-backup": "./dist-backup/scripts/backup.js",
+    "pi-agent-server-restore": "./dist-backup/scripts/restore.js",
+    "pi-agent-server-cutover": "./dist-cutover/scripts/cutover.js"
   },
   "exports": {
     "./server": "./dist/server/start.js",
     "./package.json": "./package.json"
   },
   "files": [
-    "dist"
+    "dist",
+    "dist-migrate",
+    "dist-backup",
+    "dist-cutover"
   ],
   "engines": {
     "node": ">=22.19.0"
@@ -31,8 +38,24 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:postgres": "tsx scripts/test-postgres.ts",
-    "verify": "npm run typecheck && npm run test",
-    "verify:release": "npm run typecheck && npm run test && npm run test:postgres && npm run build",
+    "test:pg-backup": "tsx scripts/test-pg-backup.ts",
+    "test:migration-prebackup": "tsx scripts/test-migration-prebackup.ts",
+    "cutover": "tsx scripts/cutover.ts",
+    "test:cutover": "pnpm test:age && cross-env PI_RUN_REAL_AGE_CUTOVER=1 vitest run tests/cutover/cutover-real-age.test.ts",
+    "test:cutover-pg": "tsx scripts/test-cutover-pg.ts",
+    "migrate": "tsx scripts/migrate.ts",
+    "backup": "tsx scripts/backup.ts",
+    "restore": "tsx scripts/restore.ts",
+    "build:migrate": "tsc -p tsconfig.migrate.json && node scripts/smoke-migrate-compiled.mjs && node scripts/smoke-migrate-package.mjs",
+    "build:backup": "tsc -p tsconfig.backup.json && node scripts/smoke-backup-compiled.mjs && node scripts/smoke-backup-package.mjs",
+    "build:cutover": "tsc -p tsconfig.cutover.json && node scripts/smoke-cutover-compiled.mjs && node scripts/smoke-cutover-package.mjs",
+    "test:age": "node scripts/test-age-real.mjs",
+    "test:restore-real": "pnpm test:age && cross-env PI_RUN_REAL_AGE_RESTORE=1 vitest run tests/backup/restore-core.test.ts",
+    "migrate:compiled": "node dist-migrate/scripts/migrate.js",
+    "backup:compiled": "node dist-backup/scripts/backup.js",
+    "restore:compiled": "node dist-backup/scripts/restore.js",
+    "verify": "npm run typecheck && npm run test && npm run build:backup",
+    "verify:release": "npm run typecheck && npm run test && npm run test:postgres && npm run test:pg-backup && npm run test:migration-prebackup && npm run test:cutover && npm run test:cutover-pg && npm run test:restore-real && npm run build && npm run build:migrate && npm run build:backup && npm run build:cutover",
     "dev": "tsx src/main.ts",
     "dev:real": "cross-env DATA_DIR=/tmp/pi-agent-server PI_DEFAULT_MODEL=openai-codex/gpt-5.6-luna PI_DEFAULT_THINKING_LEVEL=medium tsx src/main.ts",
     "mock": "tsx scripts/mock-server.ts",
@@ -42,8 +65,8 @@
     "release:rc": "npm run verify:release && npm publish --tag rc"
   },
   "dependencies": {
-    "@earendil-works/pi-ai": "^0.84.2",
-    "@earendil-works/pi-coding-agent": "^0.84.2",
+    "@earendil-works/pi-ai": "^0.84.4",
+    "@earendil-works/pi-coding-agent": "^0.84.4",
     "@fastify/cors": "^11.3.0",
     "fastify": "^5.12.0",
     "kysely": "0.29.5",

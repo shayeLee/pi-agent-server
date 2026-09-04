@@ -1,29 +1,31 @@
 # 数据库设计（RC / SQLite + PostgreSQL）
 
-> RC 阶段 SQLite 详细设计，单一事实来源的表/字段/约束/索引/查询与幂等规则。本文可独立阅读，但源码为准：schema 定义与建库 DDL 的**唯一来源**是 `src/storage/schema-manifest.ts`（运行时 Manifest，含编译期/运行期校验），`DatabaseSchema` 类型由其推导（`src/storage/schema-types.ts`，`db-schema.ts` 仅为兼容 re-export）；查询与幂等规则见 `src/storage/kysely-*-repository.ts` / `src/runtime/runtime-registry.ts` / `src/application/ports/*-store-port.ts`。
+> RC 阶段 SQLite 详细设计，单一事实来源的表/字段/约束/索引/查询、幂等与 file-operation outbox 规则。本文可独立阅读，但源码为准：schema 定义与建库 DDL 的**唯一来源**是 `src/storage/schema-manifest.ts`（当前 head 为 v1，运行时 Manifest 含编译期/运行期校验），`DatabaseSchema` 类型由其推导（`src/storage/schema-types.ts`，`db-schema.ts` 仅为兼容 re-export）；查询与存储规则见 `src/storage/kysely-*-repository.ts` / `src/runtime/runtime-registry.ts` / `src/application/ports/*-store-port.ts`。
+>
+> **WP4A 验收状态（本次更新）**：✅ 已验收。v1 migration、SQLite/PG 同构 `file_operations` 持久 outbox 与删除事务已依据用户提供的真实 PG16+age `verify:release` 成功截图验收；本文不记录或推导测试数量。WP4B（outbox 执行器/retry/quarantine）与 WP4C（reconcile）尚未开始，WP5/WP6 尚未开始。相关能力仍是离线开发期工具，不启动正式服务，整体尚非生产就绪。
 
 ## 1. 范围与源码依据
 
 - **当前形态**：RC（Release Candidate）阶段的 SQLite schema，以 Kysely 0.29.5 + `node:sqlite` 薄适配器 + `SqliteDialect` 承载。
 - **源码依据**：
-  - **Schema 唯一来源（已落地）**：`src/storage/schema-manifest.ts` 的 `schemaManifest`（`defineSchema` 返回值）声明全部表/列/逻辑类型/nullable/default/PK/FK/索引，经编译期字面量校验（PK/FK/索引列必须引用已声明列，FK 目标表/列须存在）+ 运行期结构校验（唯一性/声明顺序/枚举值）后深冻结；
+  - **Schema 唯一来源（已落地，当前 v1）**：`src/storage/schema-manifest.ts` 的 `schemaManifest`（`defineSchema` 返回值）声明全部表/列/逻辑类型/nullable/default/PK/FK/索引，经编译期字面量校验（PK/FK/索引列必须引用已声明列，FK 目标表/列须存在）+ 运行期结构校验（唯一性/声明顺序/枚举值）后深冻结；
   - 类型推导：`src/storage/schema-types.ts` 从 manifest 推导 `DatabaseSchema`（逻辑列类型 → TS 类型：uuid/text/json→`string`、integer/bigint→`number`，nullable 追加 `| null`）；`src/storage/db-schema.ts` 只做 `DatabaseSchema` 的兼容 re-export（不再手写表 interface）；
   - 建库 DDL：`src/storage/bootstrap.ts` 的 `initializeDatabase()` 消费 Manifest，仅做逻辑类型→SQLite 物理类型映射并用 `Kysely.schema.createTable(...)` / `createIndex(...)` 幂等建表/索引/外键（全部 `IF NOT EXISTS`）；
-  - 行映射与查询：`src/storage/kysely-project-repository.ts` / `kysely-session-repository.ts` / `kysely-idempotency-repository.ts` 的 `toRecord()` 与 Port 实现；
+  - 行映射与查询：`src/storage/kysely-project-repository.ts` / `kysely-session-repository.ts` / `kysely-idempotency-repository.ts` / `kysely-file-operation-repository.ts` 的 `toRecord()` 与 Port 实现；
   - 幂等 TTL：`src/runtime/runtime-registry.ts` 的 `DEFAULT_IDEMPOTENCY_TTL_MS` 与定期 `prune()`。
 - **运行期选项**：`src/server/start.ts` 创建 `DatabaseSync` 时启用 `timeout: 5000` 与 `enableForeignKeyConstraints: true`；文件库（非 `:memory:`）执行 `PRAGMA journal_mode=WAL`。
 
-### Schema Manifest 单一来源（已落地，工作包 B）
+### Schema Manifest 单一来源（已落地，工作包 B/WP4A）
 
-- **运行时 Schema Manifest 是唯一手工声明**：`src/storage/schema-manifest.ts` 的 `schemaManifest` 同时是字段/约束/索引的唯一来源与 `DatabaseSchema` 推导（`schema-types.ts`）的依据；不再有第二份手工字段定义。
-- **`db-schema.ts` 仅为派生类型出口**：`DatabaseSchema` 由 Manifest 自动推导（逻辑列类型 → TS 类型，nullable 追加 `| null`），`db-schema.ts` 只 re-export，**不再手维护**，也没有 `ProjectsTable` / `SessionsTable` / `IdempotencyTable` 手工 interface；两个 Repository 的 `SessionRow` / `ProjectRow` 同样直接引用 `DatabaseSchema["sessions"]` / `DatabaseSchema["projects"]`，无第二份手工字段声明。
-- **bootstrap 只做方言映射**：`initializeDatabase()` 不再列出字段/索引/FK，而是消费 Manifest + SQLite 逻辑类型映射（`uuid/text/json → TEXT`、`integer/bigint → INTEGER`）逐表幂等建库；DDL 与当前已知 schema 一致（单列 PK 仍为列级内联，复合 PK 仍为命名约束 `idempotency_pk`，FK 仍 ON DELETE CASCADE，4 个索引含 `updated_at DESC`）。唯一差异：主键列由 bootstrap 显式 `notNull()`（Manifest 校验也强制 PK 列不可 nullable）——较历史 DDL 更严格，但符合「主键值不可为 NULL」的业务语义。
+- **运行时 Schema Manifest 是唯一手工声明**：`src/storage/schema-manifest.ts` 的 `schemaManifest`（当前 v1）同时是字段/约束/索引的唯一来源与 `DatabaseSchema` 推导（`schema-types.ts`）的依据；不再有第二份手工字段定义。
+- **`db-schema.ts` 仅为派生类型出口**：`DatabaseSchema` 由 Manifest 自动推导（逻辑列类型 → TS 类型，nullable 追加 `| null`），`db-schema.ts` 只 re-export，**不再手维护**，也没有各业务表或 `FileOperationsTable` 手工 interface；各 Repository 的行类型直接引用 `DatabaseSchema`，无第二份手工字段声明。
+- **bootstrap 只做方言映射**：`initializeDatabase()` 不再列出字段/索引/FK，而是消费 Manifest + SQLite 逻辑类型映射（`uuid/text/json → TEXT`、`integer/bigint → INTEGER`）逐表幂等建库；DDL 与当前已知 schema 一致（单列 PK 仍为列级内联，复合 PK 仍为命名约束 `idempotency_pk`，FK 仍 ON DELETE CASCADE，v0 的 4 个索引加上 v1 outbox 的 2 个索引）。唯一差异：主键列由 bootstrap 显式 `notNull()`（Manifest 校验也强制 PK 列不可 nullable）——较历史 DDL 更严格，但符合「主键值不可为 NULL」的业务语义。
 - **校验双保险**：编译期在调用点拒绝非法 Manifest（`__schemaIssue` 字面量报错；含主键列不可 nullable、FK 源/目标列等长且非空；`@ts-expect-error` 负向用例见 `tests/storage/schema-types.test.ts`）；运行期 `defineSchema` 再做唯一性/顺序/枚举、主键列不可 nullable、FK 源/目标非空且等长、源/目标逻辑类型一致等校验并深冻结。本文其余内容（§3 表结构、§4 约束索引等）描述的就是该 Manifest 的实际定义（无手工副本）。
-- **PostgreSQL 方言（工作包 C：已完成，最终发布门禁已通过，见 §9）**：PG bootstrap（`src/storage/postgres-bootstrap.ts`）从同一 Manifest 推导——逻辑类型映射为 uuid→`UUID`、text/json→`TEXT`、integer/bigint→`BIGINT`（json 保持 TEXT 非 JSONB），DDL 流程与 SQLite 共用 `src/storage/schema-builder.ts`；Repository 已方言中立化（`src/storage/kysely-*-repository.ts`，SQLite/PG 共用，约束错误 mapper 注入）；PG 需显式 `PI_STORAGE_DIALECT=postgres` + `PI_DATABASE_URL`（见 §9）。全部 45 个扩展门控用例已由 `volta run pnpm verify:release`（真实 PG `PI_TEST_PG_URL`）验收通过（见 §9.7）；历史 17 用例 PG 基线亦曾在本机通过。仍受 RC/no migration 限制（见 §7 非目标）。
+- **PostgreSQL 方言（工作包 C：已完成；真实验收受 `PI_TEST_PG_URL` 当前环境门控，发布门禁见 §9.6）**：PG bootstrap（`src/storage/postgres-bootstrap.ts`）从同一 Manifest 推导——逻辑类型映射为 uuid→`UUID`、text/json→`TEXT`、integer/bigint→`BIGINT`（json 保持 TEXT 非 JSONB），DDL 流程与 SQLite 共用 `src/storage/schema-builder.ts`；Repository 已方言中立化（`src/storage/kysely-*-repository.ts`，SQLite/PG 共用，约束错误 mapper 注入）；PG 需显式 `PI_STORAGE_DIALECT=postgres` + `PI_DATABASE_URL`（见 §9）。真实 PG 的扩展门控用例只有在当前环境设置 `PI_TEST_PG_URL` 并实际运行时才构成验收证据；没有该 URL 不宣称 PG 通过。仍受 RC/no migration 限制（见 §7 非目标）。
 
 ## 2. 总体设计
 
-- **数据库只存索引与配置**：`projects` / `sessions` 存项目与会话的索引、归属、时间戳与会话级配置；`idempotency` 存幂等终态。不存完整消息正文、工具调用历史或对话内容。
+- **数据库只存索引、配置与文件副作用队列**：`projects` / `sessions` 存项目与会话的索引、归属、时间戳与会话级配置；`idempotency` 存幂等终态；`file_operations` 存 JSONL 清理 outbox。不存完整消息正文、工具调用历史或对话内容。
 - **完整对话历史在 JSONL**：`sessions.pi_session_file` 指向 Pi SDK 管理的 JSONL 会话文件（`SessionManager.create/open` 产生），重启后据此恢复对话。SQLite（元数据）与 JSONL（完整历史）是两个独立存储系统，无法合并为单个原子事务；写入顺序与残余边界见下方 `### JSONL 与 SQLite 的跨存储边界`。
 - **命名映射**：数据库列为 `snake_case`（`owner_key` / `created_at` / `pi_session_file` 等），领域记录为 `camelCase`（`ownerKey` / `createdAt` / `piSessionFile`），由各 Repository 的 `toRecord(row)` 显式映射，`db-schema.ts` 仅 re-export 派生类型、不做转换。
 - **应用 ID 与时间**：所有 `id` 由应用层生成（`randomUUID` 等），`created_at` / `updated_at` 为应用写入的毫秒时间戳（`Date.now()`），非数据库自增或 `DEFAULT CURRENT_TIMESTAMP`。
@@ -31,28 +33,26 @@
 ### JSONL 与 SQLite 的跨存储边界
 
 - **两个存储系统，非单事务**：`projects` / `sessions` 等元数据存 SQLite；完整对话历史存 Pi SDK 管理的 JSONL。二者分属不同存储，无法参与同一个原子事务，跨存储的「要么全成、要么全无」无法由数据库本身保证。
-- **创建顺序（降低 DB 指向不存在文件的风险）**：
+- **创建顺序（持久路径 barrier）**：
   1. 先创建 SQLite 会话记录，`pi_session_file = null`（见 `session-service.ts` 的 `createSession`，`piSessionFile: null`）；
-  2. 首次发消息时由 Pi 经 `SessionManager.create`（或 `open` 既有文件）创建/打开 JSONL 文件（`server/start.ts` 据 `record.piSessionFile` 决定 create/open）；
-  3. JSONL 创建成功后，把 `session.sessionFile` 回写 SQLite（`sessions.update(id, { piSessionFile })`）。
+  2. 首次发消息时先由 `SessionManager.create` 计算目标文件名，但此时尚未要求 SDK 持久化文件；`server/start.ts` 将该绝对路径先回写 SQLite；
+  3. 只有路径预留成功后才创建 Agent session/写 JSONL；随后再次确认 SDK 路径。删除事务锁住父项目/会话并读取该预留，因此会为已预留路径入队；若最终回写返回 false，则对实际已创建路径执行幂等 outbox enqueue。
 
+  这不是跨存储原子事务，但它把路径变成持久删除事实，覆盖 delete 与 lazy create 的交错窗口；恢复/删除路径均不调用 `unlink`。
+- **残余边界（WP4B/WP4C 尚未开始）**：进程可能在路径预留后、文件创建前退出，留下一个数据库指向尚未存在文件的预留；后续删除会安全入队，未来 WP4B 执行器可将不存在文件按幂等成功处理。进程在文件创建后崩溃不会留下无 owner 的未记录路径；WP4C reconcile 与自动 worker/quarantine 仍未实现。
+- **删除顺序（WP4A）**：
+  1. 在一个数据库事务内读取会话文件引用、向 `file_operations` 写入 `pending` 删除操作并删除 `sessions`/`projects` 行；
+  2. 事务提交后只清理进程内 runtime；
+  3. **DELETE 请求绝不 unlink**，物理文件由未来 worker 在原子 claim 后执行。
 
-  这一顺序保证：只有文件已存在，DB 才会记录其路径，因此降低了「DB 指向不存在文件」的概率。
-- **残余边界（无自动对账）**：若 JSONL 文件创建成功、但 SQLite 回写 `pi_session_file` 之前进程中断，会留下一个物理 JSONL 文件，而 DB 中该会话的 `pi_session_file` 仍为 `null`。当前 RC 没有后台扫描/对账任务去补回该路径；该文件不会出现在会话列表（SQLite 无可见记录），需人工排查或后续补偿处理。
-- **删除顺序（文件删除失败可能留物理残留）**：
-  1. 先逻辑删除 SQLite 会话元数据（`sessions.delete`，会话对外不可见）；
-  2. 再清理 runtime（`registry.delete`）；
-  3. 最后删除 JSONL 物理文件（`removeSessionFile`）。
-
-
-  若第 3 步文件删除失败（权限/磁盘等），会留下不再被 DB 引用的物理残留；当前可人工/后续补偿处理，没有持久化的清理队列或定时任务。
+  outbox 的相对路径在入队时限制为 DATA_DIR 下两种 JSONL 白名单布局；路径校验失败会回滚同一事务，业务行不丢失。删除项目显式删除 sessions，且 `file_operations` 不设级联 FK，因此待处理 outbox 不会被父行删除级联掉。
 - **`ensureDefaultProject` 与 `backfillSystemPrompt` 均非 JSONL/SQLite 对账**：
   - `ensureDefaultProject` 仅用于确保 SQLite 默认项目记录存在（`INSERT OR IGNORE`，`id=DEFAULT_PROJECT_ID`（`6f1a2b3c-4d5e-4f6a-8b9c-0d1e2f3a4b5c`）、空 owner），服务于外键不变量，与 JSONL 无关；
   - `backfillSystemPrompt` 仅补写 SQLite `sessions` 中 `system_prompt` 为 `null` 的字段，与 JSONL 无关。
 
 
   二者都不能弥合上述跨存储边界。
-- **当前不提供**：没有自动对账/恢复（reconcile）任务、没有 outbox/写前日志、没有持久化清理队列，也不对任何跨存储操作提供强一致（strong consistency）保证。
+- **WP4A 当前边界（已验收）**：已提供持久 `file_operations` outbox、相对白名单 path、lease-token fencing、SQLite `BEGIN IMMEDIATE` / PG 父项目 `FOR UPDATE` 删除锁、lazy JSONL 持久路径 barrier，以及 SQLite/PG 原子 claim 预留；删除事务只 enqueue，不执行 unlink。WP4B 执行器/retry/quarantine 与 WP4C reconcile 尚未开始，也不对 DB 与 JSONL 提供跨存储强一致。
 
 ## 3. 表结构
 
@@ -103,6 +103,24 @@
 - **源码**：`idempotency` 表 4 列由 Manifest 声明；`bootstrap.ts` 以命名复合主键约束 `idempotency_pk`（`session_id, request_id`）建表。
 - **Repository**：`kysely-idempotency-repository.ts` 的 `get()` 解析 `result` JSON，`put()` 以 `onConflict(columns(["session_id","request_id"])).doUpdateSet({ result, created_at })` 覆盖，`prune(before)` 按 `created_at < before` 删除。
 
+### 3.4 file_operations（JSONL 文件副作用 outbox，v1）
+
+| 列名 | 类型 | 可空 | 语义 |
+| --- | --- | --- | --- |
+| `id` | `text` / `uuid` | NOT NULL | 应用生成的 outbox ID，主键 |
+| `operation_key` | `text` | NOT NULL | 绑定 session 与相对路径摘要的稳定幂等键；当前删除使用 `delete-session:<sessionId>:<path-digest>`，避免懒创建预留路径与实际路径互相吞掉 |
+| `kind` | `text` | NOT NULL | 当前仅为 `delete` |
+| `relative_path` | `text` | NOT NULL | 相对 `DATA_DIR` 的 JSONL 路径；只允许 `sessions/<id>/<file>.jsonl` 或 `projects/<id>/sessions/<id>/<file>.jsonl` |
+| `session_id` / `project_id` | `text` / `uuid` | NULL | 关联事实字段，**不设 FK**，避免删除父行时级联丢 outbox |
+| `state` | `text` | NOT NULL | `pending → processing → completed/failed`；过期 lease 的 `processing` 可再次 claim |
+| `attempt_count` | `integer` | NOT NULL | claim 次数，默认 0 |
+| `available_at` | `integer` | NOT NULL | 可 claim 的毫秒时间 |
+| `lease_until` / `lease_token` | `integer` / `text` | NULL | 原子 claim 的租约边界 |
+| `last_error` | `text` | NULL | 经过规范脱敏且最多 1000 bytes 的错误摘要；不保存原始异常，restore 对不合规值 fail-closed |
+| `created_at` / `updated_at` | `integer` | NOT NULL | 毫秒时间戳 |
+
+`operation_key` 有唯一索引，重复 enqueue 返回既有记录且不重置状态。SQLite 使用同事务 `UPDATE … RETURNING`，PostgreSQL 使用同事务 `FOR UPDATE SKIP LOCKED` 预留；repository 只改变 outbox 状态，不执行文件副作用。
+
 ## 4. 约束、外键、索引
 
 ### 4.1 projects
@@ -128,6 +146,14 @@
 - **主键**：复合主键 `PRIMARY KEY (session_id, request_id)`（约束名 `idempotency_pk`），保证同一会话内 `requestId` 唯一（不同会话的同 `requestId` 互不影响）。
 - **索引**：`idx_idempotency_created_at` ON `idempotency(created_at)` —— 服务于 TTL 清理 `DELETE FROM idempotency WHERE created_at < :before`（`KyselyIdempotencyRepository.prune` 与 `RuntimeRegistry` 定期清理共用）。
 - **无外键**：`session_id` 不建 FK，避免会话删除后仍需保留幂等记录至 TTL。
+
+### 4.4 file_operations
+
+- **主键**：`file_operations.id` PRIMARY KEY。
+- **幂等索引**：`idx_file_operations_key` 是 `operation_key` 的 UNIQUE 索引；重复删除请求不会重置已完成或已租约的操作。
+- **claim 索引**：`idx_file_operations_claim` 覆盖 `(state, available_at)`；它是非 UNIQUE 索引。
+- **无外键**：`session_id` / `project_id` 只作审计关联字段，业务删除后 outbox 行必须继续存在，绝不使用 `ON DELETE CASCADE`。
+- **状态转移**：`pending → processing → completed|failed`，失败操作在 `available_at` 到达后可重新 claim；租约过期的 `processing` 也可重新预留。`complete`/`fail` 必须携带非空 `lease_token`，并同时匹配 `id + processing + token + 非空 lease_until`；新 worker 重领后旧 token 不能改变状态。
 
 ## 5. 共享默认项目与会话隔离
 
@@ -170,15 +196,16 @@
 ### 原则
 
 - **多用户/多项目**：所有查询以 `owner_key`（`identityKey(UserIdentity)`）隔离；额外项目按 `owner_key` 私有，默认项目按 `owner_key=''` 共享；会话隔离与项目可见性正交（见 §5）。
-- **外键完整性**：`sessions.project_id → projects.id ON DELETE CASCADE`，建库启用 `enableForeignKeyConstraints: true`，应用层 `transaction()` 与数据库 FK 双重保证无孤儿会话。
+- **外键完整性**：`sessions.project_id → projects.id ON DELETE CASCADE`，建库启用 `enableForeignKeyConstraints: true`，应用层 `transaction()` 与数据库 FK 双重保证无孤儿会话；`file_operations` 刻意无外键，保证业务删除不会丢待处理副作用。
 - **查询索引**：所有列表查询均有覆盖索引（`idx_projects_owner` / `idx_sessions_owner_updated` / `idx_sessions_owner_project` / `idx_idempotency_created_at`），排序键与索引列一致。
 - **应用 ID/毫秒时间戳**：`id` 由应用生成，`created_at`/`updated_at` 为 `Date.now()` 毫秒值，便于跨 SQLite/PostgreSQL 保持语义一致（PostgreSQL 阶段共用同一 Manifest，逻辑类型 `integer/bigint` 已在 Manifest 中区分）。
 
 ### 非目标（当前不做）
 
 - **不建 `users` / `messages` 表**：用户身份由 `UserIdentity` 派生的 `owner_key` 字符串承载，无需用户表；完整消息正文在 `pi_session_file` 指向的 JSONL 中，不在数据库中镜像 `messages` 表（避免双写一致性与大文本存储问题）。
-- **不做版本化迁移**：RC 阶段无 `kysely_migration` 机制，`bootstrap.ts` 仅 `IF NOT EXISTS` 面向空库/当前 schema；旧库直接删除重建。**严格 schema preflight（M1 升级，非迁移）**：`initializeDatabase` / `initializePostgresDatabase` 先运行 `assertSchemaCompatible`（`src/storage/schema-compatibility.ts`，**在任何建表/建索引 DDL 之前**调用，见 §9.7）——库中已含任一 managed 表时要求**完整 schema 与 Manifest 物理契约一致**（列名/物理类型/nullable/DEFAULT/单列·复合 PK/FK 目标列 + ON DELETE/显式索引列顺序 + DESC + 非 UNIQUE），任何不一致（含列名齐全但类型/FK/索引错误、缺显式索引）启动**立即失败**，不执行任何 ALTER/补列/建表/建索引；全新/当前 schema 不受影响（空库正常 bootstrap，完整一致库跳过 DDL、数据保留）。
-- **不做 SQLite→PostgreSQL 数据迁移**：Phase 2 已完成（真实 PG 门控经 `verify:release` 通过，见 §9.7），但仍无 SQLite→PG 数据迁移路径。
+- **服务启动暂不做版本化迁移**：RC 的 `initializeDatabase` / `initializePostgresDatabase` 消费当前 v1 Manifest，仅以 `IF NOT EXISTS` 面向空库/当前 schema；旧库仍需离线 migration/cutover，尚未接入 `startServer`。WP1/WP4A 的 `schema_migrations` 与 Manifest-driven runner 仍供显式离线 CLI 使用。服务 bootstrap 仍执行**严格 schema preflight（M1，非迁移）**：在任何建表/建索引 DDL 之前，库中已含任一 managed 表时要求完整物理契约一致，任何不一致立即失败且不执行 ALTER/补列/建表/建索引；全新/当前 v1 schema 不受影响。
+- **不做 SQLite→PostgreSQL 数据迁移**：Phase 2 历史真实 PG 门控经当时的 `verify:release` 通过（见 §9.7），但仍无 SQLite→PG 数据迁移路径。
+- **WP1/WP4A 离线迁移基础**：`src/storage/migration-manifest.ts` 固化不可变 `schemaManifestV0` 并追加 v1 `schemaManifestV1`；`src/storage/migration-engine.ts` 使用自定义 `schema_migrations` ledger、稳定 checksum、SQLite `BEGIN IMMEDIATE` 与 PG advisory lock/transaction，v1 只新增 `file_operations`。`scripts/migrate.ts` 支持 `--dry-run`、`--apply`、`--verify`。该工具不执行删除、不处理文件副作用；WP4B 执行器/retry/quarantine 与 WP4C reconcile/readiness 尚未开始，也不改变正常服务启动行为。
 
 ### 未来扩展
 
@@ -191,9 +218,9 @@
 - 核心数据流、端口契约与解耦边界：[architecture.md](architecture.md)
 - 需求基线（会话/项目/幂等/并发/工具与权限）：[../needs.md](../needs.md)
 
-## 9. PostgreSQL 方言（工作包 C：已完成，真实 PG 门控已通过 verify:release）
+## 9. PostgreSQL 方言（工作包 C：已完成；Phase 2 历史真实 PG 门控已通过）
 
-> **状态（如实分账）**：Phase 2 已完成并通过最终发布门禁。**`volta run pnpm verify:release`（设置 `PI_TEST_PG_URL` 真实 PG）全部通过**——全量 `pnpm test` 54 文件 / 563 用例、无 skip，`pnpm test:postgres` 的 45 个 PG 门控用例（含最终审计补强的契约/真实 23505/严格 preflight）全部真实执行并通过（见 §9.7）。历史 17 用例 PG 基线亦曾在本机真实 PG 上通过（保留该结论）。未提供 `PI_TEST_PG_URL` 时，普通 `pnpm test` 中该组整组**跳过**（打印依据，不发起连接、不报告通过——复跑基线机制保留）；而 `pnpm test:postgres`（发布门禁）无 URL 时**非零退出**（见 §9.6）。仍受 RC 限制：无正式 migration / SQLite→PG 数据迁移 / 备份回滚（见 §7 非目标）。
+> **Phase 2 历史状态（当时门禁，非当前 WP3B2 验收）**：Phase 2 已完成并通过当时的最终发布门禁。**当时的 `volta run pnpm verify:release`（设置 `PI_TEST_PG_URL` 真实 PG）全部通过**——全量 `pnpm test` 54 文件 / 563 用例、无 skip，`pnpm test:postgres` 的 45 个 PG 门控用例（含最终审计补强的契约/真实 23505/严格 preflight）全部真实执行并通过（见 §9.7）。历史 17 用例 PG 基线亦曾在本机真实 PG 上通过（保留该结论）。未提供 `PI_TEST_PG_URL` 时，普通 `pnpm test` 中该组整组**跳过**（打印依据，不发起连接、不报告通过——复跑基线机制保留）；而 `pnpm test:postgres`（发布门禁）无 URL 时**非零退出**（见 §9.6）。仍受 RC 限制：无正式 migration / SQLite→PG 数据迁移 / 备份回滚（见 §7 非目标）。
 
 ### 9.1 启用方式（显式，fail-fast，不静默回退）
 
@@ -201,7 +228,7 @@
 |---|---|---|
 | `PI_STORAGE_DIALECT` | 存储方言 | 缺省、空/仅空白或 `sqlite` → SQLite（默认，向后兼容；空/空白归一化为未配置，不抛错）；`postgres` → PG；未知**非空**值启动即抛错（`未知存储方言`） |
 | `PI_DATABASE_URL` | PG 连接串 | 仅 `PI_STORAGE_DIALECT=postgres` 时必填；缺失/空白 fail-fast（拒绝启动，绝不静默回退 SQLite） |
-| `PI_TEST_PG_URL` | 测试门控 | 仅 PG 集成测试使用；用于复跑（本机真实 PG 已验收通过）；未配置时整组 skip（打印依据，不发起连接、不报告通过） |
+| `PI_TEST_PG_URL` | 测试门控 | 仅 PG 集成测试使用；当前环境必须显式提供并实际运行才构成验收证据；未配置时整组 skip（打印依据，不发起连接、不报告通过） |
 
 对应 `StartConfig.storageDialect?` / `databaseUrl?`，由 `src/server/start.ts` 的 `resolveStorageConfig` 解析校验（进程入口 `src/main.ts` 读取环境变量传入）。**仅设 `PI_DATABASE_URL` 而未设 `PI_STORAGE_DIALECT=postgres` 不启用 PG**（向后兼容）。
 
@@ -216,8 +243,8 @@
 | `json` | `TEXT` | `TEXT`（**非 JSONB**，保持 JSON 文本往返语义） |
 
 - 表/列/主键/外键/索引声明仍全部来自 `schemaManifest`（唯一来源，见 §1）；`src/storage/schema-builder.ts` 是 Manifest→Kysely schema builder 的方言无关流程，SQLite（`bootstrap.ts`）与 PG（`postgres-bootstrap.ts`）只注入各自的物理类型映射。
-- 单列未命名主键（projects/sessions）→ 列级 `PRIMARY KEY`（PG 默认约束名 `<table>_pkey`，如 `projects_pkey`）；复合主键（idempotency）→ 命名约束 `idempotency_pk`；FK `sessions_project_id_fk` ON DELETE CASCADE；4 个索引（含 `idx_sessions_owner_updated` 的 `updated_at DESC`）均与 SQLite 一致。
-- `request_id` / `result` / `capability_versions`：PG 侧均为 `TEXT`（json 逻辑类型不映射 JSONB）。
+- 单列未命名主键（projects/sessions/file_operations）→ 列级 `PRIMARY KEY`（PG 默认约束名 `<table>_pkey`）；复合主键（idempotency）→ 命名约束 `idempotency_pk`；FK `sessions_project_id_fk` ON DELETE CASCADE；v0 的 4 个索引与 v1 outbox 的 2 个索引（含 `idx_sessions_owner_updated` 的 `updated_at DESC`）均与 SQLite 一致。
+- `request_id` / `result` / `capability_versions` / `file_operations.relative_path`：PG 侧均为 `TEXT`（json 逻辑类型不映射 JSONB）。
 
 ### 9.3 int8（BIGINT）读回为安全 JS number
 
@@ -243,14 +270,14 @@ application 层不识别任何 PG code（只依赖存储无关错误）；实现
 ### 9.6 Pool 生命周期与测试门控
 
 - 组合根（`start.ts`）按方言构造：SQLite → `DatabaseSync`（timeout/FK/WAL 仅 SQLite）+ `initializeDatabase`；PG → `createPostgresPool` + `initializePostgresDatabase`（失败路径内先 destroy、再抛原始错误）。`createIdempotentStorageCloser` 仍统一调用 `kysely.destroy()`：PG 侧 `PostgresDriver.destroy` 会 `pool.end()`（由 `tests/storage/postgres-bootstrap.test.ts` 以 fake Pool 驱动 init→query→destroy 全链验证；`tests/postgres` 集成测试另以真实 PG 的独立 Pool 验证关闭后拒绝新查询）。
-- PG 集成测试 `tests/postgres/` 由 `PI_TEST_PG_URL` 门控（全部扩展门控用例已由 `volta run pnpm verify:release`（真实 PG）通过，见下方「本轮补充」；历史上旧版用例亦曾在本机真实 PG 验收通过）：随机 schema（`pi_test_*`）隔离 + `search_path`，afterAll 仅 `DROP SCHEMA IF EXISTS <random> CASCADE`（严禁 drop public/任意用户库）。**用例顺序无关（发布门禁审计）**：每用例前 `TRUNCATE TABLE idempotency, sessions, projects CASCADE`，从空表开始；共享 Pool/Kysely 不被任何用例销毁，Pool 关闭用例自建独立 Pool/Kysely 并以可观测断言（关闭后 `pool.query` 拒绝 `Cannot use a pool...`）验证；「重复/任意顺序」由专门用例+文件头结构证明。覆盖 bootstrap（表/列/FK/index/无迁移表）、默认项目、CRUD、`sessions.project_id` 的 PG DEFAULT 子句（raw insert 省略 project_id）、FK CASCADE、ON CONFLICT/idempotency、TTL、JSON text 往返、BIGINT number、逐列类型/nullable/default（不只抽样）、显式索引全部非唯一（排除 PK 自动索引）、PG 错误映射（23505/23503，fixture 全为合法 UUID）、pool close、严格 preflight（M1，独立 schema 缺列/**列名齐全但类型/FK 错误** → `initializePostgresDatabase` 在 DDL 之前拒绝且释放自己的 Pool）。
-- **本轮补充（最终测试审计高/中优先级，§9.7）**：新增 PG 门控文件 `tests/postgres/repository-contract.test.ts`——与 SQLite 共用同一参数化契约集（`tests/storage/repository-contract.ts` 的 22 用例：CRUD/owner/项目隔离/排序 tie-break/默认项目守卫/ON CONFLICT/idempotency TTL 精确 cutoff/更新不存在/FK CASCADE/存储无关错误；`listByProject` 已补强为同 project 下双 owner 各自只见自己的会话），另含 2 个「真实 23505 非 id/复合唯一约束原样抛出」用例（隔离 schema 内临时建唯一索引 → 真实 23505，断言非 DuplicateIdError 且 code/constraint 保留，finally DROP 索引）。**全部 45 个扩展门控用例（22 契约 + 2 真实 23505 + 21 集成，其中含 2 个严格 preflight 用例）已由 `pnpm verify:release`（真实 PG）全部通过**。无 URL 时这些门控用例仍按设计 skip（复跑基线机制保留）。
-- **发布门禁（P0）**：`pnpm test:postgres` 由跨平台 Node runner `scripts/test-postgres.ts` 驱动——`PI_TEST_PG_URL` 缺失/空白时**非零退出并说明原因**（绝不把 skip 当作验收），有值时仅运行 `tests/postgres/**` 真实集成测试（连接串只进子进程环境，不打印）。普通 `pnpm test` 的 skip 行为不变（复跑前基线）。完整发布验证为 `pnpm verify:release`（typecheck + test + test:postgres + build），`release:rc` 发布前调用；日常用 `pnpm verify`（typecheck + test）。
+- PG 集成测试 `tests/postgres/` 由 `PI_TEST_PG_URL` 门控（Phase 2 当时全部扩展门控用例已由 `volta run pnpm verify:release`（真实 PG）通过，见下方「本轮补充」；历史上旧版用例亦曾在本机真实 PG 验收通过）：随机 schema（`pi_test_*`）隔离 + `search_path`，afterAll 仅 `DROP SCHEMA IF EXISTS <random> CASCADE`（严禁 drop public/任意用户库）。**用例顺序无关（发布门禁审计）**：每用例前 `TRUNCATE TABLE idempotency, sessions, projects CASCADE`，从空表开始；共享 Pool/Kysely 不被任何用例销毁，Pool 关闭用例自建独立 Pool/Kysely 并以可观测断言（关闭后 `pool.query` 拒绝 `Cannot use a pool...`）验证；「重复/任意顺序」由专门用例+文件头结构证明。覆盖 bootstrap（表/列/FK/index/无迁移表）、默认项目、CRUD、`sessions.project_id` 的 PG DEFAULT 子句（raw insert 省略 project_id）、FK CASCADE、ON CONFLICT/idempotency、TTL、JSON text 往返、BIGINT number、逐列类型/nullable/default（不只抽样）、显式索引全部非唯一（排除 PK 自动索引）、PG 错误映射（23505/23503，fixture 全为合法 UUID）、pool close、严格 preflight（M1，独立 schema 缺列/**列名齐全但类型/FK 错误** → `initializePostgresDatabase` 在 DDL 之前拒绝且释放自己的 Pool）。
+- **本轮补充（最终测试审计高/中优先级，§9.7）**：新增 PG 门控文件 `tests/postgres/repository-contract.test.ts`——与 SQLite 共用同一参数化契约集（`tests/storage/repository-contract.ts` 的 22 用例：CRUD/owner/项目隔离/排序 tie-break/默认项目守卫/ON CONFLICT/idempotency TTL 精确 cutoff/更新不存在/FK CASCADE/存储无关错误；`listByProject` 已补强为同 project 下双 owner 各自只见自己的会话），另含 2 个「真实 23505 非 id/复合唯一约束原样抛出」用例（隔离 schema 内临时建唯一索引 → 真实 23505，断言非 DuplicateIdError 且 code/constraint 保留，finally DROP 索引）。**Phase 2 当时的全部 45 个扩展门控用例（22 契约 + 2 真实 23505 + 21 集成，其中含 2 个严格 preflight 用例）已由 `pnpm verify:release`（真实 PG）全部通过**。无 URL 时这些门控用例仍按设计 skip（复跑基线机制保留）。
+- **发布门禁（P0）**：`pnpm test:postgres` 由跨平台 Node runner `scripts/test-postgres.ts` 驱动——`PI_TEST_PG_URL` 缺失/空白时**非零退出并说明原因**（绝不把 skip 当作验收），有值时仅运行 `tests/postgres/**` 真实集成测试（连接串只进子进程环境，不打印）。普通 `pnpm test` 的 skip 行为不变（复跑前基线）。当前完整发布验证为 `pnpm verify:release`（按 `package.json` 顺序：`typecheck` + `test` + `test:postgres` + `test:pg-backup` + `test:age`〔由 `test:restore-real` 先调用〕+ `test:restore-real` + `build` + `build:migrate` + `build:backup`），`release:rc` 发布前调用；日常用 `pnpm verify`（typecheck + test + build:backup）。
 - 无网络单元测试：dialect config fail-fast（`tests/server/start-storage-config.test.ts`）、int8 safe parser（`tests/storage/pg-int8.test.ts`）、PG SQLSTATE mapper（`tests/storage/pg-constraint-errors.test.ts`）、Manifest 类型映射与 DDL builder（`tests/storage/schema-builder.test.ts`）、PG bootstrap 生命周期（`tests/storage/postgres-bootstrap.test.ts`）、test:postgres runner（`tests/tools/test-postgres-runner.test.ts`）。
 
 ### 9.7 最终测试审计补强（H2/H4/H5/H6/M1/M2）
 
-> **H2/H4/H5/H6/M1/M2 补强及其全部 45 个扩展 PG 门控用例已由 `volta run pnpm verify:release`（真实 PG `PI_TEST_PG_URL`）验收通过**——全量 `pnpm test` 54 文件 / 563 用例无 skip 全部通过，`pnpm test:postgres` 45 个 PG 门控用例全部通过。
+> **Phase 2 历史测试审计记录（当时门禁，非当前 WP3B2 验收）：H2/H4/H5/H6/M1/M2 补强及其全部 45 个扩展 PG 门控用例已由当时的 `volta run pnpm verify:release`（真实 PG `PI_TEST_PG_URL`）验收通过**——全量 `pnpm test` 54 文件 / 563 用例无 skip 全部通过，`pnpm test:postgres` 45 个 PG 门控用例全部通过。
 
 - **H4 双库共用契约**：`tests/storage/repository-contract.ts` 为参数化共享测试集（22 用例），SQLite（`repository-contract.sqlite.test.ts`，始终运行）与 PG（`tests/postgres/repository-contract.test.ts`，门控）注册同一契约；核心 CRUD/owner/project 隔离/排序 tie-break/默认项目守卫/ON CONFLICT/idempotency TTL 精确 cutoff/更新不存在均双库对齐。
 - **H4 真实 PG mapper**：隔离 schema 内临时创建非 id/复合唯一约束触发**真实** 23505（非 synthetic），断言原样抛出且 code/constraint 保留；finally DROP 临时索引。
@@ -259,4 +286,4 @@ application 层不识别任何 PG code（只依赖存储无关错误）；实现
 - **H2 启动/失败清理**：`tests/server/start-server-lifecycle.test.ts` 走真实 `startServer`——未知 dialect / PG 缺 URL 在资源创建前 fail-fast；注入 seam（`StartConfig.onStorageReady`，生产不传无操作）+ 真实 EADDRINUSE 两种中段失败均验证存储恰好关闭一次且原始错误保留；成功 `app.close` 触发 onClose cleanup。
 - **M1 严格 schema preflight（升级：不再只比列名，且在任何 DDL 之前）**：`assertSchemaCompatible`（`src/storage/schema-compatibility.ts`，SQLite 用 PRAGMA、PG 用 information_schema/pg_catalog 的只读 catalog）——库中已含任一 managed 表时要求**完整 schema 与 Manifest 物理契约一致**（列名/物理类型/nullable/DEFAULT/单列·复合 PK/FK 目标列 + ON DELETE/显式索引列顺序 + DESC + 非 UNIQUE），任何不一致 → `initializeDatabase` / `initializePostgresDatabase` 在**建表/建索引 DDL 之前** fail-fast（不执行任何 ALTER/补列/建表/建索引，失败路径关闭资源）；空库/bootstrap 正常建库，完整一致库跳过 DDL。SQLite 测试（`tests/storage/bootstrap.test.ts`：缺非索引列、列名齐全但类型错误、FK/索引错误、无 DDL mutation）+ PG 门控测试（`tests/postgres/postgres.integration.test.ts`：缺列 + 列名齐全但类型/FK 错误，独立 Pool cleanup）同契约。
 - **M2 资源所有权**：`tests/helpers/sqlite.ts` 暴露统一 `close()`（复用生产 `createIdempotentStorageCloser`）；受影响 repository 测试按真实所有权关闭，无直接 `db.close()` 绕过 Kysely。
-- **最终验收计数（真实 PG URL 运行的 actual reporter）**：`volta run pnpm verify:release`（设置 `PI_TEST_PG_URL`）全部通过——全量 `volta run pnpm test` = **54 文件 / 563 用例，无 skip，全部通过**（PG 门控在真实 URL 下真实执行，不再 skip）；`volta run pnpm test:postgres` = **45 个 PG 门控用例（`postgres.integration.test.ts` 21 用例 + `postgres/repository-contract.test.ts` 24 用例）全部通过**；`verify`、`typecheck`、`build` 均通过。历史实录保留：无 URL 日常计数曾为 54 文件（52 passed、2 skipped）/ 563 用例（518 passed、45 skipped）。
+- **Phase 2 历史验收计数（当时真实 PG URL 运行的 actual reporter）**：当时的 `volta run pnpm verify:release`（设置 `PI_TEST_PG_URL`）全部通过——全量 `volta run pnpm test` = **54 文件 / 563 用例，无 skip，全部通过**（PG 门控在真实 URL 下真实执行，不再 skip）；`volta run pnpm test:postgres` = **45 个 PG 门控用例（`postgres.integration.test.ts` 21 用例 + `postgres/repository-contract.test.ts` 24 用例）全部通过**；`verify`、`typecheck`、`build` 均通过。历史实录保留：无 URL 日常计数曾为 54 文件（52 passed、2 skipped）/ 563 用例（518 passed、45 skipped）。

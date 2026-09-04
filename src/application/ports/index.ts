@@ -8,6 +8,18 @@ export type {
   ControlDecision,
 } from "./session-runtime-port.js";
 export type { IdempotencyStorePort } from "./idempotency-store-port.js";
+export {
+  FILE_OPERATION_KINDS,
+  FILE_OPERATION_STATES,
+  FILE_OPERATION_TRANSITIONS,
+} from "./file-operation-store-port.js";
+export type {
+  EnqueueFileOperationInput,
+  FileOperationKind,
+  FileOperationRecord,
+  FileOperationState,
+  FileOperationStorePort,
+} from "./file-operation-store-port.js";
 export type { ModelDescriptor, ModelCatalogPort } from "./model-catalog-port.js";
 export type { CredentialPort } from "./credential-port.js";
 export type { SystemPromptPort } from "./system-prompt-port.js";

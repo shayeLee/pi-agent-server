@@ -23,14 +23,24 @@ export interface ProjectStorePort {
   create(record: ProjectRecord): Promise<void>;
   get(id: string): Promise<ProjectRecord | null>;
   listByOwner(ownerKey: string): Promise<ProjectRecord[]>;
+  /** 删除项目及其文件清理操作入队由 repository 同一事务完成；不执行 unlink。 */
   delete(id: string): Promise<boolean>;
   /**
-   * 在同一事务内删除项目及其所有会话记录（逻辑删墓碑）：
+   * 在同一事务内锁住项目父行（PG `FOR UPDATE`；SQLite `BEGIN IMMEDIATE`），列出并删除项目及其所有会话记录（逻辑删墓碑）：
    * 要么项目与会话都删，要么都保留，避免删除一半留下孤儿会话。
-   * 物理清理（runtime/SSE/文件）由应用层在此之后执行。
-   * 数据库层另有外键 ON DELETE CASCADE 兑底：即使应用层遗漏，删项目也不会留下孤儿会话。
+   * 物理文件清理不在此处执行：本事务只向持久 file_operations outbox enqueue，
+   * runtime/SSE 由应用层随后清理，文件由未来 worker 处理。
+   * 数据库层另有外键 ON DELETE CASCADE 兑底：即使应用层遗漏，删项目也不会留下孤儿会话；父行锁同时阻止 FK insert 与删除之间的竞态。
+   * file_operations 不设 FK，避免 outbox 被级联丢弃。
    */
   deleteProjectWithSessions(projectId: string, sessionIds: string[]): Promise<void>;
+  /**
+   * Repository-native variant: returns the exact session ids deleted while the
+   * parent lock/list/enqueue/delete transaction is held. Optional for legacy
+   * in-memory adapters; production repositories should implement it so the
+   * application never needs an unlocked pre-delete session snapshot.
+   */
+  deleteProjectWithSessionsAndReturnSessionIds?(projectId: string, sessionIds: string[]): Promise<readonly string[]>;
   /** 确保默认项目记录存在（INSERT OR IGNORE）：默认项目落库以支持外键 CASCADE。 */
   ensureDefaultProject(record: ProjectRecord): Promise<void>;
 }

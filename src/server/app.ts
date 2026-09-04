@@ -2,7 +2,6 @@
 // remain here; session/project application behavior is implemented by SessionService.
 
 import { randomUUID, createHash } from "node:crypto";
-import { unlink } from "node:fs/promises";
 import Fastify, {
   type FastifyInstance,
   type FastifyReply,
@@ -177,7 +176,6 @@ export function buildApp(deps: ServerDeps): FastifyInstance {
     capabilityVersions: deps.capabilityVersions,
     createId: randomUUID,
     now: Date.now,
-    removeSessionFile: async (path) => { await unlink(path).catch(() => {}); },
   });
 
   const sseConnections = new Map<string, number>();

@@ -14,20 +14,18 @@ import { Kysely, SqliteDialect } from "kysely";
 import {
   bootstrapSchemaFromManifest,
   type LogicalTypeMap,
+  type SchemaBootstrapOptions,
 } from "./schema-builder.js";
 import { assertSchemaCompatible } from "./schema-compatibility.js";
 import { NodeSqliteAdapter } from "./node-sqlite-adapter.js";
 import type { DatabaseSchema } from "./db-schema.js";
+import { schemaManifest } from "./schema-manifest.js";
+import { SQLITE_PHYSICAL_TYPES } from "./migration-manifest.js";
+import { registerSqliteWriteLockKey, sqliteWriteLockKeyForFilename } from "./sqlite-write-lock.js";
 
 /** 逻辑列类型 → SQLite 物理类型（uuid/text/json → TEXT、integer/bigint → INTEGER）。
  *  PG 映射（uuid → UUID、integer/bigint → BIGINT、json 保持 TEXT）见 postgres-bootstrap.ts。 */
-export const SQLITE_LOGICAL_TYPE: LogicalTypeMap = {
-  uuid: "text",
-  text: "text",
-  integer: "integer",
-  bigint: "integer",
-  json: "text",
-};
+export const SQLITE_LOGICAL_TYPE: LogicalTypeMap = SQLITE_PHYSICAL_TYPES;
 
 export function isMemoryDatabase(db: DatabaseSync): boolean {
   const row = db.prepare("PRAGMA database_list").get() as { file?: unknown } | undefined;
@@ -37,6 +35,12 @@ export function isMemoryDatabase(db: DatabaseSync): boolean {
 /**
  * 启用 WAL（文件数据库；:memory: 保持 memory 模式）并初始化 SQLite 方言存储。
  *
+ * 原子 bootstrap（P1）：**preflight + 完整 DDL 在同一个事务内执行**（SQLite 的 DDL 是
+ * 事务性的），任何一步失败 —— 包括中途 DDL 失败 —— 都 ROLLBACK 到 bootstrap 前状态：
+ * 数据库保持「无 managed 表」，严格 preflight 不会把半成品 schema 判成不兼容库，重试即
+ * 可正常初始化。BEGIN IMMEDIATE 与迁移引擎一致，作为跨进程并发的写锁：第二个并发
+ * bootstrap 等待第一个 COMMIT/ROLLBACK 后再做 preflight，看到完整 schema 即跳过 DDL。
+ *
  * 启动路径（严格 schema preflight，**在任何建表/建索引 DDL 之前**）：
  * 1. assertSchemaCompatible 检查数据库现状：
  *    - 无任何 managed 表（全新库 / 只有无关表）→ bootstrap 正常建库；
@@ -45,19 +49,40 @@ export function isMemoryDatabase(db: DatabaseSync): boolean {
  *    - 已完整一致 → 跳过 DDL（不重建，数据保留）。
  * 返回共享的 Kysely 实例；调用方负责在关闭时 destroy 它（会关闭底层 DatabaseSync）。
  */
-export async function initializeDatabase(db: DatabaseSync): Promise<Kysely<DatabaseSchema>> {
+export async function initializeDatabase(db: DatabaseSync, options: SchemaBootstrapOptions = {}): Promise<Kysely<DatabaseSchema>> {
   if (!isMemoryDatabase(db)) {
     db.exec("PRAGMA journal_mode=WAL");
   }
 
   const kysely = new Kysely<DatabaseSchema>({
-    dialect: new SqliteDialect({ database: new NodeSqliteAdapter(db) }),
+    // Repository transactions must be BEGIN IMMEDIATE: project deletion first
+    // locks the parent before listing sessions, fencing concurrent FK inserts.
+    dialect: new SqliteDialect({ database: new NodeSqliteAdapter(db, true, true) }),
   });
+  const databaseFile = db.prepare("PRAGMA database_list").get() as { file?: unknown } | undefined;
+  registerSqliteWriteLockKey(
+    kysely,
+    typeof databaseFile?.file === "string" && databaseFile.file !== ""
+      ? sqliteWriteLockKeyForFilename(databaseFile.file)
+      : db,
+  );
 
+  const manifest = options.manifest ?? schemaManifest;
   try {
-    const verdict = await assertSchemaCompatible(kysely, "SQLite", SQLITE_LOGICAL_TYPE);
-    if (verdict === "empty") {
-      await bootstrapSchemaFromManifest(kysely, SQLITE_LOGICAL_TYPE);
+    db.exec("BEGIN IMMEDIATE");
+    try {
+      const verdict = await assertSchemaCompatible(kysely, "SQLite", SQLITE_LOGICAL_TYPE, manifest);
+      if (verdict === "empty") {
+        await bootstrapSchemaFromManifest(kysely, SQLITE_LOGICAL_TYPE, manifest);
+      }
+      db.exec("COMMIT");
+    } catch (error) {
+      try {
+        db.exec("ROLLBACK");
+      } catch {
+        // 保留原始错误：回滚失败只意味着连接状态未知，绝不能掩盖 bootstrap 失败原因。
+      }
+      throw error;
     }
     return kysely;
   } catch (error) {

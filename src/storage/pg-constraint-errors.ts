@@ -62,6 +62,7 @@ export function throwPgProjectForeignKeyOrOriginal(error: unknown): never {
 
 /** PG 方言的约束错误映射器（注入给中立 Kysely Repository）。 */
 export const pgConstraintErrorMapper: ConstraintErrorMapper = {
+  dialect: "postgres",
   isForeignKeyError: isPgForeignKeyError,
   throwDuplicateIdOrOriginal: throwPgDuplicateIdOrOriginal,
   throwProjectForeignKeyOrOriginal: throwPgProjectForeignKeyOrOriginal,

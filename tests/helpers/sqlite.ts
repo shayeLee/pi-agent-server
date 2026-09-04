@@ -13,6 +13,8 @@ import { sqliteConstraintErrorMapper } from "../../src/storage/sqlite-constraint
 import { KyselyProjectRepository } from "../../src/storage/kysely-project-repository.js";
 import { KyselySessionRepository } from "../../src/storage/kysely-session-repository.js";
 import { KyselyIdempotencyRepository } from "../../src/storage/kysely-idempotency-repository.js";
+import { KyselyFileOperationRepository } from "../../src/storage/kysely-file-operation-repository.js";
+import { relativeWhitelistedPath } from "../../src/storage/file-operation-policy.js";
 import { DEFAULT_PROJECT_ID } from "../../src/application/ports/project-store-port.js";
 import type { DatabaseSchema } from "../../src/storage/db-schema.js";
 import { createIdempotentStorageCloser } from "../../src/server/storage-close.js";
@@ -27,16 +29,23 @@ export type SqliteTestStorage = {
   projects: KyselyProjectRepository;
   sessions: KyselySessionRepository;
   idempotency: KyselyIdempotencyRepository;
+  fileOperations: KyselyFileOperationRepository;
   /** 统一 Kysely destroy close（幂等：多次调用只真正 destroy 一次）。 */
   close: () => Promise<void>;
 };
 
 export async function initStorage(
   db: DatabaseSync,
-  opts: { cwd?: string } = {},
+  opts: { cwd?: string; dataDir?: string } = {},
 ): Promise<SqliteTestStorage> {
   const kysely = await initializeDatabase(db);
-  const projects = new KyselyProjectRepository(kysely, sqliteConstraintErrorMapper);
+  const fileOperations = new KyselyFileOperationRepository(kysely, "sqlite");
+  const root = opts.dataDir ?? opts.cwd ?? DEFAULT_CWD;
+  const fileOperationOptions = {
+    fileOperations,
+    relativePath: (filePath: string) => relativeWhitelistedPath(root, filePath),
+  } as const;
+  const projects = new KyselyProjectRepository(kysely, sqliteConstraintErrorMapper, fileOperationOptions);
   await projects.ensureDefaultProject({
     id: DEFAULT_PROJECT_ID,
     name: "默认项目",
@@ -46,8 +55,9 @@ export async function initStorage(
   });
   return {
     projects,
-    sessions: new KyselySessionRepository(kysely, sqliteConstraintErrorMapper),
+    sessions: new KyselySessionRepository(kysely, sqliteConstraintErrorMapper, fileOperationOptions),
     idempotency: new KyselyIdempotencyRepository(kysely),
+    fileOperations,
     kysely,
     db,
     close: createIdempotentStorageCloser(async () => {
@@ -57,7 +67,7 @@ export async function initStorage(
 }
 
 /** 创建一个已初始化的 :memory: 数据库（含默认项目）。 */
-export async function makeInitializedMemoryDb(opts: { cwd?: string } = {}) {
+export async function makeInitializedMemoryDb(opts: { cwd?: string; dataDir?: string } = {}) {
   const db = new DatabaseSync(":memory:");
   return initStorage(db, opts);
 }

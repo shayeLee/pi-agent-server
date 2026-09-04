@@ -469,7 +469,7 @@ describe("SessionService", () => {
     expect(adapters.get(created.id)?.calls).toEqual([{ method: "prompt", text: "first" }]);
   });
 
-  it("导出快照并在删除项目时级联删除会话与会话文件", async () => {
+  it("导出快照并在删除项目时级联删除会话且只由 outbox 负责文件清理", async () => {
     const { service, sessions, projects, removed } = makeService();
     await projects.create({ id: "project-a", name: "A", cwd: "/workspace/a", ownerKey: "owner-a", createdAt: 1 });
     const first = createdSession(await service.createSession("owner-a", { projectId: "project-a" }));
@@ -482,6 +482,7 @@ describe("SessionService", () => {
     expect(await projects.get("project-a")).toBeNull();
     expect(await sessions.get(first.id)).toBeNull();
     expect(await sessions.get(second.id)).toBeNull();
-    expect(removed).toEqual(["/tmp/first.jsonl", "/tmp/second.jsonl"]);
+    // WP4A：服务层不得直接 unlink；文件副作用由持久 file_operations outbox 处理。
+    expect(removed).toEqual([]);
   });
 });

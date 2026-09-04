@@ -11,6 +11,7 @@ import { DatabaseSync } from "node:sqlite";
 import type { Kysely } from "kysely";
 import { initializeDatabase } from "../../src/storage/bootstrap.js";
 import type { DatabaseSchema } from "../../src/storage/db-schema.js";
+import type { SchemaManifest } from "../../src/storage/schema-manifest.js";
 import { KyselySessionRepository } from "../../src/storage/kysely-session-repository.js";
 import { sqliteConstraintErrorMapper } from "../../src/storage/sqlite-constraint-errors.js";
 import { KyselyProjectRepository } from "../../src/storage/kysely-project-repository.js";
@@ -369,6 +370,66 @@ describe("旧 schema 严格兼容性 preflight（M1 升级：列名齐全但类�
       } finally {
         reader.close();
       }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+// -------------------------------------------------------------------------
+// 原子 bootstrap（P1）：preflight + 完整 DDL 在同一个事务内执行，中途 DDL 失败
+// 必须整库回滚（不残留半成品表），回滚后是空库、严格 preflight 不误判，重试即成功。
+// -------------------------------------------------------------------------
+
+/** 注入一份 DDL 中途必失败的 Manifest：第一张表正常创建后，第二张表的索引引用不存在的列。 */
+function brokenBootstrapManifest(): SchemaManifest {
+  // 不用 defineSchema（其运行期校验会提前拦截不合理声明）；raw 字面量直接交给 bootstrap 的
+  // DDL 阶段，让失败点发生在真实数据库层（SQLite: no such column / PG: column does not exist）。
+  return {
+    tables: [
+      {
+        name: "t_first",
+        columns: [{ name: "id", type: "uuid", nullable: false }],
+        primaryKey: { columns: ["id"] },
+        foreignKeys: [],
+        indexes: [],
+      },
+      {
+        name: "t_second",
+        columns: [{ name: "id", type: "uuid", nullable: false }],
+        primaryKey: { columns: ["id"] },
+        foreignKeys: [],
+        indexes: [{ name: "idx_t_second_missing", columns: [{ name: "missing_column" }] }],
+      },
+    ],
+  };
+}
+
+describe("原子 bootstrap：失败回滚后数据库保持空库、可正常重试", () => {
+  it("SQLite：中途 DDL 失败 → 整库回滚（首张表也不残留）→ 换成生产 Manifest 重试成功", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-bootstrap-atomic-"));
+    const file = join(dir, "atomic.db");
+    try {
+      // 注入失败：CREATE TABLE IF NOT EXISTS t_first/t_second 都成功，第二个索引引用
+      // 不存在的列（缺 IF NOT EXISTS 兜底路径）→ DDL 中途失败。
+      await expect(initializeDatabase(new DatabaseSync(file), { manifest: brokenBootstrapManifest() }))
+        .rejects.toThrow(/no such column/i);
+
+      // 失败路径已 destroy 关闭 Kysely/底层 DatabaseSync——用新连接复查：没有任何
+      // 半成品表残留（事务已整体回滚，t_first 也不在）。
+      const reader = new DatabaseSync(file);
+      try {
+        expect(sqliteTables(reader)).toEqual([]);
+      } finally {
+        reader.close();
+      }
+
+      // 重试（生产 Manifest）：回滚后是空库，严格 preflight 放行、完整 schema 建库成功。
+      const retryDb = new DatabaseSync(file);
+      const kysely = await initializeDatabase(retryDb);
+      expect(sqliteTables(retryDb)).toEqual(expect.arrayContaining(["projects", "sessions", "idempotency"]));
+      expect(sqliteIndexes(retryDb, "projects")).toContain("idx_projects_owner");
+      await destroyAll(kysely);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

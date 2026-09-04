@@ -75,7 +75,7 @@ describe("Schema 类型推导（DatabaseSchema 由 Manifest 推导）", () => {
 
   it("Manifest 值保留字面量：表名与列名可直接做 keyof 约束（推导的依据）", () => {
     type TableNames = (typeof schemaManifest)["tables"][number]["name"];
-    expectTypeOf<TableNames>().toEqualTypeOf<"projects" | "sessions" | "idempotency">();
+    expectTypeOf<TableNames>().toEqualTypeOf<"projects" | "sessions" | "idempotency" | "file_operations">();
     expectTypeOf<keyof DatabaseSchema>().toEqualTypeOf<TableNames>();
 
     // 列名来自 Manifest（而非手写表 interface）

@@ -7,6 +7,9 @@
 import { homedir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
+import { chmodSync, copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import {
   createAgentSession,
@@ -27,15 +30,27 @@ import { buildAuthenticate } from "./real-auth.js";
 import { validateTrustProxyConfig } from "./trust-proxy-policy.js";
 import { createIdempotentStorageCloser } from "./storage-close.js";
 import { SessionDeletedError } from "../runtime/session-runtime.js";
+import { runPostgresMigrations, runSqliteMigrations } from "../storage/migration-engine.js";
 import { initializeDatabase } from "../storage/bootstrap.js";
 import { sqliteConstraintErrorMapper } from "../storage/sqlite-constraint-errors.js";
 import { pgConstraintErrorMapper } from "../storage/pg-constraint-errors.js";
-import { createPostgresPool, initializePostgresDatabase } from "../storage/postgres-bootstrap.js";
+import { createPostgresKysely, createPostgresPool, initializePostgresDatabase } from "../storage/postgres-bootstrap.js";
+import {
+  resolveAgentDir,
+  resolveStorageConfig as resolveSharedStorageConfig,
+  resolveStoragePaths,
+  type ResolvedStorage,
+} from "../storage/storage-config.js";
 import type { DatabaseSchema } from "../storage/db-schema.js";
+
+export { resolveStoragePaths } from "../storage/storage-config.js";
+export type { ResolvedStorage } from "../storage/storage-config.js";
 import type { Kysely } from "kysely";
 import { KyselySessionRepository } from "../storage/kysely-session-repository.js";
 import { KyselyProjectRepository } from "../storage/kysely-project-repository.js";
 import { KyselyIdempotencyRepository } from "../storage/kysely-idempotency-repository.js";
+import { KyselyFileOperationRepository } from "../storage/kysely-file-operation-repository.js";
+import { relativeWhitelistedPath, sessionDeleteOperationKey } from "../storage/file-operation-policy.js";
 import { PiAgentAdapter, type AgentSessionLike } from "../agent/pi-agent-adapter.js";
 import { PiModelRuntimeCatalog } from "../model-adapters/pi-model-runtime-catalog.js";
 import { PiModelRuntimeCredentials } from "../model-adapters/pi-model-runtime-credentials.js";
@@ -91,23 +106,103 @@ export type StartConfig = {
   /** 可信代理 IP 列表（反代部署时配置；默认 false 只信 TCP 对端，避免伪造 IP 绕过内网免登录）。 */
   trustProxy?: string | string[] | boolean;
   /**
-   * 测试注入点（生产不配置，恒定无操作）：存储初始化完成（Kysely + 三个 Repository + 默认项目
+   * 测试注入点（生产不配置，恒定无操作）：存储初始化完成（Kysely + 四个 Repository + 默认项目
    * + backfill）之后、buildApp 之前回调。供测试观测/注入启动中段失败，验证启动失败/成功路径的
    * 幂等 storage close（见 tests/server/start-server-lifecycle.test.ts）。回调抛错走与生产一致的
    * 启动失败清理路径（closeStorage 幂等销毁 + 原始错误向上抛），不改变生产行为。
    */
   onStorageReady?: (kysely: Kysely<DatabaseSchema>) => Promise<void> | void;
+  /**
+   * 严格生产 migration 门禁（WP2A，默认 "off" 保持 RC 行为不变）：
+   * - "off"（默认）：不自动 apply migration、不自动 reset，维持 RC bootstrap 行为；
+   * - "verify"：存储打开后、schema bootstrap 之前只读校验 migration ledger/head——空库/无 ledger 的
+   *   legacy RC 库/落后库一律 fail-fast（明确提示运行离线 cutover 或 migrate），绝不自动迁移；
+   * - 两种模式都不会在启动路径执行任何迁移或删除。
+   */
+  migrationGate?: "off" | "verify";
 };
 
 const THINKING_LEVELS = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+
+/** 严格生产 migration 门禁失败时的统一 fail-fast 语义：绝不自动迁移，明确指引离线 cutover/migrate。 */
+function startupMigrationGateError(error: unknown): Error {
+  const detail = error instanceof Error ? error.message : String(error);
+  return new Error(
+    `startup migration gate: storage is not at the migration head; refusing to start. ` +
+    `Run the offline controlled cutover (pnpm cutover) or migration (pnpm migrate -- --apply) first. Detail: ${detail}`,
+  );
+}
+
+interface GateFileFingerprint {
+  readonly exists: boolean;
+  readonly dev: number;
+  readonly ino: number;
+  readonly nlink: number;
+  readonly mode: number;
+  readonly size: number;
+  readonly mtimeMs: number;
+  readonly sha256: string | null;
+}
+
+/** 完整 DB/WAL/SHM 指纹：门禁前后必须逐字节/逐 stat 一致，否则视为门禁触碰了源库。 */
+function sqliteGateFingerprint(dbPath: string): Record<string, GateFileFingerprint> {
+  const fingerprints: Record<string, GateFileFingerprint> = {};
+  for (const file of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`]) {
+    try {
+      const st = statSync(file);
+      let sha256: string | null = null;
+      if (st.isFile()) sha256 = createHash("sha256").update(readFileSync(file)).digest("hex");
+      fingerprints[file] = { exists: true, dev: st.dev, ino: st.ino, nlink: st.nlink, mode: st.mode, size: st.size, mtimeMs: st.mtimeMs, sha256 };
+    } catch {
+      fingerprints[file] = { exists: false, dev: 0, ino: 0, nlink: 0, mode: 0, size: 0, mtimeMs: 0, sha256: null };
+    }
+  }
+  return fingerprints;
+}
+
+/**
+ * SQLite migration 门禁（migrationGate="verify"）：真只读。
+ * - DB 文件不存在 → 直接 fail-fast，绝不创建/初始化文件；
+ * - 已存在的库：复制 DB/WAL/SHM 到私有临时目录后在副本上校验（WAL 下直接 readonly 打开
+ *   仍可能触碰 -shm），源库零写入；门禁前后对源 DB/WAL/SHM 做完整 stat+sha256 指纹比对，
+ *   任何变化都视为门禁破坏了只读边界而失败。
+ */
+async function runSqliteMigrationGateReadonly(dbPath: string): Promise<void> {
+  if (!existsSync(dbPath)) {
+    throw startupMigrationGateError(new Error(`database file does not exist; the startup gate never creates or initializes a database`));
+  }
+  const before = sqliteGateFingerprint(dbPath);
+  const directory = mkdtempSync(path.join(tmpdir(), ".pi-agent-migration-gate-"));
+  chmodSync(directory, 0o700);
+  let gateError: unknown;
+  try {
+    const copy = path.join(directory, "gate-snapshot.db");
+    for (const suffix of ["", "-wal", "-shm"] as const) {
+      const source = `${dbPath}${suffix}`;
+      if (existsSync(source)) copyFileSync(source, `${copy}${suffix}`);
+    }
+    const db = new DatabaseSync(copy, { timeout: 5000, readOnly: true, enableForeignKeyConstraints: true });
+    try {
+      await runSqliteMigrations(db, { mode: "verify" });
+    } finally {
+      try { db.close(); } catch { /* gateError below keeps the original failure */ }
+    }
+  } catch (error) {
+    gateError = error;
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+    const after = sqliteGateFingerprint(dbPath);
+    if (JSON.stringify(before) !== JSON.stringify(after)) {
+      throw startupMigrationGateError(new Error("the source database changed during the startup migration gate; read-only boundary violated"));
+    }
+  }
+  if (gateError) throw startupMigrationGateError(gateError);
+}
 
 /** 支持的存储方言：sqlite（默认）/ postgres（显式开启）。 */
 export type StorageDialect = "sqlite" | "postgres";
 
 /** startServer 解析后的存储形态：SQLite（dbPath）或 PostgreSQL（数据库连接串）。 */
-export type ResolvedStorage =
-  | { dialect: "sqlite"; dbPath: string }
-  | { dialect: "postgres"; databaseUrl: string };
 
 /**
  * 解析并校验存储配置（fail-fast，不静默回退）：
@@ -117,26 +212,6 @@ export type ResolvedStorage =
  * - "postgres" → 必须提供非空 databaseUrl，否则抛错拒绝启动；
  * - 未知**非空**方言值 → 抛错拒绝启动（空/空白不 fail-fast，未知有内容的值 fail-fast）。
  */
-export function resolveStorageConfig(
-  config: Pick<StartConfig, "storageDialect" | "databaseUrl" | "dbPath">,
-  defaultDbPath: string,
-): ResolvedStorage {
-  // 空/空白（含 '   '）归一化为未配置：不抛错、走 SQLite 默认；未知且非空的值仍 fail-fast。
-  const rawDialect = config.storageDialect;
-  const dialect = rawDialect === undefined || rawDialect.trim() === "" ? "sqlite" : rawDialect;
-  if (dialect !== "sqlite" && dialect !== "postgres") {
-    throw new Error(`未知存储方言：${String(dialect)}（仅支持 sqlite / postgres，不静默回退）`);
-  }
-  if (dialect === "sqlite") {
-    return { dialect: "sqlite", dbPath: config.dbPath ?? defaultDbPath };
-  }
-  if (config.databaseUrl === undefined || config.databaseUrl.trim() === "") {
-    throw new Error(
-      "storageDialect=postgres 需要非空 databaseUrl（环境变量 PI_DATABASE_URL），缺失时拒绝启动（不静默回退 SQLite）",
-    );
-  }
-  return { dialect: "postgres", databaseUrl: config.databaseUrl };
-}
 
 /** startServer 默认路径解析所需的配置子集。 */
 export type ServerPathConfig = Pick<
@@ -167,12 +242,23 @@ export type ResolvedServerPaths = {
  * 显式传入的配置优先，其余均可用对应环境变量覆盖。
  */
 export function resolveServerPaths(config: ServerPathConfig = {}): ResolvedServerPaths {
-  const cwd = config.cwd ?? process.cwd();
-  const dataDir = config.dataDir ?? cwd;
-  const agentDir = config.agentDir ?? path.join(dataDir, ".pi-agent");
-  const authPath = config.authPath ?? path.join(homedir(), ".pi", "agent", "auth.json");
-  const dbPath = config.dbPath ?? path.join(dataDir, "pi-agent-server.db");
-  return { cwd, dataDir, agentDir, modelsPath: path.join(agentDir, "models.json"), authPath, dbPath };
+  const storagePaths = resolveStoragePaths(config, {}, process.cwd());
+  const agentDir = resolveAgentDir(storagePaths.dataDir, config.agentDir);
+  const authPath = config.authPath?.trim() ? path.resolve(config.authPath.trim()) : path.join(homedir(), ".pi", "agent", "auth.json");
+  return {
+    ...storagePaths,
+    agentDir,
+    modelsPath: path.join(agentDir, "models.json"),
+    authPath,
+  };
+}
+
+/** Compatibility export: service and offline CLI use the same pure resolver. */
+export function resolveStorageConfig(
+  config: Pick<StartConfig, "storageDialect" | "databaseUrl" | "dbPath">,
+  defaultDbPath: string,
+): ResolvedStorage {
+  return resolveSharedStorageConfig(config, defaultDbPath);
 }
 
 export async function startServer(config: StartConfig) {
@@ -323,14 +409,37 @@ export async function startServer(config: StartConfig) {
   let app: FastifyInstance;
   try {
     // 按存储方言构造 DatabaseSync+SQLite 或 Pool+PG bootstrap，再注入同一中立 Repository
-    // （KyselyProjectRepository / KyselySessionRepository / KyselyIdempotencyRepository）；
-    // 方言约束错误 mapper 随方言注入，Repository 本身不识别任何底层错误码。
+    // （含持久 file_operations outbox）；方言约束错误 mapper 随方言注入，Repository 本身
+    // 不识别任何底层错误码。file_operations 的 path 只存 DATA_DIR 下的相对白名单路径。
     if (storage.dialect === "postgres") {
-      const pool = createPostgresPool(storage.databaseUrl);
+      // 严格 migration 门禁（默认 off，不改变 RC 行为）：bootstrap 之前只读校验 ledger/head，
+      // 空/legacy/落后库 fail-fast，绝不自动迁移；校验自身不写任何数据。
+      // 门禁必须使用完全独立的 gate Pool/Kysely 并在校验后销毁：成功后另建全新的 actual
+      // Pool 供 bootstrap/app 使用；失败路径同样销毁 gate 资源后再抛错。
+      if ((config.migrationGate ?? "off") === "verify") {
+        const gatePool = createPostgresPool(storage.databaseUrl, { connectionTimeoutMillis: 5_000 });
+        const gate = createPostgresKysely(gatePool);
+        try {
+          await runPostgresMigrations(gate, { mode: "verify" });
+        } catch (error) {
+          await gate.destroy().catch(() => undefined);
+          await gatePool.end().catch(() => undefined);
+          throw startupMigrationGateError(error);
+        }
+        await gate.destroy().catch(() => undefined);
+        await gatePool.end().catch(() => undefined);
+      }
       // 初始化 Kysely + 空数据库 schema bootstrap（建表/索引/外键都由 postgres-bootstrap 消费同一 Manifest）；
       // 失败路径内部先 destroy（同时释放 Pool）再抛原始错误。
+      const pool = createPostgresPool(storage.databaseUrl);
       kysely = await initializePostgresDatabase(pool);
     } else {
+      // 严格 migration 门禁（默认 off）：真只读校验 migration ledger/head；空库/无 ledger 的
+      // legacy RC 库 fail-fast（提示运行离线 cutover/migrate），绝不自动迁移；
+      // DB 文件不存在时绝不创建。门禁通过后才打开实际读写连接。
+      if ((config.migrationGate ?? "off") === "verify") {
+        await runSqliteMigrationGateReadonly(storage.dbPath);
+      }
       const db = new DatabaseSync(storage.dbPath, {
         timeout: 5000,
         enableForeignKeyConstraints: true,
@@ -341,9 +450,20 @@ export async function startServer(config: StartConfig) {
     }
     const constraintMapper =
       storage.dialect === "postgres" ? pgConstraintErrorMapper : sqliteConstraintErrorMapper;
-    // 三个 Repository 共享同一 Kysely 实例；默认项目在 schema 初始化后经 ensureDefaultProject 创建
+    // 四个 Repository 共享同一 Kysely 实例；默认项目在 schema 初始化后经 ensureDefaultProject 创建
     // （INSERT … ON CONFLICT DO NOTHING 幂等：不覆盖既有默认项目；异常既有行 fail-fast）。
-    const projects = new KyselyProjectRepository(kysely, constraintMapper);
+    const fileOperations = new KyselyFileOperationRepository(
+      kysely,
+      storage.dialect === "postgres" ? "postgres" : "sqlite",
+    );
+    const fileOperationOptions = {
+      fileOperations,
+      relativePath: (filePath: string) => relativeWhitelistedPath(dataDir, filePath),
+    } as const;
+    const projects = new KyselyProjectRepository(kysely, constraintMapper, {
+      ...fileOperationOptions,
+      dialect: storage.dialect,
+    });
     await projects.ensureDefaultProject({
       id: DEFAULT_PROJECT_ID,
       name: "默认项目",
@@ -351,7 +471,7 @@ export async function startServer(config: StartConfig) {
       ownerKey: "",
       createdAt: 0,
     });
-    const sessions = new KyselySessionRepository(kysely, constraintMapper);
+    const sessions = new KyselySessionRepository(kysely, constraintMapper, fileOperationOptions);
     // 已存在会话（同 schema 旧运行）没有可恢复的独立副本；以 Pi 当前默认提示词补齐一次，
     // 后续服务端配置变化不会覆盖已写入的会话值。
     await sessions.backfillSystemPrompt(defaultSystemPrompt);
@@ -391,9 +511,22 @@ export async function startServer(config: StartConfig) {
         projectId === DEFAULT_PROJECT_ID
           ? path.join(dataDir, "sessions", sessionId)
           : path.join(dataDir, "projects", projectId, "sessions", sessionId);
+      // Reserve the deterministic session-file name in the database before
+      // asking the SDK to persist anything.  Project/session deletion locks
+      // this row and enqueues the reserved path in the same transaction, so
+      // a delete racing this lazy create cannot observe a file without a
+      // durable cleanup record.  SessionManager.create only materializes the
+      // file when the agent session starts, after this reservation commits.
+      let reservedSessionFile: string | undefined;
       const sessionManager = record.piSessionFile
         ? SessionManager.open(record.piSessionFile)
         : SessionManager.create(projectCwd, sessionDir);
+      if (!record.piSessionFile) {
+        reservedSessionFile = sessionManager.getSessionFile();
+        if (!reservedSessionFile) throw new Error("new Pi session did not provide a session file");
+        const reserved = await sessions.update(sessionId, { piSessionFile: reservedSessionFile });
+        if (!reserved) throw new SessionDeletedError(sessionId);
+      }
 
       // 会话级模型/思考级别覆盖服务端默认；已落 JSONL 的旧会话由 SDK 恢复其历史模型，
       // 不因修改服务端默认配置而被覆盖。
@@ -426,9 +559,23 @@ export async function startServer(config: StartConfig) {
         ...agentToolConfig,
       });
 
-      // 首次发消息时把 Pi 会话文件路径记到服务库，重启后据此恢复对话历史
-      if (!record.piSessionFile && session.sessionFile) {
-        await sessions.update(sessionId, { piSessionFile: session.sessionFile });
+      // Confirm the SDK path after initialization.  Normally it is the
+      // reserved path; if a future SDK changes it, persist the actual path.
+      // A false write-back means deletion won the race: enqueue the exact
+      // now-created path idempotently instead of leaving an orphan.  This
+      // path is still relative-whitelist checked and no unlink is performed.
+      if (isNewSession && session.sessionFile) {
+        const persisted = await sessions.update(sessionId, { piSessionFile: session.sessionFile });
+        if (!persisted) {
+          const relativePath = relativeWhitelistedPath(dataDir, session.sessionFile);
+          await fileOperations.enqueue({
+            operationKey: sessionDeleteOperationKey(sessionId, relativePath),
+            kind: "delete",
+            relativePath,
+            sessionId,
+            projectId,
+          });
+        }
       }
 
       // 真实 AgentSession 结构满足 AgentSessionLike，此处用断言隔离 SDK 事件完整类型与我们的子集类型

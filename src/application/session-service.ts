@@ -41,8 +41,11 @@ export type SessionServiceDeps = {
   systemPromptResolver?: SystemPromptPort;
   /** 创建会话时冻结的能力版本快照（id→version）。 */
   capabilityVersions?: Readonly<Record<string, number>>;
-  /** 由 composition root 提供，避免 application 层依赖具体文件系统。 */
-  removeSessionFile: (path: string) => Promise<void>;
+  /**
+   * @deprecated WP4A 起删除只向持久 file_operations outbox 入队，不再由 application
+   * 直接触碰文件系统；保留可选字段仅兼容旧 composition root/tests。
+   */
+  removeSessionFile?: (path: string) => Promise<void>;
   /** 由 composition root 提供，便于隔离 ID 生成策略。 */
   createId: () => string;
   /** 由 composition root 提供，便于测试并隔离时钟。 */
@@ -137,12 +140,22 @@ export class SessionService {
     // 墓碑：删除期间拒绝并发创建会话到本项目
     this.deletingProjects.add(projectId);
     try {
-      const owned = await this.deps.sessions.listByProject(ownerKey, projectId);
-      // 1. 逻辑删（SQLite 事务墓碑）：项目与会话要么全删、要么全保留
-      await this.deps.projects.deleteProjectWithSessions(projectId, owned.map((r) => r.id));
-      // 2. 物理清理：中止 runtime + 删文件（失败可重试/补偿，不阻塞逻辑删）
-      for (const record of owned) {
-        await this.cleanupRuntime(record);
+      let deletedSessionIds: readonly string[];
+      const repositoryDelete = this.deps.projects.deleteProjectWithSessionsAndReturnSessionIds;
+      if (repositoryDelete) {
+        // The production repository returns the ids from its locked
+        // parent/list/enqueue/delete transaction.  No unlocked snapshot is
+        // taken before that transaction.
+        deletedSessionIds = await repositoryDelete.call(this.deps.projects, projectId, []);
+      } else {
+        // Compatibility adapters may only implement the old void method.
+        const owned = await this.deps.sessions.listByProject(ownerKey, projectId);
+        await this.deps.projects.deleteProjectWithSessions(projectId, owned.map((r) => r.id));
+        deletedSessionIds = owned.map((record) => record.id);
+      }
+      // 仅清理进程内 runtime；文件副作用由持久 outbox 的未来 worker 执行。
+      for (const sessionId of deletedSessionIds) {
+        await this.cleanupRuntimeById(sessionId);
       }
     } finally {
       this.deletingProjects.delete(projectId);
@@ -399,15 +412,18 @@ export class SessionService {
   }
 
   private async deleteRecord(record: SessionRecord): Promise<void> {
-    // 1. 逻辑删（SQLite 墓碑）：会话对外不可见
+    // 会话删除与 file_operations enqueue 由 repository 在同一数据库事务中完成。
     await this.deps.sessions.delete(record.id);
-    // 2. 物理清理（失败可重试/补偿）
+    // 不在 DELETE 请求中 unlink；只清理进程内 runtime。
     await this.cleanupRuntime(record);
   }
 
   private async cleanupRuntime(record: SessionRecord): Promise<void> {
-    await this.deps.registry.delete(record.id);
-    if (record.piSessionFile) await this.deps.removeSessionFile(record.piSessionFile);
+    await this.cleanupRuntimeById(record.id);
+  }
+
+  private async cleanupRuntimeById(sessionId: string): Promise<void> {
+    await this.deps.registry.delete(sessionId);
   }
 }
 

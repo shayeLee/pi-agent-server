@@ -21,6 +21,7 @@
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import { Pool } from "pg";
+import { assertRequiredPgTestEnvironment } from "../../scripts/pg-test-gate.js";
 import { randomUUID } from "node:crypto";
 import { sql, type Kysely } from "kysely";
 import { initializePostgresDatabase, createPostgresKysely } from "../../src/storage/postgres-bootstrap.js";
@@ -29,6 +30,7 @@ import { pgConstraintErrorMapper } from "../../src/storage/pg-constraint-errors.
 import { KyselyProjectRepository } from "../../src/storage/kysely-project-repository.js";
 import { KyselySessionRepository } from "../../src/storage/kysely-session-repository.js";
 import { KyselyIdempotencyRepository } from "../../src/storage/kysely-idempotency-repository.js";
+import { KyselyFileOperationRepository } from "../../src/storage/kysely-file-operation-repository.js";
 import type { DatabaseSchema } from "../../src/storage/db-schema.js";
 import { schemaManifest, type LogicalColumnType, type TableManifest } from "../../src/storage/schema-manifest.js";
 import {
@@ -37,8 +39,10 @@ import {
 } from "../../src/application/ports/project-store-port.js";
 import type { SessionRecord } from "../../src/application/ports/session-store-port.js";
 import { DuplicateIdError, ProjectForeignKeyError } from "../../src/application/ports/store-errors.js";
+import type { SchemaManifest } from "../../src/storage/schema-manifest.js";
 
 const pgUrl = process.env.PI_TEST_PG_URL?.trim() || undefined;
+assertRequiredPgTestEnvironment("tests/postgres/postgres.integration", pgUrl, false);
 if (!pgUrl) {
   console.warn(
     "[postgres integration] PI_TEST_PG_URL 未配置：PG 集成测试整组跳过（不尝试连接、不静默通过）；本机验收锁定 Docker 的 PG 环境",
@@ -77,7 +81,10 @@ function expectedPgColumns(table: TableManifest) {
     data_type: PG_PHYSICAL[c.type].data_type,
     udt_name: PG_PHYSICAL[c.type].udt_name,
     is_nullable: c.nullable ? "YES" : "NO",
-    has_default: c.default !== undefined,
+    // Keep the expected literal, not only a boolean. v1 also declares
+    // file_operations.attempt_count DEFAULT 0; a table-agnostic assertion
+    // must not mistake that valid default for sessions.project_id.
+    default_value: c.default,
   }));
 }
 
@@ -88,6 +95,7 @@ describePg("PostgreSQL 集成测试（PI_TEST_PG_URL 门控；随机 schema 隔�
   let projects: KyselyProjectRepository;
   let sessions: KyselySessionRepository;
   let idempotency: KyselyIdempotencyRepository;
+  let fileOperations: KyselyFileOperationRepository;
 
   function session(overrides: Partial<SessionRecord> = {}): SessionRecord {
     return {
@@ -115,15 +123,17 @@ describePg("PostgreSQL 集成测试（PI_TEST_PG_URL 门控；随机 schema 隔�
     // search_path 指向尚不存在的 schema 合法；CREATE SCHEMA 不受 search_path 影响
     await pool.query(`CREATE SCHEMA ${schema}`);
     kysely = await initializePostgresDatabase(pool);
-    projects = new KyselyProjectRepository(kysely, pgConstraintErrorMapper);
-    sessions = new KyselySessionRepository(kysely, pgConstraintErrorMapper);
+    fileOperations = new KyselyFileOperationRepository(kysely, "postgres");
+    const fileOperationOptions = { fileOperations, relativePath: (filePath: string) => filePath } as const;
+    projects = new KyselyProjectRepository(kysely, pgConstraintErrorMapper, fileOperationOptions);
+    sessions = new KyselySessionRepository(kysely, pgConstraintErrorMapper, fileOperationOptions);
     idempotency = new KyselyIdempotencyRepository(kysely);
   });
 
   beforeEach(async () => {
-    // 每条用例独立起点：清空三张表。projects CASCADE 连带其引用表（sessions）；idempotency 无 FK。
+    // 每条用例独立起点：清空四张表。file_operations 无 FK，父表 CASCADE 不会清理它。
     // 随机 schema + afterAll 只 drop 自己的 schema 保留不变；TRUNCATE 只在本随机 schema 内生效。
-    await pool.query(`TRUNCATE TABLE idempotency, sessions, projects CASCADE`);
+    await pool.query(`TRUNCATE TABLE file_operations, idempotency, sessions, projects CASCADE`);
   });
 
   afterAll(async () => {
@@ -147,14 +157,14 @@ describePg("PostgreSQL 集成测试（PI_TEST_PG_URL 门控；随机 schema 隔�
   });
 
   describe("bootstrap：Manifest → PG DDL（表/列/FK/索引/无迁移表）", () => {
-    it("3 张表齐备，无 kysely_migration 表", async () => {
+    it("4 张表齐备，无 kysely_migration 表", async () => {
       const tables = (
         await pool.query(
           `SELECT table_name FROM information_schema.tables WHERE table_schema = $1 ORDER BY table_name`,
           [schema],
         )
       ).rows.map((r) => r.table_name as string);
-      expect(tables).toEqual(["idempotency", "projects", "sessions"]);
+      expect(tables).toEqual(["file_operations", "idempotency", "projects", "sessions"]);
       const migrationTables = (
         await pool.query(
           `SELECT count(*)::int AS n FROM information_schema.tables WHERE table_schema = $1 AND table_name LIKE 'kysely_%'`,
@@ -196,10 +206,13 @@ describePg("PostgreSQL 集成测试（PI_TEST_PG_URL 门控；随机 schema 隔�
           expect(a.data_type).toBe(e.data_type);
           expect(a.udt_name).toBe(e.udt_name);
           expect(a.is_nullable).toBe(e.is_nullable);
-          if (e.has_default) {
-            // 唯一带 DEFAULT 的列：sessions.project_id → DEFAULT_PROJECT_ID（PG 渲染为 '<uuid>'::uuid）
+          if (e.default_value !== undefined) {
+            // information_schema canonicalizes a string UUID default to
+            // '<uuid>'::uuid and leaves the integer default as 0. Compare
+            // the manifest's own literal so both v0 and v1 defaults are
+            // checked without hard-coding a table-specific expectation.
             expect(a.column_default).not.toBeNull();
-            expect(a.column_default).toContain(DEFAULT_PROJECT_ID);
+            expect(a.column_default).toContain(String(e.default_value));
           } else {
             expect(a.column_default).toBeNull();
           }
@@ -243,7 +256,7 @@ describePg("PostgreSQL 集成测试（PI_TEST_PG_URL 门控；随机 schema 隔�
       expect(col?.column_default).toContain(DEFAULT_PROJECT_ID);
     });
 
-    it("4 个显式索引齐备、全部非唯一，idx_sessions_owner_updated 含 updated_at DESC；PK 自动索引被排除", async () => {
+    it("6 个显式索引齐备，outbox key 唯一且 claim 非唯一，含 updated_at DESC；PK 自动索引被排除", async () => {
       // PostgreSQL 会为每个 PRIMARY KEY / UNIQUE 约束自动创建索引（如 projects_pkey、sessions_pkey、
       // idempotency_pk）。这里仅查询 indisprimary = false 的非主键索引（PK 索引自动排除），
       // 只验证 Manifest 显式声明的 4 个业务索引；且断言它们全部 indisunique=false（业务索引非唯一）。
@@ -263,11 +276,11 @@ describePg("PostgreSQL 集成测试（PI_TEST_PG_URL 门控；随机 schema 隔�
       ).rows as Array<{ indexname: string; indexdef: string; indisunique: boolean }>;
       const names = indexes.map((r) => r.indexname).sort();
       expect(names).toEqual(
-        ["idx_idempotency_created_at", "idx_projects_owner", "idx_sessions_owner_project", "idx_sessions_owner_updated"].sort(),
+        ["idx_file_operations_claim", "idx_file_operations_key", "idx_idempotency_created_at", "idx_projects_owner", "idx_sessions_owner_project", "idx_sessions_owner_updated"].sort(),
       );
       // Manifest 声明的 4 个业务索引显式非唯一（无 unique: true）
       for (const row of indexes) {
-        expect(row.indisunique, `索引 ${row.indexname} 不应是 UNIQUE`).toBe(false);
+        expect(row.indisunique, `索引 ${row.indexname} unique 语义`).toBe(row.indexname === "idx_file_operations_key");
       }
       const ownerUpdated = indexes.find((r) => r.indexname === "idx_sessions_owner_updated")!;
       expect(ownerUpdated.indexdef).toMatch(/owner_key/);
@@ -646,6 +659,89 @@ describePg("PostgreSQL 集成测试（PI_TEST_PG_URL 门控；随机 schema 隔�
         const cleanupPool = new Pool({ connectionString: pgUrl! });
         try {
           await cleanupPool.query(`DROP SCHEMA IF EXISTS ${badSchema} CASCADE`);
+        } finally {
+          await cleanupPool.end();
+        }
+      }
+    });
+  });
+
+  describe("原子 bootstrap（P1）：中途 DDL 失败整库回滚、保持空库、重试成功", () => {
+    it("注入失败后事务回滚（无任何残留 managed 表），生产 Manifest 重试建全 schema 成功", async () => {
+      const atomicSchema = safeSchemaName();
+      const schemaSetupPool = new Pool({
+        connectionString: withSchemaSearchPath(pgUrl!, atomicSchema),
+        types: createPgInt8SafeTypes(),
+      });
+      try {
+        await schemaSetupPool.query(`CREATE SCHEMA ${atomicSchema}`);
+        await schemaSetupPool.end();
+
+        // 注入一份 DDL 中途必失败的 Manifest（索引引用不存在的列；绕过 defineSchema 的
+        // 运行期校验，让失败点真实发生在数据库层）：第一张表创建成功后第二个 CREATE INDEX 失败。
+        const broken: SchemaManifest = {
+          tables: [
+            {
+              name: "t_first",
+              columns: [{ name: "id", type: "uuid", nullable: false }],
+              primaryKey: { columns: ["id"] },
+              foreignKeys: [],
+              indexes: [],
+            },
+            {
+              name: "t_second",
+              columns: [{ name: "id", type: "uuid", nullable: false }],
+              primaryKey: { columns: ["id"] },
+              foreignKeys: [],
+              indexes: [{ name: "idx_t_second_missing", columns: [{ name: "missing_column" }] }],
+            },
+          ],
+        };
+        const failingPool = new Pool({
+          connectionString: withSchemaSearchPath(pgUrl!, atomicSchema),
+          types: createPgInt8SafeTypes(),
+        });
+        const err = await initializePostgresDatabase(failingPool, { manifest: broken }).then(() => null, (e: unknown) => e);
+        expect(err).toBeInstanceOf(Error);
+        expect((err as Error).message).toMatch(/missing_column/);
+        // 失败路径内部 destroy 了 Pool（与「失败释放 Pool」既有用例同一可观测契约）。
+        await expect(failingPool.query("SELECT 1")).rejects.toThrow(/Cannot use a pool after calling end on the pool/);
+
+        // 事务整体回滚：独立只读连接复查，库中不残留任何 managed 表（t_first 也已回滚）。
+        const readerPool = new Pool({
+          connectionString: withSchemaSearchPath(pgUrl!, atomicSchema),
+          types: createPgInt8SafeTypes(),
+        });
+        try {
+          const remaining = await readerPool.query(
+            "SELECT table_name FROM information_schema.tables WHERE table_schema = $1 AND table_type = 'BASE TABLE' ORDER BY table_name",
+            [atomicSchema],
+          );
+          expect(remaining.rows).toEqual([]);
+        } finally {
+          await readerPool.end();
+        }
+
+        // 重试（生产 Manifest）：空库 preflight 放行，完整 schema 建库成功。
+        const retryPool = new Pool({
+          connectionString: withSchemaSearchPath(pgUrl!, atomicSchema),
+          types: createPgInt8SafeTypes(),
+        });
+        const retryKysely = await initializePostgresDatabase(retryPool);
+        const result = await sql<{ table_name: string }>`
+          SELECT table_name FROM information_schema.tables
+          WHERE table_schema = current_schema() AND table_type = 'BASE TABLE'
+          ORDER BY table_name
+        `.execute(retryKysely);
+        expect(result.rows.map((r) => r.table_name)).toEqual(
+          expect.arrayContaining(["projects", "sessions", "idempotency"]),
+        );
+        await retryKysely.destroy();
+      } finally {
+        if (!(schemaSetupPool as { ending?: boolean }).ending) await schemaSetupPool.end().catch(() => undefined);
+        const cleanupPool = new Pool({ connectionString: pgUrl! });
+        try {
+          await cleanupPool.query(`DROP SCHEMA IF EXISTS ${atomicSchema} CASCADE`);
         } finally {
           await cleanupPool.end();
         }

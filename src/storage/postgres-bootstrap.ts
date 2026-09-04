@@ -18,26 +18,49 @@
 // bootstrap 失败时本文件先 destroy（同时也释放 Pool）再抛原始错误。
 
 import { Pool } from "pg";
-import { Kysely, PostgresDialect } from "kysely";
-import { bootstrapSchemaFromManifest, type LogicalTypeMap } from "./schema-builder.js";
+import { Kysely, PostgresDialect, sql } from "kysely";
+import {
+  bootstrapSchemaFromManifest,
+  type LogicalTypeMap,
+  type SchemaBootstrapOptions,
+} from "./schema-builder.js";
 import { assertSchemaCompatible } from "./schema-compatibility.js";
 import { createPgInt8SafeTypes } from "./pg-int8.js";
 import type { DatabaseSchema } from "./db-schema.js";
+import { schemaManifest } from "./schema-manifest.js";
+import { POSTGRES_PHYSICAL_TYPES } from "./migration-manifest.js";
 
 /** 逻辑列类型 → PostgreSQL 物理类型（uuid→UUID、text/json→TEXT、integer/bigint→BIGINT）。 */
-export const POSTGRES_LOGICAL_TYPE: LogicalTypeMap = {
-  uuid: "uuid",
-  text: "text",
-  integer: "bigint",
-  bigint: "bigint",
-  json: "text",
-};
+export const POSTGRES_LOGICAL_TYPE: LogicalTypeMap = POSTGRES_PHYSICAL_TYPES;
+
+/**
+ * Bootstrap 并发锁的 key 前缀（advisory lock 与迁移引擎的 POSTGRES_MIGRATION_LOCK_KEY
+ * 不同域）。锁以 `key || current_database()` 键控：并发 bootstrap 同一数据库互相串行，
+ * 不同数据库互不阻塞。
+ */
+export const POSTGRES_BOOTSTRAP_LOCK_SCOPE = "pi-agent-server:pg-schema-bootstrap";
 
 /** 创建带 int8 安全解析的 PG Pool（连接按需建立；连接串由调用方提供）。 */
-export function createPostgresPool(connectionString: string): Pool {
+export interface PostgresPoolTimeouts {
+  /** Milliseconds to wait for an idle connection before failing (0 = no timeout). */
+  readonly connectionTimeoutMillis?: number;
+  /** Per-connection statement_timeout in ms; bounds any single hung query. */
+  readonly statementTimeoutMs?: number;
+  /** Per-query driver timeout in ms; bounds a stuck query independent of the server. */
+  readonly queryTimeoutMs?: number;
+}
+
+/**
+ * 创建带 int8 安全解析的 PG Pool。可选的 timeouts 仅用于离线 gate（pre-migration
+ * backup / migrate CLI），让每个外部查询有界；服务端正常路径不传，保持原有无界语义。
+ */
+export function createPostgresPool(connectionString: string, timeouts?: PostgresPoolTimeouts): Pool {
   return new Pool({
     connectionString,
     types: createPgInt8SafeTypes(),
+    connectionTimeoutMillis: timeouts?.connectionTimeoutMillis ?? 0,
+    ...(timeouts?.statementTimeoutMs !== undefined ? { statement_timeout: timeouts.statementTimeoutMs } : {}),
+    ...(timeouts?.queryTimeoutMs !== undefined ? { query_timeout: timeouts.queryTimeoutMs } : {}),
   });
 }
 
@@ -51,6 +74,12 @@ export function createPostgresKysely(pool: Pool): Kysely<DatabaseSchema> {
 /**
  * PG 空库 bootstrap：按 Manifest 幂等创建当前 schema（表/列/主键/外键/索引）。
  *
+ * 原子 bootstrap（P1）：**preflight + 完整 DDL 在同一个 transaction 内执行**（PG 的 DDL
+ * 是事务性的），中途 DDL 失败由事务自动 ROLLBACK，数据库保持空库、严格 preflight 不会把
+ * 半成品 schema 判成不兼容，重试即可。事务内先取 transaction-scoped advisory lock
+ * （按当前数据库名前缀键控，不跨库互锁），把并发 bootstrap 串行化：后到者等待前者
+ * COMMIT/ROLLBACK（xact 锁自动释放）之后再 preflight，看到完整 schema 即跳过 DDL。
+ *
  * 启动路径（严格 schema preflight，**在任何建表/建索引 DDL 之前**）：
  * 1. assertSchemaCompatible 检查数据库现状：
  *    - 无任何 managed 表（全新 schema / 只有无关表）→ bootstrap 正常建库；
@@ -59,13 +88,18 @@ export function createPostgresKysely(pool: Pool): Kysely<DatabaseSchema> {
  *    - 已完整一致 → 跳过 DDL（不重建）。
  * 失败路径先 destroy（释放 Pool）再抛原始错误。
  */
-export async function initializePostgresDatabase(pool: Pool): Promise<Kysely<DatabaseSchema>> {
+export async function initializePostgresDatabase(pool: Pool, options: SchemaBootstrapOptions = {}): Promise<Kysely<DatabaseSchema>> {
   const kysely = createPostgresKysely(pool);
   try {
-    const verdict = await assertSchemaCompatible(kysely, "PostgreSQL", POSTGRES_LOGICAL_TYPE);
-    if (verdict === "empty") {
-      await bootstrapSchemaFromManifest(kysely, POSTGRES_LOGICAL_TYPE);
-    }
+    const manifest = options.manifest ?? schemaManifest;
+    await kysely.transaction().execute(async (transaction) => {
+      const trx = transaction as unknown as Kysely<DatabaseSchema>;
+      await sql`SELECT pg_advisory_xact_lock(hashtext(${POSTGRES_BOOTSTRAP_LOCK_SCOPE} || current_database()))`.execute(trx);
+      const verdict = await assertSchemaCompatible(trx, "PostgreSQL", POSTGRES_LOGICAL_TYPE, manifest);
+      if (verdict === "empty") {
+        await bootstrapSchemaFromManifest(trx, POSTGRES_LOGICAL_TYPE, manifest);
+      }
+    });
     return kysely;
   } catch (error) {
     await kysely.destroy();

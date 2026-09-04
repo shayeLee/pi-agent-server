@@ -19,7 +19,7 @@
 // 个只读接口，由共享的比较逻辑消费（Manifest → 期望值）。
 
 import { sql, type Kysely } from "kysely";
-import { schemaManifest, type TableManifest } from "./schema-manifest.js";
+import { schemaManifest, type SchemaManifest, type TableManifest } from "./schema-manifest.js";
 import type { DatabaseSchema } from "./db-schema.js";
 import type { LogicalTypeMap } from "./schema-builder.js";
 
@@ -170,12 +170,85 @@ const PG_CONFDEL: Readonly<Record<string, string>> = {
 type PgColumnRow = { column_name: string; data_type: string; is_nullable: string; column_default: string | null };
 type PgFkRow = {
   constraint_name: string;
-  columns: string[] | null;
-  target_columns: string[] | null;
+  // node-postgres normally decodes PostgreSQL text[] (OID 1009) to string[],
+  // but a raw/custom result parser may leave the wire-format value as text.
+  // Keep this unknown until the catalog boundary validates it.
+  columns: unknown;
+  target_columns: unknown;
   target_table: string;
   confdeltype: string;
 };
 type PgIndexRow = { indexname: string; indisunique: boolean; indexdef: string };
+
+/**
+ * Normalize the two forms a PostgreSQL text[] can have at the Kysely catalog
+ * boundary. With the normal node-postgres parser (OID 1009), array_agg(text)
+ * is already a JavaScript string[]. A raw/custom parser can instead expose the
+ * PostgreSQL wire representation (for example `{"project_id"}`), so do not
+ * let that representation reach the shared comparer as an object/string.
+ *
+ * The catalog query below casts pg_attribute.attname (the PostgreSQL `name`
+ * type) to text before aggregating. Without that cast, array_agg(name) has the
+ * name[] OID (1003), which node-postgres returns as the raw string
+ * `{"project_id"}` rather than a JavaScript array.
+ */
+export function normalizePgTextArray(value: unknown, field: string): string[] {
+  if (value === null || value === undefined) return [];
+  if (Array.isArray(value)) {
+    if (value.every((item): item is string => typeof item === "string")) return [...value];
+    throw new Error(`schema compatibility: PostgreSQL ${field} is not a text[]`);
+  }
+  if (typeof value !== "string") {
+    throw new Error(`schema compatibility: PostgreSQL ${field} is not a text[]`);
+  }
+
+  const text = value.trim();
+  if (text.startsWith("[")) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(text);
+    } catch {
+      throw new Error(`schema compatibility: PostgreSQL ${field} is not a valid text[]`);
+    }
+    if (Array.isArray(parsed) && parsed.every((item): item is string => typeof item === "string")) return [...parsed];
+    throw new Error(`schema compatibility: PostgreSQL ${field} is not a text[]`);
+  }
+  if (!text.startsWith("{") || !text.endsWith("}")) {
+    throw new Error(`schema compatibility: PostgreSQL ${field} is not a text[]`);
+  }
+
+  // Parse the scalar PostgreSQL array form. Constraint column names are
+  // identifiers, but handling quoting/escaping here keeps this a real parser
+  // rather than a comma split and rejects malformed catalog data explicitly.
+  const result: string[] = [];
+  let item = "";
+  let quoted = false;
+  let escaped = false;
+  for (const character of text.slice(1, -1)) {
+    if (escaped) {
+      item += character;
+      escaped = false;
+    } else if (character === "\\") {
+      escaped = true;
+    } else if (quoted) {
+      if (character === '"') quoted = false;
+      else item += character;
+    } else if (character === '"') {
+      quoted = true;
+    } else if (character === ",") {
+      if (item === "NULL") throw new Error(`schema compatibility: PostgreSQL ${field} contains a NULL array element`);
+      result.push(item);
+      item = "";
+    } else {
+      item += character;
+    }
+  }
+  if (escaped || quoted || item === "NULL") {
+    throw new Error(`schema compatibility: PostgreSQL ${field} is not a valid text[]`);
+  }
+  if (text !== "{}") result.push(item);
+  return result;
+}
 
 class PostgresCatalog implements Catalog {
   constructor(private readonly kysely: Kysely<DatabaseSchema>) {}
@@ -223,10 +296,10 @@ class PostgresCatalog implements Catalog {
   async foreignKeys(table: string): Promise<CatalogForeignKey[]> {
     const { rows } = await sql<PgFkRow>`
       SELECT con.conname AS constraint_name,
-             (SELECT array_agg(a.attname ORDER BY k.ord)
+             (SELECT array_agg(a.attname::text ORDER BY k.ord)
                 FROM unnest(con.conkey) WITH ORDINALITY AS k(attnum, ord)
                 JOIN pg_attribute a ON a.attrelid = con.conrelid AND a.attnum = k.attnum) AS columns,
-             (SELECT array_agg(a.attname ORDER BY k.ord)
+             (SELECT array_agg(a.attname::text ORDER BY k.ord)
                 FROM unnest(con.confkey) WITH ORDINALITY AS k(attnum, ord)
                 JOIN pg_attribute a ON a.attrelid = con.confrelid AND a.attnum = k.attnum) AS target_columns,
              ct.relname AS target_table,
@@ -239,9 +312,9 @@ class PostgresCatalog implements Catalog {
     `.execute(this.kysely);
     return rows.map((r) => ({
       constraintName: r.constraint_name,
-      columns: r.columns ?? [],
+      columns: normalizePgTextArray(r.columns, `${r.constraint_name}.columns`),
       targetTable: r.target_table,
-      targetColumns: r.target_columns ?? [],
+      targetColumns: normalizePgTextArray(r.target_columns, `${r.constraint_name}.target_columns`),
       onDelete: PG_CONFDEL[r.confdeltype] ?? r.confdeltype.toLowerCase(),
     }));
   }
@@ -425,11 +498,12 @@ export async function assertSchemaCompatible(
   kysely: Kysely<DatabaseSchema>,
   dialect: SchemaDialect,
   typeMap: LogicalTypeMap,
+  manifest: SchemaManifest = schemaManifest,
 ): Promise<SchemaCompatVerdict> {
   const catalog: Catalog =
     dialect === "SQLite" ? new SqliteCatalog(kysely) : new PostgresCatalog(kysely);
   const existingTables = new Set(await catalog.tableNames());
-  const managedTables: readonly TableManifest[] = schemaManifest.tables;
+  const managedTables: readonly TableManifest[] = manifest.tables;
 
   if (!managedTables.some((t) => existingTables.has(t.name))) {
     return "empty"; // 全新库 / 只有无关表：允许正常 bootstrap

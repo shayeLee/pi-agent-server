@@ -46,6 +46,15 @@ const trustProxy = process.env.TRUST_PROXY
       .filter(Boolean)
   : undefined;
 
+// 严格生产 migration 门禁（WP2A）：默认 off 保持 RC 行为；PI_MIGRATION_GATE=verify 启用启动前
+// migration ledger/head 只读校验（不自动迁移/不自动 reset）；未知非空值 fail-fast。
+function resolveMigrationGate(value: string | undefined): "off" | "verify" {
+  const trimmed = value?.trim().toLowerCase();
+  if (!trimmed || trimmed === "off") return "off";
+  if (trimmed === "verify") return "verify";
+  throw new Error(`PI_MIGRATION_GATE 只支持 off / verify（当前值不回显），收到未知非空值时拒绝启动`);
+}
+
 const app = await startServer({
   port,
   host,
@@ -76,6 +85,7 @@ const app = await startServer({
     | undefined,
   systemPrompt: process.env.PI_SYSTEM_PROMPT,
   trustProxy,
+  migrationGate: resolveMigrationGate(process.env.PI_MIGRATION_GATE),
 });
 
 app.log.info(`pi-agent-server listening on ${host}:${port}`);

@@ -10,8 +10,9 @@
 //
 // 本文件同时是可测试的最小结构：判定/解析函数导出（tests/tools/test-postgres-runner.test.ts 直接饮用），
 // 仅当被当作 CLI 入口执行时才运行 main()。
-import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
+import { checkPgBackupBinaries } from "./test-pg-backup.js";
+import { PG_TEST_REQUIRED_ENV, runVitestWithEvidence } from "./pg-test-gate.js";
 import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
@@ -22,6 +23,7 @@ const require = createRequire(import.meta.url);
 export const PG_TEST_URL_ENV = "PI_TEST_PG_URL";
 /** vitest 文件名过滤：只跑 tests/postgres/** 下的真实集成测试。 */
 export const PG_TEST_FILE_PATTERN = "tests/postgres";
+export { PG_TEST_REQUIRED_ENV };
 
 export interface PgUrlDecision {
   ok: boolean;
@@ -86,28 +88,20 @@ async function main(): Promise<void> {
     return;
   }
 
-  // 有 URL：仅跑 tests/postgres/**，连接串只进子进程环境（绝不打印）
-  const vitestCli = resolveBinPath("vitest", "vitest");
-  const envUrl = decision.ok ? process.env[PG_TEST_URL_ENV] : undefined;
-  const child = spawn(
-    process.execPath,
-    [vitestCli, "run", PG_TEST_FILE_PATTERN],
-    {
-      stdio: "inherit",
-      env: envUrl !== undefined ? { ...process.env, [PG_TEST_URL_ENV]: envUrl.trim() } : process.env,
-    },
-  );
-  child.on("error", (error) => {
-    console.error(`[test:postgres] 启动 vitest 失败：${error.message}`);
+  // This target includes pg-backup and migration-prebackup. Preflight all of
+  // their required tools so a skipped inner file can never make this gate green.
+  const binaries = checkPgBackupBinaries();
+  if (!binaries.ok) {
+    console.error(`[test:postgres] ${binaries.reason}`);
     process.exitCode = 1;
-  });
-  child.on("exit", (code, signal) => {
-    if (signal) {
-      console.error(`[test:postgres] vitest 被信号终止：${signal}`);
-      process.exitCode = 1;
-    } else {
-      process.exitCode = code ?? 1;
-    }
+    return;
+  }
+  // 有 URL：仅跑 tests/postgres/**，连接串只进子进程环境（绝不打印）。
+  process.exitCode = await runVitestWithEvidence({
+    vitestPath: resolveBinPath("vitest", "vitest"),
+    target: PG_TEST_FILE_PATTERN,
+    scope: "test:postgres",
+    env: { ...process.env, [PG_TEST_URL_ENV]: process.env[PG_TEST_URL_ENV]!.trim(), [PG_TEST_REQUIRED_ENV]: "1" },
   });
 }
 

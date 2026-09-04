@@ -85,6 +85,7 @@ export function throwProjectForeignKeyOrOriginal(error: unknown): never {
 
 /** SQLite 方言的约束错误映射器（注入给中立 Kysely Repository；PG 见 pg-constraint-errors.ts）。 */
 export const sqliteConstraintErrorMapper: ConstraintErrorMapper = {
+  dialect: "sqlite",
   isForeignKeyError: isSqliteForeignKeyError,
   throwDuplicateIdOrOriginal,
   throwProjectForeignKeyOrOriginal,

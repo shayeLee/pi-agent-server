@@ -18,14 +18,24 @@ import type { SqliteDatabase, SqliteStatement } from "kysely";
 /** 把 node:sqlite DatabaseSync 适配成 Kysely SqliteDialect 可用的 SqliteDatabase。 */
 export class NodeSqliteAdapter implements SqliteDatabase {
   private readonly db: DatabaseSync;
+  private readonly closeDatabase: boolean;
+  private readonly beginImmediate: boolean;
   private closed = false;
 
-  constructor(db: DatabaseSync) {
+  constructor(db: DatabaseSync, closeDatabase = true, beginImmediate = true) {
     this.db = db;
+    this.closeDatabase = closeDatabase;
+    this.beginImmediate = beginImmediate;
   }
 
   prepare(sql: string): SqliteStatement {
-    return new NodeStatementAdapter(this.db.prepare(sql));
+    // Kysely's SQLite driver starts transactions with plain `BEGIN` (a
+    // deferred transaction).  Delete transactions must reserve the writer
+    // lock before their first SELECT, otherwise a concurrent FK insert can
+    // pass the read and race the parent delete.  Keep this opt-in so the
+    // adapter remains a general-purpose wrapper; service storage enables it.
+    const statement = this.beginImmediate && /^\s*begin\s*$/i.test(sql) ? "BEGIN IMMEDIATE" : sql;
+    return new NodeStatementAdapter(this.db.prepare(statement));
   }
 
   // 幂等关闭：node:sqlite 的 DatabaseSync.close() 对已关闭实例二次调用会抛 "database is not open"，
@@ -35,6 +45,7 @@ export class NodeSqliteAdapter implements SqliteDatabase {
   close(): void {
     if (this.closed) return;
     this.closed = true;
+    if (!this.closeDatabase) return;
     try {
       this.db.close();
     } catch {

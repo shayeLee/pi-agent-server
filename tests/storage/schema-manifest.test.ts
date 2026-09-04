@@ -2,7 +2,7 @@
 // 1. Manifest 是唯一手工声明：表/列/PK/FK/索引全部在 schemaManifest 中声明一次；
 //    Manifest → SQLite bootstrap 可生成与 PRAGMA 实际观察一致的 schema（等价 DDL）。
 // 2. 真实 DatabaseSync 空库验证：所有表、列（类型/nullable/default）、单列/复合主键、
-//    FK cascade、4 个索引（含 updated_at DESC）、文件库 WAL、无 kysely_migration。
+//    FK cascade、6 个索引（含 updated_at DESC 与 outbox claim/key）、文件库 WAL、无 kysely_migration。
 // 3. defineSchema 运行期校验：重复表/列/索引名、未知列引用、FK 目标不存在或声明顺序错误、
 //    FK 源/目标列非空且等长、源/目标逻辑类型一致、主键列不可 nullable、
 //    onDelete 非法、default 类型不匹配（含 boolean 拒绝）均抛错。
@@ -89,7 +89,7 @@ function indexKeyColumns(db: DatabaseSync, index: string): Array<{ name: string;
 /** 显式索引的 UNIQUE 标志（PRAGMA index_list 的 unique 列；排除 SQLite 自动建的 PK/UNIQUE 约束索引 sqlite_autoindex_*）。 */
 function indexUniqueness(db: DatabaseSync): Record<string, number> {
   const out: Record<string, number> = {};
-  for (const table of ["projects", "sessions", "idempotency"]) {
+  for (const table of ["projects", "sessions", "idempotency", "file_operations"]) {
     for (const r of db.prepare(`PRAGMA index_list(${table})`).all() as Array<{ name: string; unique: number }>) {
       if (!r.name.startsWith("sqlite_autoindex_")) out[r.name] = r.unique;
     }
@@ -132,10 +132,10 @@ async function initMemoryDb() {
 }
 
 describe("Schema Manifest 契约：Manifest → SQLite bootstrap DDL 等价（真实空库）", () => {
-  it("Manifest 声明了恰好的 3 张表，每张表的列/主键/外键/索引与当前 schema 一致", () => {
+  it("Manifest 声明了恰好的 4 张表，每张表的列/主键/外键/索引与当前 schema 一致", () => {
     // 宽化为 TableManifest：字面量仅供 DatabaseSchema 推导，这里只做值的断言。
     const tables: readonly TableManifest[] = schemaManifest.tables;
-    expect(tables.map((t) => t.name)).toEqual(["projects", "sessions", "idempotency"]);
+    expect(tables.map((t) => t.name)).toEqual(["projects", "sessions", "idempotency", "file_operations"]);
 
     expect(tables[0]!.columns.map((c) => [c.name, c.type, c.nullable])).toEqual([
       ["id", "uuid", false],
@@ -186,6 +186,15 @@ describe("Schema Manifest 契约：Manifest → SQLite bootstrap DDL 等价（�
     ]);
     expect(tables[2]!.primaryKey).toEqual({ constraintName: "idempotency_pk", columns: ["session_id", "request_id"] });
     expect(tables[2]!.indexes!.map((i) => i.name)).toEqual(["idx_idempotency_created_at"]);
+    expect(tables[3]!.name).toBe("file_operations");
+    expect(tables[3]!.columns.map((c) => [c.name, c.type, c.nullable])).toEqual([
+      ["id", "uuid", false], ["operation_key", "text", false], ["kind", "text", false],
+      ["relative_path", "text", false], ["session_id", "uuid", true], ["project_id", "uuid", true],
+      ["state", "text", false], ["attempt_count", "integer", false], ["available_at", "integer", false],
+      ["lease_until", "integer", true], ["lease_token", "text", true], ["last_error", "text", true],
+      ["created_at", "integer", false], ["updated_at", "integer", false],
+    ]);
+    expect(tables[3]!.foreignKeys).toEqual([]);
 
     // 默认值唯一来源：sessions.project_id 引用 DEFAULT_PROJECT_ID 常量
     expect(tables[1]!.columns.find((c) => c.name === "project_id")).toMatchObject({ default: DEFAULT_PROJECT_ID });
@@ -284,7 +293,7 @@ describe("Schema Manifest 契约：Manifest → SQLite bootstrap DDL 等价（�
     await kysely.destroy();
   });
 
-  it("4 个索引齐备且全部非唯一，idx_sessions_owner_updated 含 updated_at DESC 排序语义", async () => {
+  it("6 个索引齐备，outbox key 唯一且 claim 索引非唯一，含 updated_at DESC 排序语义", async () => {
     const { db, kysely } = await initMemoryDb();
     // 宽化为 TableManifest：索引列字面量仅供 DatabaseSchema 推导，这里只做值的断言。
     const tables: readonly TableManifest[] = schemaManifest.tables;
@@ -296,11 +305,11 @@ describe("Schema Manifest 契约：Manifest → SQLite bootstrap DDL 等价（�
       expect(actual[name]).toBe(table);
     }
 
-    // 显式业务索引全部非唯一（unique=0；SQLite 为 PK/UNIQUE 约束自动建的 sqlite_autoindex_* 被排除，
-    // 与 PG 侧 indisprimary=false 排除自动索引的断言互补）。
+    // 业务索引的 UNIQUE 语义也来自 Manifest：只有 operation_key 幂等索引唯一。
     const uniqueness = indexUniqueness(db);
     expect(Object.keys(uniqueness).sort()).toEqual(expectedIndexes.map(([name]) => name).sort());
-    for (const name of Object.keys(uniqueness)) {
+    expect(uniqueness.idx_file_operations_key).toBe(1);
+    for (const name of Object.keys(uniqueness).filter((name) => name !== "idx_file_operations_key")) {
       expect(uniqueness[name], `索引 ${name} 不应是 UNIQUE`).toBe(0);
     }
 
@@ -330,7 +339,7 @@ describe("Schema Manifest 契约：Manifest → SQLite bootstrap DDL 等价（�
       (db.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all() as { name: string }[]).map(
         (r) => r.name,
       ),
-    ).toEqual(["idempotency", "projects", "sessions"]);
+    ).toEqual(["file_operations", "idempotency", "projects", "sessions"]);
     // 无版本化迁移痕迹（本方案没有 Migrator，不应创建迁移簿记表）
     expect(
       db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'kysely_%'").all() as unknown[],
