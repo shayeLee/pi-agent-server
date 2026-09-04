@@ -1,5 +1,5 @@
 import { FILE_OPERATION_STATES } from "../application/ports/file-operation-store-port.js";
-import { assertWhitelistedRelativePath, isRedactedFileOperationError } from "../storage/file-operation-policy.js";
+import { assertWhitelistedRelativePath, isFileOperationErrorCodeAllowlisted } from "../storage/file-operation-policy.js";
 
 function fail(message: string): never {
   throw new Error(`restore: ${message}`);
@@ -50,8 +50,8 @@ export function validateRestoredFileOperations(rows: readonly Record<string, unk
     const leaseUntil = nullableInteger(row.lease_until, "lease_until");
     const leaseToken = nullableString(row.lease_token, "lease_token");
     const lastError = nullableString(row.last_error, "last_error");
-    if (lastError !== null && !isRedactedFileOperationError(lastError)) {
-      fail("restored file_operations last_error is not a canonical redacted error or exceeds 1000 bytes");
+    if (lastError !== null && !isFileOperationErrorCodeAllowlisted(lastError)) {
+      fail("restored file_operations last_error is not a canonical allowlisted error code");
     }
     nonNegativeInteger(row.created_at, "created_at");
     nonNegativeInteger(row.updated_at, "updated_at");

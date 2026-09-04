@@ -129,6 +129,8 @@ describe("WP4A file_operations outbox（SQLite）", () => {
     expect(await storage.fileOperations.fail(queued.id, new Error("password=super-secret /Users/alice/private.jsonl bearer eyJabc.def.ghi"), 200, claimed[0]!.leaseToken!)).toBe(true);
     const failed = await storage.fileOperations.get(queued.id);
     expect(failed).toMatchObject({ state: "failed", availableAt: 200 });
+    // WP4B error policy：非 allowlist 的错误统一落到固定 canonical code，绝不保留原文。
+    expect(failed?.lastError).toBe("file operation failed");
     expect(failed?.lastError).not.toContain("super-secret");
     expect(failed?.lastError).not.toContain("/Users/alice");
     const reclaimed = await storage.fileOperations.claim(200, 1, 50);
@@ -136,6 +138,16 @@ describe("WP4A file_operations outbox（SQLite）", () => {
     expect(await storage.fileOperations.complete(queued.id, reclaimed[0]!.leaseToken!)).toBe(true);
     expect((await storage.fileOperations.get(queued.id))?.state).toBe("completed");
     expect(await storage.fileOperations.complete(queued.id, reclaimed[0]!.leaseToken!)).toBe(false);
+  });
+
+  it("非 allowlist 的 last_error 行在仓库层 fail-closed，绝不读入内存模型", async () => {
+    const storage = await makeInitializedMemoryDb();
+    open.push(storage);
+    // 篡改行：相对路径文本对 redaction 幂等，但不在固定 allowlist 内 → list() 抛错。
+    storage.db.prepare(
+      "INSERT INTO file_operations (id, operation_key, kind, relative_path, state, attempt_count, available_at, last_error, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+    ).run("e0000000-0000-4000-8000-000000000000", "tampered-error", "delete", "sessions/s1/history.jsonl", "failed", 1, 0, "sessions/s1/history.jsonl", 0, 0);
+    await expect(storage.fileOperations.list()).rejects.toThrow(/last_error/);
   });
 
   it("脱敏覆盖常见环境变量凭证，且规范错误保持幂等", () => {

@@ -3,6 +3,10 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { checkDistHygiene } from "./dist-hygiene.mjs";
+
+// 发布产物卫生：编译产物树中不允许出现已移除执行器的残留文件或任何符号链接。
+checkDistHygiene("dist-migrate");
 
 const packageJson = JSON.parse(readFileSync("package.json", "utf8"));
 if (packageJson.bin?.["pi-agent-server-migrate"] !== "./dist-migrate/scripts/migrate.js" || !packageJson.files?.includes("dist-migrate") || !existsSync("dist-migrate/scripts/migrate.js")) {

@@ -277,17 +277,24 @@ class PostgresCatalog implements Catalog {
   }
 
   async primaryKeyColumns(table: string): Promise<string[] | null> {
+    // 不能用 information_schema.table_constraints：它的权限过滤只认
+    // INSERT/UPDATE/DELETE/TRUNCATE/REFERENCES/TRIGGER（含列级
+    // INSERT/UPDATE/REFERENCES），`SELECT` 不在其中。仅 SELECT 权限的只读
+    // planner role 会看到 0 行，把真实主键误判成「无主键」→ 严格 verify 失败。
+    // 改用 pg_catalog（pg_constraint/pg_attribute 对能读表的任何用户可见，且
+    // 与同类 foreignKeys()/indexes() 的 catalog 查询一致）：主键身份与列序语义
+    // 不变，owner 与只读 role 都能完成同一 strict preflight。
     const { rows } = await sql<{ column_name: string }>`
-      SELECT kcu.column_name
-      FROM information_schema.table_constraints tc
-      JOIN information_schema.key_column_usage kcu
-        ON tc.constraint_name = kcu.constraint_name
-       AND tc.constraint_schema = kcu.constraint_schema
-       AND tc.table_name = kcu.table_name
-      WHERE tc.table_schema = current_schema()
-        AND tc.table_name = ${table}
-        AND tc.constraint_type = 'PRIMARY KEY'
-      ORDER BY kcu.ordinal_position
+      SELECT a.attname AS column_name
+      FROM pg_constraint con
+      JOIN pg_namespace ns ON ns.oid = con.connamespace
+      JOIN pg_class rel ON rel.oid = con.conrelid
+      JOIN LATERAL unnest(con.conkey) WITH ORDINALITY AS key(attnum, ord) ON true
+      JOIN pg_attribute a ON a.attrelid = con.conrelid AND a.attnum = key.attnum
+      WHERE ns.nspname = current_schema()
+        AND rel.relname = ${table}
+        AND con.contype = 'p'
+      ORDER BY key.ord
     `.execute(this.kysely);
     const columns = rows.map((r) => r.column_name);
     return columns.length > 0 ? columns : null;

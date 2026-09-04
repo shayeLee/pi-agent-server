@@ -17,7 +17,8 @@
     "pi-agent-server-migrate": "./dist-migrate/scripts/migrate.js",
     "pi-agent-server-backup": "./dist-backup/scripts/backup.js",
     "pi-agent-server-restore": "./dist-backup/scripts/restore.js",
-    "pi-agent-server-cutover": "./dist-cutover/scripts/cutover.js"
+    "pi-agent-server-cutover": "./dist-cutover/scripts/cutover.js",
+    "pi-agent-server-file-ops": "./dist-file-ops/scripts/file-ops.js"
   },
   "exports": {
     "./server": "./dist/server/start.js",
@@ -27,13 +28,14 @@
     "dist",
     "dist-migrate",
     "dist-backup",
-    "dist-cutover"
+    "dist-cutover",
+    "dist-file-ops"
   ],
   "engines": {
     "node": ">=22.19.0"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "node scripts/dist-hygiene.mjs clean dist && tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -43,19 +45,22 @@
     "cutover": "tsx scripts/cutover.ts",
     "test:cutover": "pnpm test:age && cross-env PI_RUN_REAL_AGE_CUTOVER=1 vitest run tests/cutover/cutover-real-age.test.ts",
     "test:cutover-pg": "tsx scripts/test-cutover-pg.ts",
+    "test:file-ops-pg": "tsx scripts/test-file-ops-pg.ts",
     "migrate": "tsx scripts/migrate.ts",
     "backup": "tsx scripts/backup.ts",
     "restore": "tsx scripts/restore.ts",
-    "build:migrate": "tsc -p tsconfig.migrate.json && node scripts/smoke-migrate-compiled.mjs && node scripts/smoke-migrate-package.mjs",
-    "build:backup": "tsc -p tsconfig.backup.json && node scripts/smoke-backup-compiled.mjs && node scripts/smoke-backup-package.mjs",
-    "build:cutover": "tsc -p tsconfig.cutover.json && node scripts/smoke-cutover-compiled.mjs && node scripts/smoke-cutover-package.mjs",
+    "file-ops": "tsx scripts/file-ops.ts",
+    "build:migrate": "node scripts/dist-hygiene.mjs clean dist-migrate && tsc -p tsconfig.migrate.json && node scripts/smoke-migrate-compiled.mjs && node scripts/smoke-migrate-package.mjs",
+    "build:backup": "node scripts/dist-hygiene.mjs clean dist-backup && tsc -p tsconfig.backup.json && node scripts/smoke-backup-compiled.mjs && node scripts/smoke-backup-package.mjs",
+    "build:cutover": "node scripts/dist-hygiene.mjs clean dist-cutover && tsc -p tsconfig.cutover.json && node scripts/smoke-cutover-compiled.mjs && node scripts/smoke-cutover-package.mjs",
+    "build:file-ops": "node scripts/dist-hygiene.mjs clean dist-file-ops && tsc -p tsconfig.file-ops.json && node scripts/smoke-file-ops-compiled.mjs && node scripts/smoke-file-ops-package.mjs",
     "test:age": "node scripts/test-age-real.mjs",
     "test:restore-real": "pnpm test:age && cross-env PI_RUN_REAL_AGE_RESTORE=1 vitest run tests/backup/restore-core.test.ts",
     "migrate:compiled": "node dist-migrate/scripts/migrate.js",
     "backup:compiled": "node dist-backup/scripts/backup.js",
     "restore:compiled": "node dist-backup/scripts/restore.js",
-    "verify": "npm run typecheck && npm run test && npm run build:backup",
-    "verify:release": "npm run typecheck && npm run test && npm run test:postgres && npm run test:pg-backup && npm run test:migration-prebackup && npm run test:cutover && npm run test:cutover-pg && npm run test:restore-real && npm run build && npm run build:migrate && npm run build:backup && npm run build:cutover",
+    "verify": "npm run typecheck && npm run test && npm run build:backup && npm run build:file-ops",
+    "verify:release": "npm run typecheck && npm run test && npm run test:postgres && npm run test:pg-backup && npm run test:migration-prebackup && npm run test:cutover && npm run test:cutover-pg && npm run test:file-ops-pg && npm run test:restore-real && npm run build && npm run build:migrate && npm run build:backup && npm run build:cutover && npm run build:file-ops",
     "dev": "tsx src/main.ts",
     "dev:real": "cross-env DATA_DIR=/tmp/pi-agent-server PI_DEFAULT_MODEL=openai-codex/gpt-5.6-luna PI_DEFAULT_THINKING_LEVEL=medium tsx src/main.ts",
     "mock": "tsx scripts/mock-server.ts",

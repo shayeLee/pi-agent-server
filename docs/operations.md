@@ -77,6 +77,23 @@ Online daily backup is not a substitute for the strict stop-and-prebackup step b
 
 Use the manual, offline restore/drill procedure in [backup-restore.md](backup-restore.md). A restore target must be explicitly isolated; never point a drill at a live production database or overwrite a source in place.
 
+## Offline outbox planner (WP4B, ✅ accepted — read-only, no executor)
+
+The persistent `file_operations` outbox is **not drained by anything yet**. The explicit offline CLI is a read-only planner that never executes:
+
+```bash
+# read-only plan (zero writes) — the default `run` mode
+DB_PATH=/absolute/application/data/pi-agent-server.db \
+pnpm file-ops -- run
+
+# PostgreSQL (explicit dialect + URL; read-only session enforced)
+PI_STORAGE_DIALECT=postgres \
+PI_DATABASE_URL=postgresql://... \
+pnpm file-ops -- run
+```
+
+`--apply` fails closed immediately (exit code 2): the WP4B physical executor (including unlink)/quarantine is not implemented, no confirmation word can bypass it, and the planner never claims/leases/completes/fails rows or touches files (a missing SQLite DB is never created — no DB/WAL/SHM sidecars; existing DB bytes stay fingerprint-identical). Reports and errors are redacted (counts/error codes only, no relative/absolute paths). Execution is reserved for a future audited native helper (separate item). The supplied successful real PG16+age `verify:release` evidence includes the file-ops planner gate and compiled/npm smoke; no test counts are recorded or inferred. The CLI does not start the service or install a worker; it is offline dev-time tooling and not production-ready. Full details: [file-operations.md](file-operations.md).
+
 ## Open operational decisions
 
-RPO, RTO, retention duration, off-host replication, key custody/rotation, alerting, and the exact service-manager stop/start commands remain deployment decisions. Until they are decided and tested, this RC workflow is not production-ready.
+RPO, RTO, retention duration, off-host replication, key custody/rotation, alerting, and the exact service-manager stop/start commands remain deployment decisions. Until they are decided and tested, this RC workflow is not production-ready. WP4B’s accepted scope is only the safe read-only planner; the physical executor (including unlink)/quarantine and worker remain unimplemented, and WP4C reconcile, WP5 and WP6 have not started.

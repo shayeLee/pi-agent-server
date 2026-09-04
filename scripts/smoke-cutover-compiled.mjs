@@ -8,6 +8,10 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { checkDistHygiene } from "./dist-hygiene.mjs";
+
+// 发布产物卫生：编译产物树中不允许出现已移除执行器的残留文件或任何符号链接。
+checkDistHygiene("dist-cutover");
 
 const cutoverBin = path.resolve("dist-cutover/scripts/cutover.js");
 if (!existsSync(cutoverBin)) throw new Error("compiled cutover CLI is missing (build:cutover must run first)");

@@ -16,8 +16,9 @@ import {
   assertFileOperationKind,
   FileOperationStateError,
   assertWhitelistedRelativePath,
+  canonicalFileOperationErrorCode,
+  isFileOperationErrorCodeAllowlisted,
   isRedactedFileOperationError,
-  redactFileOperationError,
 } from "./file-operation-policy.js";
 
 export type FileOperationDialect = "sqlite" | "postgres";
@@ -37,8 +38,8 @@ type FileOperationRow = DatabaseSchema["file_operations"];
 function toRecord(row: FileOperationRow): FileOperationRecord {
   assertFileOperationKind(row.kind);
   state(row.state);
-  if (row.last_error !== null && !isRedactedFileOperationError(row.last_error)) {
-    throw new FileOperationStateError("file operation last_error is not a canonical redacted error or exceeds 1000 bytes");
+  if (row.last_error !== null && (!isRedactedFileOperationError(row.last_error) || !isFileOperationErrorCodeAllowlisted(row.last_error))) {
+    throw new FileOperationStateError("file operation last_error is not a canonical allowlisted error code or exceeds 1000 bytes");
   }
   const relativePath = assertWhitelistedRelativePath(row.relative_path);
   return {
@@ -273,7 +274,7 @@ export class KyselyFileOperationRepository implements FileOperationStorePort, Fi
           available_at: availableAt,
           lease_until: null,
           lease_token: null,
-          last_error: redactFileOperationError(error),
+          last_error: canonicalFileOperationErrorCode(error),
           updated_at: Date.now(),
         })
         .where("id", "=", id)

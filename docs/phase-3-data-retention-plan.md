@@ -6,7 +6,7 @@
 >
 > **RC 现状**：当前仍是 Release Candidate 阶段——**无服务级正式 migration / 备份 / 回滚**：bootstrap 仅面向空库/当前 v1 schema（`IF NOT EXISTS` + 严格 preflight `assertSchemaCompatible`，见 database-design.md §7 与 §9.7），离线 migration 与 WP3A/WP3B backup/restore 工具不接入服务，亦无 SQLite→PG 数据迁移、无 JSONL 自动对账；RC 旧库删除重建仍是允许的心智（§2.1 切换窗口内继续有效）。
 >
-> **Phase 3 当前状态**：WP0 决策冻结、WP1 离线迁移基础、WP3A SQLite 在线备份核心、WP3B1 SQLite restore drill、WP3B2 PG backup/restore 与 WP3C migration prebackup/runbook 基础实现已完成；真实 PG/age 只有在当前环境提供 URL/二进制并实际运行对应 gate 时才计为验收证据，没有这些前置条件不宣称通过。WP2A 受控 cutover 实现与 reviewer 复审修复已落地，但实际 reset 从未执行。WP4A（v1 migration + `file_operations` outbox + 删除事务）已依据用户提供的真实 PG16+age `verify:release` 成功证据验收通过；WP4B 执行器/retry/quarantine 与 WP4C reconcile 尚未开始，WP5/WP6 也尚未开始。正式常驻服务仍未接入这些离线工具，整体仍非生产就绪。
+> **Phase 3 当前状态**：WP0 决策冻结、WP1 离线迁移基础、WP3A SQLite 在线备份核心、WP3B1 SQLite restore drill、WP3B2 PG backup/restore 与 WP3C migration prebackup/runbook 基础实现已完成；真实 PG/age 只有在当前环境提供 URL/二进制并实际运行对应 gate 时才计为验收证据，没有这些前置条件不宣称通过。WP2A 受控 cutover 实现与 reviewer 复审修复已落地，但实际 reset 从未执行。WP4A（v1 migration + `file_operations` outbox + 删除事务）已依据用户提供的真实 PG16+age `verify:release` 成功证据验收通过。**WP4B（方案 A）✅ 已验收，但范围仅限安全只读 planner（`pnpm file-ops`）**：用户提供的真实 PG16+age `verify:release` 成功证据包含 file-ops planner gate 及 compiled/npm smoke；本文不记录或推导测试数量。物理 executor（包括 unlink）、retry/quarantine 仍未实现，执行留给未来受审计的 native helper；正式常驻 worker 仍未接入，WP4C/WP5/WP6 尚未开始。正式常驻服务仍未接入这些离线工具，整体仍非生产就绪。
 >
 > 关联文档：[数据库设计](database-design.md)、[IAM 规划](identity-access-plan.md)、[PG 测试流程](postgres-podman-test.md)、[架构](architecture.md)、[需求基线](../needs.md)。
 
@@ -34,12 +34,12 @@
 | Phase 2（Manifest 单一来源 + SQLite/PG 双库） | ✅ 已完成；真实 PG 结果仅以当前环境实际运行 `PI_TEST_PG_URL` 门控为准 |
 | 正式 migration | ⚠️ WP1 离线 Manifest-driven migration CLI + WP2A 可选严格启动门禁（`migrationGate="verify"`，只读校验、不自动迁移）；默认启动行为仍为 RC bootstrap，正式 migration 尚未成为默认启动路径 |
 | 备份 / 回滚 | ✅ WP3A/WP3B1/WP3B2/WP3C 离线基础实现已完成；真实 PG/age gate 需当前环境实际提供前置条件并运行，未接入服务启动 |
-| JSONL/DB 数据生命周期 | ✅ WP4A（v1 migration、`file_operations` 持久 outbox、删除事务）已验收；WP4B 执行器/retry/quarantine 与 WP4C reconcile 尚未开始 |
+| JSONL/DB 数据生命周期 | ✅ WP4A（v1 migration、`file_operations` 持久 outbox、删除事务）已验收；✅ WP4B（方案 A）安全只读 planner 已验收（`pnpm file-ops`：只读统计、`--apply` fail-closed）；物理 executor（包括 unlink）、retry/quarantine 未实现，正式 worker/调度仍不存在；WP4C reconcile 尚未开始 |
 | SQLite→PG 数据迁移 | ❌ 无（PG 仅要求空库可 bootstrap） |
 | Phase 3（WP0） | ✅ 已完成/已冻结（仅决策文档，零实现） |
 | Phase 3 WP1 | ✅ 离线迁移核心已完成；真实 PG 验收需当前环境实际提供 URL 并运行门禁（未接入服务启动） |
 | Phase 3 WP3A | ✅ SQLite 在线备份核心与显式 CLI 已完成；真实 age/PG release gate 需当前环境实际运行（不接入服务启动） |
-| Phase 3（WP2 及以后） | 🟡 进行中（WP3 基础工作包已完成；WP2A 受控 cutover 实现与干净 SQLite 基线初始化已完成；当前目标无旧 RC 数据，破坏性 WP2B reset 不适用；WP4A 已验收，WP4B/WP4C/WP5/WP6 尚未开始，正式常驻服务未启用） |
+| Phase 3（WP2 及以后） | 🟡 进行中（WP3 基础工作包已完成；WP2A 受控 cutover 实现与干净 SQLite 基线初始化已完成；当前目标无旧 RC 数据，破坏性 WP2B reset 不适用；WP4A 与 WP4B 方案 A 只读 planner 已验收，WP4C/WP5/WP6 尚未开始，正式常驻服务未启用） |
 
 ### 1.4 明确不实施的内容（WP2B 及 WP3C 之外的后续工作包）
 
@@ -50,7 +50,7 @@ WP1、WP3A/WP3B1/WP3B2/WP3C 与 WP2A 的 cutover CLI 均为**离线开发期工�
 - 不执行真实用户数据 cutover/reset：实际切换需要用户/运维后续对目标的明确授权（[cutover-runbook.md](cutover-runbook.md)）；
 - 不实现 WP4B 执行器/retry/quarantine、WP4C reconcile、IAM 或 readiness；WP4A 已验收的 outbox 基础不包含这些后续能力；
 - 不执行真实用户数据备份或恢复演练、不部署任何备份任务；
-- 不实现 JSONL/DB 对账、quarantine 或自动清理 worker；WP4A 的持久 outbox、删除事务 enqueue 与 claim 预留已验收，执行器/retry/quarantine 留给 WP4B，对账留给 WP4C；
+- 不实现 JSONL/DB 对账、自动清理 worker；WP4A 的持久 outbox、删除事务 enqueue 与 claim 预留已验收；**WP4B 仅交付安全只读 planner，物理执行器/retry/quarantine 未实施（见 §5.7）**；对账/自动扫描生成新操作留给 WP4C；
 - 不新增用户/token/角色/审计等 IAM 表，不实施 IAM 功能（只定义进入条件）；
 - README 的“尚非生产就绪”边界保持不变：可说明 WP3（备份/恢复/pre-migration/runbook）基础工作包已完成且 WP2A 受控 cutover 工具已实现（真实 age/PG 演练门禁通过），当前 SQLite 目标的破坏性 cutover 不适用、正式启动迁移门禁默认关闭，不能宣称生产 backup/rollback 已完成或 Phase 3 整体已生产就绪（见 §10）。
 
@@ -168,9 +168,9 @@ WP0 只产出决策冻结 ADR 与本文档状态同步；WP1 离线核心、WP3A
 - 回滚流程 = 停服 → 从最近完整备份恢复（DB 快照 + JSONL 对齐，见 §6）→ 启动门禁重新校验（ledger 与 manifest 版本重对齐）→ 验证 → 恢复服务。
 - 恢复演练（WP3）必须覆盖「迁移出错后的回滚」，保证该流程可用。
 
-## 5. JSONL / DB 双存储数据生命周期（WP4A 已验收，WP4B/WP4C 后续仍为计划）
+## 5. JSONL / DB 双存储数据生命周期（WP4A 与 WP4B 方案 A 只读 planner 已验收；WP4C 未开始）
 
-> WP4A（v1 migration + `file_operations` outbox + 删除事务）已依据用户提供的真实 PG16+age `verify:release` 成功证据验收通过：删除事务内 enqueue，DELETE 请求只清理 runtime、绝不 unlink；相对路径白名单、状态机、脱敏 error 与 SQLite/PG 原子 claim 预留均已实现。WP4B 执行器/retry/quarantine 与 WP4C reconcile 尚未开始，创建侧回写中断与文件最终清理由后续工作包处理。
+> WP4A（v1 migration + `file_operations` outbox + 删除事务）已依据用户提供的真实 PG16+age `verify:release` 成功证据验收通过：删除事务内 enqueue，DELETE 请求只清理 runtime、绝不 unlink；相对路径白名单、状态机、脱敏 error 与 SQLite/PG 原子 claim 预留均已实现。**WP4B 物理执行器/retry/quarantine 未实施**：当前仅安全只读 planner（只读统计 pending/processing-expired/failed 及安全 error/state counts；SQLite 缺失库零创建、PG 连接只读；`--apply` 立即 fail-closed），用户提供的真实 PG16+age `verify:release` 成功证据包含 file-ops planner gate 及 compiled/npm smoke；本文不记录或推导测试数量。正式 worker 未接入；WP4C reconcile 尚未开始，创建侧回写中断与文件最终清理由后续工作包处理。
 
 ### 5.1 一致性模型与 outbox
 
@@ -202,7 +202,15 @@ WP0 只产出决策冻结 ADR 与本文档状态同步；WP1 离线核心、WP3A
 ### 5.6 WP4A 边界
 
 - 已实现：v1 Manifest/migration、SQLite/PG 同构 `file_operations`、相对 JSONL 白名单、状态转移与 lease claim、错误脱敏、删除同事务 enqueue、操作幂等。
-- 未实现：claim 后的文件执行器/retry/quarantine、启动/定时 reconcile、orphan/lost-file 处置与审计保留策略；前者属于 WP4B，后者属于尚未开始的 WP4C。
+- 未实现：claim 后的文件执行器/retry/quarantine（WP4B，方案 A 未实施）、启动/定时 reconcile、orphan/lost-file 处置与审计保留策略（WP4C）。
+
+### 5.7 WP4B 实施状态（方案 A：安全只读 planner，✅ 已验收）
+
+- **已实现（planner 基础）**：`src/file-operations/planner.ts` 只读统计——唯一数据来源 `store.list()`（WP4A 契约），对 pending、lease 已过期的 processing（崩溃残留）、available_at 已到的 failed 分别计数，并按状态与脱敏 error code（`isRedactedFileOperationError`）计数；不 claim/lease/complete/fail、不扫描文件系统、不生成操作。
+- **CLI 与只读保证**：`pnpm file-ops` / bin `pi-agent-server-file-ops`；仅支持默认/`--dry-run`；SQLite 以 `readOnly` 打开（缺失 DB 绝不创建 DB/WAL/SHM，已有库字节指纹不变）；PG 需显式 `PI_STORAGE_DIALECT=postgres` + `PI_DATABASE_URL` 且连接强制 `default_transaction_read_only=on`；`--apply` 立即 fail-closed（退出码 2），无任何确认词可绕过；报告/错误脱敏（只含 counts/error codes，无相对/绝对路径）。
+- **未实施（方案 A 移除）**：物理执行器（claim → unlink/quarantine → complete/fail）、指数退避/at-limit、quarantine 布局及其 backup/restore 集成（`quarantineRoot`、`quarantineFiles` 等）——相关代码与测试已整体移除，backup/restore 回到 WP4A 契约；仓库中不存在任何路径式 physical executor 或可被内部调用的副作用 API。
+- **执行路径说明**：执行需受审计的外部运维工具或未来 native helper（单独、尚未启动的事项）；WP4A 的 outbox schema/repository/lease 契约保持不变，是未来执行器的基础。
+- **门禁与验收**：`pnpm test:file-ops-pg`（真实 PG planner 强制门禁，缺 URL fail-closed）与 `pnpm build:file-ops`（compiled/npm bin smoke）已接入 `verify:release`；用户提供的真实 PG16+age `verify:release` 成功证据包含该 planner gate 及 compiled/npm smoke，因此 WP4B 方案 A 的安全只读 planner 已验收。本文不记录或推导测试数量。详见 [file-operations.md](file-operations.md)。
 
 ## 6. 备份与恢复
 
@@ -289,7 +297,7 @@ WP0 只产出决策冻结 ADR 与本文档状态同步；WP1 离线核心、WP3A
 | WP3B | ✅ 已完成，真实 PG16 dump/restore release gate 验收通过 | 恢复与运维门禁 | WP3B1 SQLite restore drill；WP3B2 PG backup/restore、恢复流程与演练、完整性复核；不接入服务启动 | WP1 + WP3A + WP0 | WP3B1 与 WP3B2 已通过各自 release gate | 演练在隔离环境执行，生产无风险 |
 | WP3C | ✅ 已完成，真实 PG+age `verify:release` 全通过及 `test:migration-prebackup` 门禁通过 | migration 前强制加密备份 + 离线 runbook | `--apply` 强制绝对 backup root、age recipient 与维护窗口确认；`pre-migration` backup → COMPLETE/manifest/age 输出复核 → migration → verify/head check；SQLite/PG 共用 backup core；不接入服务、scheduler、retention、outbox 或 IAM | WP1 + WP3A + WP3B | 真实 PG+age `verify:release` 全量通过；`test:migration-prebackup` 真实 PG 门禁通过；失败不迁移、不自动 down/restore | 备份失败不发布成功；migration 失败保留备份，人工按 runbook 决定恢复 |
 | WP4A | ✅ 已验收 | v1 file_operations outbox 基础 | v1 Manifest migration；SQLite/PG 同构表；relative 白名单 path；pending/processing/completed/failed 状态机与脱敏 error；session/project 删除同事务 enqueue；operation key 幂等；双库 repository + 原子 claim 预留；DELETE 只 enqueue、不 unlink | WP1 | 已依据用户提供的真实 PG16+age `verify:release` 成功证据验收；本文不列测试数量 | 执行器/retry/quarantine/reconcile 留后续；outbox 无 FK 级联丢失 |
-| WP4B | ⬜ 未开始 | JSONL 生命周期执行器/retry/quarantine | claim 后受控文件清理、执行器、retry、quarantine | WP4A | 崩溃补偿、失败重试、异常文件不自动删除、审计完整 | 仅处理已 claim 的相对路径 |
+| WP4B | ✅ 已验收（方案 A：仅安全只读 planner） | JSONL 生命周期 planner（物理 executor，包括 unlink、retry/quarantine 未实施） | 只读统计 pending/processing-expired/failed 及安全 error/state counts；SQLite 缺库零创建、PG 只读；`--apply` fail-closed | WP4A | 用户提供的真实 PG16+age `verify:release` 成功证据包含 file-ops planner gate 及 compiled/npm smoke；本文不记录或推导测试数量 | 无执行路径：物理执行需未来受审计的 native helper |
 | WP4C | ⬜ 未开始 | JSONL/DB reconcile | 启动/定时 reconcile、orphan/lost-file 识别与处置 | WP4A、WP4B | 对账与异常处置安全、不可重建文件不自动删除 | 仅处理白名单路径并保留审计 |
 | WP5 | ⬜ 未开始 | 运维门禁 | 启动迁移门禁 fail-fast；备份缺失/过期告警（对齐 needs.md §6.6 分级阈值）；审计保留衔接；恢复演练节奏化 | WP1、WP3B | 故障注入测试（坏库/滞后库/缺备份 → 拒绝启动或告警）；门禁与告警清单落文档 | 门禁规则配置化，可降级为告警（需决策） |
 | WP6 | ⬜ 未开始 | IAM 进入条件 | 确认 IAM（identity-access-plan.md 工作包 0–5）数据落地门槛 = WP1–5 全部通过；在此之前 IAM 仅做设计（schema decision、待决策项），不落地真实表/迁移 | WP1–5 全部通过 | WP1–5 各自验收全绿；触发 IAM 启动评审并记录决策 | IAM 未开始，无回滚 |
@@ -299,11 +307,11 @@ WP0 只产出决策冻结 ADR 与本文档状态同步；WP1 离线核心、WP3A
 ```text
 WP0 决策冻结
  └─→ WP1 迁移引擎 ──→ WP3A 备份核心 ──→ WP3B1 SQLite drill ──→ WP3B 后续恢复/门禁 ──→ WP2 最终 reset 切换（== 数据保留起点）
-     └─→ WP4A outbox 基础 ──→ WP4B 执行器/retry/quarantine ──→ WP4C reconcile ──┐
+     └─→ WP4A outbox 基础 ──→ WP4B 安全只读 planner（✅ 已验收；物理 executor，包括 unlink、retry/quarantine 未实施；执行留给未来受审计的 native helper）──→ WP4C reconcile ──┐
      └─→ WP5 运维门禁 ───────────────────────────────────────────────────────────┴─→ WP6 IAM 进入条件（仅当 WP1–5 全部通过）
 ```
 
-- **关键门槛**：只有 WP1–5 全部通过，才能进入 WP6（IAM 数据落地）——WP3 基础工作包（WP3A/WP3B1/WP3B2/WP3C）已完成各自真实 gate；WP4A 已验收，WP4B/WP4C/WP5 尚未开始，WP6 也尚未开始。WP2A 工具已实现并通过真实 PG16+age `verify:release` 门禁；当前 SQLite 目标已完成干净基线初始化，破坏性 WP2B reset 不适用。
+- **关键门槛**：只有 WP1–5 全部通过，才能进入 WP6（IAM 数据落地）——WP3 基础工作包（WP3A/WP3B1/WP3B2/WP3C）已完成各自真实 gate；WP4A 已验收，**WP4B 方案 A 的安全只读 planner 已验收（物理 executor，包括 unlink、retry/quarantine 未实施）**，WP4C/WP5/WP6 尚未开始。WP2A 工具已实现并通过真实 PG16+age `verify:release` 门禁；当前 SQLite 目标已完成干净基线初始化，破坏性 WP2B reset 不适用。
 - WP3 基础工作包已完成不将 WP2、WP4–WP5 或其他后续工作包视为已完成；后续依赖关系仍按原计划保留，WP2 必须在 WP3 备份恢复完成后执行。
 
 ### 8.3 回滚点原则
@@ -334,5 +342,6 @@ WP0 决策冻结
 - IAM 规划（本计划 Phase 3.1 的承接方）：[identity-access-plan.md](identity-access-plan.md)
 - 本地 PostgreSQL 测试流程：[postgres-podman-test.md](postgres-podman-test.md)
 - 架构速览（单实例并发模型、SQLite 锁语义、目录/端口边界）：[architecture.md](architecture.md)
+- WP4B 离线 planner 设计与运维：[file-operations.md](file-operations.md)
 - 平台需求基线（交付计划、备份/保留/审计要求、存储分卷与容量治理）：[../needs.md](../needs.md)
 - 对外状态与限制：[../README.md](../README.md) / [../README.zh-CN.md](../README.zh-CN.md)（Security & Limitations：迁移核心当前仅为 WP1 离线开发工具，尚未接入服务；README 的正式能力限制保持准确，不修改）

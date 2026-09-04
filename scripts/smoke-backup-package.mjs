@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpath
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { checkDistHygiene } from "./dist-hygiene.mjs";
 
 const packageJson = JSON.parse(readFileSync("package.json", "utf8"));
 if (packageJson.bin?.["pi-agent-server-backup"] !== "./dist-backup/scripts/backup.js" || packageJson.bin?.["pi-agent-server-restore"] !== "./dist-backup/scripts/restore.js" || !packageJson.files?.includes("dist-backup") || !existsSync("dist-backup/scripts/backup.js") || !existsSync("dist-backup/scripts/restore.js")) {
@@ -77,6 +78,8 @@ try {
   if (!tarball || !existsSync(path.join(packageDir, tarball))) throw new Error("npm pack tarball is missing");
   npm(["install", "--ignore-scripts", "--prefix", installDir, path.join(packageDir, tarball)]);
   const packageRoot = path.join(installDir, "node_modules", packageJson.name);
+  // 发布产物卫生：安装后的包内不允许出现已移除执行器残留文件或任何符号链接。
+  checkDistHygiene(packageRoot);
   const backupBin = path.join(installDir, "node_modules", ".bin", "pi-agent-server-backup");
   const restoreBin = path.join(installDir, "node_modules", ".bin", "pi-agent-server-restore");
   if (!existsSync(backupBin) || !existsSync(restoreBin)) throw new Error("installed backup/restore bins are missing");

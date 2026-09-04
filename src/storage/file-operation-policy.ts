@@ -97,6 +97,37 @@ export function isRedactedFileOperationError(value: string): boolean {
 }
 
 /**
+ * WP4B error policy：持久化 last_error 只允许固定、有限的 canonical error code。
+ * 未知/相对路径/credential= 等任何非 allowlist 值一律只按 unsafeErrors 计数，
+ * 绝不成为报告 key；仓库读取与 restore 校验对不合规值 fail-closed。
+ */
+export const FILE_OPERATION_FAILED_ERROR_CODE = "file operation failed";
+
+export const FILE_OPERATION_ERROR_CODE_ALLOWLIST: readonly string[] = [
+  // 通用回退码：任何无法归类的错误（redaction 后仍非 canonical code）都落到它。
+  FILE_OPERATION_FAILED_ERROR_CODE,
+  // 路径白名单拒绝（WP4A FileOperationPathError 默认消息）。
+  "file operation path is outside the relative JSONL whitelist",
+  // 不受支持的 operation kind（WP4A assertFileOperationKind）。
+  "unsupported file operation kind",
+  // 非法状态（repository state() 校验）。
+  "file operation state is invalid",
+] as const;
+
+export function isFileOperationErrorCodeAllowlisted(value: string): boolean {
+  return (FILE_OPERATION_ERROR_CODE_ALLOWLIST as readonly string[]).includes(value);
+}
+
+/**
+ * 持久化/报告的 canonical code 映射：先按 WP4A 规则脱敏，再要求 allowlist 成员。
+ * 未知/相对路径/credential= 等一律落到 FILE_OPERATION_FAILED_ERROR_CODE。
+ */
+export function canonicalFileOperationErrorCode(error: unknown): string {
+  const candidate = redactFileOperationError(error);
+  return isFileOperationErrorCodeAllowlisted(candidate) ? candidate : FILE_OPERATION_FAILED_ERROR_CODE;
+}
+
+/**
  * 持久化错误只保留有限长度的可诊断摘要，并移除 URL、token、凭证赋值和
  * 绝对路径。原始异常只能留在进程内，不能进入 outbox 或 HTTP 响应。
  */

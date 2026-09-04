@@ -5,6 +5,10 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpath
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { checkDistHygiene } from "./dist-hygiene.mjs";
+
+// 发布产物卫生：编译产物树中不允许出现已移除执行器的残留文件或任何符号链接。
+checkDistHygiene("dist-backup");
 
 const { runSqliteMigrations } = await import(pathToFileURL(path.resolve("dist-backup/src/storage/migration-engine.js")));
 const directory = mkdtempSync(path.join(tmpdir(), "pi-backup-build-smoke-"));
