@@ -22,6 +22,12 @@ import type {
 import { RuntimeRegistry, SessionDeletedError } from "../runtime/runtime-registry.js";
 import { SessionService, THINKING_LEVELS } from "../application/session-service.js";
 import type { Authenticate } from "./auth.js";
+import {
+  createOperationStatus,
+  readyzBody,
+  renderMetrics,
+  type OperationStatus,
+} from "./ops-status.js";
 import { formatSseEvent } from "./sse-format.js";
 import { nextBackpressureState, SSE_BACKPRESSURE_THRESHOLD } from "./sse-backpressure.js";
 import { defaultSseSocket, type SseReplyRaw, type SseRequestRaw, type SseSocket } from "./sse-socket.js";
@@ -54,6 +60,12 @@ export type ServerDeps = {
   systemPromptResolver?: SystemPromptPort;
   /** 创建会话时冻结的能力版本快照（id→version）。 */
   capabilityVersions?: Readonly<Record<string, number>>;
+  /**
+   * WP5A：可注入进程运行状态/readiness（生产组合 startServer 总是注入真实对象并维护
+   * ready/gate verified；未注入时缺省为未就绪对象——仅测试/非生产组合使用，恒 503/ready 0，
+   * 绝不误报就绪）。
+   */
+  ops?: OperationStatus;
 };
 
 const DEFAULT_CONCURRENCY = {
@@ -162,6 +174,21 @@ export function buildApp(deps: ServerDeps): FastifyInstance {
   });
   // 关闭中标志：preClose 置真，SSE 路由在 hijack 前检查，拒绝晚建立的连接（避免关闭自锁）。
   let closing = false;
+  // WP5A 最小运维门禁基础（与 /health 一样免鉴权，供探针使用）：
+  // - /readyz：只报告本进程安全启动完成 + 选用的 migration gate 已通过；effective readiness
+  //   failclosed：ready && (gate=off || gate=verify 且校验通过) && dialect 已知，不一致/未知一律 503；
+  //   请求路径不做任何迁移/写库；
+  // - /metrics：Prometheus text exposition 固定小表面，渲染异常 failclosed 不泄漏；
+  //   pi_agent_server_ready 与 effective readiness 一致（不一致/未知 = 0）；
+  // - 两者均为 route-level strict GET-only（HEAD 404），不影响 /health 与 /v1 的默认 HEAD 行为；
+  // - 缺省 ops 恒未就绪（ready=false、dialect unknown）：未注入 ops 的组合不误报就绪。
+  const ops = deps.ops ?? createOperationStatus();
+  // WP5A：关闭开始（preClose）即把 readiness 拉低（/readyz → 503、/metrics ready 0）——
+  // best-effort 状态回落，不构成任何新的 shutdown 保证（其余关闭行为保持原有语义）。
+  app.addHook("preClose", async () => {
+    ops.ready = false;
+    ops.readyAt = null;
+  });
   const sessions = new SessionService({
     sessions: deps.sessions,
     projects: deps.projects,
@@ -197,6 +224,33 @@ export function buildApp(deps: ServerDeps): FastifyInstance {
     corsOrigins.length === 0 ? undefined : corsOrigins.length === 1 ? corsOrigins[0] : corsOrigins;
   if (corsOriginOption !== undefined) void app.register(cors, { origin: corsOriginOption });
   app.get("/health", async () => ({ status: "ok" }));
+  // WP5A 运维探针（读进程状态纯函数，零 I/O、零定时器、不触碰存储）：
+  // route-level strict GET-only（exposeHeadRoute:false，HEAD 404）；/health 与 /v1 既有路由
+  // 的默认 HEAD 行为不变。
+  app.get("/readyz", { exposeHeadRoute: false }, async (_request, reply) => {
+    reply.header("Cache-Control", "no-store");
+    try {
+      const body = readyzBody(ops);
+      return reply.code(body.ready ? 200 : 503).type("application/json; charset=utf-8").send(body);
+    } catch {
+      // failclosed：状态读取异常时绝不误报 ready，且只返回最小兜底体（无内部细节）。
+      return reply.code(503).type("application/json; charset=utf-8").send({
+        ready: false,
+        migrationGate: "off",
+        schema: "unknown",
+      });
+    }
+  });
+  app.get("/metrics", { exposeHeadRoute: false }, async (_request, reply) => {
+    reply.header("Cache-Control", "no-store");
+    try {
+      const body = renderMetrics(ops, Date.now());
+      return reply.type("text/plain; version=0.0.4; charset=utf-8").send(body);
+    } catch {
+      // failclosed：渲染异常返回空 503（无堆栈/无内部字段），绝不让异常内容泄漏。
+      return reply.code(503).type("text/plain; charset=utf-8").send("");
+    }
+  });
 
   app.register(async (api) => {
     api.addHook("onRequest", async (request, reply) => {

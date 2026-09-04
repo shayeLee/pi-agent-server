@@ -29,6 +29,7 @@ import {
 import { buildAuthenticate } from "./real-auth.js";
 import { validateTrustProxyConfig } from "./trust-proxy-policy.js";
 import { createIdempotentStorageCloser } from "./storage-close.js";
+import { createOperationStatus, validateMigrationGate } from "./ops-status.js";
 import { SessionDeletedError } from "../runtime/session-runtime.js";
 import { runPostgresMigrations, runSqliteMigrations } from "../storage/migration-engine.js";
 import { initializeDatabase } from "../storage/bootstrap.js";
@@ -118,6 +119,8 @@ export type StartConfig = {
    * - "verify"：存储打开后、schema bootstrap 之前只读校验 migration ledger/head——空库/无 ledger 的
    *   legacy RC 库/落后库一律 fail-fast（明确提示运行离线 cutover 或 migrate），绝不自动迁移；
    * - 两种模式都不会在启动路径执行任何迁移或删除。
+   * 运行时校验（failclosed）：入口只接受精确 "off" / "verify"（undefined/null 归一化为 "off"），
+   * 任何其他值（JS/typed bypass，含大小写/空白变体）在任何资源创建之前拒绝启动。
    */
   migrationGate?: "off" | "verify";
 };
@@ -262,6 +265,10 @@ export function resolveStorageConfig(
 }
 
 export async function startServer(config: StartConfig) {
+  // WP5A：migrationGate 运行时校验（failclosed）在任何资源创建/网络访问之前执行——
+  // 只接受精确 "off" / "verify"（undefined/null 归一化为 "off"）；JS/typed bypass 传其他值
+  // （含大小写/空白变体）一律拒绝启动，且不回显原始值。
+  const migrationGate = validateMigrationGate(config.migrationGate);
   validateTrustProxyConfig(config.trustProxy, config.intranetCidrs);
   const { cwd, dataDir, agentDir, authPath, dbPath, modelsPath } = resolveServerPaths(config);
   // 存储方言 + 连接配置先于任何资源创建/网络访问解析（fail-fast：PG URL 缺失/未知方言在此抛错）。
@@ -280,6 +287,14 @@ export async function startServer(config: StartConfig) {
   if (config.modelProvider && config.modelApiKey) {
     await credentials.setRuntimeApiKey(config.modelProvider, config.modelApiKey);
   }
+
+  // WP5A 运行状态（生产组合唯一注入点；buildApp 缺省对象恒未就绪，仅测试/非生产组合使用）：
+  // - ready：listen 成功后才置真（失败路径进程不监听，ready 恒 false）；
+  // - migrationGateVerified：仅当启用 gate（"verify"）且启动门禁实际校验通过后置真。
+  const ops = createOperationStatus({
+    migrationGate,
+    storageDialect: storage.dialect,
+  });
 
   if (config.defaultThinkingLevel && !THINKING_LEVELS.has(config.defaultThinkingLevel)) {
     throw new Error(`不支持的默认思考级别：${config.defaultThinkingLevel}`);
@@ -416,7 +431,7 @@ export async function startServer(config: StartConfig) {
       // 空/legacy/落后库 fail-fast，绝不自动迁移；校验自身不写任何数据。
       // 门禁必须使用完全独立的 gate Pool/Kysely 并在校验后销毁：成功后另建全新的 actual
       // Pool 供 bootstrap/app 使用；失败路径同样销毁 gate 资源后再抛错。
-      if ((config.migrationGate ?? "off") === "verify") {
+      if (migrationGate === "verify") {
         const gatePool = createPostgresPool(storage.databaseUrl, { connectionTimeoutMillis: 5_000 });
         const gate = createPostgresKysely(gatePool);
         try {
@@ -428,6 +443,8 @@ export async function startServer(config: StartConfig) {
         }
         await gate.destroy().catch(() => undefined);
         await gatePool.end().catch(() => undefined);
+        // WP5A：门禁实际校验通过后才置 verified（/readyz schema=migration-head、/metrics gate verified=1）。
+        ops.migrationGateVerified = true;
       }
       // 初始化 Kysely + 空数据库 schema bootstrap（建表/索引/外键都由 postgres-bootstrap 消费同一 Manifest）；
       // 失败路径内部先 destroy（同时释放 Pool）再抛原始错误。
@@ -437,8 +454,10 @@ export async function startServer(config: StartConfig) {
       // 严格 migration 门禁（默认 off）：真只读校验 migration ledger/head；空库/无 ledger 的
       // legacy RC 库 fail-fast（提示运行离线 cutover/migrate），绝不自动迁移；
       // DB 文件不存在时绝不创建。门禁通过后才打开实际读写连接。
-      if ((config.migrationGate ?? "off") === "verify") {
+      if (migrationGate === "verify") {
         await runSqliteMigrationGateReadonly(storage.dbPath);
+        // WP5A：门禁实际校验通过后才置 verified。
+        ops.migrationGateVerified = true;
       }
       const db = new DatabaseSync(storage.dbPath, {
         timeout: 5000,
@@ -589,14 +608,18 @@ export async function startServer(config: StartConfig) {
     systemPrompt: defaultSystemPrompt,
     systemPromptResolver,
     capabilityVersions: capabilitySnapshot.versions,
+    ops,
   });
 
   // 关闭流程：destroy Kysely（经 NodeSqliteAdapter 关闭底层 DatabaseSync）与既有 runtime 清理
   // （buildApp 注册的 preClose/onClose）一起在 app.close() 时执行，不破坏既有 SSE/并发清理。
-    app.addHook("onClose", closeStorage);
+  app.addHook("onClose", closeStorage);
 
-    await app.listen({ port: config.port, host: config.host ?? "127.0.0.1" });
-    return app;
+  await app.listen({ port: config.port, host: config.host ?? "127.0.0.1" });
+  // WP5A：listen 成功（安全启动完成）才置 ready；listen 抛错走下方 catch，ready 恒 false。
+  ops.ready = true;
+  ops.readyAt = Date.now();
+  return app;
   } catch (error) {
     // 初始化成功后的任一 init 或 listen 失败：在此幂等销毁 Kysely/DatabaseSync，再向上抛原始错误。
     // 清理本身失败只记录、不掩盖原始错误：cleanupError 绝不覆盖原始 error（throw error 是最终退出路径）。

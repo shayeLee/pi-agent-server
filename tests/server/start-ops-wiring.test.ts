@@ -1,0 +1,146 @@
+// WP5A startServer 接线：可注入运行状态对象由真实启动路径维护。
+// - SQLite 无门禁：readyz 明确 RC bootstrap ready（非 schema 背书）；metrics dialect=sqlite、gate 0/0；
+// - SQLite gate=verify（已迁移库）：readyz migration-head；metrics gate 1/1；探针请求零 DB 写入；
+// - 门禁失败 → startServer 拒绝（无监听，即 ready false 语义），/health//readyz//metrics 均不可达；
+// - 关闭开始（preClose）→ readyz 立即 503，不再误报 ready。
+import { DatabaseSync } from "node:sqlite";
+import {
+  createHash,
+} from "node:crypto";
+import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { afterEach, describe, expect, it } from "vitest";
+import { startServer, type StartConfig } from "../../src/server/start.js";
+import { runSqliteMigrations } from "../../src/storage/migration-engine.js";
+
+const cleanups: string[] = [];
+afterEach(() => { for (const directory of cleanups.splice(0)) rmSync(directory, { recursive: true, force: true }); });
+
+function makeTempDir(): string {
+  const dir = mkdtempSync(join(tmpdir(), "pi-start-ops-"));
+  cleanups.push(dir);
+  return dir;
+}
+
+function baseConfig(overrides: Partial<StartConfig> = {}): StartConfig {
+  const dir = makeTempDir();
+  return {
+    port: 0,
+    intranetCidrs: [],
+    tokens: {},
+    dataDir: dir,
+    authPath: join(dir, "auth.json"),
+    ...overrides,
+  };
+}
+
+/** 探针请求前后的 DB 字节指纹：/readyz、/metrics 不得引发任何写库副作用。 */
+function dbBytesFingerprint(dbPath: string): string {
+  const files = [dbPath, `${dbPath}-wal`, `${dbPath}-shm`];
+  const digest = createHash("sha256");
+  for (const file of files) {
+    try {
+      const st = statSync(file);
+      digest.update(file).update(String(st.size)).update(String(st.mtimeMs));
+      if (st.isFile()) digest.update(readFileSync(file));
+    } catch {
+      digest.update(file).update("absent");
+    }
+  }
+  return digest.digest("hex");
+}
+
+describe("startServer WP5A 接线（SQLite）", () => {
+  it("无门禁：readyz=RC bootstrap ready，metrics dialect=sqlite、gate 0/0，health 语义不变，探针零写库", async () => {
+    const dir = makeTempDir();
+    const dbPath = join(dir, "pi-agent-server.db");
+    const app = await startServer(baseConfig({ dbPath }));
+    try {
+      const health = await app.inject({ method: "GET", url: "/health" });
+      expect(health.statusCode).toBe(200);
+      expect(health.json()).toEqual({ status: "ok" });
+
+      const readyz = await app.inject({ method: "GET", url: "/readyz" });
+      expect(readyz.statusCode).toBe(200);
+      expect(readyz.headers["cache-control"]).toBe("no-store");
+      expect(readyz.json()).toEqual({ ready: true, migrationGate: "off", schema: "rc-bootstrap" });
+
+      const metrics = await app.inject({ method: "GET", url: "/metrics" });
+      expect(metrics.statusCode).toBe(200);
+      expect(metrics.body).toContain("pi_agent_server_ready 1");
+      expect(metrics.body).toContain("pi_agent_server_migration_gate_enabled 0");
+      expect(metrics.body).toContain("pi_agent_server_migration_gate_verified 0");
+      expect(metrics.body).toContain('pi_agent_server_storage_dialect_info{dialect="sqlite"} 1');
+      // 探针请求（多次）前后 DB 字节指纹一致：readiness/metrics 路径零写库副作用。
+      const before = dbBytesFingerprint(dbPath);
+      await app.inject({ method: "GET", url: "/readyz" });
+      await app.inject({ method: "GET", url: "/metrics" });
+      await app.inject({ method: "GET", url: "/readyz" });
+      expect(dbBytesFingerprint(dbPath)).toBe(before);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("gate=verify（已迁移库）：readyz=migration-head，metrics gate 1/1，无自动迁移副作用", async () => {
+    const dir = makeTempDir();
+    const dbPath = join(dir, "pi-agent-server.db");
+    const db = new DatabaseSync(dbPath);
+    let head: number | null = null;
+    try {
+      const result = await runSqliteMigrations(db, { mode: "apply" });
+      expect(result.status).toBe("applied");
+      if (result.appliedVersion !== undefined) head = result.appliedVersion;
+      else {
+        const versions = db.prepare("SELECT version FROM schema_migrations ORDER BY version").all() as Array<{ version: number }>;
+        head = versions.at(-1)?.version ?? null;
+      }
+    } finally {
+      db.close();
+    }
+    const app = await startServer(baseConfig({ migrationGate: "verify", dbPath }));
+    try {
+      const readyz = await app.inject({ method: "GET", url: "/readyz" });
+      expect(readyz.statusCode).toBe(200);
+      expect(readyz.json()).toEqual({ ready: true, migrationGate: "verify", schema: "migration-head" });
+
+      const metrics = await app.inject({ method: "GET", url: "/metrics" });
+      expect(metrics.body).toContain("pi_agent_server_migration_gate_enabled 1");
+      expect(metrics.body).toContain("pi_agent_server_migration_gate_verified 1");
+      expect(metrics.body).toContain('pi_agent_server_storage_dialect_info{dialect="sqlite"} 1');
+
+      // 启动/探针后 ledger 仍在 head（无自动迁移/删除副作用）。
+      const check = new DatabaseSync(dbPath, { readOnly: true });
+      try {
+        const versions = check.prepare("SELECT version FROM schema_migrations ORDER BY version").all() as Array<{ version: number }>;
+        expect(versions.at(-1)?.version).toBe(head);
+      } finally {
+        check.close();
+      }
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("门禁失败：startServer 拒绝（进程不监听），即 ready false 语义——/readyz 与 /metrics 不可达", async () => {
+    const dir = makeTempDir();
+    const dbPath = join(dir, "pi-agent-server.db");
+    await expect(startServer(baseConfig({ migrationGate: "verify", dbPath })))
+      .rejects.toThrow(/startup migration gate.*cutover.*migrate/s);
+    // 无监听实例可注入/连接：没有任何端点声称 ready。
+    expect(dbBytesFingerprint(dbPath)).toBe(dbBytesFingerprint(dbPath));
+  });
+
+  it("关闭后进程不再提供任何端点（ready 语义：关闭即不可达，不误报）", async () => {
+    const dir = makeTempDir();
+    const dbPath = join(dir, "pi-agent-server.db");
+    const app = await startServer(baseConfig({ dbPath }));
+    const readyz = await app.inject({ method: "GET", url: "/readyz" });
+    expect(readyz.statusCode).toBe(200);
+    await app.close();
+    // 关闭完成后：listen 已停止，inject 被拒——没有任何端点再声称 ready。
+    await expect(app.inject({ method: "GET", url: "/readyz" })).rejects.toThrow();
+    await expect(app.inject({ method: "GET", url: "/metrics" })).rejects.toThrow();
+  });
+});

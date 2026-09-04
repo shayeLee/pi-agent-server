@@ -2,6 +2,7 @@
 // 通过最小、无行为变化的测试注入点（StartConfig.onStorageReady，生产不传恒无操作）观测/注入
 // 启动中段失败，验证：
 // - 未知 storageDialect / PG 缺 databaseUrl 在任何资源创建前 fail-fast（错误消息 + 代码位置 = 行为契约）；
+// - migrationGate 运行时校验（failclosed）：JS/typed bypass 的非 off/verify 值在任何资源创建前拒绝启动；
 // - 至少一个初始化中段失败（注入 seam 抛错、以及真实 app.listen EADDRINUSE）：存储恰好关闭一次、
 //   原始错误保留（cleanup 不掩盖）；
 // - 成功 startServer 后 app.close：onClose 幂等 closeStorage 清理底层存储恰一次。
@@ -10,7 +11,7 @@
 // 不设置任何模型/凭证配置（不触达网络），与 scripts/mock-server.ts 同级别的本机可运行性。
 
 import { describe, it, expect, vi } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer as createNetServer } from "node:net";
@@ -42,6 +43,41 @@ describe("startServer 启动/失败清理（H2：fail-fast 顺序 + 幂等 stora
     await expect(
       startServer(baseConfig({ storageDialect: "mongodb" as never })),
     ).rejects.toThrow(/未知存储方言：mongodb/);
+  });
+
+  it("migrationGate 运行时校验（failclosed）：JS/typed bypass 的任何非 off/verify 值在任何资源创建前拒绝启动", async () => {
+    // 大小写/空白/其他字面量/非字符串一律拒绝；校验必须先于一切资源创建（目录零副作用）。
+    for (const bad of ["verify ", "VERIFY", "Verify", "enabled", "true", "on", 1, 0]) {
+      const dir = makeTempDir();
+      try {
+        try {
+          await startServer(baseConfig({ dataDir: dir, migrationGate: bad as never }));
+          throw new Error(`应拒绝 migrationGate=${JSON.stringify(bad)} 但启动了`);
+        } catch (error) {
+          if (error instanceof Error && error.message.startsWith("应拒绝")) throw error;
+          expect(error).toBeInstanceOf(Error);
+          // 固定消息、绝不回显原始值（校验实现不插值任何 config 内容）。
+          expect((error as Error).message).toMatch(/^migrationGate 只支持 "off" \/ "verify"/);
+        }
+        // 校验先于一切资源创建/网络访问：dataDir 内不得出现任何 DB/配置副作用文件。
+        expect(readdirSync(dir)).toEqual([]);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+    // 精确 "off" / undefined 仍正常启动（默认 off）；"verify" 走门禁语义（空库 → gate 错误，非校验错误）。
+    const okDir = makeTempDir();
+    try {
+      const app = await startServer(baseConfig({ dataDir: okDir, dbPath: join(okDir, "ok.db") }));
+      await app.close();
+      const app2 = await startServer(baseConfig({ dataDir: okDir, dbPath: join(okDir, "ok.db"), migrationGate: "off" }));
+      await app2.close();
+      await expect(
+        startServer(baseConfig({ dataDir: okDir, dbPath: join(okDir, "verify.db"), migrationGate: "verify" })),
+      ).rejects.toThrow(/startup migration gate/);
+    } finally {
+      rmSync(okDir, { recursive: true, force: true });
+    }
   });
 
   it("PG 缺 databaseUrl fail-fast：在同位置（资源创建前）拒绝启动，绝不静默回退 SQLite", async () => {

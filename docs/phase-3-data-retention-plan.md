@@ -6,7 +6,7 @@
 >
 > **RC 现状**：当前仍是 Release Candidate 阶段——**无服务级正式 migration / 备份 / 回滚**：bootstrap 仅面向空库/当前 v1 schema（`IF NOT EXISTS` + 严格 preflight `assertSchemaCompatible`，见 database-design.md §7 与 §9.7），离线 migration 与 WP3A/WP3B backup/restore 工具不接入服务，亦无 SQLite→PG 数据迁移、无 JSONL 自动对账；RC 旧库删除重建仍是允许的心智（§2.1 切换窗口内继续有效）。
 >
-> **Phase 3 当前状态**：WP0 决策冻结、WP1 离线迁移基础、WP3A SQLite 在线备份核心、WP3B1 SQLite restore drill、WP3B2 PG backup/restore 与 WP3C migration prebackup/runbook 基础实现已完成；真实 PG/age 只有在当前环境提供 URL/二进制并实际运行对应 gate 时才计为验收证据，没有这些前置条件不宣称通过。WP2A 受控 cutover 实现与 reviewer 复审修复已落地，但实际 reset 从未执行。WP4A（v1 migration + `file_operations` outbox + 删除事务）已依据用户提供的真实 PG16+age `verify:release` 成功证据验收通过。**WP4B（方案 A）✅ 已验收，但范围仅限安全只读 planner（`pnpm file-ops`）**：用户提供的真实 PG16+age `verify:release` 成功证据包含 file-ops planner gate 及 compiled/npm smoke；本文不记录或推导测试数量。**WP4C（方案 A 收敛）✅ 已验收**：安全 DB-only reconcile analyzer（`pnpm reconcile-jsonl`）已实现（只读 DB 引用 + 纯字符串规范布局绑定；固定 issue codes + opaque 引用；`--apply` fail-closed；不执行任何处置；**绝不扫描文件系统、不读取 JSONL，不能探测 orphan/lost/JSONL 损坏**）。用户提供的完整真实 PG16+age `verify:release` 成功证据包含真实 PG reconcile gate 及 compiled/npm smoke，WP4C 据此验收；本文不记录或推导测试数量。物理 executor（包括 unlink）、retry/quarantine 仍未实现，执行留给未来受审计的 native helper；正式常驻 worker 仍未接入，WP5/WP6 尚未开始。正式常驻服务仍未接入这些离线工具，整体仍非生产就绪。
+> **Phase 3 当前状态**：WP0 决策冻结、WP1 离线迁移基础、WP3A SQLite 在线备份核心、WP3B1 SQLite restore drill、WP3B2 PG backup/restore 与 WP3C migration prebackup/runbook 基础实现已完成；真实 PG/age 只有在当前环境提供 URL/二进制并实际运行对应 gate 时才计为验收证据，没有这些前置条件不宣称通过。WP2A 受控 cutover 实现与 reviewer 复审修复已落地，但实际 reset 从未执行。WP4A（v1 migration + `file_operations` outbox + 删除事务）已依据用户提供的真实 PG16+age `verify:release` 成功证据验收通过。**WP4B（方案 A）✅ 已验收，但范围仅限安全只读 planner（`pnpm file-ops`）**：用户提供的真实 PG16+age `verify:release` 成功证据包含 file-ops planner gate 及 compiled/npm smoke；本文不记录或推导测试数量。**WP4C（方案 A 收敛）✅ 已验收**：安全 DB-only reconcile analyzer（`pnpm reconcile-jsonl`）已实现（只读 DB 引用 + 纯字符串规范布局绑定；固定 issue codes + opaque 引用；`--apply` fail-closed；不执行任何处置；**绝不扫描文件系统、不读取 JSONL，不能探测 orphan/lost/JSONL 损坏**）。用户提供的完整真实 PG16+age `verify:release` 成功证据包含真实 PG reconcile gate 及 compiled/npm smoke，WP4C 据此验收；本文不记录或推导测试数量。物理 executor（包括 unlink）、retry/quarantine 仍未实现，执行留给未来受审计的 native helper；正式常驻 worker 仍未接入。**WP5A（最小运维门禁基础）✅ 已验收**：/readyz（进程 readiness + migration gate 背书语义）与 /metrics（Prometheus 固定小表面）已实现并接入 `startServer`（无新依赖、无定时器、不写库、GET only、异常 failclosed；仅进程 readiness/metrics，**不改变 request idempotency 与 shutdown persistence**）；验收依据为用户提供的真实 PG16+age `verify:release` 成功证据，其中包含 real-PostgreSQL startup-ops gate 及全部 smoke 通过；本文不记录或推导测试数量。WP5 其余内容（备份缺失/过期告警、审计保留衔接、恢复演练节奏化）计划为未来 WP5B（仅设计注记、未开始）与 WP6 尚未开始。正式常驻服务仍未接入这些离线工具，整体仍非生产就绪。
 >
 > 关联文档：[数据库设计](database-design.md)、[IAM 规划](identity-access-plan.md)、[PG 测试流程](postgres-podman-test.md)、[架构](architecture.md)、[需求基线](../needs.md)。
 
@@ -39,7 +39,7 @@
 | Phase 3（WP0） | ✅ 已完成/已冻结（仅决策文档，零实现） |
 | Phase 3 WP1 | ✅ 离线迁移核心已完成；真实 PG 验收需当前环境实际提供 URL 并运行门禁（未接入服务启动） |
 | Phase 3 WP3A | ✅ SQLite 在线备份核心与显式 CLI 已完成；真实 age/PG release gate 需当前环境实际运行（不接入服务启动） |
-| Phase 3（WP2 及以后） | 🟡 进行中（WP3 基础工作包已完成；WP2A 受控 cutover 实现与干净 SQLite 基线初始化已完成；当前目标无旧 RC 数据，破坏性 WP2B reset 不适用；WP4A、WP4B 方案 A 只读 planner 与 WP4C 方案 A 收敛 DB-only reconcile analyzer 均已验收，WP5/WP6 尚未开始，正式常驻服务未启用） |
+| Phase 3（WP2 及以后） | 🟡 进行中（WP3 基础工作包已完成；WP2A 受控 cutover 实现与干净 SQLite 基线初始化已完成；当前目标无旧 RC 数据，破坏性 WP2B reset 不适用；WP4A、WP4B 方案 A 只读 planner 与 WP4C 方案 A 收敛 DB-only reconcile analyzer 均已验收；**WP5A 最小运维门禁基础（/readyz、/metrics、启动 migration-gate readiness 契约）✅ 已验收——仅进程 readiness/metrics，不改变 request idempotency 与 shutdown persistence；WP5 其余计划为 WP5B（仅设计注记、未开始）与 WP6 尚未开始**，正式常驻服务未启用） |
 
 ### 1.4 明确不实施的内容（WP2B 及 WP3C 之外的后续工作包）
 
@@ -48,9 +48,10 @@
 WP1、WP3A/WP3B1/WP3B2/WP3C 与 WP2A 的 cutover CLI 均为**离线开发期工具**，不自动接入 `startServer`（启动门禁为显式 opt-in，默认 off），不启动服务、不安装 scheduler/timer。已完成工作包的后续限制如下：
 
 - 不执行真实用户数据 cutover/reset：实际切换需要用户/运维后续对目标的明确授权（[cutover-runbook.md](cutover-runbook.md)）；
-- 不实现 WP4B 执行器/retry/quarantine、WP4C 自动处置/IAM/readiness；WP4A 已验收的 outbox 基础不包含这些后续能力；WP4C 仅交付安全 DB-only reconcile 分析（见 §5.8）；
+- 不实现 WP4B 执行器/retry/quarantine、WP4C 自动处置/IAM；WP4A 已验收的 outbox 基础不包含这些后续能力；WP4C 仅交付安全 DB-only reconcile 分析（见 §5.8）。**readiness 已由 WP5A 交付**（/readyz、/metrics、启动 migration-gate readiness 契约，见 §8.1）——此处旧文「不实现 … IAM/readiness」中的 readiness 指 WP5A 之前的范围，随 WP5A 落地已解除，本计划现状以 §8.1 WP5A 行为为准；
 - 不执行真实用户数据备份或恢复演练、不部署任何备份任务；
 - 不实现 JSONL/DB 自动对账后的处置、自动清理 worker；WP4A 的持久 outbox、删除事务 enqueue 与 claim 预留已验收；**WP4B 仅交付安全只读 planner，物理执行器/retry/quarantine 未实施（见 §5.7）**；**WP4C 仅交付安全 DB-only reconcile analyzer（见 §5.8），不生成操作、不写入 outbox、不扫描文件系统**，对账后的自动处置与真实 filesystem reconcile 留给后续工作包/native helper；
+- **WP5A 已验收，交付最小运维门禁基础（/readyz、/metrics、启动 migration-gate readiness 契约）**：无 backup scheduler/timer、无 retention、无备份缺失/过期 age alerts、无 RPO/RTO 默认阈值、无 restore drill 调度；/readyz 与 /metrics 不等价于备份新鲜度或生产就绪；**不改变 request idempotency 与 shutdown persistence**（持久 processing marker 等幂等/关闭加固与备份告警/retention 等 WP5 其余内容计划为未来 WP5B——仅设计注记、未开始，见 §8.1 WP5A/WP5B 行）；
 - 不新增用户/token/角色/审计等 IAM 表，不实施 IAM 功能（只定义进入条件）；
 - README 的“尚非生产就绪”边界保持不变：可说明 WP3（备份/恢复/pre-migration/runbook）基础工作包已完成且 WP2A 受控 cutover 工具已实现（真实 age/PG 演练门禁通过），当前 SQLite 目标的破坏性 cutover 不适用、正式启动迁移门禁默认关闭，不能宣称生产 backup/rollback 已完成或 Phase 3 整体已生产就绪（见 §10）。
 
@@ -156,7 +157,7 @@ WP0 只产出决策冻结 ADR 与本文档状态同步；WP1 离线核心、WP3A
 
 - 目标行为：迁移与校验发生在服务监听之前，失败 → **拒绝启动**（fail-fast），绝不静默降级、跳过迁移继续服务；WP1 不实现此接入。
 - 已确认的 migration 前置顺序：严格停服务 → 强制 pre-migration backup → 备份完整性复核通过 → 执行 migration；当前没有全局写冻结，停服务是强制要求。WP1 不实现启动门禁或备份联动；备份前置与正常服务启动接入留给 WP3/WP5。
-- WP1 离线 CLI 已输出版本/checksum；源码开发使用 `pnpm migrate`，发布构建同时产出 `dist-migrate/scripts/migrate.js` 与 `pi-agent-server-migrate`，迁移审计日志与服务启动门禁留给后续 WP5。
+- WP1 离线 CLI 已输出版本/checksum；源码开发使用 `pnpm migrate`，发布构建同时产出 `dist-migrate/scripts/migrate.js` 与 `pi-agent-server-migrate`，迁移审计日志与备份联动仍留给后续 WP5；启动门禁本身已由 WP2A 实现（`migrationGate="verify"`），其 readiness 呈现面（/readyz、/metrics）已由 WP5A 交付（见 §8.1）。
 
 ### 4.7 migration 不可变
 
@@ -308,7 +309,11 @@ WP0 只产出决策冻结 ADR 与本文档状态同步；WP1 离线核心、WP3A
 | WP4A | ✅ 已验收 | v1 file_operations outbox 基础 | v1 Manifest migration；SQLite/PG 同构表；relative 白名单 path；pending/processing/completed/failed 状态机与脱敏 error；session/project 删除同事务 enqueue；operation key 幂等；双库 repository + 原子 claim 预留；DELETE 只 enqueue、不 unlink | WP1 | 已依据用户提供的真实 PG16+age `verify:release` 成功证据验收；本文不列测试数量 | 执行器/retry/quarantine/reconcile 留后续；outbox 无 FK 级联丢失 |
 | WP4B | ✅ 已验收（方案 A：仅安全只读 planner） | JSONL 生命周期 planner（物理 executor，包括 unlink、retry/quarantine 未实施） | 只读统计 pending/processing-expired/failed 及安全 error/state counts；SQLite 缺库零创建、PG 只读；`--apply` fail-closed | WP4A | 用户提供的真实 PG16+age `verify:release` 成功证据包含 file-ops planner gate 及 compiled/npm smoke；本文不记录或推导测试数量 | 无执行路径：物理执行需未来受审计的 native helper |
 | WP4C | ✅ 已验收（方案 A 收敛：DB-only reconcile analyzer） | JSONL/DB 只读 DB reference 分析（真实 filesystem reconcile、启动/定时 reconcile 与自动处置未实施） | 只读 DB 引用（session id/project id/pi_session_file）+ 纯字符串规范布局绑定（绝不扫描文件系统、不读取 JSONL；null = normal unmaterialized）；固定 issue codes（invalid_reference/duplicate_reference）+ opaque 引用；`--apply` fail-closed；零删除/移动/quarantine/DB 写入/outbox enqueue/v2 migration | WP4A、WP4B | 用户提供的完整真实 PG16+age `verify:release` 成功证据包含真实 PG reconcile 门禁及 compiled/npm smoke，WP4C 已验收；本文不记录或推导测试数量 | 无执行路径：不能探测 orphan/lost/JSONL 损坏，处置需未来受审计的 native helper；不可重建文件不自动删除 |
-| WP5 | ⬜ 未开始 | 运维门禁 | 启动迁移门禁 fail-fast；备份缺失/过期告警（对齐 needs.md §6.6 分级阈值）；审计保留衔接；恢复演练节奏化 | WP1、WP3B | 故障注入测试（坏库/滞后库/缺备份 → 拒绝启动或告警）；门禁与告警清单落文档 | 门禁规则配置化，可降级为告警（需决策） |
+| WP5 | 🟡 进行中（**WP5A ✅ 已验收，WP5B 未开始**） | 运维门禁 | 启动迁移门禁 fail-fast；备份缺失/过期告警（对齐 needs.md §6.6 分级阈值）；审计保留衔接；恢复演练节奏化 | WP1、WP3B | 故障注入测试（坏库/滞后库/缺备份 → 拒绝启动或告警）；门禁与告警清单落文档 | 门禁规则配置化，可降级为告警（需决策） |
+
+**WP5A（✅ 已验收，仅进程 readiness/metrics）**：/readyz 只报告本进程安全启动完成 + 选用的 migration gate 已通过（gate=off 时明确是 RC bootstrap ready 而非 schema 背书；启动失败 → 进程不监听即 ready false；请求路径零迁移、零写库）；**effective readiness failclosed**：只有 `ready && (gate=off || gate=verify 且已校验通过)` 且 storage dialect 已知才算就绪，不一致/未知状态一律 503 / metrics ready=0，绝不误报；**startServer 入口对 migrationGate 做运行时校验（只接受精确 off/verify，JS/typed bypass 在任何资源创建前拒绝启动）**；/metrics 为 Prometheus text exposition 固定小表面（ready、start_time/uptime、migration gate enabled/verified、storage dialect 安全 label；无 URL/path/session/prompt/DB counts），Cache-Control no-store、**route-level strict GET-only（仅 /readyz、/metrics 禁用 HEAD 路由，/health 与 /v1 默认 HEAD 不变）**、任何异常 failclosed 不泄漏，无新 prom 依赖；状态对象由 startServer 注入并维护（gate 实际校验通过后才置 verified，listen 成功后才 ready，preClose best-effort 拉低——仅状态回落，无新 shutdown 保证）。验收依据：用户提供的真实 PG16+age `verify:release` 成功证据，其中包含 real-PostgreSQL startup-ops gate（`tests/postgres/start-ops-pg.test.ts`）及全部 smoke 通过；SQLite 普通启动 / verify 门禁已迁移库、门禁失败拒绝启动、探针零写库、buildApp inject 契约、effective readiness failclosed、strict GET-only 与失败清理测试通过（`tests/server/ops-endpoints.test.ts`、`tests/server/start-ops-wiring.test.ts`、`tests/server/start-server-lifecycle.test.ts`、`tests/server/start-migration-gate.test.ts`），`pnpm typecheck`/`pnpm test`/`pnpm build` 通过。本文不记录或推导测试数量。**WP5A 不等价于备份新鲜度 / scheduler / 生产就绪，且不改变 request idempotency 与 shutdown persistence（既有语义原样保留）**。
+
+**WP5B（计划中，仅设计注记、未开始——不要实现）**：未来 WP5B 将承接 WP5 其余条目——备份缺失/过期 age alerts、审计保留衔接、恢复演练节奏化，以及可能的后备 scheduler/timer 与 request idempotency / shutdown persistence 的持久加固（如 durable processing marker、终态持久化有界化等）。**本计划只记录该方向作为设计注记；WP5B 无任何设计或代码，尚未开始**，WP5A 的验收范围也不承诺其中任何行为。
 | WP6 | ⬜ 未开始 | IAM 进入条件 | 确认 IAM（identity-access-plan.md 工作包 0–5）数据落地门槛 = WP1–5 全部通过；在此之前 IAM 仅做设计（schema decision、待决策项），不落地真实表/迁移 | WP1–5 全部通过 | WP1–5 各自验收全绿；触发 IAM 启动评审并记录决策 | IAM 未开始，无回滚 |
 
 ### 8.2 依赖链
@@ -317,10 +322,10 @@ WP0 只产出决策冻结 ADR 与本文档状态同步；WP1 离线核心、WP3A
 WP0 决策冻结
  └─→ WP1 迁移引擎 ──→ WP3A 备份核心 ──→ WP3B1 SQLite drill ──→ WP3B 后续恢复/门禁 ──→ WP2 最终 reset 切换（== 数据保留起点）
      └─→ WP4A outbox 基础 ──→ WP4B 安全只读 planner（✅ 已验收；物理 executor，包括 unlink、retry/quarantine 未实施；执行留给未来受审计的 native helper）──→ WP4C DB-only reconcile analyzer（✅ 已验收；不扫描文件系统、不能探测 orphan/lost/JSONL 损坏，自动处置未实施）──┐
-     └─→ WP5 运维门禁 ───────────────────────────────────────────────────────────┴─→ WP6 IAM 进入条件（仅当 WP1–5 全部通过）
+     └─→ WP5 运维门禁 ──（WP5A 最小运维门禁基础：/readyz、/metrics、启动 migration-gate readiness 契约 — ✅ 已验收；WP5 其余：备份缺失/过期告警、审计保留衔接、恢复演练节奏化 — 计划为 WP5B，仅设计注记、未开始）──┴─→ WP6 IAM 进入条件（仅当 WP1–5 全部通过）
 ```
 
-- **关键门槛**：只有 WP1–5 全部通过，才能进入 WP6（IAM 数据落地）——WP3 基础工作包（WP3A/WP3B1/WP3B2/WP3C）已完成各自真实 gate；WP4A 已验收，**WP4B 方案 A 的安全只读 planner 已验收（物理 executor，包括 unlink、retry/quarantine 未实施）**，WP4C 方案 A 收敛 DB-only reconcile analyzer ✅ 已验收（绝不扫描文件系统，不能探测 orphan/lost/JSONL 损坏，自动处置未实施），WP5/WP6 尚未开始。WP2A 工具已实现并通过真实 PG16+age `verify:release` 门禁；当前 SQLite 目标已完成干净基线初始化，破坏性 WP2B reset 不适用。
+- **关键门槛**：只有 WP1–5 全部通过，才能进入 WP6（IAM 数据落地）——WP3 基础工作包（WP3A/WP3B1/WP3B2/WP3C）已完成各自真实 gate；WP4A 已验收，**WP4B 方案 A 的安全只读 planner 已验收（物理 executor，包括 unlink、retry/quarantine 未实施）**，WP4C 方案 A 收敛 DB-only reconcile analyzer ✅ 已验收（绝不扫描文件系统，不能探测 orphan/lost/JSONL 损坏，自动处置未实施），**WP5A（最小运维门禁基础：/readyz、/metrics、启动 migration-gate readiness 契约）✅ 已验收——仅进程 readiness/metrics，不改变 request idempotency 与 shutdown persistence；WP5 其余（备份缺失/过期告警、审计保留衔接、恢复演练节奏化）计划为 WP5B（仅设计注记、未开始）与 WP6 尚未开始**。WP2A 工具已实现并通过真实 PG16+age `verify:release` 门禁；当前 SQLite 目标已完成干净基线初始化，破坏性 WP2B reset 不适用。
 - WP3 基础工作包已完成不将 WP2、WP4–WP5 或其他后续工作包视为已完成；后续依赖关系仍按原计划保留，WP2 必须在 WP3 备份恢复完成后执行。
 
 ### 8.3 回滚点原则
