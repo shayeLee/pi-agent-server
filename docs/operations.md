@@ -94,6 +94,25 @@ pnpm file-ops -- run
 
 `--apply` fails closed immediately (exit code 2): the WP4B physical executor (including unlink)/quarantine is not implemented, no confirmation word can bypass it, and the planner never claims/leases/completes/fails rows or touches files (a missing SQLite DB is never created — no DB/WAL/SHM sidecars; existing DB bytes stay fingerprint-identical). Reports and errors are redacted (counts/error codes only, no relative/absolute paths). Execution is reserved for a future audited native helper (separate item). The supplied successful real PG16+age `verify:release` evidence includes the file-ops planner gate and compiled/npm smoke; no test counts are recorded or inferred. The CLI does not start the service or install a worker; it is offline dev-time tooling and not production-ready. Full details: [file-operations.md](file-operations.md).
 
+## Offline DB-only reconcile analyzer (WP4C, ✅ accepted — safe DB-only analyzer)
+
+The explicit offline CLI performs a **read-only DB reference analysis** (read-only DB references: session id/project id/`pi_session_file` only, never content fields) with pure string/lexical validation of the canonical layout under the specified `DATA_DIR` string. It **never touches the filesystem** — no recursive traversal, no stat/open/read, no JSONL parsing — so it cannot detect orphan/lost/JSONL-corruption states, and it never executes anything:
+
+```bash
+# read-only DB reference analysis (zero writes) — the default `run` mode
+DATA_DIR=/absolute/application/data \
+DB_PATH=/absolute/application/data/pi-agent-server.db \
+pnpm reconcile-jsonl -- run
+
+# PostgreSQL (explicit dialect + URL; read-only session enforced)
+PI_STORAGE_DIALECT=postgres \
+PI_DATABASE_URL=postgresql://... \
+DATA_DIR=/absolute/application/data \
+pnpm reconcile-jsonl -- run
+```
+
+`DATA_DIR` is a pure string contract (explicit, absolute, non-root, no traversal segments; existence is not required and nothing is ever scanned) used to bind the canonical layouts `sessions/<sessionId>/<file>` (default project) and `projects/<projectId>/sessions/<sessionId>/<file>` (other projects). `NULL` `pi_session_file` rows are counted as normal unmaterialized (not an issue); non-NULL references are validated lexically (rejecting traversal/empty/wrong root/id mismatch/invalid file names) and duplicate references to the same canonical reference are detected. `--apply` fails closed immediately (exit code 2): WP4C Plan A performs **no delete/move/quarantine, no DB writes, no outbox enqueue and no v2 migration**; no confirmation word can bypass this. Reports contain counts, fixed issue codes (`invalid_reference`/`duplicate_reference`), fixed `filesystemNotScanned: true` / `cannotDetect` fields (orphan/lost/json validity cannot be determined), and opaque sha256 references — never paths, URLs, DATA_DIR, session ids or prompt content — with `executable:false`. SQLite is opened `readOnly` (missing DB never created — no DB/WAL/SHM sidecars; existing DB bytes stay fingerprint-identical); PostgreSQL requires explicit `PI_STORAGE_DIALECT=postgres` + `PI_DATABASE_URL` with `default_transaction_read_only=on` (URLs with an existing `options` parameter are rejected); migration-head verification is read-only. **WP4C is accepted** based on the supplied complete real PG16+age `verify:release` success evidence, which includes the real-PostgreSQL reconcile gate and compiled/npm smoke; no test counts are recorded or inferred. Real filesystem reconcile (orphan/lost/JSONL-corruption detection) and any remediation are reserved for a future audited native helper (separate item). The CLI does not start the service or install a worker; it is offline dev-time tooling and not production-ready. Full details: [reconcile-jsonl.md](reconcile-jsonl.md).
+
 ## Open operational decisions
 
-RPO, RTO, retention duration, off-host replication, key custody/rotation, alerting, and the exact service-manager stop/start commands remain deployment decisions. Until they are decided and tested, this RC workflow is not production-ready. WP4B’s accepted scope is only the safe read-only planner; the physical executor (including unlink)/quarantine and worker remain unimplemented, and WP4C reconcile, WP5 and WP6 have not started.
+RPO, RTO, retention duration, off-host replication, key custody/rotation, alerting, and the exact service-manager stop/start commands remain deployment decisions. Until they are decided and tested, this RC workflow is not production-ready. The WP4B physical executor (including unlink)/quarantine and worker remain unimplemented; WP4C is accepted as Plan A's safe DB-only reconcile analyzer only (never scans the filesystem and cannot detect orphan/lost/JSONL corruption; no executor), while WP5/WP6 have not started. The CLI does not start the service and the service remains non-production-ready.

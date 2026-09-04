@@ -4,7 +4,9 @@
 // and dropped by the fixture; the URL is passed only through the child
 // environment and is never printed). Without the URL this gate exits non-zero.
 // The fixture also runs the real planner CLI PG branch (source entry via tsx,
-// dedicated random role + schema, forced default_transaction_read_only=on) and
+// random schema bound through the URL's search_path options — no LOGIN role is
+// created; the CLI strictly parses options, allowing only search_path, and
+// merges default_transaction_read_only=on plus a bounded lock_timeout) and
 // verifies random-schema isolation, zero DB changes, and no URL/path/credential
 // leakage. The planner is read-only; its read-only enforcement on the CLI side
 // is enforced in tests/postgres/file-operation-planner.test.ts (and in-process

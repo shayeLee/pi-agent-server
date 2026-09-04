@@ -2,11 +2,13 @@
 // 无 URL 时本文件按既有门控 skip（普通 `pnpm test`），强制门禁 `pnpm test:file-ops-pg`
 // 缺 URL fail-closed（scripts/test-file-ops-pg.ts）；本文件绝不回退 SQLite。
 // planner 只读性质同时由：
-// - in-process 层强制（readOnlyPostgresUrl：default_transaction_read_only=on），
-//   且 readOnly URL 同时保留随机 schema 的 search_path 与只读约束；
+// - in-process 层强制（readOnlyPostgresUrl：严格解析仅 search_path options，合并
+//   default_transaction_read_only=on 与 lock_timeout），且随机 schema 的
+//   search_path 与只读约束同时生效（SHOW 断言）；
 // - 真实 CLI PG 分支（source 入口 scripts/file-ops.ts，经 tsx 运行）：门禁真实跑 CLI，
 //   验证随机 schema 隔离、只读、零 DB 变化、无 URL/path/credential 泄漏。
-//   主题 role 由 fixture 创建/销毁，绝不触碰任何真实用户 schema 或角色。
+//   主题隔离通过 URL 的 search_path options 绑定随机专属 schema——**绝不创建任何
+//   LOGIN role / 不使用 CREATEROLE**，绝不触碰任何真实用户 schema 或角色。
 
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { rmSync } from "node:fs";
@@ -17,6 +19,7 @@ import { fileURLToPath } from "node:url";
 import { assertRequiredPgTestEnvironment } from "../../scripts/pg-test-gate.js";
 import { resolveBinPath } from "../../scripts/test-postgres.js";
 import { createPostgresKysely, createPostgresPool } from "../../src/storage/postgres-bootstrap.js";
+import { enforceReadOnlyPostgresUrl, requirePostgresConnectionUrl } from "../../src/storage/postgres-connection.js";
 import { KyselyFileOperationRepository } from "../../src/storage/kysely-file-operation-repository.js";
 import { runPostgresMigrations } from "../../src/storage/migration-engine.js";
 import { planFileOperationBatch } from "../../src/file-operations/planner.js";
@@ -26,6 +29,11 @@ import type { Kysely } from "kysely";
 const pgUrl = process.env.PI_TEST_PG_URL?.trim();
 assertRequiredPgTestEnvironment("tests/postgres/file-operation-planner", pgUrl, false);
 const describePg = pgUrl ? describe : describe.skip;
+
+if (pgUrl !== undefined) {
+  // 严格校验门禁环境 URL：协议/host/database 显式、禁止 fragment；不合法 → 立即失败。
+  requirePostgresConnectionUrl(pgUrl);
+}
 
 const plannerCliEntry = path.join(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -46,42 +54,66 @@ function scopedUrl(schema: string): string {
 }
 
 const cleanups: string[] = [];
-const cleanupRoles: string[] = [];
+const ADMIN_TIMEOUTS = {
+  connectionTimeoutMillis: 10_000,
+  queryTimeoutMs: 15_000,
+  statementTimeoutMs: 15_000,
+} as const;
+const ADMIN_PG_CONFIG = {
+  connectionTimeoutMillis: ADMIN_TIMEOUTS.connectionTimeoutMillis,
+  query_timeout: ADMIN_TIMEOUTS.queryTimeoutMs,
+  statement_timeout: ADMIN_TIMEOUTS.statementTimeoutMs,
+} as const;
 
 describePg("WP4B file_operations planner（real PostgreSQL）", () => {
   let schema: string;
-  let admin: Pool;
-  let pool: Pool;
-  let kysely: Kysely<DatabaseSchema>;
+  let admin: Pool | undefined;
+  let pool: Pool | undefined;
+  let kysely: Kysely<DatabaseSchema> | undefined;
   let operations: KyselyFileOperationRepository;
 
   beforeAll(async () => {
     schema = schemaName();
-    admin = new Pool({ connectionString: pgUrl! });
+    admin = new Pool({ connectionString: pgUrl!, ...ADMIN_PG_CONFIG });
     await admin.query(`CREATE SCHEMA ${ident(schema)}`);
-    pool = createPostgresPool(scopedUrl(schema));
-    kysely = createPostgresKysely(pool);
-    await runPostgresMigrations(kysely);
-    operations = new KyselyFileOperationRepository(kysely, "postgres");
+    pool = createPostgresPool(scopedUrl(schema), ADMIN_TIMEOUTS);
+    kysely = createPostgresKysely(pool!);
+    await runPostgresMigrations(kysely!);
+    operations = new KyselyFileOperationRepository(kysely!, "postgres");
   });
 
   beforeEach(async () => {
-    await pool.query("TRUNCATE TABLE file_operations");
+    await pool!.query("TRUNCATE TABLE file_operations");
   });
 
   afterEach(async () => {
-    await pool.query("TRUNCATE TABLE file_operations");
+    await pool!.query("TRUNCATE TABLE file_operations");
     for (const directory of cleanups.splice(0)) rmSync(directory, { recursive: true, force: true });
   });
 
   afterAll(async () => {
-    await pool.end();
-    if (admin) {
-      for (const role of cleanupRoles.splice(0)) {
-        await admin.query(`DROP ROLE IF EXISTS ${ident(role)}`).catch(() => undefined);
+    // finally 语义：无论前序用例是否失败，schema 必须可靠回收；不创建任何 role。
+    try {
+      // Kysely owns the application pool once it has been created. Do not call
+      // pool.end() after kysely.destroy(): that is a duplicate close.
+      if (kysely !== undefined) {
+        await kysely.destroy();
+        kysely = undefined;
+        pool = undefined;
+      } else if (pool !== undefined) {
+        // before Kysely is created, the fixture still owns the pool directly.
+        await pool.end();
+        pool = undefined;
       }
-      await admin.query(`DROP SCHEMA IF EXISTS ${ident(schema)} CASCADE`);
-      await admin.end();
+    } finally {
+      if (admin !== undefined) {
+        try {
+          if (schema !== undefined) await admin.query(`DROP SCHEMA IF EXISTS ${ident(schema)} CASCADE`);
+        } finally {
+          await admin.end();
+          admin = undefined;
+        }
+      }
     }
   });
 
@@ -118,18 +150,27 @@ describePg("WP4B file_operations planner（real PostgreSQL）", () => {
   });
 
   it("planner 在只读事务约束（default_transaction_read_only）下仍可计划", async () => {
-    // 模拟 CLI 的只读连接约束：readOnly URL 必须同时保留随机 schema 的
-    // search_path 与 default_transaction_read_only=on（顺序无关，两个 -c 并存）。
-    const readOnlyUrl = new URL(scopedUrl(schema));
-    readOnlyUrl.searchParams.set("options", `-c search_path=${schema} -c default_transaction_read_only=on`);
-    const readOnlyPool = createPostgresPool(readOnlyUrl.toString());
+    // 模拟 CLI 的只读连接约束：生产代码（enforceReadOnlyPostgresUrl）严格解析仅
+    // search_path options 并合并 default_transaction_read_only=on 与 lock_timeout。
+    const readOnlyUrl = enforceReadOnlyPostgresUrl(scopedUrl(schema), { lockTimeoutMs: 10_000 });
+    const readOnlyPool = createPostgresPool(readOnlyUrl, ADMIN_TIMEOUTS);
+    let readOnlyKysely: Kysely<DatabaseSchema> | undefined;
     try {
-      // 直接证明连接同时具备两个约束：随机 schema 可见 + 服务端只读。
+      // Pool options prove all client/server-side bounds are wired; SHOW proves
+      // the server-side statement/lock bounds and read-only search path.
+      expect(readOnlyPool.options.connectionTimeoutMillis).toBe(ADMIN_TIMEOUTS.connectionTimeoutMillis);
+      expect(readOnlyPool.options.query_timeout).toBe(ADMIN_TIMEOUTS.queryTimeoutMs);
+      expect(readOnlyPool.options.statement_timeout).toBe(ADMIN_TIMEOUTS.statementTimeoutMs);
+      // 直接证明连接同时具备这些约束：随机 schema 可见 + 服务端只读 + 有界 lock。
       const searchPath = await readOnlyPool.query("SHOW search_path");
       expect(searchPath.rows[0]?.search_path).toContain(schema);
       const readOnly = await readOnlyPool.query("SHOW transaction_read_only");
       expect(readOnly.rows[0]?.transaction_read_only).toBe("on");
-      const readOnlyKysely = createPostgresKysely(readOnlyPool);
+      const lockTimeout = await readOnlyPool.query("SHOW lock_timeout");
+      expect(String(lockTimeout.rows[0]?.lock_timeout)).toBe("10s");
+      const statementTimeout = await readOnlyPool.query("SHOW statement_timeout");
+      expect(String(statementTimeout.rows[0]?.statement_timeout)).toBe("15s");
+      readOnlyKysely = createPostgresKysely(readOnlyPool);
       await runPostgresMigrations(readOnlyKysely, { mode: "verify" });
       const readOnlyOperations = new KyselyFileOperationRepository(readOnlyKysely, "postgres");
       await operations.enqueue({ operationKey: "pg-plan-ro", relativePath: "sessions/ro/history.jsonl", createdAt: 1 });
@@ -141,27 +182,16 @@ describePg("WP4B file_operations planner（real PostgreSQL）", () => {
       // 写尝试必须被服务端拒绝（fail-closed 证明连接确实是只读的）。
       await expect(readOnlyOperations.claim(Date.now(), 1, 60_000)).rejects.toThrow(/read-only|read only|transaction/i);
     } finally {
-      await readOnlyPool.end();
+      if (readOnlyKysely !== undefined) await readOnlyKysely.destroy();
+      else await readOnlyPool.end();
     }
   });
 
-  it("真实 CLI PG 分支（source 入口）在随机 schema 上只读计划，零 DB 变化、无泄漏", async () => {
-    // 主题隔离：只读 planner 要求 URL 不含 options（CLI 强制追加
-    // default_transaction_read_only=on 时对既有 options fail-closed），因此用
-    // fixture 创建/销毁的随机 role 提供 schema 级 search_path 默认值；
-    // role 通过 ALTER ROLE 绑定到随机 schema，绝不触碰 public 或真实用户对象。
-    const role = `pi_fo_cli_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`.replace(/[^a-zA-Z0-9_]/g, "_");
-    const rolePassword = `${Math.random().toString(36).slice(2)}${Date.now().toString(36)}${Math.random().toString(36).slice(2)}`.replace(/[^a-zA-Z0-9]/g, "a");
-    cleanupRoles.push(role);
-    await admin.query(`CREATE ROLE ${ident(role)} LOGIN PASSWORD '${rolePassword}'`);
-    await admin.query(`GRANT USAGE ON SCHEMA ${ident(schema)} TO ${ident(role)}`);
-    await admin.query(`GRANT SELECT ON ALL TABLES IN SCHEMA ${ident(schema)} TO ${ident(role)}`);
-    await admin.query(`ALTER ROLE ${ident(role)} SET search_path = ${ident(schema)}`);
-
-    const cliUrl = new URL(pgUrl!);
-    cliUrl.username = role;
-    cliUrl.password = rolePassword;
-    cliUrl.searchParams.delete("options"); // 必须无 options：CLI 对既有 options fail-closed。
+  it("真实 CLI PG 分支（source 入口）使用随机 schema URL（search_path options）只读计划，零 DB 变化、无泄漏", async () => {
+    // 主题隔离：URL 直接携带随机 schema 的 search_path options；CLI 严格解析
+    // options（仅 search_path）并合并 default_transaction_read_only=on 与
+    // lock_timeout——**不创建任何 LOGIN role / 不使用 CREATEROLE**。
+    const cliUrl = scopedUrl(schema);
     await operations.enqueue({ operationKey: "pg-cli-1", relativePath: "sessions/s1/history.jsonl", createdAt: 1 });
     await operations.enqueue({ operationKey: "pg-cli-2", relativePath: "sessions/s2/history.jsonl", createdAt: 2 });
 
@@ -169,7 +199,7 @@ describePg("WP4B file_operations planner（real PostgreSQL）", () => {
       process.execPath,
       [resolveBinPath("tsx", "tsx"), plannerCliEntry, "run"],
       {
-        env: { ...process.env, PI_STORAGE_DIALECT: "postgres", PI_DATABASE_URL: cliUrl.toString() },
+        env: { ...process.env, PI_STORAGE_DIALECT: "postgres", PI_DATABASE_URL: cliUrl },
         encoding: "utf8",
         timeout: 120_000,
       },
@@ -188,8 +218,8 @@ describePg("WP4B file_operations planner（real PostgreSQL）", () => {
     // 无 URL / path / credential / schema 泄漏。
     const allOutput = `${result.stdout}\n${result.stderr ?? ""}`;
     expect(allOutput).not.toContain("postgresql://");
-    expect(allOutput).not.toContain(rolePassword);
     expect(allOutput).not.toContain(schema);
+    expect(allOutput).not.toContain("search_path");
     expect(allOutput).not.toContain("sessions/");
     expect(allOutput).not.toContain("history.jsonl");
 
@@ -198,13 +228,22 @@ describePg("WP4B file_operations planner（real PostgreSQL）", () => {
     expect(rows).toHaveLength(2);
     expect(rows.every((row) => row.state === "pending" && row.attemptCount === 0 && row.leaseToken === null && row.leaseUntil === null)).toBe(true);
 
-    // 只读证明：同一 role 的连接（CLI 同款只读 options）上写操作被服务端拒绝。
-    const readOnlyUrl = new URL(cliUrl);
-    readOnlyUrl.searchParams.set("options", "-c default_transaction_read_only=on");
-    const readOnlyPool = createPostgresPool(readOnlyUrl.toString());
+    // 只读证明：CLI 同款 schema URL（生产枚举整个 enforceReadOnlyPostgresUrl）上
+    // 服务端只读 + 写操作被拒绝。
+    const readOnlyUrl = enforceReadOnlyPostgresUrl(cliUrl, { lockTimeoutMs: 10_000 });
+    const readOnlyPool = createPostgresPool(readOnlyUrl, ADMIN_TIMEOUTS);
     try {
+      expect(readOnlyPool.options.connectionTimeoutMillis).toBe(ADMIN_TIMEOUTS.connectionTimeoutMillis);
+      expect(readOnlyPool.options.query_timeout).toBe(ADMIN_TIMEOUTS.queryTimeoutMs);
+      expect(readOnlyPool.options.statement_timeout).toBe(ADMIN_TIMEOUTS.statementTimeoutMs);
       const searchPath = await readOnlyPool.query("SHOW search_path");
       expect(searchPath.rows[0]?.search_path).toContain(schema);
+      const readOnly = await readOnlyPool.query("SHOW transaction_read_only");
+      expect(readOnly.rows[0]?.transaction_read_only).toBe("on");
+      const statementTimeout = await readOnlyPool.query("SHOW statement_timeout");
+      expect(String(statementTimeout.rows[0]?.statement_timeout)).toBe("15s");
+      const lockTimeout = await readOnlyPool.query("SHOW lock_timeout");
+      expect(String(lockTimeout.rows[0]?.lock_timeout)).toBe("10s");
       const count = await readOnlyPool.query("SELECT count(*) AS n FROM file_operations");
       expect(Number(count.rows[0]?.n)).toBe(2);
       await expect(readOnlyPool.query(

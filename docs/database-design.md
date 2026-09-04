@@ -2,7 +2,7 @@
 
 > RC 阶段 SQLite 详细设计，单一事实来源的表/字段/约束/索引/查询、幂等与 file-operation outbox 规则。本文可独立阅读，但源码为准：schema 定义与建库 DDL 的**唯一来源**是 `src/storage/schema-manifest.ts`（当前 head 为 v1，运行时 Manifest 含编译期/运行期校验），`DatabaseSchema` 类型由其推导（`src/storage/schema-types.ts`，`db-schema.ts` 仅为兼容 re-export）；查询与存储规则见 `src/storage/kysely-*-repository.ts` / `src/runtime/runtime-registry.ts` / `src/application/ports/*-store-port.ts`。
 >
-> **WP4A 验收状态（本次更新）**：✅ 已验收。v1 migration、SQLite/PG 同构 `file_operations` 持久 outbox 与删除事务已依据用户提供的真实 PG16+age `verify:release` 成功截图验收；本文不记录或推导测试数量。**WP4B 方案 A：✅ 安全只读 planner 已验收**（用户提供的成功证据包含 file-ops planner gate 及 compiled/npm smoke）；物理 executor（包括 unlink）、retry/quarantine 仍未实现，执行留给未来受审计的 native helper。WP4C（reconcile）尚未开始，WP5/WP6 尚未开始。相关能力仍是离线开发期工具，不启动正式服务，整体尚非生产就绪。
+> **WP4A 验收状态（本次更新）**：✅ 已验收。v1 migration、SQLite/PG 同构 `file_operations` 持久 outbox 与删除事务已依据用户提供的真实 PG16+age `verify:release` 成功截图验收；本文不记录或推导测试数量。**WP4B 方案 A：✅ 安全只读 planner 已验收**（用户提供的成功证据包含 file-ops planner gate 及 compiled/npm smoke）；物理 executor（包括 unlink）、retry/quarantine 仍未实现，执行留给未来受审计的 native helper。**WP4C 方案 A 收敛：✅ 安全 DB-only reconcile analyzer 已验收**（绝不扫描文件系统、不读取 JSONL，不能探测 orphan/lost/JSONL 损坏；用户提供的完整真实 PG16+age `verify:release` 成功证据包含真实 PostgreSQL reconcile gate 及 compiled/npm smoke；本文不记录或推导测试数量；详见 [reconcile-jsonl.md](reconcile-jsonl.md)）。WP5/WP6 尚未开始。相关能力仍是离线开发期工具，不启动正式服务，整体尚非生产就绪。
 
 ## 1. 范围与源码依据
 
@@ -39,7 +39,7 @@
   3. 只有路径预留成功后才创建 Agent session/写 JSONL；随后再次确认 SDK 路径。删除事务锁住父项目/会话并读取该预留，因此会为已预留路径入队；若最终回写返回 false，则对实际已创建路径执行幂等 outbox enqueue。
 
   这不是跨存储原子事务，但它把路径变成持久删除事实，覆盖 delete 与 lazy create 的交错窗口；恢复/删除路径均不调用 `unlink`。
-- **残余边界（WP4B 未实施，仅安全只读 planner；WP4C 尚未开始）**：进程可能在路径预留后、文件创建前退出，留下一个数据库指向尚未存在文件的预留；后续删除会安全入队，未来执行器（受审计外部运维工具或 native helper）可将不存在文件按幂等成功处理；当前无执行器，outbox 只读可见。进程在文件创建后崩溃不会留下无 owner 的未记录路径；WP4C reconcile 与自动 worker/quarantine 入队仍未实现。
+- **残余边界（WP4B 未实施，仅安全只读 planner；WP4C 方案 A 收敛 DB-only reconcile analyzer ✅ 已验收）**：进程可能在路径预留后、文件创建前退出，留下一个数据库指向尚未存在文件的预留；后续删除会安全入队，未来执行器（受审计外部运维工具或 native helper）可将不存在文件按幂等成功处理；当前无执行器，outbox 只读可见。进程在文件创建后崩溃不会留下无 owner 的未记录路径；WP4C analyzer 仅做只读 DB reference 分析（null = normal unmaterialized；non-null 词法校验 invalid_reference/duplicate_reference + opaque 引用，零处置、不扫描文件系统、不能探测 orphan/lost/JSONL 损坏），自动 worker/quarantine 入队仍未实现。
 - **删除顺序（WP4A）**：
   1. 在一个数据库事务内读取会话文件引用、向 `file_operations` 写入 `pending` 删除操作并删除 `sessions`/`projects` 行；
   2. 事务提交后只清理进程内 runtime；
@@ -52,7 +52,7 @@
 
 
   二者都不能弥合上述跨存储边界。
-- **WP4A 当前边界（已验收）**：已提供持久 `file_operations` outbox、相对白名单 path、lease-token fencing、SQLite `BEGIN IMMEDIATE` / PG 父项目 `FOR UPDATE` 删除锁、lazy JSONL 持久路径 barrier，以及 SQLite/PG 原子 claim 预留；删除事务只 enqueue，不执行 unlink。**WP4B 方案 A 的安全只读 planner 已验收；物理 executor（包括 unlink）、retry/quarantine 未实施**，执行留给未来受审计的 native helper；WP4C reconcile 尚未开始，也不对 DB 与 JSONL 提供跨存储强一致。
+- **WP4A 当前边界（已验收）**：已提供持久 `file_operations` outbox、相对白名单 path、lease-token fencing、SQLite `BEGIN IMMEDIATE` / PG 父项目 `FOR UPDATE` 删除锁、lazy JSONL 持久路径 barrier，以及 SQLite/PG 原子 claim 预留；删除事务只 enqueue，不执行 unlink。**WP4B 方案 A 的安全只读 planner 已验收；物理 executor（包括 unlink）、retry/quarantine 未实施**，执行留给未来受审计的 native helper；**WP4C 方案 A 收敛 DB-only reconcile analyzer ✅ 已验收**（只读 DB 引用 + 纯字符串规范布局绑定，固定 issue codes + opaque 引用，零处置、绝不扫描文件系统，不能探测 orphan/lost/JSONL 损坏），不对 DB 与 JSONL 提供跨存储强一致或自动修复。
 
 ## 3. 表结构
 
@@ -205,7 +205,7 @@
 - **不建 `users` / `messages` 表**：用户身份由 `UserIdentity` 派生的 `owner_key` 字符串承载，无需用户表；完整消息正文在 `pi_session_file` 指向的 JSONL 中，不在数据库中镜像 `messages` 表（避免双写一致性与大文本存储问题）。
 - **服务启动暂不做版本化迁移**：RC 的 `initializeDatabase` / `initializePostgresDatabase` 消费当前 v1 Manifest，仅以 `IF NOT EXISTS` 面向空库/当前 schema；旧库仍需离线 migration/cutover，尚未接入 `startServer`。WP1/WP4A 的 `schema_migrations` 与 Manifest-driven runner 仍供显式离线 CLI 使用。服务 bootstrap 仍执行**严格 schema preflight（M1，非迁移）**：在任何建表/建索引 DDL 之前，库中已含任一 managed 表时要求完整物理契约一致，任何不一致立即失败且不执行 ALTER/补列/建表/建索引；全新/当前 v1 schema 不受影响。
 - **不做 SQLite→PostgreSQL 数据迁移**：Phase 2 历史真实 PG 门控经当时的 `verify:release` 通过（见 §9.7），但仍无 SQLite→PG 数据迁移路径。
-- **WP1/WP4A 离线迁移基础**：`src/storage/migration-manifest.ts` 固化不可变 `schemaManifestV0` 并追加 v1 `schemaManifestV1`；`src/storage/migration-engine.ts` 使用自定义 `schema_migrations` ledger、稳定 checksum、SQLite `BEGIN IMMEDIATE` 与 PG advisory lock/transaction，v1 只新增 `file_operations`。`scripts/migrate.ts` 支持 `--dry-run`、`--apply`、`--verify`。该工具不执行删除、不处理文件副作用；**WP4B 方案 A 的 `pnpm file-ops` 安全只读 planner 已验收（物理 executor，包括 unlink、retry/quarantine 未实施），只读统计持久 `file_operations` 记录**；执行留给未来受审计的 native helper。WP4C reconcile/readiness 尚未开始，也不改变正常服务启动行为。
+- **WP1/WP4A 离线迁移基础**：`src/storage/migration-manifest.ts` 固化不可变 `schemaManifestV0` 并追加 v1 `schemaManifestV1`；`src/storage/migration-engine.ts` 使用自定义 `schema_migrations` ledger、稳定 checksum、SQLite `BEGIN IMMEDIATE` 与 PG advisory lock/transaction，v1 只新增 `file_operations`。`scripts/migrate.ts` 支持 `--dry-run`、`--apply`、`--verify`。该工具不执行删除、不处理文件副作用；**WP4B 方案 A 的 `pnpm file-ops` 安全只读 planner 已验收（物理 executor，包括 unlink、retry/quarantine 未实施），只读统计持久 `file_operations` 记录**；执行留给未来受审计的 native helper。**WP4C 方案 A 收敛 DB-only reconcile analyzer ✅ 已验收**（`pnpm reconcile-jsonl`：只读 DB 引用 + 纯字符串规范布局绑定，固定 issue codes + opaque 引用，`executable:false`、零处置、绝不扫描文件系统/不读取 JSONL，不能探测 orphan/lost/JSONL 损坏；用户提供的完整真实 PG16+age `verify:release` 成功证据包含真实 PG reconcile gate 及 compiled/npm smoke；本文不记录或推导测试数量），不改变正常服务启动行为。
 
 ### 未来扩展
 

@@ -63,14 +63,25 @@ describe("redactFileOpsError（WP4B planner CLI 脱敏）", () => {
 });
 
 describe("readOnlyPostgresUrl（PG planner 会话只读强制）", () => {
-  it("追加 default_transaction_read_only=on，保留既有参数", () => {
+  it("追加 default_transaction_read_only=on 与 lock_timeout，保留既有参数", () => {
     const url = readOnlyPostgresUrl("postgresql://user:pass@host:5432/db");
     expect(url).toContain("options=");
     expect(decodeURIComponent(url)).toContain("default_transaction_read_only=on");
+    expect(decodeURIComponent(url)).toContain("lock_timeout=10000");
     expect(url).toContain("//user:pass@");
   });
 
-  it("原 URL 已含 options 时拒绝（fail-closed，不降级为可写连接）", () => {
-    expect(() => readOnlyPostgresUrl("postgresql://user:pass@host:5432/db?options=-c%20search_path%3Dx")).toThrow(/options/);
+  it("options 只允许 search_path（严格解析并保留），其余选项一律拒绝（不降级为可写连接）", () => {
+    const merged = readOnlyPostgresUrl("postgresql://user:pass@host:5432/db?options=-c%20search_path%3Dpi_x");
+    expect(decodeURIComponent(merged)).toContain("search_path=pi_x");
+    expect(decodeURIComponent(merged)).toContain("default_transaction_read_only=on");
+    for (const url of [
+      "postgresql://user:pass@host:5432/db?options=-c%20statement_timeout%3D1000",
+      "postgresql://user:pass@host:5432/db?options=--%20foo",
+      "ftp://user:pass@host:5432/db",
+      "postgresql://user:pass@host:5432/db#frag",
+    ]) {
+      expect(() => readOnlyPostgresUrl(url)).toThrow();
+    }
   });
 });

@@ -21,6 +21,7 @@ import { pgConstraintErrorMapper, PG_UNIQUE_VIOLATION } from "../../src/storage/
 import { DuplicateIdError } from "../../src/application/ports/store-errors.js";
 import { identityKey } from "../../src/core/user-identity.js";
 import { defineRepositoryContract, DEFAULT_PROJECT_RECORD, type RepositoryContractStorage } from "../storage/repository-contract.js";
+import { defineReconcileReferenceContract, type ReconcileReferenceContractStorage } from "../storage/reconcile-reference-contract.js";
 import type { Kysely } from "kysely";
 import type { DatabaseSchema } from "../../src/storage/db-schema.js";
 
@@ -100,6 +101,14 @@ describePg("共用 Repository 行为契约（PostgreSQL，PI_TEST_PG_URL 门控�
     async (): Promise<RepositoryContractStorage> => {
       await truncateAndReseed();
       return { kysely, projects, sessions, idempotency, close: async () => {} };
+    },
+  );
+
+  defineReconcileReferenceContract(
+    "WP4C 受控只读引用契约（PostgreSQL，每个用例 TRUNCATE + 重种默认项目）",
+    async (): Promise<ReconcileReferenceContractStorage> => {
+      await truncateAndReseed();
+      return { kysely, sessions, projects, close: async () => {} };
     },
   );
 

@@ -12,11 +12,11 @@
 //   未来 native helper（单独事项）。
 
 import { DatabaseSync } from "node:sqlite";
-import { realpathSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { Kysely, SqliteDialect } from "kysely";
 import { createPostgresKysely, createPostgresPool } from "../src/storage/postgres-bootstrap.js";
+import { enforceReadOnlyPostgresUrl } from "../src/storage/postgres-connection.js";
 import { NodeSqliteAdapter } from "../src/storage/node-sqlite-adapter.js";
 import { runPostgresMigrations, runSqliteMigrations } from "../src/storage/migration-engine.js";
 import { KyselyFileOperationRepository } from "../src/storage/kysely-file-operation-repository.js";
@@ -32,6 +32,12 @@ export const FILE_OPS_APPLY_UNAVAILABLE =
 export interface FileOpsCliOptions {
   readonly mode: "dry-run" | "default";
 }
+
+/** PostgreSQL 有界超时（毫秒）：connect/query/statement/lock 全部有界，防挂死。 */
+export const FILE_OPS_CONNECT_TIMEOUT_MS = 10_000;
+export const FILE_OPS_QUERY_TIMEOUT_MS = 15_000;
+export const FILE_OPS_STATEMENT_TIMEOUT_MS = 15_000;
+export const FILE_OPS_LOCK_TIMEOUT_MS = 10_000;
 
 const usage = "用法：pnpm file-ops -- run [--dry-run]\n本工具是安全只读 planner：只统计 file_operations，绝不执行/写入/扫描文件系统";
 
@@ -87,16 +93,12 @@ function requireExplicitPostgresUrl(environment: StorageEnvironment): string {
 }
 
 /**
- * 强制 PostgreSQL 会话只读：给连接串追加 default_transaction_read_only=on。
- * 原 URL 已含 options 参数时拒绝合并（fail-closed），绝不降级为可写连接。
+ * 强制 PostgreSQL 会话只读：严格校验连接串（协议/host/database 显式、禁止
+ * fragment），options 只允许 search_path（严格解析，其余一律拒绝），并合并
+ * default_transaction_read_only=on 与有界 lock_timeout——绝不降级为可写连接。
  */
 export function readOnlyPostgresUrl(raw: string): string {
-  const url = new URL(raw);
-  if (url.searchParams.get("options") !== null) {
-    throw new Error("file-ops: PI_DATABASE_URL 已含 options 连接参数；planner 拒绝合并，请移除后重试（强制 default_transaction_read_only=on）");
-  }
-  url.searchParams.set("options", "-c default_transaction_read_only=on");
-  return url.toString();
+  return enforceReadOnlyPostgresUrl(raw, { lockTimeoutMs: FILE_OPS_LOCK_TIMEOUT_MS });
 }
 
 function redactFileOpsError(error: unknown): string {
@@ -168,7 +170,13 @@ export async function runFileOpsCli(
   let pool: ReturnType<typeof createPostgresPool>;
   try {
     poolUrl = readOnlyPostgresUrl(requireExplicitPostgresUrl(environment));
-    pool = createPostgresPool(poolUrl);
+    // 有界超时：connect（连接建立）/ query（驱动侧单查询）/ statement（服务端
+    // 单语句）/ lock（-c lock_timeout 已在 readOnlyPostgresUrl 合并）。
+    pool = createPostgresPool(poolUrl, {
+      connectionTimeoutMillis: FILE_OPS_CONNECT_TIMEOUT_MS,
+      queryTimeoutMs: FILE_OPS_QUERY_TIMEOUT_MS,
+      statementTimeoutMs: FILE_OPS_STATEMENT_TIMEOUT_MS,
+    });
   } catch (error) {
     io.error(`[file-ops] ${redactFileOpsError(error)}`);
     return 1;
@@ -190,12 +198,23 @@ export async function runFileOpsCli(
 }
 
 function isCliEntry(): boolean {
-  try {
-    return process.argv[1] !== undefined && realpathSync(process.argv[1]) === realpathSync(fileURLToPath(import.meta.url));
-  } catch {
-    return false;
-  }
+  // 纯 path/fileURL 判断，零 fs：不 realpath、不 stat、不解析符号链接、不读取
+  // 任何文件（SQLite 只读打开是本 CLI 唯一必要的文件系统访问）。
+  const entry = process.argv[1];
+  if (entry === undefined || entry === "") return false;
+  // 1) argv[1] 字面解析到本文件（相对/绝对均可；pnpm/tsx/编译产物直跑）。
+  if (path.resolve(entry) === fileURLToPath(import.meta.url)) return true;
+  // 2) installed npm bin：argv[1] 是 node_modules/.bin 下的符号链接（不解析），
+  //    按已知 bin 名 basename 匹配兜底。
+  return FILE_OPS_ENTRY_BASENAMES.has(path.basename(entry));
 }
+
+/** 与入口文件对应的已知 basename（installed bin 名 / 源 / 编译入口）。 */
+const FILE_OPS_ENTRY_BASENAMES = new Set([
+  "pi-agent-server-file-ops", // package.json bin 名（.bin 符号链接）
+  "file-ops.js", // compiled 入口
+  "file-ops", // 源入口（tsx/直接 node 调用别名）
+]);
 
 if (isCliEntry()) {
   void runFileOpsCli(process.argv.slice(2), process.env as StorageEnvironment).then(

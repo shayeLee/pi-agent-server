@@ -1,0 +1,32 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "outDir": "./dist-reconcile",
+    "rootDir": ".",
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true
+  },
+  "include": [
+    "scripts/reconcile-jsonl.ts",
+    "src/file-operations/reconcile.ts",
+    "src/application/ports/project-store-port.ts",
+    "src/application/ports/reconcile-reference-port.ts",
+    "src/storage/db-schema.ts",
+    "src/storage/kysely-reconcile-reference-repository.ts",
+    "src/storage/migration-engine.ts",
+    "src/storage/migration-manifest.ts",
+    "src/storage/migration-renderer.ts",
+    "src/storage/node-sqlite-adapter.ts",
+    "src/storage/pg-int8.ts",
+    "src/storage/postgres-bootstrap.ts",
+    "src/storage/postgres-connection.ts",
+    "src/storage/schema-builder.ts",
+    "src/storage/schema-compatibility.ts",
+    "src/storage/schema-manifest.ts",
+    "src/storage/schema-types.ts",
+    "src/storage/sqlite-write-lock.ts",
+    "src/storage/storage-config.ts"
+  ]
+}
