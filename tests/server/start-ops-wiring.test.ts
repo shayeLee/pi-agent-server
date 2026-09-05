@@ -13,6 +13,7 @@ import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
 import { startServer, type StartConfig } from "../../src/server/start.js";
 import { runSqliteMigrations } from "../../src/storage/migration-engine.js";
+import { makePolicy, makeTestIpAccess } from "../helpers/ip-access.js";
 
 const cleanups: string[] = [];
 afterEach(() => { for (const directory of cleanups.splice(0)) rmSync(directory, { recursive: true, force: true }); });
@@ -27,8 +28,8 @@ function baseConfig(overrides: Partial<StartConfig> = {}): StartConfig {
   const dir = makeTempDir();
   return {
     port: 0,
-    intranetCidrs: [],
-    tokens: {},
+    // WP5D-3：/metrics 仅 admin/operator；探针测试以 inject 默认来源 127.0.0.1 访问，登记为 admin。
+    ipAccess: makeTestIpAccess({ policy: makePolicy([{ ip: "127.0.0.1", role: "admin" }]) }),
     dataDir: dir,
     authPath: join(dir, "auth.json"),
     ...overrides,

@@ -17,6 +17,7 @@ import { join } from "node:path";
 import { createServer as createNetServer } from "node:net";
 import type { AddressInfo } from "node:net";
 import { startServer, type StartConfig } from "../../src/server/start.js";
+import { makeTestIpAccess } from "../helpers/ip-access.js";
 import type { Kysely } from "kysely";
 import type { DatabaseSchema } from "../../src/storage/db-schema.js";
 
@@ -28,8 +29,7 @@ function baseConfig(overrides: Partial<StartConfig> = {}): StartConfig {
   const dir = makeTempDir();
   return {
     port: 0,
-    intranetCidrs: [],
-    tokens: overrides.tokens ?? {},
+    ipAccess: makeTestIpAccess(),
     dataDir: dir,
     authPath: join(dir, "auth.json"),
     ...overrides,
@@ -37,6 +37,112 @@ function baseConfig(overrides: Partial<StartConfig> = {}): StartConfig {
 }
 
 describe("startServer 启动/失败清理（H2：fail-fast 顺序 + 幂等 storage close + 成功 app.close 清理）", () => {
+  it("ipAccess 缺失/伪造/旧字段（JS/typed bypass）→ 在任何资源创建前拒绝启动", async () => {
+    // 缺失：legacy 字段单独在场也不行（旧字段必须被显式拒绝，值不回显）。
+    for (const [name, field, value] of [
+      ["legacy intranetCidrs", "intranetCidrs", ["SECRET-INTRA"]],
+      ["legacy tokens", "tokens", { "SECRET-TOKEN": "acct" }],
+      ["legacy trustProxy", "trustProxy", "SECRET-PROXY"],
+    ] as const) {
+      const dir = makeTempDir();
+      try {
+        const config = baseConfig({ dataDir: dir });
+        // JS bypass: legal ipAccess plus an explicitly present legacy property, including
+        // undefined, must be rejected before any resource is created.
+        Object.defineProperty(config, field, { value, enumerable: true, configurable: true });
+        try {
+          await startServer(config as StartConfig);
+          throw new Error(`应拒绝 ${name} 但启动了`);
+        } catch (error) {
+          if (error instanceof Error && error.message.startsWith("应拒绝")) throw error;
+          expect(error).toBeInstanceOf(Error);
+          // 固定消息、绝不回显原始值（校验实现不插值任何 config 内容）。
+          expect((error as Error).message).not.toContain("SECRET");
+        }
+        // 校验先于一切资源创建/网络访问：dataDir 内不得出现任何 DB/配置副作用文件。
+        expect(readdirSync(dir)).toEqual([]);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+
+    for (const field of ["intranetCidrs", "tokens", "trustProxy"] as const) {
+      const undefinedLegacyDir = makeTempDir();
+      try {
+        const config = baseConfig({ dataDir: undefinedLegacyDir });
+        Object.defineProperty(config, field, { value: undefined, enumerable: true, configurable: true });
+        await expect(startServer(config)).rejects.toThrow(/legacy 网络字段/);
+        expect(readdirSync(undefinedLegacyDir)).toEqual([]);
+      } finally {
+        rmSync(undefinedLegacyDir, { recursive: true, force: true });
+      }
+    }
+
+    for (const [name, value] of [
+      ["ipAccess 缺失", undefined],
+      ["ipAccess 非对象", "bypass"],
+      ["ipAccess 空对象", {}],
+      ["allowedClientCidrs 非法", { allowedClientCidrs: [{ family: "v4", prefix: 8, bytes: [10, 0, 0, 0], text: "10.0.0.1/8" }], policy: null }],
+      ["allowedClientCidrs 空", { allowedClientCidrs: [], policy: null }],
+      ["ipAccess defaultWorkspaceRoot undefined", { ...makeTestIpAccess(), defaultWorkspaceRoot: undefined }],
+      ["ipAccess unknown undefined", { ...makeTestIpAccess(), unknownField: undefined }],
+    ] as const) {
+      const dir = makeTempDir();
+      try {
+        try {
+          await startServer(baseConfig({ dataDir: dir, ipAccess: value as never }));
+          throw new Error(`应拒绝 ${name} 但启动了`);
+        } catch (error) {
+          if (error instanceof Error && error.message.startsWith("应拒绝")) throw error;
+          expect(error).toBeInstanceOf(Error);
+          expect((error as Error).message).not.toContain("SECRET");
+        }
+        expect(readdirSync(dir)).toEqual([]);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+  });
+
+  it("startServer 顶层 workspace 字段按 property presence 拒绝：direct JS bypass 每字段零副作用", async () => {
+    for (const field of ["defaultWorkspaceRoot", "workspaceRoots"] as const) {
+      for (const value of ["SECRET-WORKSPACE-VALUE", undefined]) {
+        const dir = makeTempDir();
+        try {
+          const config = baseConfig({ dataDir: dir });
+          // Deliberately bypass the TypeScript shape; undefined must remain an own property.
+          Object.defineProperty(config, field, { value, enumerable: true, configurable: true });
+          try {
+            await startServer(config as StartConfig);
+            throw new Error(`应拒绝 ${field} 但启动了`);
+          } catch (error) {
+            if (error instanceof Error && error.message.startsWith("应拒绝")) throw error;
+            expect(error).toBeInstanceOf(Error);
+            expect((error as Error).message).toBe(
+              "StartConfig 包含已废弃的 legacy 网络字段（设置即拒绝启动；值不回显）",
+            );
+            expect((error as Error).message).not.toContain("SECRET-WORKSPACE-VALUE");
+          }
+          expect(readdirSync(dir)).toEqual([]);
+        } finally {
+          rmSync(dir, { recursive: true, force: true });
+        }
+      }
+    }
+  });
+
+  it("ipAccess 缺失时即使在旧字段也存在的前提下也优先拒绝（不创建任何资源）", async () => {
+    const dir = makeTempDir();
+    try {
+      await expect(startServer({ port: 0, dataDir: dir, authPath: join(dir, "auth.json") } as StartConfig)).rejects.toThrow(
+        /ipAccess/,
+      );
+      expect(readdirSync(dir)).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("未知 storageDialect fail-fast：在任何 ModelRuntime/Pool/DatabaseSync 创建前拒绝启动", async () => {
     // resolveStorageConfig 在 startServer 内最先解析（先于 ModelRuntime.create、任何 DatabaseSync/
     // Pool 创建）；断言的具体错误消息即 fail-fast 的位置与顺序契约。

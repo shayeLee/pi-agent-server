@@ -13,6 +13,11 @@ import {
   type OperationStatus,
 } from "../../src/server/ops-status.js";
 import { makeInitializedMemoryDb } from "../helpers/sqlite.js";
+import { makePolicy, makeTestIpAccess } from "../helpers/ip-access.js";
+
+// WP5D-3：/metrics 仅 admin/operator。这些探针测试以 inject 默认来源 127.0.0.1 访问 /metrics，
+// 故策略把 127.0.0.1 登记为 admin（角色 gate 的明细矩阵见 tests/server/route-rbac.test.ts）。
+const PROBE_ADMIN_POLICY = makePolicy([{ ip: "127.0.0.1", role: "admin" }]);
 
 async function makeApp(ops: OperationStatus): Promise<FastifyInstance> {
   const { sessions, projects } = await makeInitializedMemoryDb({ cwd: "/tmp/default-project" });
@@ -25,7 +30,7 @@ async function makeApp(ops: OperationStatus): Promise<FastifyInstance> {
       getAvailable: async () => [],
       isAvailable: async () => false,
     },
-    authenticate: async () => ({ kind: "ip", ip: "127.0.0.1" }),
+    ipAccess: makeTestIpAccess({ policy: PROBE_ADMIN_POLICY }),
     createAdapter: async () => {
       throw new Error("unused");
     },
@@ -228,7 +233,7 @@ describe("WP5A /readyz（进程 readiness + migration gate 背书语义）", () 
         getAvailable: async () => [],
         isAvailable: async () => false,
       },
-      authenticate: async () => ({ kind: "ip", ip: "127.0.0.1" }),
+      ipAccess: makeTestIpAccess({ policy: PROBE_ADMIN_POLICY }),
       createAdapter: async () => {
         throw new Error("unused");
       },

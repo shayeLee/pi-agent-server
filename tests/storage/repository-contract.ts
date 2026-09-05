@@ -33,7 +33,7 @@ export interface RepositoryContractStorage {
 }
 
 const OWNER_A = identityKey({ kind: "ip", ip: "10.0.0.1" });
-const OWNER_B = identityKey({ kind: "account", accountId: "acct-9" });
+const OWNER_B = identityKey({ kind: "ip", ip: "10.0.0.9" });
 
 /**
  * 共享默认项目 fixture：方言测试 makeStorage 必须用此值预种默认项目，

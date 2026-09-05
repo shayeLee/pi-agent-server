@@ -4,6 +4,7 @@ import type {
   ModelDescriptor,
   ProjectRecord,
   ProjectStorePort,
+  SessionHistoryReader,
   SessionRecord,
   SessionRecordPatch,
   SessionStorePort,
@@ -41,6 +42,12 @@ export type SessionServiceDeps = {
   systemPromptResolver?: SystemPromptPort;
   /** 创建会话时冻结的能力版本快照（id→version）。 */
   capabilityVersions?: Readonly<Record<string, number>>;
+  /**
+   * 只读会话历史解析口（WP5D-3 P1）：GET export 命中持久化但未实例化的会话时使用。
+   * 缺省未注入时，导出含 piSessionFile 的未实例化会话失败（failclosed 脱敏错误），
+   * 绝不回退到可写 createAdapter 路径。
+   */
+  sessionHistoryReader?: SessionHistoryReader;
   /**
    * @deprecated WP4A 起删除只向持久 file_operations outbox 入队，不再由 application
    * 直接触碰文件系统；保留可选字段仅兼容旧 composition root/tests。
@@ -327,15 +334,39 @@ export class SessionService {
   }
 
   /**
-   * 导出会话快照。契约：先读事件游标、再导出历史，导出期间新事件可能被重放，
-   * 语义为「至少一次」——客户端需按 lastEventId 去重（避免重复消费）。
+   * 导出会话快照（WP5D-3 P1：真只读，绝不实例化 runtime）。
+   * 顺序：先查 owned 记录（越权/不存在一律 null）；已存在 runtime → 活会话导出
+   * （事件游标 + adapter 投影，快照语义「至少一次」不变）；无 runtime 且未持久化
+   * （piSessionFile null）→ 空消息 + 游标 0；无 runtime 但已持久化 → 注入的
+   * SessionHistoryReader 只读解析（与活会话导出同一 role/text 投影），绝不
+   * createAdapter / 写 DB / 写 piSessionFile。
    */
   async exportSession(ownerKey: string, id: string): Promise<{ messages: unknown; lastEventId: number } | null> {
-    const entry = await this.findEntry(ownerKey, id);
-    if (!entry) return null;
-    const lastEventId = entry.events.lastEventId;
-    const messages = await entry.runtime.exportSession();
-    return { messages, lastEventId };
+    const record = await this.findOwned(ownerKey, id);
+    if (!record) return null;
+    // 已实例化 runtime：活会话导出（registry.get 仅读取，绝不因导出触发创建）。
+    const existing = this.deps.registry.get(id);
+    if (existing) {
+      const lastEventId = existing.events.lastEventId;
+      const messages = await existing.runtime.exportSession();
+      return { messages, lastEventId };
+    }
+    // 无 runtime：从未活跃（或重启后未实例化）的会话——零写入只读路径。
+    if (!record.piSessionFile) {
+      // 未持久化：没有任何历史可读（空消息，游标 0），稳定且零副作用。
+      return { messages: [], lastEventId: 0 };
+    }
+    if (!this.deps.sessionHistoryReader) {
+      // 组合根未注入只读解析口：failclosed，绝不回退到可写的 getOrCreate/createAdapter 路径。
+      throw new Error("会话历史只读解析不可用（服务配置缺失）");
+    }
+    try {
+      const messages = await this.deps.sessionHistoryReader.readSessionHistory(record.piSessionFile);
+      return { messages, lastEventId: 0 };
+    } catch (error) {
+      // 错误脱敏：只暴露固定文案，不透出文件路径/内容/解析细节（实现层同样脱敏，此处兜底）。
+      throw new Error("会话历史读取失败", { cause: error });
+    }
   }
 
   async controlSession(
@@ -357,6 +388,22 @@ export class SessionService {
   /** SSE transport uses the event bus, but ownership/runtime lookup remains application logic. */
   async getEntry(ownerKey: string, id: string): Promise<SessionEntry | null> {
     return this.findEntry(ownerKey, id);
+  }
+
+  /**
+   * SSE viewer 只读入口（WP5D-3 P2）：只 registry.get（绝不创建 runtime/adapter，
+   * 零 DB/文件副作用）。区分「记录不存在/越权」（HTTP 404）与「记录存在但无 runtime」
+   * （HTTP 层返回稳定受控态 204：无可订阅的 live 事件流）。
+   */
+  async getExistingEntry(
+    ownerKey: string,
+    id: string,
+  ): Promise<{ kind: "not-found" } | { kind: "no-runtime" } | { kind: "entry"; entry: SessionEntry }> {
+    const record = await this.findOwned(ownerKey, id);
+    if (!record) return { kind: "not-found" };
+    const existing = this.deps.registry.get(id);
+    if (!existing) return { kind: "no-runtime" };
+    return { kind: "entry", entry: existing };
   }
 
   /**

@@ -15,6 +15,7 @@ import { startServer, type StartConfig } from "../../src/server/start.js";
 import { createPostgresKysely, createPostgresPool } from "../../src/storage/postgres-bootstrap.js";
 import { runPostgresMigrations } from "../../src/storage/migration-engine.js";
 import { assertRequiredPgTestEnvironment } from "../../scripts/pg-test-gate.js";
+import { makeTestIpAccess } from "../helpers/ip-access.js";
 
 const baseUrl = process.env.PI_TEST_PG_URL?.trim();
 assertRequiredPgTestEnvironment("tests/postgres/start-migration-gate-pg", baseUrl, false);
@@ -36,8 +37,7 @@ function scopedUrl(url: string, targetSchema: string): string {
 function baseConfig(databaseUrl: string, dir: string): StartConfig {
   return {
     port: 0,
-    intranetCidrs: [],
-    tokens: {},
+    ipAccess: makeTestIpAccess(),
     dataDir: dir,
     authPath: join(dir, "auth.json"),
     cwd: dir,

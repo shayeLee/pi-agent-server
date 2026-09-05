@@ -11,6 +11,7 @@ import { startServer, type StartConfig } from "../../src/server/start.js";
 import { createPostgresKysely, createPostgresPool } from "../../src/storage/postgres-bootstrap.js";
 import { runPostgresMigrations } from "../../src/storage/migration-engine.js";
 import { assertRequiredPgTestEnvironment } from "../../scripts/pg-test-gate.js";
+import { makePolicy, makeTestIpAccess } from "../helpers/ip-access.js";
 
 const baseUrl = process.env.PI_TEST_PG_URL?.trim();
 assertRequiredPgTestEnvironment("tests/postgres/start-ops-pg", baseUrl, false);
@@ -32,8 +33,8 @@ function scopedUrl(url: string, targetSchema: string): string {
 function baseConfig(databaseUrl: string, dir: string): StartConfig {
   return {
     port: 0,
-    intranetCidrs: [],
-    tokens: {},
+    // WP5D-3：/metrics 仅 admin/operator；探针测试以 inject 默认来源 127.0.0.1 访问，登记为 admin。
+    ipAccess: makeTestIpAccess({ policy: makePolicy([{ ip: "127.0.0.1", role: "admin" }]) }),
     dataDir: dir,
     authPath: join(dir, "auth.json"),
     cwd: dir,

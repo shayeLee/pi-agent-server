@@ -72,7 +72,7 @@ GET    /v1/sessions/:id/events          SSE 订阅回答、工具与状态事件
 GET    /health                          存活与依赖检查
 ```
 
-鉴权与用户标识：所有业务接口经 Bearer Token 鉴权（接入鉴权）；用户身份另由来源 IP（内网）或 pi-agent-server 签发的账号（公网）识别，统一抽象为 `UserIdentity`，Token 与身份分离——Token 校验通过后，身份取自 IP 或账号；每个用户只能访问自己的会话。内网以来源 IP 作为身份的前提是内网设备 IP 固定；NAT、共享出口或伪造 IP 的风险由网络边界控制，不在应用层解决。模型配置：服务端默认提供模型，用户可添加自定义模型（自己的 OpenAI 账号或 API key），默认与自定义模型可灵活选择使用；凭证归属用户（按 `UserIdentity` 隔离）、脱敏返回；自定义模型额度耗尽或凭证删除时回退服务端默认模型，平台总 token/成本配额另设、超限拒绝；存储见 §7。
+网络准入与用户标识（WP5D-2 ⏳ change pending revalidation——当前 RC 用户决策收窄 WP5D、移除 workspaceRoots/`PI_DEFAULT_WORKSPACE_ROOT` 后处于待重验状态，此前 ✅ 已验收的依据为用户提供的修复 SSE flaky 后完整真实 PG16+age `pnpm verify:release` 成功证据；待新 release 证据再 accepted）：所有 HTTP 路由（含 `/health`/`/readyz`/`/metrics` 探针）先经**来源 IP 准入**——身份 = 直接 TCP 对端 IP（`request.raw.socket.remoteAddress`，忽略 `X-Forwarded-For`；IPv4-mapped 归一 v4 后 canonical 化），CIDR 外/disabled/不可解析一律 403；`/v1` 与 `/metrics` 上策略画像 `tokenRequired` 的**实际请求**（GET/非预检 OPTIONS）必须出示绑定该 IP 的 Bearer token（缺失/错误 401；token off 忽略 Bearer；合规 CORS 预检免 token），`/health`/`/readyz` 存活/就绪探针任意 admitted 且**永不要求 token**（仅 IP gate）。策略（`PI_ALLOWED_CLIENT_CIDRS` 必填 + 可选 `PI_IP_ACCESS_POLICY_FILE`）与 401/403 语义见 [IP access policy 设计](docs/ip-rbac-design.md)；旧 `INTRANET_CIDRS`/`TOKENS`/`TRUST_PROXY` 设置即拒绝启动。每个用户（一个 IP = 一个用户，身份 = canonical IP，owner 键 `ip:<canonical>`）只能访问自己的会话/项目；**role 授权矩阵（WP5D-3 ⏳ change pending revalidation——同上，待新 release 证据再 accepted）**：基于 `request.access.role` 逐路由 gate——探针（/health、/readyz）任意 admitted role、`/metrics` 仅 admin/operator（其画像 tokenRequired 时实际 GET 仍须出示 token）、operator 的 `/v1` 一律 403、viewer 仅纯读 GET/会话 export/SSE（写与 messages/steer/follow-ups/abort 一律 403）、user/admin 维持 own-resource 行为（仍 owner 隔离，**admin 暂不跨 owner**）；每路由显式 permission、未声明即 default-deny 403，403 固定响应体不泄 role/IP/path，CORS 预检不做 role（先 admission）。**只读路径零实例化（P1/P2）**：`GET /v1/sessions/:id/export` 对任何角色都**绝不创建 runtime/adapter**——已有 runtime 走活会话导出（事件游标 + 投影）；无 runtime 且未持久化 → 空消息 + `lastEventId 0`；无 runtime 但已持久化 → 注入的 `SessionHistoryReader` 零写只读解析（与 `PiAgentAdapter` 同一 `{role,text}` 投影，读取前后文件指纹验证零写、错误脱敏），绝不 createAdapter/写 DB/写 piSessionFile。SSE：关闭（503）与配额（429）检查先于**任何** runtime 创建（拒绝路径零副作用）；viewer 只 `registry.getExisting`——会话存在但无 runtime 返回**稳定受控态 `204 No Content`**（不创建不订阅；与 404「不存在/越权」区分），已有 runtime 可订阅（200）；user/admin 通过关闭/配额后才 getOrCreate。**IP-RBAC 不限制 cwd 或 Agent 工具绝对路径/OS 权限（不是 sandbox）**：workspace/sandbox 安全（工具根限制、路径逃逸防护）仅公网暴露前需要，当前 RC 决策整体延期至未来 OIDC/IAM + workspace/sandbox 设计；`workspaceRoots`/`PI_DEFAULT_WORKSPACE_ROOT` 已从策略/配置/access profile 完整移除（策略 JSON 出现 workspaceRoots 即未知字段 failfast）。owner transfer 未实现。**数据与身份迁移语义（RC）**：新 RC 不存在 legacy 账号/token 的 owner 迁移——正式旧公网 token 数据从未存在，无可迁移；早期开发库按 RC 语义直接删库重建/经受控离线 cutover（`pnpm cutover`）reset，绝不在位转换；未来若实现 owner transfer，也仅在 DB 层把资源归属在两个 IP 身份间转移（IP→IP），且永远不迁移策略文件的 token/role（接收方继承自己的 IP 画像）。NAT、共享出口或伪造 IP 的风险由网络边界控制，不在应用层解决。模型配置：服务端默认提供模型，用户可添加自定义模型（自己的 OpenAI 账号或 API key），默认与自定义模型可灵活选择使用；凭证归属用户（按 `UserIdentity` 隔离）、脱敏返回；自定义模型额度耗尽或凭证删除时回退服务端默认模型，平台总 token/成本配额另设、超限拒绝；存储见 §7。
 
 **服务端默认模型配置：**可设置 `PI_DEFAULT_MODEL="provider/modelId"`（例如 `openai-codex/gpt-5.5`）与 `PI_DEFAULT_THINKING_LEVEL="medium"`。两者仅作用于未在会话中显式选择配置、且尚未产生 JSONL 历史的新会话；会话级模型/思考级别优先，已有历史会话会恢复其历史配置。配置的模型不存在、没有凭证或思考级别不合法时，服务启动失败而非静默回退。`PI_MODEL_PROVIDER`/`PI_MODEL_API_KEY` 仅用于注入服务端 API 凭证，不选择默认模型。
 
@@ -108,16 +108,29 @@ SSE 至少包含：`text_delta`、`tool_start`、`tool_update`、`tool_end`、`s
 
 - 使用 Fastify 内置的 Pino，单行 JSON 输出，便于 Docker、Loki、ELK 等采集。
 - 日志级别（`trace`/`debug`/`info`/`warn`/`error`）由 `LOG_LEVEL` 配置，生产默认 `info`。
-- 通过 `redact` 在序列化阶段自动脱敏，避免敏感字段落入日志：
+- **Fastify 内置 per-request 日志一律关闭**（`logController: new LogController({ disableRequestLogging: true })`）：
+  `incoming request`/`request completed`/`routeNotFound`/默认错误日志会序列化 raw `remoteAddress`/
+  `remotePort`/`url`/`query`/headers（含 `X-Forwarded-For` 与 `Authorization`），不得进入日志。
+- 配置**安全 serializers + `redact` 纵深防线**：`req` serializer 只保留 `id`/`method`（剥离 url/query/
+  headers/remoteAddress/remotePort），`res` 只保留 `statusCode`；任何残余敏感键（authorization/token/
+  apiKey 等）被 `redact` censor：
 
 ```ts
 logger: {
   level: process.env.LOG_LEVEL ?? "info",
+  serializers: { req: safeReqSerializer, res: safeResSerializer },
   redact: {
-    paths: ["req.headers.authorization", "token", "apiKey"],
+    paths: ["req.headers.authorization", "req.headers", "headers.authorization",
+            "authorization", "token", "apiKey", "req.url", "req.query",
+            "req.remoteAddress", "req.remotePort"],
     censor: "[REDACTED]",
   },
 }
+```
+
+- **准入后置安全日志**（WP5D-2）：网络准入通过后把请求 logger 替换为带 `subjectHash` 的子 logger；
+  allowed 请求只记录 `{ admission: "allowed" }` + subjectHash，denied（401/403）只记录固定枚举
+  （`reason`/`statusCode`），绝不记录原始 IP、url/path/query、token。
 ```
 
 ### 5.2 关联字段
@@ -229,14 +242,14 @@ N、M 天数由部署配置决定。
 
 ## 7. 安全与运维要求
 
-- 默认绑定 `127.0.0.1` 或内网网卡；业务 API 一律经 TLS（内网亦要求），公网部署额外增加 pi-agent-server 账号鉴权与网络边界控制。传输层与鉴权层预留 TLS 与账号签发接入点，不写死内网假设。
-- 所有业务 API 使用 Bearer Token；部署环境增加每用户限流（QPS）、请求体大小限制和 CORS 白名单。
+- 默认绑定 `127.0.0.1` 或内网网卡；业务 API 一律经 TLS（内网亦要求），公网部署额外增加 WP5D-2 网络准入（CIDR + 可选 token 画像；旧 TOKENS 账号映射已废弃）与网络边界控制。传输层与鉴权层预留 TLS 与账号签发接入点，不写死内网假设。
+- 所有业务 API 使用 Bearer Token（仅 /v1 上 `tokenRequired` 画像强制；token off 画像不要求）；部署环境增加每用户限流（QPS）、请求体大小限制和 CORS 白名单。
 - 使用独立 `agentDir`、固定 `cwd`、固定系统提示词和固定工具列表，避免继承个人 Pi 配置；工具列表是已启用能力所声明工具的并集；系统提示词与工具列表按会话创建时的已启用能力生成并冻结，配置变更不影响既有会话。禁用项目目录自动发现（`.pi/extensions`、skills、prompts、`AGENTS.md`、themes），只从 manifest 显式注入受控资源，避免仓库中未声明的扩展被加载执行。
 - 服务端默认模型用 API key（环境变量/密钥系统读取）；各能力凭证同理；不得写入仓库、会话或日志。
   - 实现例外（本机开发便利）：凭证文件默认指向开发者本机个人 `~/.pi/agent/auth.json`（与 pi CLI 共用，OAuth token 刷新由 SDK 回写该文件，同文件带锁并发安全）；**生产部署必须**通过 `PI_AUTH_PATH` 指向服务端独立凭证文件或 KMS，不得沿用默认个人路径。
 - 用户自定义模型凭证：统一服务端加密存储（KMS）。支持 OAuth 登录（`login()` 授权、token 入库）或 API key 两种方式；不采用浏览器 localStorage 明文保存——XSS 可窃取、明文传输可被抓包、共享设备易残留；凭证不落明文库，按用户/会话独立 ModelRuntime 承载，会话期间经 `setRuntimeApiKey` 注入、结束后清零，禁止在共享实例上可竞争地设置用户密钥；日志按 §5 脱敏。
 - **多项目 cwd 安全边界**：`POST /v1/projects` 允许指定任意 cwd，因此**公网部署不得开放创建项目接口**（应仅内网/管理面开放）。若未来开放公网创建项目，必须先限制 cwd 到服务端配置的项目根目录下（`realpath` 防 `..` 与符号链接逃逸），否则启用文件/命令工具后用户可将 Agent 指向服务账号可访问的任意目录。
-- **内网免 token 与反向代理的组合边界**：内网免 token 依据 `request.ip` 判定来源；服务位于反向代理后且未配置 `TRUST_PROXY` 时，`request.ip` 是代理自身地址（常为 `127.0.0.1` 或私网 IP），会使所有经代理进入的公网请求被误判为内网、绕过 token。因此反向代理部署时**必须**配置 `TRUST_PROXY` 为具体代理 IP（并确保代理覆盖而非透传不可信的 `X-Forwarded-For`）；或将公网入口与内网免 token 入口隔离（不同端口/监听地址），避免公网链路上启用 IP 免鉴权。
+- **来源 IP 准入与反向代理的组合边界（WP5D-2）**：准入依据**直接 TCP 对端 IP**（`request.raw.socket.remoteAddress`），**不信任任何 `X-Forwarded-For`/`request.ip`**；`TRUST_PROXY` 已废弃（设置即拒绝启动）。服务位于反向代理后时，所有请求的准入身份都是代理出口 IP——必须把代理出口网段（而非最终客户端网段）纳入 `PI_ALLOWED_CLIENT_CIDRS`，或将服务直接可达（TLS 终结于服务自身）；默认拒绝模型下未纳入即 403，不存在「未配置即默认内网」的隐式语义。
 - 日志字段、脱敏与分级遵循 §5 日志设计。
 - 有副作用的流程应使用独立 Worker 或权限受限的 Pi 自定义工具；写仓库、创建 PR、构建和部署等权限必须按能力最小化授予并审计。
 - 审计：有副作用的工具调用与 Job 须记录持久化审计——`UserIdentity`、会话/Job、工具/能力、授权范围、目标、结果、时间与关联 ID；不记录密钥与正文；审计记录单独定义保留期与访问权限，写入失败须告警。
@@ -244,4 +257,4 @@ N、M 天数由部署配置决定。
 
 ## 8. 交付计划
 
-当前数据库设计见[数据库设计](docs/database-design.md)；Phase 3 数据保留计划见[Phase 3 数据保留计划](docs/phase-3-data-retention-plan.md)（WP0 决策冻结已完成，WP1 离线迁移基础已完成；WP3（备份/恢复/pre-migration/runbook）基础工作包已完成，真实 PG/age gate 仅在当前环境提供 URL 与二进制并实际运行时计为验收证据；服务级正式 backup/rollback/运行时接入仍未实施，WP3 为离线工具，未接入服务启动；WP2 受控 reset 仍未开始）；身份与访问管理规划见[身份与访问管理规划](docs/identity-access-plan.md)；历史平台交付计划见[归档交付计划](docs/archive/delivery-plan.md)；能力级交付见各自能力文档（如[知识库问答](docs/capabilities/knowledge-qa.md)）。
+当前数据库设计见[数据库设计](docs/database-design.md)；Phase 3 数据保留计划见[Phase 3 数据保留计划](docs/phase-3-data-retention-plan.md)（WP0 决策冻结已完成，WP1 离线迁移基础已完成；WP3（备份/恢复/pre-migration/runbook）基础工作包已完成，真实 PG/age gate 仅在当前环境提供 URL 与二进制并实际运行时计为验收证据；服务级正式 backup/rollback/运行时接入仍未实施，WP3 为离线工具，未接入服务启动；WP2 受控 reset 仍未开始）；身份与访问管理规划见[身份与访问管理规划](docs/identity-access-plan.md)；IP access policy（WP5D）核心设计见[IP access policy 设计](docs/ip-rbac-design.md)，其 WP5D-1（core 模块与单测）、WP5D-2（HTTP 网络准入接线：全局 CIDR/disabled gate + /v1 与 /metrics token gate（/health、/readyz 免 token）+ 旧变量拒绝启动）与 **WP5D-3（role 授权矩阵）⏳ change pending revalidation**（当前 RC 用户决策收窄 WP5D、移除 workspaceRoots/`PI_DEFAULT_WORKSPACE_ROOT` 后处于待重验状态；此前 ✅ 已验收依据用户提供的修复 SSE flaky 后完整真实 PG16+age `pnpm verify:release` 成功证据、不记录测试数量，待新 release 证据再 accepted），`INTRANET_CIDRS`/`TOKENS`/`TRUST_PROXY` 设置即拒绝启动，admin 跨 owner 只读、owner transfer 未做，workspace/sandbox 安全整体延期（公网暴露前才需要，需未来 OIDC/IAM + workspace/sandbox 设计）；只读导出零实例化与 SSE viewer 稳定 204 见上文 §4.3/§7 准入段；WP5D 验收不代表 WP5 整体完成：WP5B DEFERRED（暂缓），WP5C deployment drill 未验收；历史平台交付计划见[归档交付计划](docs/archive/delivery-plan.md)；能力级交付见各自能力文档（如[知识库问答](docs/capabilities/knowledge-qa.md)）。

@@ -3,10 +3,12 @@ import type { FastifyInstance } from "fastify";
 import { buildApp } from "../../src/server/app.js";
 import { formatSseEvent } from "../../src/server/sse-format.js";
 import { MockAgentAdapter } from "../../src/agent/mock-agent-adapter.js";
-import type { UserIdentity } from "../../src/core/user-identity.js";
 import { makeInitializedMemoryDb } from "../helpers/sqlite.js";
+import { makePolicy, makeTestIpAccess } from "../helpers/ip-access.js";
+import { identityKey } from "../../src/core/user-identity.js";
+import { DEFAULT_PROJECT_ID } from "../../src/application/ports/index.js";
 
-const IDENTITY: UserIdentity = { kind: "account", accountId: "u1" };
+// WP5D-2：真实 TCP 连接来自 127.0.0.1；策略登记 127.0.0.1 为 tokenRequired（Bearer token-1）。
 const TOKEN = "token-1";
 const JSON_HEADERS = { "content-type": "application/json" };
 const authHeader = (token: string) => ({ authorization: `Bearer ${token}` });
@@ -17,6 +19,112 @@ describe("SSE 帧格式化（needs.md §4.2）", () => {
     expect(formatSseEvent(3, { type: "text_delta", text: "hi" })).toBe(
       'id: 3\ndata: {"type":"text_delta","text":"hi"}\n\n',
     );
+  });
+});
+
+describe("WP5D-3 P2：SSE 关闭/配额检查先于任何 runtime 创建（零副作用）", () => {
+  const apps: FastifyInstance[] = [];
+  afterEach(async () => {
+    await Promise.all(apps.splice(0).map((a) => a.close().catch(() => {})));
+  });
+
+  /** 预置一个 127.0.0.1 所属会话（绕过 HTTP 创建）。 */
+  async function seedSession(sessions: Awaited<ReturnType<typeof makeInitializedMemoryDb>>["sessions"], id: string): Promise<void> {
+    await sessions.create({
+      id,
+      ownerKey: identityKey({ kind: "ip", ip: "127.0.0.1" }),
+      projectId: DEFAULT_PROJECT_ID,
+      title: "配额测试",
+      createdAt: 1,
+      updatedAt: 1,
+      piSessionFile: null,
+      modelProvider: null,
+      modelId: null,
+      thinkingLevel: null,
+      systemPrompt: null,
+      capabilityVersions: null,
+    });
+  }
+
+  it("配额超限 429：在 runtime 创建之前拒绝，createAdapter 0、DB 不变（含不存在会话）", async () => {
+    const { sessions, projects } = await makeInitializedMemoryDb({ cwd: "/tmp/default-project" });
+    await seedSession(sessions, "quota-session");
+    let created = 0;
+    const app = buildApp({
+      sessions,
+      projects,
+      defaultProjectCwd: "/tmp/default-project",
+      ipAccess: makeTestIpAccess({
+        policy: makePolicy([{ ip: "127.0.0.1", tokenRequired: true, tokens: [TOKEN] }]),
+      }),
+      maxSsePerUser: 0,
+      maxSseGlobal: 0,
+      createAdapter: async () => {
+        created++;
+        return new MockAgentAdapter();
+      },
+    });
+    apps.push(app);
+
+    const before = await sessions.get("quota-session");
+    for (const url of ["/v1/sessions/quota-session/events", "/v1/sessions/no-such/events"]) {
+      const res = await app.inject({
+        method: "GET",
+        url,
+        remoteAddress: "127.0.0.1",
+        headers: authHeader(TOKEN),
+      });
+      expect(res.statusCode, url).toBe(429);
+      expect(res.json()).toMatchObject({ statusCode: 429, error: "Too Many Requests" });
+    }
+    expect(created).toBe(0); // 零 createAdapter 副作用
+    expect(await sessions.get("quota-session")).toEqual(before); // DB 逐字段不变
+  });
+
+  it("关闭中 503：真实连接在 preClose 期间被拒，createAdapter 0、DB 不变", async () => {
+    const { sessions, projects } = await makeInitializedMemoryDb({ cwd: "/tmp/default-project" });
+    await seedSession(sessions, "closing-session");
+    let created = 0;
+    const app = buildApp({
+      sessions,
+      projects,
+      defaultProjectCwd: "/tmp/default-project",
+      ipAccess: makeTestIpAccess({
+        policy: makePolicy([{ ip: "127.0.0.1", tokenRequired: true, tokens: [TOKEN] }]),
+      }),
+      createAdapter: async () => {
+        created++;
+        return new MockAgentAdapter();
+      },
+    });
+    // 在 preClose 挂起（closing=true）窗口内发起真实请求：buildApp 内建 preClose 先置
+    // closing，随后注册的 hook 等待 gate——此窗口监听器仍接受连接，SSE 路由必须先拒 503。
+    // 必须先于 listen 注册（Fastify listen 后禁止 addHook）。
+    let releaseClose: () => void = () => {};
+    const gate = new Promise<void>((resolve) => {
+      releaseClose = resolve;
+    });
+    app.addHook("preClose", async () => {
+      await gate;
+    });
+    await app.listen({ port: 0 });
+    apps.push(app);
+    const address = app.server.address();
+    const port = typeof address === "object" && address ? address.port : 0;
+
+    const closePromise = app.close(); // 进入 preClose：closing=true，随后阻塞在 gate 上
+    await flush(); // 等待内建 preClose（closing=true）执行完
+
+    const res = await fetch(`http://127.0.0.1:${port}/v1/sessions/closing-session/events`, {
+      headers: authHeader(TOKEN),
+    });
+    expect(res.status).toBe(503);
+    await res.text(); // 消费响应体
+
+    releaseClose();
+    await closePromise;
+    expect(created).toBe(0); // 零 createAdapter 副作用
+    expect((await sessions.get("closing-session"))?.title).toBe("配额测试"); // DB 不变
   });
 });
 
@@ -32,10 +140,10 @@ describe("GET /v1/sessions/:id/events（SSE 订阅与 Last-Event-ID 补发）", 
       sessions,
       projects,
       defaultProjectCwd: "/tmp/default-project",
-      authenticate: async (request) => {
-        if (request.headers.authorization !== `Bearer ${TOKEN}`) throw new Error("bad token");
-        return IDENTITY;
-      },
+      // 准入：127.0.0.1 登记为 tokenRequired（真实 SSE 连接必须携带 Bearer token-1）
+      ipAccess: makeTestIpAccess({
+        policy: makePolicy([{ ip: "127.0.0.1", tokenRequired: true, tokens: [TOKEN] }]),
+      }),
       serverEpoch,
       createAdapter: async () =>
         new MockAgentAdapter([
@@ -59,7 +167,7 @@ describe("GET /v1/sessions/:id/events（SSE 订阅与 Last-Event-ID 补发）", 
     const res = await app.inject({
       method: "POST",
       url: "/v1/sessions",
-      headers: { ...authHeader(TOKEN), ...JSON_HEADERS },
+      headers: { ...authHeader(TOKEN), ...JSON_HEADERS }, remoteAddress: "127.0.0.1",
       payload: JSON.stringify({ title: "SSE 会话" }),
     });
     return res.json().id;
@@ -109,7 +217,7 @@ describe("GET /v1/sessions/:id/events（SSE 订阅与 Last-Event-ID 补发）", 
     await app.inject({
       method: "POST",
       url: `/v1/sessions/${id}/messages`,
-      headers: { ...authHeader(TOKEN), ...JSON_HEADERS },
+      headers: { ...authHeader(TOKEN), ...JSON_HEADERS }, remoteAddress: "127.0.0.1",
       payload: JSON.stringify({ requestId: "r1", prompt: "你好" }),
     });
     await flush(); // 等待后台流式完成
@@ -139,7 +247,7 @@ describe("GET /v1/sessions/:id/events（SSE 订阅与 Last-Event-ID 补发）", 
     await app.inject({
       method: "POST",
       url: `/v1/sessions/${id}/messages`,
-      headers: { ...authHeader(TOKEN), ...JSON_HEADERS },
+      headers: { ...authHeader(TOKEN), ...JSON_HEADERS }, remoteAddress: "127.0.0.1",
       payload: JSON.stringify({ requestId: "r1", prompt: "你好" }),
     });
     await flush();
@@ -173,7 +281,7 @@ describe("GET /v1/sessions/:id/events（SSE 订阅与 Last-Event-ID 补发）", 
     await app.inject({
       method: "POST",
       url: `/v1/sessions/${id}/messages`,
-      headers: { ...authHeader(TOKEN), ...JSON_HEADERS },
+      headers: { ...authHeader(TOKEN), ...JSON_HEADERS }, remoteAddress: "127.0.0.1",
       payload: JSON.stringify({ requestId: "r1", prompt: "你好" }),
     });
 
@@ -196,7 +304,7 @@ describe("GET /v1/sessions/:id/events（SSE 订阅与 Last-Event-ID 补发）", 
     await app.inject({
       method: "POST",
       url: `/v1/sessions/${id}/messages`,
-      headers: { ...authHeader(TOKEN), ...JSON_HEADERS },
+      headers: { ...authHeader(TOKEN), ...JSON_HEADERS }, remoteAddress: "127.0.0.1",
       payload: JSON.stringify({ requestId: "r1", prompt: "你好" }),
     });
     await flush();

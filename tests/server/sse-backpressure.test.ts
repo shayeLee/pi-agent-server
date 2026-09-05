@@ -6,8 +6,8 @@ import {
 import { buildApp } from "../../src/server/app.js";
 import { MockAgentAdapter } from "../../src/agent/mock-agent-adapter.js";
 import type { SseSocket } from "../../src/server/sse-socket.js";
-import type { UserIdentity } from "../../src/core/user-identity.js";
 import { makeInitializedMemoryDb } from "../helpers/sqlite.js";
+import { makeTestIpAccess } from "../helpers/ip-access.js";
 
 describe("SSE 背压判定（纯逻辑）", () => {
   it("write 成功重置背压计数", () => {
@@ -37,8 +37,6 @@ describe("SSE 背压判定（纯逻辑）", () => {
 });
 
 describe("SSE 背压集成（fake socket）", () => {
-  const IDENTITY: UserIdentity = { kind: "ip", ip: "127.0.0.1" };
-
   async function makeAppWithSlowSocket() {
     const { projects, sessions } = await makeInitializedMemoryDb({ cwd: "/tmp/backpressure" });
     let ended = false;
@@ -47,7 +45,7 @@ describe("SSE 背压集成（fake socket）", () => {
       sessions,
       projects,
       defaultProjectCwd: "/tmp/backpressure",
-      authenticate: async () => IDENTITY,
+      ipAccess: makeTestIpAccess(),
       // 阈值 2：连续第 3 次 write=false 触发关闭
       sseBackpressureThreshold: 2,
       sseSocketFactory: (replyRaw, requestRaw): SseSocket => ({

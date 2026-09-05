@@ -7,17 +7,29 @@
 ### 一次 `POST /v1/sessions/:id/messages` 请求
 
 ```text
-① 鉴权    Bearer Token                          src/server/real-auth.ts
-② 身份    内网 IP / 公网账号 → UserIdentity      src/core/user-identity.ts（+ cidr.ts）
-③ 归属    owner == 该用户？                     src/application/session-service.ts
-④ 幂等    requestId 已处理过？                  src/core/idempotency.ts + storage/kysely-idempotency-repository.ts
+① 准入   直接 socket IP（remoteAddress，忽略 XFF）→ CIDR/disabled gate → /v1 token gate
+                                            src/server/network-admission.ts（+ ip-access-policy.ts / cidr.ts）
+② 身份   来源 IP → canonical UserIdentity（IPv4-mapped 归一 v4）→ request.user / request.access
+                                            src/core/user-identity.ts
+③ 归属   owner == 该用户？                     src/application/session-service.ts
+④ 幂等   requestId 已处理过？                  src/core/idempotency.ts + storage/kysely-idempotency-repository.ts
 ⑤ 状态机  idle？否则 409                        src/core/task-state-machine.ts
-⑥ 并发    全局/每用户上限 → 放行/排队           src/core/concurrency-control.ts
-⑦ 执行    Pi SDK session.prompt()               src/agent/pi-agent-adapter.ts
-⑧ 翻译    SDK 事件 → SseEvent → SSE 字节        src/agent/translate.ts → runtime/session-event-bus.ts → server/sse-format.ts
+⑥ 并发   全局/每用户上限 → 放行/排队           src/core/concurrency-control.ts
+⑦ 执行   Pi SDK session.prompt()               src/agent/pi-agent-adapter.ts
+⑧ 翻译   SDK 事件 → SseEvent → SSE 字节        src/agent/translate.ts → runtime/session-event-bus.ts → server/sse-format.ts
 ⑨ 持久化  JSONL（Pi 写）+ 服务库 SQLite         src/storage/kysely-session-repository.ts
 ```
 
+> ① 是 **WP5D-2 全局准入 + WP5D-3 role 授权**：准入覆盖 `/health`/`/readyz`/`/metrics` 与 `/v1` 全部路由——
+> CIDR 外/disabled/socket IP 不可解析 → 403（探针亦同）；`/v1` 与 `/metrics` 且画像 tokenRequired 时缺失/错误
+> Bearer → 401（实际 GET/非预检 OPTIONS；合规 CORS 预检免 token；`/health`、`/readyz` 永不要求 token）。
+> 授权（`src/server/route-rbac.ts`）基于 `request.access.role` 的逐路由矩阵：探针（/health、/readyz）任意 admitted role、
+> `/metrics` 仅 admin/operator（其画像 tokenRequired 时实际 GET 仍须 token）、operator 的 `/v1` 一律 403、viewer 仅纯读
+> GET/export/SSE（写与 messages/steer/follow-ups/abort 一律 403；export 绝不实例化 runtime，viewer SSE 无 live
+> runtime 返回稳定 204）、user/admin 维持 own-resource 行为（仍 owner 隔离，admin 暂不跨
+> owner）；每路由显式 permission、未声明即 default-deny 403。IP-RBAC 不限制 cwd 或 Agent 工具的
+> 绝对路径/OS 权限（不是 sandbox；workspace 安全 当前 RC 决策整体延期）。
+> WP5D-1 policy core、WP5D-2 HTTP 网络准入与 WP5D-3 role 授权此前 ✅ 已验收，依据用户提供的修复 SSE flaky 后完整真实 PG16+age `pnpm verify:release` 成功证据；本次验收仅针对 WP5D，WP5 整体仍未完成（WP5B DEFERRED，WP5C deployment drill 未验收）；当前 RC 用户决策收窄 WP5D（移除 workspaceRoots/`PI_DEFAULT_WORKSPACE_ROOT`），当前状态为 **change pending revalidation**（待新 release 证据再 accepted）；admin cross-owner read 与 owner transfer 均未实现。
 > ④⑤⑥⑦⑧ 的编排集中在 [`src/runtime/session-runtime.ts`](src/runtime/session-runtime.ts)（`submitMessage` → `doSubmit` → `runStreamingTask` → `settle`）。
 > HTTP 层（[`src/server/app.ts`](src/server/app.ts)）只把决策映射为状态码（202 放行 / 409 冲突 / 429 排队满），不承载业务编排。
 
@@ -53,10 +65,10 @@ HTTP 路由在 `app.ts`，应用逻辑在 `session-service.ts`，编排在 `sess
 
 | 目录 | 职责 | 关键文件 |
 |---|---|---|
-| `src/core/` | 纯逻辑，零 IO/外部依赖，可独立单测 | `task-state-machine.ts`、`concurrency-control.ts`、`idempotency.ts`、`user-identity.ts`、`cidr.ts` |
+| `src/core/` | 纯逻辑，零 IO/外部依赖，可独立单测 | `task-state-machine.ts`、`concurrency-control.ts`、`idempotency.ts`、`user-identity.ts`、`cidr.ts`、`ip-access-policy.ts`、`ip-access-config.ts`、`ip-access-policy-file.ts` |
 | `src/application/` | 应用层：不依赖 Fastify/SQLite/Pi SDK | `session-service.ts`、`ports/`（端口契约）、`capabilities/`（能力组合） |
 | `src/runtime/` | 会话任务编排（状态机+并发+幂等+执行+事件） | `session-runtime.ts`、`runtime-registry.ts`、`session-event-bus.ts` |
-| `src/server/` | HTTP 层 + composition root | `app.ts`、`start.ts`、`auth.ts`/`real-auth.ts`、`sse-format.ts`、`sse-backpressure.ts`、`sse-socket.ts`、`trust-proxy-policy.ts` |
+| `src/server/` | HTTP 层 + composition root | `app.ts`、`start.ts`、`network-admission.ts`（WP5D-2 全局准入）、`route-rbac.ts`（WP5D-3 role 授权：中央 permission + default-deny hook）、`sse-format.ts`、`sse-backpressure.ts`、`sse-socket.ts` |
 | `src/agent/` | Agent 适配边界 | `agent-adapter.ts`（接口）、`pi-agent-adapter.ts`（Pi 实现）、`mock-agent-adapter.ts`（测试）、`events.ts`、`translate.ts` |
 | `src/storage/` | 存储适配器（实现 ports；SQLite/PG 各自方言 bootstrap + 方言中立 Repository） | `bootstrap.ts`、`postgres-bootstrap.ts`、`schema-manifest.ts`、`schema-builder.ts`、`node-sqlite-adapter.ts`、`db-schema.ts`、`kysely-session-repository.ts`、`kysely-project-repository.ts`、`kysely-idempotency-repository.ts` |
 | `src/model-adapters/` | Pi ModelRuntime → ports 适配 | `pi-model-runtime-catalog.ts`、`pi-model-runtime-credentials.ts` |
@@ -65,7 +77,7 @@ HTTP 路由在 `app.ts`，应用逻辑在 `session-service.ts`，编排在 `sess
 ## 三、解耦边界
 
 1. **依赖方向单向**：`core/`、`application/`、`runtime/` 不依赖 Fastify、SQLite、Pi SDK、厂商类型；外部实现（`server/`、`storage/`、`agent/pi-agent-adapter.ts`）通过 [`src/application/ports/`](src/application/ports/) 的接口被核心调用（依赖倒置）。
-2. **纯逻辑优先**：①鉴权外的 ④⑤⑥ 是纯逻辑，集中在 `src/core/`，零外部依赖。
+2. **纯逻辑优先**：①准入（CIDR/disabled/token 判定）与 ④⑤⑥ 均为纯逻辑，集中在 `src/core/`（`cidr.ts`、`ip-access-policy.ts`）与 `src/server/network-admission.ts`（接线闭包，无 IO）。
 3. **厂商协议隔离**：`src/provider-adapters/` 只做「厂商流 → 规范事件」的归一化，绝不执行工具、不进入 HTTP/存储/工具授权路径；工具执行始终走 Pi 原生白名单路径。
 4. **执行唯一入口**：适配器只产生规范化调用事件，Pi Agent 的工具白名单、schema 校验、权限钩子是唯一执行路径。
 
@@ -82,5 +94,5 @@ HTTP 路由在 `app.ts`，应用逻辑在 `session-service.ts`，编排在 `sess
 ## 五、关键入口
 
 - 进程入口：`src/main.ts`（环境变量 → `startServer`）
-- 组装根：`src/server/start.ts`（Pi SDK / SQLite / 鉴权 / 能力注册表 → `buildApp`）
+- 组装根：`src/server/start.ts`（Pi SDK / SQLite / 网络准入 / 能力注册表 → `buildApp`）
 - HTTP 路由与 SSE：`src/server/app.ts`

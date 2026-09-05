@@ -7,23 +7,23 @@ import { buildApp } from "../../src/server/app.js";
 import { MockAgentAdapter } from "../../src/agent/mock-agent-adapter.js";
 import { identityKey, type UserIdentity } from "../../src/core/user-identity.js";
 import { makeInitializedMemoryDb, type SqliteTestStorage } from "../helpers/sqlite.js";
+import { makeTestIpAccess } from "../helpers/ip-access.js";
 import { DEFAULT_PROJECT_ID } from "../../src/application/ports/project-store-port.js";
 import { sessionDeleteOperationKey } from "../../src/storage/file-operation-policy.js";
 
-const identity: UserIdentity = { kind: "account", accountId: "http-user" };
-const token = "http-token";
+// WP5D-2：身份 = 来源 IP（测试固定 127.0.0.1，inject 默认来源即 127.0.0.1）
+const identity: UserIdentity = { kind: "ip", ip: "127.0.0.1" };
 
 it("HTTP DELETE session/project only enqueues file cleanup and never unlinks", async () => {
   const root = mkdtempSync(join(tmpdir(), "pi-file-operation-http-"));
   const storage: SqliteTestStorage = await makeInitializedMemoryDb({ cwd: root, dataDir: root });
   let app: FastifyInstance | undefined;
   try {
-    const authenticate = async () => identity;
     app = buildApp({
       sessions: storage.sessions,
       projects: storage.projects,
       defaultProjectCwd: root,
-      authenticate,
+      ipAccess: makeTestIpAccess(),
       createAdapter: async () => new MockAgentAdapter(),
     });
     await app.ready();
@@ -36,7 +36,7 @@ it("HTTP DELETE session/project only enqueues file cleanup and never unlinks", a
       thinkingLevel: null, systemPrompt: null, capabilityVersions: null,
     });
 
-    const response = await app.inject({ method: "DELETE", url: "/v1/sessions/http-session", headers: { authorization: `Bearer ${token}` } });
+    const response = await app.inject({ method: "DELETE", url: "/v1/sessions/http-session", remoteAddress: "127.0.0.1" });
     expect(response.statusCode).toBe(204);
     expect(existsSync(file)).toBe(true);
     expect(await storage.fileOperations.list()).toEqual([
@@ -52,7 +52,7 @@ it("HTTP DELETE session/project only enqueues file cleanup and never unlinks", a
       piSessionFile: projectFile, modelProvider: null, modelId: null, thinkingLevel: null,
       systemPrompt: null, capabilityVersions: null,
     });
-    const projectResponse = await app.inject({ method: "DELETE", url: "/v1/projects/http-project", headers: { authorization: `Bearer ${token}` } });
+    const projectResponse = await app.inject({ method: "DELETE", url: "/v1/projects/http-project", remoteAddress: "127.0.0.1" });
     expect(projectResponse.statusCode).toBe(204);
     expect(existsSync(projectFile)).toBe(true);
     expect(await storage.fileOperations.getByOperationKey(sessionDeleteOperationKey("http-project-session", "projects/http-project/sessions/http-project-session/history.jsonl"))).toMatchObject({

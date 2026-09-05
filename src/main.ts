@@ -1,26 +1,26 @@
 #!/usr/bin/env node
 // 进程入口：从环境变量读取配置，启动 pi-agent-server，处理优雅关闭信号。
+//
+// WP5D-2 网络准入：
+// - PI_ALLOWED_CLIENT_CIDRS 显式必填（无默认），PI_IP_ACCESS_POLICY_FILE 可选（安全加载：
+//   符号链接/权限/属主/大小/TOCTOU 全程校验）；PI_DEFAULT_WORKSPACE_ROOT 已移除（2026-02 用户
+//   决策：内网不做 workspace 强制，workspace 安全延期至公网暴露前）；
+// - 旧变量 INTRANET_CIDRS / TOKENS / TRUST_PROXY 一律拒绝启动（值不回显）；
+// - 身份 = 直接 socket IP，不信任任何代理头；CIDR 外 / disabled → 403，/v1 tokenRequired → 401。
 
-import { startServer, type StorageDialect } from "./server/start.js";
+import { startServer, rejectLegacyStartEnv, type StorageDialect } from "./server/start.js";
+import { parseIpAccessEnv } from "./core/ip-access-config.js";
+import { loadIpAccessPolicy } from "./core/ip-access-policy-file.js";
+
+// WP5D-2：旧启动变量拒绝（failfast，值不回显）：不再有「未配置即默认内网」的隐式语义。
+rejectLegacyStartEnv(process.env);
+
+// WP5D-2：严格解析准入环境变量 + 可选策略文件安全加载（任何缺失/非法配置 fail-fast）。
+const ipAccessEnv = parseIpAccessEnv(process.env);
+const ipAccessPolicy = loadIpAccessPolicy(ipAccessEnv);
 
 const port = Number(process.env.PORT ?? 8080);
 const host = process.env.HOST ?? "127.0.0.1";
-
-const intranetCidrs = (process.env.INTRANET_CIDRS ?? "10.0.0.0/8,172.16.0.0/12,192.168.0.0/16,127.0.0.0/8")
-  .split(",")
-  .map((s) => s.trim())
-  .filter(Boolean);
-
-// 公网 token → accountId：TOKENS="token1:acct1,token2:acct2"
-const tokens: Record<string, string> = {};
-for (const pair of (process.env.TOKENS ?? "").split(",")) {
-  const idx = pair.indexOf(":");
-  if (idx > 0) {
-    const token = pair.slice(0, idx).trim();
-    const accountId = pair.slice(idx + 1).trim();
-    if (token && accountId) tokens[token] = accountId;
-  }
-}
 
 const tools = (process.env.TOOLS ?? "")
   .split(",")
@@ -38,13 +38,6 @@ function parseDefaultModel(value: string | undefined): { provider: string; id: s
   }
   return { provider, id };
 }
-
-// 可信代理 IP 列表（反代部署时配置；默认不信任，只信 TCP 对端）
-const trustProxy = process.env.TRUST_PROXY
-  ? process.env.TRUST_PROXY.split(",")
-      .map((s) => s.trim())
-      .filter(Boolean)
-  : undefined;
 
 // 严格生产 migration 门禁（WP2A）：默认 off 保持 RC 行为；PI_MIGRATION_GATE=verify 启用启动前
 // migration ledger/head 只读校验（不自动迁移/不自动 reset）；未知非空值 fail-fast。
@@ -64,8 +57,10 @@ const app = await startServer({
   storageDialect: process.env.PI_STORAGE_DIALECT as StorageDialect | undefined,
   dbPath: process.env.DB_PATH,
   databaseUrl: process.env.PI_DATABASE_URL,
-  intranetCidrs,
-  tokens,
+  ipAccess: {
+    allowedClientCidrs: ipAccessEnv.allowedClientCidrs,
+    policy: ipAccessPolicy,
+  },
   cwd: process.env.AGENT_CWD,
   tools: tools.length > 0 ? tools : undefined,
   dataDir: process.env.DATA_DIR,
@@ -84,7 +79,6 @@ const app = await startServer({
     | "max"
     | undefined,
   systemPrompt: process.env.PI_SYSTEM_PROMPT,
-  trustProxy,
   migrationGate: resolveMigrationGate(process.env.PI_MIGRATION_GATE),
 });
 

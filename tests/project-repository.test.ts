@@ -123,12 +123,12 @@ describe("项目索引存储（多项目，SQLite 实现）", () => {
   describe("listByOwner", () => {
     it("只返回该 owner 的项目，按 createdAt 降序", async () => {
       const repo = await makeRepo();
-      const owner = identityKey({ kind: "account", accountId: "acct-1" });
+      const owner = identityKey({ kind: "ip", ip: "10.0.0.1" });
       const a = makeRecord({ id: "p1", ownerKey: owner, createdAt: 1000 });
       const b = makeRecord({ id: "p2", ownerKey: owner, createdAt: 3000 });
       const other = makeRecord({
         id: "p3",
-        ownerKey: identityKey({ kind: "account", accountId: "acct-2" }),
+        ownerKey: identityKey({ kind: "ip", ip: "10.0.0.2" }),
         createdAt: 9999,
       });
       for (const rec of [a, b, other]) await repo.create(rec);
@@ -202,7 +202,7 @@ describe("项目索引存储（多项目，SQLite 实现）", () => {
     it("不同 owner 的项目互不串扰", async () => {
       const repo = await makeRepo();
       const ownerA = identityKey({ kind: "ip", ip: "10.1.1.1" });
-      const ownerB = identityKey({ kind: "account", accountId: "acct-9" });
+      const ownerB = identityKey({ kind: "ip", ip: "10.0.0.9" });
       await repo.create(makeRecord({ id: "a1", ownerKey: ownerA, name: "A 项目" }));
       await repo.create(makeRecord({ id: "b1", ownerKey: ownerB, name: "B 项目" }));
 

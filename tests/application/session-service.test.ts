@@ -6,6 +6,7 @@ import type {
   ModelCatalogPort,
   ProjectRecord,
   ProjectStorePort,
+  SessionHistoryReader,
   SessionRecord,
   SessionRecordPatch,
   SessionStorePort,
@@ -183,6 +184,7 @@ function makeService(
   projectsOverride?: MemoryProjects,
   now: () => number = () => 1234,
   systemPromptResolver?: (cwd: string) => Promise<string>,
+  sessionHistoryReader?: SessionHistoryReader,
 ) {
   const projects = projectsOverride ?? new MemoryProjects(sessions);
   // 默认项目落库（与真实 SQLite 实现的 ensureDefaultProject 对齐）：resolveProject 现按查库判定。
@@ -210,6 +212,7 @@ function makeService(
     createId,
     now,
     systemPromptResolver: systemPromptResolver ? { resolve: systemPromptResolver } : undefined,
+    sessionHistoryReader,
     removeSessionFile: async (path) => { removed.push(path); },
   });
   return { service, sessions, projects, adapters, removed };
@@ -470,14 +473,28 @@ describe("SessionService", () => {
   });
 
   it("导出快照并在删除项目时级联删除会话且只由 outbox 负责文件清理", async () => {
-    const { service, sessions, projects, removed } = makeService();
+    const readCalls: string[] = [];
+    const { service, sessions, projects, removed } = makeService(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      // WP5D-3 P1：只读解析口（有文件但未实例化的会话经它零写导出，绝不实例化 runtime）。
+      { readSessionHistory: async (file: string) => { readCalls.push(file); return []; } },
+    );
     await projects.create({ id: "project-a", name: "A", cwd: "/workspace/a", ownerKey: "owner-a", createdAt: 1 });
     const first = createdSession(await service.createSession("owner-a", { projectId: "project-a" }));
     const second = createdSession(await service.createSession("owner-a", { projectId: "project-a" }));
     await sessions.update(first.id, { piSessionFile: "/tmp/first.jsonl" });
     await sessions.update(second.id, { piSessionFile: "/tmp/second.jsonl" });
 
+    // 有文件但无 runtime：只经只读解析口导出（同一投影），不创建 adapter、不写 DB/文件。
     expect(await service.exportSession("owner-a", first.id)).toEqual({ messages: [], lastEventId: 0 });
+    expect(readCalls).toEqual(["/tmp/first.jsonl"]);
     expect(await service.deleteProject("owner-a", "project-a")).toBe("deleted");
     expect(await projects.get("project-a")).toBeNull();
     expect(await sessions.get(first.id)).toBeNull();

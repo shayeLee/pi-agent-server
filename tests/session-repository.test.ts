@@ -94,13 +94,13 @@ describe("会话索引存储（needs.md §4.1 / §4.2，SQLite 实现）", () =>
   describe("listByOwner", () => {
     it("只返回该 owner 的会话，按 updatedAt 降序", async () => {
       const repo = await makeRepo();
-      const owner = identityKey({ kind: "account", accountId: "acct-1" });
+      const owner = identityKey({ kind: "ip", ip: "10.0.0.1" });
       const a = makeRecord({ id: "s1", ownerKey: owner, createdAt: 1000, updatedAt: 1000 });
       const b = makeRecord({ id: "s2", ownerKey: owner, createdAt: 3000, updatedAt: 3000 });
       const c = makeRecord({ id: "s3", ownerKey: owner, createdAt: 2000, updatedAt: 2000 });
       const other = makeRecord({
         id: "s4",
-        ownerKey: identityKey({ kind: "account", accountId: "acct-2" }),
+        ownerKey: identityKey({ kind: "ip", ip: "10.0.0.2" }),
         createdAt: 9999,
         updatedAt: 9999,
       });
@@ -115,7 +115,7 @@ describe("会话索引存储（needs.md §4.1 / §4.2，SQLite 实现）", () =>
       const db = makeDb();
       const storage = await initStorage(db);
       openStorages.push(storage);
-      const owner = identityKey({ kind: "account", accountId: "acct-1" });
+      const owner = identityKey({ kind: "ip", ip: "10.0.0.1" });
       const projects = storage.projects;
       await projects.create({ id: "p1", name: "P1", cwd: "/tmp/p1", ownerKey: owner, createdAt: 1 });
       const repo = storage.sessions;
@@ -208,7 +208,7 @@ describe("会话索引存储（needs.md §4.1 / §4.2，SQLite 实现）", () =>
     it("不同 owner 的数据互不串扰", async () => {
       const repo = await makeRepo();
       const ownerA = identityKey({ kind: "ip", ip: "10.1.1.1" });
-      const ownerB = identityKey({ kind: "account", accountId: "acct-9" });
+      const ownerB = identityKey({ kind: "ip", ip: "10.0.0.9" });
       await repo.create(makeRecord({ id: "a1", ownerKey: ownerA }));
       await repo.create(makeRecord({ id: "b1", ownerKey: ownerB, title: "B 的会话" }));
 

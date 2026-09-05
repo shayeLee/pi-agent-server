@@ -7,12 +7,11 @@ import { MockAgentAdapter } from "../../src/agent/mock-agent-adapter.js";
 import type { AgentAdapter } from "../../src/agent/agent-adapter.js";
 import { ConcurrencyController } from "../../src/core/concurrency-control.js";
 import type { IdempotencyStorePort } from "../../src/application/ports/index.js";
-import type { UserIdentity } from "../../src/core/user-identity.js";
+import { makeTestIpAccess } from "../helpers/ip-access.js";
 
-const IDENTITY: UserIdentity = { kind: "account", accountId: "u1" };
-const TOKEN = "token-1";
-const OTHER_IDENTITY: UserIdentity = { kind: "account", accountId: "u2" };
-const OTHER_TOKEN = "token-2";
+// WP5D-2：身份 = 直接 socket IP（一个 IP = 一个用户）
+const TOKEN = "10.0.0.1";
+const OTHER_TOKEN = "10.0.0.2";
 
 const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
@@ -60,12 +59,7 @@ async function makeApp(
     defaultProjectCwd: "/tmp/default-project",
     concurrency: options.concurrency,
     idempotencyRepo: options.idempotencyRepo,
-    authenticate: async (request) => {
-      const h = request.headers.authorization;
-      if (h === `Bearer ${TOKEN}`) return IDENTITY;
-      if (h === `Bearer ${OTHER_TOKEN}`) return OTHER_IDENTITY;
-      throw new Error("bad token");
-    },
+    ipAccess: makeTestIpAccess(),
     createAdapter: async (sessionId) => {
       const adapter = await createAdapter(sessionId);
       adapters.set(sessionId, adapter);
@@ -76,13 +70,12 @@ async function makeApp(
 }
 
 const JSON_HEADERS = { "content-type": "application/json" };
-const authHeader = (token: string) => ({ authorization: `Bearer ${token}` });
 
 async function createSession(app: FastifyInstance, token: string): Promise<string> {
   const res = await app.inject({
     method: "POST",
     url: "/v1/sessions",
-    headers: { ...authHeader(token), ...JSON_HEADERS },
+    headers: JSON_HEADERS, remoteAddress: token,
     payload: JSON.stringify({ title: "聊天" }),
   });
   expect(res.statusCode).toBe(201);
@@ -98,7 +91,7 @@ async function post(
   const res = await app.inject({
     method: "POST",
     url,
-    headers: body === undefined ? authHeader(token) : { ...authHeader(token), ...JSON_HEADERS },
+    headers: body === undefined ? undefined : JSON_HEADERS, remoteAddress: token,
     payload: body === undefined ? undefined : JSON.stringify(body),
   });
   return { statusCode: res.statusCode, body: res.body ? res.json() : undefined };
@@ -125,7 +118,7 @@ describe("HTTP 层：messages / steer / follow-ups / abort（needs.md §4.2）",
       const exported = await app.inject({
         method: "GET",
         url: `/v1/sessions/${id}/export`,
-        headers: authHeader(TOKEN),
+        remoteAddress: TOKEN,
       });
       expect((exported.json() as { lastEventId: number }).lastEventId).toBeGreaterThan(0);
     });
@@ -388,7 +381,7 @@ describe("HTTP 层：messages / steer / follow-ups / abort（needs.md §4.2）",
       const del = await app.inject({
         method: "DELETE",
         url: `/v1/sessions/${id}`,
-        headers: authHeader(TOKEN),
+        remoteAddress: TOKEN,
       });
       expect(del.statusCode).toBe(204);
 

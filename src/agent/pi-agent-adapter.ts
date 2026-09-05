@@ -111,15 +111,27 @@ export class PiAgentAdapter implements AgentAdapter {
 
   /** 导出会话：把 SDK AgentMessage[] 扁平化为 { role, text }[]（提取 text 块，忽略 thinking/toolResult）。 */
   async exportSession(): Promise<unknown> {
-    const messages = this.session.messages as Array<{ role?: string; content?: unknown }>;
-    return messages
-      .filter((m) => m.role === "user" || m.role === "assistant")
-      .map((m) => ({ role: m.role, text: extractText(m.content) }));
+    return projectExportMessages(this.session.messages);
   }
 }
 
+/** 导出投影的消息条目（与 PiAgentAdapter.exportSession 完全同一形状）。 */
+export type ExportMessage = { role: string; text: string };
+
+/**
+ * 会话导出投影（唯一实现点）：SDK AgentMessage[] → { role, text }[]。
+ * 只保留 user/assistant，提取 text 块（忽略 thinking/toolResult）；
+ * 只读路径（SessionHistoryReader）必须与活会话导出（PiAgentAdapter.exportSession）共用本函数，
+ * 保证两类导出返回逐字节一致的投影。
+ */
+export function projectExportMessages(messages: readonly unknown[]): ExportMessage[] {
+  return (messages as Array<{ role?: string; content?: unknown }>)
+    .filter((m) => m.role === "user" || m.role === "assistant")
+    .map((m) => ({ role: m.role as string, text: extractText(m.content) }));
+}
+
 /** 从 SDK 消息 content（string 或 content blocks 数组）提取文本。 */
-function extractText(content: unknown): string {
+export function extractText(content: unknown): string {
   if (typeof content === "string") return content;
   if (Array.isArray(content)) {
     return content

@@ -11,6 +11,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { startServer, type StartConfig } from "../../src/server/start.js";
 import { runSqliteMigrations } from "../../src/storage/migration-engine.js";
 import { initializeDatabase } from "../../src/storage/bootstrap.js";
+import { makeTestIpAccess } from "../helpers/ip-access.js";
 
 const cleanups: string[] = [];
 afterEach(() => { for (const directory of cleanups.splice(0)) rmSync(directory, { recursive: true, force: true }); });
@@ -25,8 +26,7 @@ function baseConfig(overrides: Partial<StartConfig> = {}): StartConfig {
   const dir = makeTempDir();
   return {
     port: 0,
-    intranetCidrs: [],
-    tokens: {},
+    ipAccess: makeTestIpAccess(),
     dataDir: dir,
     authPath: join(dir, "auth.json"),
     ...overrides,

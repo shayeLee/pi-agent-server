@@ -37,6 +37,7 @@ export type {
   SessionRecordPatch,
   SessionStorePort,
 } from "./session-store-port.js";
+export type { SessionHistoryReader } from "./session-history-reader-port.js";
 export {
   DEFAULT_PROJECT_ID,
 } from "./project-store-port.js";

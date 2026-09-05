@@ -1,5 +1,7 @@
-// E2E 测试用的 mock pi-agent-server：真实 buildApp + buildAuthenticate + MockAgentAdapter。
+// E2E 测试用的 mock pi-agent-server：真实 buildApp + createAdmission + MockAgentAdapter。
 // 不依赖真实 Pi SDK 模型凭证，供 Playwright 端到端验证 HTTP/SSE 完整链路。
+// WP5D-2：准入配置与生产同一语义（直接 socket IP；127.0.0.0/8 + 10.0.0.0/8 允许，未登记默认
+// role=user / token off；workspaceRoots/PI_DEFAULT_WORKSPACE_ROOT 已移除）。
 //
 // 存储层与生产（start.ts）一致：DatabaseSync（启用 FK）→ initializeDatabase → Kysely repositories，
 // 默认项目确保必须 await（不能 fire-and-forget），幂等 Kysely destroy / DB 关闭在 app.close 与
@@ -8,7 +10,7 @@
 import { DatabaseSync } from "node:sqlite";
 import type { Kysely } from "kysely";
 import { buildApp } from "../src/server/app.js";
-import { buildAuthenticate } from "../src/server/real-auth.js";
+import { parseCidrStrict } from "../src/core/cidr.js";
 import { initializeDatabase } from "../src/storage/bootstrap.js";
 import { sqliteConstraintErrorMapper } from "../src/storage/sqlite-constraint-errors.js";
 import type { DatabaseSchema } from "../src/storage/db-schema.js";
@@ -58,13 +60,14 @@ try {
     projects,
     defaultProjectCwd: MOCK_CWD,
     idempotencyRepo,
+    // WP5D-2：准入配置（直接 socket IP；浏览器经 vite 代理后仍是 127.0.0.1）。
+    ipAccess: {
+      allowedClientCidrs: ["127.0.0.0/8", "10.0.0.0/8"].map((text) => parseCidrStrict(text)),
+      policy: null,
+    },
     // SSE 连接配额可从环境变量覆盖，便于 e2e 用小值验证配额/断线清理。
     maxSsePerUser: Number(process.env.MAX_SSE_PER_USER ?? 10),
     maxSseGlobal: Number(process.env.MAX_SSE_GLOBAL ?? 100),
-    authenticate: buildAuthenticate({
-      intranetCidrs: ["10.0.0.0/8", "127.0.0.0/8"],
-      tokens: { "e2e-token": "e2e-user" },
-    }),
     createAdapter: async () =>
       new MockAgentAdapter([
         { type: "agent_start" },
