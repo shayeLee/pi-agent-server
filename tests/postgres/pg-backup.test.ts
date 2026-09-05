@@ -9,7 +9,7 @@ import { createPostgresKysely, createPostgresPool } from "../../src/storage/post
 import { createIdempotentStorageCloser } from "../../src/server/storage-close.js";
 import { migrationDefinitions } from "../../src/storage/migration-manifest.js";
 import { runPostgresMigrations } from "../../src/storage/migration-engine.js";
-import { assertPostgresClientServerMajor, assertPostgresToolMajorMatch, createPostgresBackup, parseClientMajor, parseServerVersionNumMajor, parseVersion, pgProcessAdapter, redactPgDiagnostic, runPgProcess, type PgBackupClient, type PgProcessAdapter, type PgProcessRequest } from "../../src/backup/postgres-backup-core.js";
+import { assertPostgresClientServerMajor, assertPostgresToolMajorMatch, createPostgresBackup, parseClientMajor, parseServerVersionNumMajor, parseVersion, pgProcessAdapter, postgresIdentity, redactPgDiagnostic, runPgProcess, type PgBackupClient, type PgProcessAdapter, type PgProcessRequest } from "../../src/backup/postgres-backup-core.js";
 import { POSTGRES_RESTORE_SAFETY_CONTRACT, restorePostgresBackup, type PgRestoreClient } from "../../src/backup/restore-core.js";
 import { assertRequiredPgTestEnvironment } from "../../scripts/pg-test-gate.js";
 import { checkPgBackupBinaries } from "../../scripts/test-pg-backup.js";
@@ -53,7 +53,7 @@ function fixture(): { root: string; dataDir: string; backupRoot: string; recipie
  * identity/catalog queries → pg_export_snapshot() → pg_dump → COMMIT on this
  * single client. Every query is recorded for ordering assertions.
  */
-function sourceClient(f: ReturnType<typeof fixture>, variant: "v0" | "v1" | "legacy-v0" | "legacy-v1" = "v0"): PgBackupClient & { readonly queries: string[] } {
+function sourceClient(f: ReturnType<typeof fixture>, variant: "v0" | "v1" | "legacy-v0" | "legacy-v1" = "v0", schema = "app_schema"): PgBackupClient & { readonly queries: string[] } {
   const queries: string[] = [];
   const hasLedger = variant !== "legacy-v0" && variant !== "legacy-v1";
   const hasOutbox = variant === "v1" || variant === "legacy-v1";
@@ -69,19 +69,19 @@ function sourceClient(f: ReturnType<typeof fixture>, variant: "v0" | "v1" | "leg
       if (text.includes("pg_export_snapshot")) return { rows: [{ snapshot: "0003A0-1" } as unknown as T] };
       if (text.includes("pg_control_system")) return { rows: [{ system_identifier: "7234567890123456789" } as unknown as T] };
       if (text.includes("inet_server_addr")) return { rows: [{ database_oid: "16384", schema_oid: "16401", server_address: "192.0.2.10", server_port: "5432", cluster_name: "" } as unknown as T] };
-      if (text.includes("current_database()")) return { rows: [{ database: "source_db", schema: "app_schema", user: "backup_user" } as unknown as T] };
+      if (text.includes("current_database()")) return { rows: [{ database: "source_db", schema, user: "backup_user" } as unknown as T] };
       if (text === "SHOW server_version_num") return { rows: [{ server_version_num: "160004" } as unknown as T] };
       if (text.includes("information_schema.tables")) {
         const table = values?.[1];
         return { rows: [{ present: (table === "schema_migrations" && hasLedger) || table === "sessions" || (table === "file_operations" && hasOutbox) } as unknown as T] };
       }
-      if (text.includes("FROM \"app_schema\".\"schema_migrations\"")) {
+      if (text.includes(`FROM "${schema}"."schema_migrations"`)) {
         const rows = variant === "v1"
           ? [{ version: 0, name: "initial-schema", checksum: "a".repeat(64), applied_at: 1 }, { version: 1, name: "file-operations-outbox", checksum: "b".repeat(64), applied_at: 2 }]
           : [{ version: 0, name: "initial-schema", checksum: "a".repeat(64), applied_at: 1 }];
         return { rows: rows as unknown as readonly T[] };
       }
-      if (text.includes("FROM \"app_schema\".\"sessions\"")) return { rows: [{ id: "session-1", pi_session_file: f.session } as unknown as T] };
+      if (text.includes(`FROM "${schema}"."sessions"`)) return { rows: [{ id: "session-1", pi_session_file: f.session } as unknown as T] };
       throw new Error(`unexpected fake source query: ${text}`);
     },
   };
@@ -420,6 +420,34 @@ describe("PostgreSQL backup core fake-process safety (WP3B2)", () => {
     const f = fixture();
     await expect(createPostgresBackup({ storageDialect: "sqlite", databaseUrl: "postgres://u:p@example.test/source_db", paths: backupPaths(f), age: fakeAge(), pgClient: sourceClient(f), pgProcess: new FakePgProcess() })).rejects.toThrow(/explicit PI_STORAGE_DIALECT/);
     await expect(createPostgresBackup({ storageDialect: "postgres", databaseUrl: "postgres://u:p@example.test", paths: backupPaths(f), age: fakeAge(), pgClient: sourceClient(f), pgProcess: new FakePgProcess() })).rejects.toThrow(/database/);
+  });
+
+  it("rejects allowPublicSchema=true for any backup kind other than pre-owner-transfer before connecting", async () => {
+    const f = fixture();
+    for (const kind of [undefined, "postgresql", "pre-migration", "pre-reset"] as const) {
+      await expect(createPostgresBackup({ storageDialect: "postgres", databaseUrl: "postgres://u:p@example.test/source_db", paths: backupPaths(f), age: fakeAge(), allowPublicSchema: true, ...(kind === undefined ? {} : { backupKind: kind }), pgClient: sourceClient(f), pgProcess: new FakePgProcess() })).rejects.toThrow(/reserved for pre-owner-transfer/);
+    }
+  });
+
+  it("honors allowPublicSchema=true only for kind=pre-owner-transfer and backs up a public business schema (owner-transfer opt-in)", async () => {
+    const f = fixture();
+    const source = sourceClient(f, "v0", "public");
+    const result = await createPostgresBackup({
+      storageDialect: "postgres",
+      databaseUrl: "postgres://u:p@example.test/source_db",
+      paths: backupPaths(f),
+      age: fakeAge(),
+      backupKind: "pre-owner-transfer",
+      allowPublicSchema: true,
+      pgClient: source,
+      pgProcess: pgProcessAdapter,
+      pgDumpBinary: controlledPgExecutable(f),
+      pgRestoreBinary: controlledPgExecutable(f, "pg_restore"),
+    });
+    expect(result.finalPath).toBeTruthy();
+    expect(result.manifest?.kind).toBe("pre-owner-transfer");
+    expect(result.manifest?.postgres.schemaIdentity).toBe(postgresIdentity("public", "schema"));
+    expect(readFileSync(path.join(result.finalPath!, "COMPLETE"), "utf8").trim()).toBe(createHash("sha256").update(readFileSync(path.join(result.finalPath!, "manifest.json.age"))).digest("hex"));
   });
 
   it("strict mode fails closed on any missing session reference before publish/COMPLETE and is desensitized", async () => {

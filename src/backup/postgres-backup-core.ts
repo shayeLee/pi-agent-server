@@ -304,8 +304,18 @@ export interface PostgresBackupPaths {
 }
 
 export interface PostgresBackupOptions {
-  /** The published manifest kind. Pre-migration is only selected by the offline migration CLI; pre-reset only by the offline cutover CLI. */
-  readonly backupKind?: "postgresql" | "pre-migration" | "pre-reset";
+  /** The published manifest kind. Pre-migration is only selected by the offline migration CLI; pre-reset only by the offline cutover CLI; pre-owner-transfer only by the offline owner-transfer CLI. */
+  readonly backupKind?: "postgresql" | "pre-migration" | "pre-reset" | "pre-owner-transfer";
+  /**
+   * Owner-transfer only: allow the public schema as the authenticated business
+   * schema. Honored EXCLUSIVELY when `backupKind` is `pre-owner-transfer`; with
+   * any other kind the backup fails closed (allowPublicSchema=true is rejected).
+   * The owner-transfer tool explicitly permits a public business schema while
+   * still rejecting system/restore-drill/cutover-drill schemas at its own
+   * validation layer; the general backup core keeps rejecting public unless this
+   * opt-in flag is set.
+   */
+  readonly allowPublicSchema?: boolean;
   /** Must be the literal explicit dialect selection, never an implicit default. */
   readonly storageDialect: string;
   /** Explicit PI_DATABASE_URL value. It is used only to construct the client. */
@@ -779,6 +789,13 @@ export async function runPgProcess(
 function checkStorageSelection(options: PostgresBackupOptions): void {
   if (options.storageDialect !== "postgres") fail("PostgreSQL backup requires explicit PI_STORAGE_DIALECT=postgres");
   if (typeof options.databaseUrl !== "string" || options.databaseUrl.trim() === "") fail("PostgreSQL backup requires explicit PI_DATABASE_URL");
+  // Owner-transfer-only opt-in: public as the authenticated business schema is
+  // permitted EXCLUSIVELY for kind=pre-owner-transfer (the owner-transfer tool's
+  // own schema validator still rejects system/restore-drill/cutover-drill
+  // schemas). Any other kind with allowPublicSchema=true fails closed here.
+  if (options.allowPublicSchema === true && options.backupKind !== "pre-owner-transfer") {
+    fail("allowPublicSchema is reserved for pre-owner-transfer backups only; refusing a public-schema backup for any other kind");
+  }
 }
 
 /**
@@ -883,7 +900,11 @@ export async function createPostgresBackup(options: PostgresBackupOptions): Prom
       }
       serverMajor = await queryPostgresServerMajor(tx);
       clusterIdentity = await queryClusterIdentity(tx);
-      if (target.schema === "public" || target.schema === "information_schema" || target.schema.startsWith("pg_")) fail("PostgreSQL backup source schema is not an allowed non-public application schema");
+      if (target.schema === "information_schema" || target.schema.startsWith("pg_")) fail("PostgreSQL backup source schema is not an allowed application schema");
+      // Public is rejected by the general backup core unless the owner-transfer
+      // opt-in flag allows it (its own validation layer still rejects system /
+      // restore-drill / cutover-drill schemas).
+      if (!options.allowPublicSchema && target.schema === "public") fail("PostgreSQL backup source schema is not an allowed non-public application schema");
       references = options.querySessionReferences
         ? await options.querySessionReferences(tx, target.schema)
         : await defaultSessionReferences(tx, target.schema);

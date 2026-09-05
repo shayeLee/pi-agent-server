@@ -29,7 +29,7 @@
 > runtime 返回稳定 204）、user/admin 维持 own-resource 行为（仍 owner 隔离，admin 暂不跨
 > owner）；每路由显式 permission、未声明即 default-deny 403。IP-RBAC 不限制 cwd 或 Agent 工具的
 > 绝对路径/OS 权限（不是 sandbox；workspace 安全 当前 RC 决策整体延期）。
-> WP5D-1 policy core、WP5D-2 HTTP 网络准入与 WP5D-3 role 授权已 ✅ 验收，依据用户提供的在移除 workspaceRoots/`PI_DEFAULT_WORKSPACE_ROOT` 并提交 `5e84a9da` 之后的新 release run 中，完整真实 PG16+age `pnpm verify:release` 成功证据；本次验收仅针对 WP5D，WP5 整体仍未完成（WP5B DEFERRED，WP5C deployment drill 未验收）；admin cross-owner read 与 owner transfer 均未实现。
+> WP5D-1 policy core、WP5D-2 HTTP 网络准入与 WP5D-3 role 授权已 ✅ 验收，依据用户提供的在移除 workspaceRoots/`PI_DEFAULT_WORKSPACE_ROOT` 并提交 `5e84a9da` 之后的新 release run 中，完整真实 PG16+age `pnpm verify:release` 成功证据；本次验收仅针对 WP5D，WP5 整体仍未完成（WP5B DEFERRED，WP5C deployment drill 未验收）；admin cross-owner read 未实现；**WP5D-4 owner transfer（DB 层 IP→IP 离线 CLI）✅ 已验收**——用户提供的完整真实 PG16+age `pnpm verify:release` 成功证据中，真实 PostgreSQL owner-transfer gate、真实 age gate，以及 compiled + installed-npm PostgreSQL E2E smoke 均通过；见 [owner-transfer.md](owner-transfer.md)。本文不记录测试数量。
 > ④⑤⑥⑦⑧ 的编排集中在 [`src/runtime/session-runtime.ts`](src/runtime/session-runtime.ts)（`submitMessage` → `doSubmit` → `runStreamingTask` → `settle`）。
 > HTTP 层（[`src/server/app.ts`](src/server/app.ts)）只把决策映射为状态码（202 放行 / 409 冲突 / 429 排队满），不承载业务编排。
 

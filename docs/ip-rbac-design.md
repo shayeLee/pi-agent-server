@@ -11,8 +11,13 @@
 > 不泄 role/IP/path、CORS 预检不做 role、SSE viewer 只读（无 runtime 返回稳定 204、有 runtime 可订阅）、会话导出真只读
 > （绝不实例化 runtime）。
 > **明确未做（WP5D 范围外或 future）**：admin 跨 owner 只读、workspace/sandbox 安全（工具根限制、路径逃逸防护；公网暴露前
-> 才需要）、owner transfer —— 本阶段 admin 与其他角色一样受 owner 隔离，**IP-RBAC 不是 sandbox**：不限制 cwd 或 Agent 工具的
+> 才需要）—— 本阶段 admin 与其他角色一样受 owner 隔离，**IP-RBAC 不是 sandbox**：不限制 cwd 或 Agent 工具的
 > 绝对路径/OS 权限；公网暴露禁止（需未来 OIDC/IAM + workspace/sandbox 设计），无任何 DB schema 变更。
+> **WP5D-4（owner transfer）✅ 已验收**（见 [owner-transfer.md](owner-transfer.md)）：离线
+> CLI `owner-transfer` 只做 DB 层 IP→IP 转移（仅更新 projects.owner_key / sessions.owner_key，不迁移策略 IP 条目/…token/角色）。
+> 用户提供的完整真实 PG16+age `pnpm verify:release` 成功证据中，真实 PostgreSQL owner-transfer gate、真实 age gate，
+> 以及 compiled + installed-npm PostgreSQL E2E smoke 均通过。确认词 + 维护窗口（声明而非进程锁） + strict
+> pre-owner-transfer 备份 → verify → binding 复验 → 事务内 transfer/verify 的范围保持不变；本文不记录测试数量。
 >
 > 关联文档：[needs.md](../needs.md) §4.2/§7、[identity-access-plan.md](identity-access-plan.md)、[architecture.md](architecture.md)。
 
@@ -183,7 +188,7 @@ tokenRequired，不换角色）；未登记 IP 默认 `user`。
   隔离由 OS 账号、容器与网络边界负责。**公网暴露禁止**：公网部署不得开放本服务（含 `POST /v1/projects`
   的任意 cwd 创建项目接口，见 needs.md §7）；workspace/sandbox 安全设计（收窄工具/会话可见根、防路径
   逃逸）随未来 OIDC/IAM 工作包一起做。
-- **owner transfer 仅 DB 层面，且只存在 IP→IP 形态**：未来若支持资源归属转移，只在数据库层变更 owner 映射（把一个 IP 身份的资源归属转到另一个 IP 身份）；**不迁移**政策文件的 IP 条目与 token 绑定、不迁移角色——接收方继承自己的 IP 画像，与资源原 owner 的画像无关。
+- **owner transfer 仅 DB 层面，且只存在 IP→IP 形态**：`owner-transfer` 离线 CLI（WP5D-4，**✅ 已验收**，见 [owner-transfer.md](owner-transfer.md)）在数据库层变更 owner 映射（把一个 IP 身份资源归属转到另一个 IP 身份，仅更新 projects.owner_key / sessions.owner_key）；**不迁移**政策文件的 IP 条目与 token 绑定、不迁移角色——接收方继承自己的 IP 画像，与资源原 owner 的画像无关。
 - **无 legacy 账号/token 迁移（RC 决策）**：新 RC **不存在** legacy 账号/token 的 owner 迁移——正式旧公网 token 数据从未存在，因此不实现任何「旧 token/旧账号 → 新主体」迁移代码，也不存在 owner transfer 的账号维度。早期开发数据按 RC 语义**删库重建 / 经受控离线 cutover（`pnpm cutover`）reset**，绝不在位转换（详见 [database-design.md](database-design.md) §7 与 [identity-access-plan.md](identity-access-plan.md) WP5D 注记）。
 - **不做**：token 签发/轮换/撤销接口（无签发端点）、OIDC/账号体系（见 identity-access-plan 工作包 1–2）、基于 header 的客户端 IP 推导、审计落库（WP5D-2 接线时按 needs.md §7 要求补齐鉴权审计埋点）。
 - 单实例假设不变；多实例部署策略文件的一致性由部署层负责（同文件、同内容；加载期校验相同）。
@@ -265,4 +270,4 @@ tokenRequired，不换角色）；未登记 IP 默认 `user`。
   404 不变（admin 暂不跨 owner）；SSE viewer 只读可（有 runtime 200、无 runtime 204）、writes 拒且零 service side
   effects——会话记录逐字节不变、runtime/adapter 未创建）。
 - **明确未做（WP5D-3 范围内不声称）**：admin 跨 owner 只读（admin 与其他角色一样 owner 隔离）、workspace/
-sandbox 安全（当前 RC 决策整体延期；workspaceRoots 已移除）、owner transfer 未实现（future DB 层工作包，不迁移策略 entry）。
+sandbox 安全（当前 RC 决策整体延期；workspaceRoots 已移除）。**WP5D-4 owner transfer**（DB 层 IP→IP，不迁移策略 entry）✅ 已验收——见 [owner-transfer.md](owner-transfer.md)。

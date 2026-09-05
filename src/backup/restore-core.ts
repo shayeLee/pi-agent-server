@@ -328,7 +328,7 @@ function validateManifest(value: unknown): BackupManifest {
   };
   if (manifest.format !== "pi-agent-server.backup-manifest.v1") fail("unsupported backup format");
   if (manifest.dialect === "PostgreSQL" || manifest.kind === "postgresql-online") fail("PostgreSQL backup requires an explicit temporary target PG connection");
-  if ((manifest.kind !== "sqlite-online" && manifest.kind !== "pre-migration" && manifest.kind !== "pre-reset") || manifest.dialect !== "SQLite") fail("unsupported backup format or dialect");
+  if ((manifest.kind !== "sqlite-online" && manifest.kind !== "pre-migration" && manifest.kind !== "pre-reset" && manifest.kind !== "pre-owner-transfer") || manifest.dialect !== "SQLite") fail("unsupported backup format or dialect");
   if (!manifest.credentials || manifest.credentials.included !== false || manifest.credentials.policy !== "whitelist-excludes-credentials") fail("manifest credential policy is invalid");
   const sourceRoots = manifest.sourceRoots as { dataDir?: unknown; agentDir?: unknown; dbPath?: unknown } | undefined;
   if (!sourceRoots || typeof sourceRoots.dataDir !== "string" || !path.isAbsolute(sourceRoots.dataDir) ||

@@ -218,7 +218,7 @@ function validateLedger(ledger: PostgresBackupManifest["migrationLedger"]): void
 function validatePostgresManifest(value: unknown): PostgresBackupManifest {
   if (!value || typeof value !== "object") fail("manifest is not an object");
   const manifest = value as Partial<PostgresBackupManifest> & { credentials?: { included?: unknown; policy?: unknown } };
-  if (manifest.format !== "pi-agent-server.backup-manifest.v1" || (manifest.kind !== "postgresql" && manifest.kind !== "pre-migration" && manifest.kind !== "pre-reset") || manifest.dialect !== "PostgreSQL") fail("unsupported backup format or dialect");
+  if (manifest.format !== "pi-agent-server.backup-manifest.v1" || (manifest.kind !== "postgresql" && manifest.kind !== "pre-migration" && manifest.kind !== "pre-reset" && manifest.kind !== "pre-owner-transfer") || manifest.dialect !== "PostgreSQL") fail("unsupported backup format or dialect");
   if (!manifest.credentials || manifest.credentials.included !== false || manifest.credentials.policy !== "whitelist-excludes-credentials") fail("manifest credential policy is invalid");
   const roots = manifest.sourceRoots;
   if (!roots || typeof roots.dataDir !== "string" || !path.isAbsolute(roots.dataDir) || typeof roots.agentDir !== "string" || !path.isAbsolute(roots.agentDir)) fail("manifest must include explicit authenticated source roots");

@@ -43,8 +43,12 @@ const AUTH_FILE_NAME = "auth.json";
 export const AGE_PROCESS_TIMEOUT_MS = 60_000;
 
 type FileKind = "jsonl" | "config";
-/** "pre-reset" is published only by the offline controlled-cutover tool (WP2A). */
-export type BackupKind = "sqlite-online" | "pre-migration" | "pre-reset";
+/**
+ * "pre-reset" is published only by the offline controlled-cutover tool (WP2A);
+ * "pre-owner-transfer" only by the offline owner-transfer tool (WP5D-4). Both use
+ * the full DB/WAL/SHM tree binding captured around the snapshot.
+ */
+export type BackupKind = "sqlite-online" | "pre-migration" | "pre-reset" | "pre-owner-transfer";
 
 /** Per-call bound for one age child process. */
 export interface AgeEncryptFileOptions {
@@ -249,7 +253,7 @@ export interface PostgresSnapshotIdentity {
 
 export interface PostgresBackupManifest {
   readonly format: "pi-agent-server.backup-manifest.v1";
-  readonly kind: "postgresql" | "pre-migration" | "pre-reset";
+  readonly kind: "postgresql" | "pre-migration" | "pre-reset" | "pre-owner-transfer";
   readonly dialect: "PostgreSQL";
   readonly createdAt: string;
   readonly sourceRoots: PostgresBackupSourceRoots;
@@ -1362,7 +1366,12 @@ export async function createSqliteBackup(options: BackupOptions): Promise<Backup
     // write that slips in between the snapshot and the manifest therefore
     // fails the backup (and any later cutover) with zero deletion instead of
     // silently becoming the new baseline.
-    const preSnapshot = backupKind === "pre-reset" ? sqliteTreeBinding(options.paths.dbPath) : null;
+    // Pre-reset/pre-owner-transfer binding: the DB/WAL/SHM state is fingerprinted
+    // immediately before the snapshot is generated, re-checked right after the
+    // VACUUM INTO completes, and then FIXED. The verified post-snapshot state
+    // becomes the single immutable binding before any JSONL/age work runs.
+    const usesTreeBinding = backupKind === "pre-reset" || backupKind === "pre-owner-transfer";
+    const preSnapshot = usesTreeBinding ? sqliteTreeBinding(options.paths.dbPath) : null;
     plainStaging.revalidate();
     source.prepare("VACUUM INTO ?").run(plainSnapshot);
     let treeBinding: SqliteSourceTreeBinding | null = null;
@@ -1738,7 +1747,7 @@ export function verifyPublishedBackup(result: {
     fail("published COMPLETE marker was replaced after creation; refusing to consume the package");
   }
   if (marker !== manifestInfo.sha256) fail("published COMPLETE marker does not match the manifest");
-  if (result.manifest.kind !== "pre-migration" && result.manifest.kind !== "pre-reset") fail("pre-reset/migration pre-backup has the wrong kind");
+  if (result.manifest.kind !== "pre-migration" && result.manifest.kind !== "pre-reset" && result.manifest.kind !== "pre-owner-transfer") fail("pre-reset/pre-owner-transfer/migration pre-backup has the wrong kind");
   if (result.manifest.format !== "pi-agent-server.backup-manifest.v1" || result.manifest.files.length === 0) fail("published backup manifest is incomplete");
   if (!result.manifest.sourceRoots || typeof result.manifest.sourceRoots !== "object") fail("published backup manifest has no authenticated source roots");
   const rootsDigest = recomputedRootsSha256(result.manifest.sourceRoots);
