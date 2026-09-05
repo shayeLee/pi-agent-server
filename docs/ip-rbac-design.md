@@ -1,20 +1,18 @@
 # IP Access Policy 设计（WP5D）
 
-> 状态：**change pending revalidation（当前 RC 用户新决策后）** —— 当前 RC 用户决策收窄 WP5D 范围：
+> 状态：**✅ 已验收（当前 RC）** —— 当前 RC 用户决策收窄 WP5D 范围：
 > 内网不做 workspace 强制；workspace 安全（workspaceRoots 选定/工具根限制）仅公网暴露前需要，**整体延期**。
 > 因此 `workspaceRoots`/`PI_DEFAULT_WORKSPACE_ROOT` 从本设计（策略 JSON v1、env/运行时配置、access profile）
-> 中**完整移除**：策略 JSON 中出现 workspaceRoots 即按未知字段 failfast，绝不保留解析但不用。此前依据用户
-> 提供的修复 SSE flaky 后完整真实 PG16+age `pnpm verify:release` 成功证据做出的 WP5D-1/WP5D-2/WP5D-3
-> **✅ 已验收**结论，因本次代码变化**改为待重新验证（change pending revalidation）**：待新的 release 证据
-> （typecheck / full tests / build / verify 全套）通过后再恢复 accepted。本次验收仅针对 WP5D，WP5 整体
-> 仍未完成（WP5B DEFERRED，WP5C deployment drill 未验收）。—— policy core（WP5D-1）与 HTTP 网络准入
-> 接线（WP5D-2）均已实现并接线；**WP5D-3（role 授权矩阵）已落地并随代码/test/build 齐全**：每路由显式
-> permission、全局 default-deny、403 固定不泄 role/IP/path、CORS 预检不做 role、SSE viewer 只读（无
-> runtime 返回稳定 204、有 runtime 可订阅）、会话导出真只读（绝不实例化 runtime）。
-> **明确未做（WP5D 范围外或 future）**：admin 跨 owner 只读、workspace/sandbox 安全（工具根限制、
-> 路径逃逸防护；公网暴露前才需要）、owner transfer —— 本阶段 admin 与其他角色一样受 owner 隔离，
-> **IP-RBAC 不是 sandbox**：不限制 cwd 或 Agent 工具的绝对路径/OS 权限；公网暴露禁止（需未来
-> OIDC/IAM + workspace/sandbox 设计），无任何 DB schema 变更。
+> 中**完整移除**：策略 JSON 中出现 workspaceRoots 即按未知字段 failfast，绝不保留解析但不用。WP5D-1/WP5D-2/WP5D-3
+> **✅ 已验收**，依据用户提供的在移除 `workspaceRoots`/`PI_DEFAULT_WORKSPACE_ROOT` 并提交 `5e84a9da` 之后的新 release run 中，
+> 完整真实 PG16+age `pnpm verify:release` 成功证据。本次验收仅针对 WP5D，WP5 整体仍未完成（WP5B DEFERRED，
+> WP5C deployment drill 未验收）。—— policy core（WP5D-1）与 HTTP 网络准入接线（WP5D-2）均已实现并接线；
+> **WP5D-3（role 授权矩阵）已落地并随代码/test/build 齐全**：每路由显式 permission、全局 default-deny、403 固定
+> 不泄 role/IP/path、CORS 预检不做 role、SSE viewer 只读（无 runtime 返回稳定 204、有 runtime 可订阅）、会话导出真只读
+> （绝不实例化 runtime）。
+> **明确未做（WP5D 范围外或 future）**：admin 跨 owner 只读、workspace/sandbox 安全（工具根限制、路径逃逸防护；公网暴露前
+> 才需要）、owner transfer —— 本阶段 admin 与其他角色一样受 owner 隔离，**IP-RBAC 不是 sandbox**：不限制 cwd 或 Agent 工具的
+> 绝对路径/OS 权限；公网暴露禁止（需未来 OIDC/IAM + workspace/sandbox 设计），无任何 DB schema 变更。
 >
 > 关联文档：[needs.md](../needs.md) §4.2/§7、[identity-access-plan.md](identity-access-plan.md)、[architecture.md](architecture.md)。
 
@@ -224,18 +222,17 @@ tokenRequired，不换角色）；未登记 IP 默认 `user`。
 
 ## 10. 验收状态与证据（WP5D-1 core / WP5D-2 接线 / WP5D-3 role 授权）
 
-> 统一口径：**WP5D-1 policy core、WP5D-2 HTTP 网络准入与 WP5D-3 role 授权 → change pending revalidation**
-> （当前 RC 用户决策收窄 WP5D 范围：移除 workspaceRoots / `PI_DEFAULT_WORKSPACE_ROOT` 后，此前基于用户提供的
-> 修复 SSE flaky 后完整真实 PG16+age `pnpm verify:release` 成功证据的 ✅ 已验收状态暂挂起；待新的 release 证据
-> （typecheck / full tests / build / verify 全套通过）后再恢复 accepted）。本文不记录测试数量。本次仅针对 WP5D，
-> WP5 整体仍未完成：WP5B 按用户决定 DEFERRED，WP5C deployment drill 未验收。
+> 统一口径：**WP5D-1 policy core、WP5D-2 HTTP 网络准入与 WP5D-3 role 授权 → ✅ 已验收**
+> （依据用户提供的在移除 workspaceRoots / `PI_DEFAULT_WORKSPACE_ROOT` 并提交 `5e84a9da` 之后的新 release run 中，完整真实 PG16+age
+> `pnpm verify:release` 成功证据）。本文不记录测试数量。本次仅针对 WP5D，WP5 整体仍未完成：WP5B 按用户决定 DEFERRED，
+> WP5C deployment drill 未验收。
 
-- **WP5D-1（此前 ✅ 已验收 → 本次变更为待重新验证）**：`src/core/cidr.ts`（兼容层 + 严格 canonical 层）、
+- **WP5D-1（✅ 已验收）**：`src/core/cidr.ts`（兼容层 + 严格 canonical 层）、
   `src/core/ip-access-policy.ts`（类型/解析/解析器/token 助手）、`src/core/ip-access-config.ts`（env 解析）、
   `src/core/ip-access-policy-file.ts`（安全加载）已落地；单测：`tests/core/cidr.test.ts`（旧用例原样保留为兼容契约）、
   `tests/core/ip-access-policy.test.ts`、`tests/core/ip-access-config.test.ts`、`tests/core/ip-access-policy-file.test.ts`。
   当前 RC 变更：`workspaceRoots`/`PI_DEFAULT_WORKSPACE_ROOT` 整体移除（策略 JSON 出现即未知字段 failfast）。
-- **WP5D-2（此前 ✅ 已验收 → 本次变更为待重新验证）**：`src/server/network-admission.ts`（`createAdmission` 全局准入 +
+- **WP5D-2（✅ 已验收）**：`src/server/network-admission.ts`（`createAdmission` 全局准入 +
   运行时严格校验 + `extractBearerToken`；token gate 覆盖 `/v1` 与 `/metrics`，`/health`/`/readyz` 免 token）、
   `app.ts` 全局 onRequest 接线（覆盖探针与 `/v1`，401/403 语义）、`start.ts`
   （`ipAccess` 必填校验、旧字段拒绝、`rejectLegacyStartEnv`）、`main.ts`（env 解析 + 策略安全加载 + 旧变量拒绝）、
@@ -246,8 +243,8 @@ tokenRequired，不换角色）；未登记 IP 默认 `user`。
   `/metrics` tokenRequired 实际 GET 需 token、预检例外）；
   既有 HTTP/start 测试全部迁移到 ipAccess + remoteAddress；e2e mock 服务同语义。
 - 门禁：`pnpm typecheck`、`pnpm test`（全量）、`pnpm build` 通过；**当前 RC 变更后的门禁需随
-  新的 release 证据重新验证后恢复 accepted**。
-- **WP5D-3（此前 ✅ 已验收 → 本次变更为待重新验证）**：`src/server/route-rbac.ts`（`ROUTE_PERMISSIONS` 中央权限定义 +
+  新 release run 的证据已确认 accepted**。
+- **WP5D-3（✅ 已验收）**：`src/server/route-rbac.ts`（`ROUTE_PERMISSIONS` 中央权限定义 +
   `evaluateRouteAuthorization` 纯函数决策 + `requirePermission` 每路由显式声明 + `routeRbacOnRequest` 全局
   default-deny hook + 固定 `FORBIDDEN_BODY`）；`app.ts` 全路由显式 `config.permission`（探针/`/v1`），hook 注册于
   CORS 之后（预检不做 role）。
