@@ -1,6 +1,6 @@
 # WP4C 离线 DB-only reconcile analyzer（方案 A 收敛）：设计与运维 runbook
 
-> **状态：WP4C（方案 A 收敛）✅ 已验收。** 当前交付物是**安全 DB-only reconcile analyzer**（`pnpm reconcile-jsonl` / bin `pi-agent-server-reconcile-jsonl`）：只读 DB 引用（session id / project id / pi_session_file）+ 纯字符串/lexical 规范布局绑定，输出 counts、固定 issue codes 与 opaque 引用（sha256），**绝不扫描文件系统、不读取任何 JSONL**。因此本工具**不能探测 orphan、lost 或 JSONL 损坏**（报告以固定 `filesystemNotScanned` / `cannotDetect` 字段明确声明），也**不执行任何处置**：`--apply` 立即 fail-closed，无任何确认词可绕过；不存在物理 delete/move/quarantine、DB 写入、outbox enqueue 或 v2 migration。真实 filesystem reconcile（探测 orphan/lost/JSONL 有效性并处置）留给未来受审计的 native helper（单独、尚未启动的事项）。**验收证据**：用户提供的完整真实 PG16+age `verify:release` 成功证据包含真实 PostgreSQL reconcile gate 及 compiled/npm smoke，WP4C 据此验收。本文不记录或推导测试数量。WP4B 物理 executor 仍未实施（WP4B 与 WP4C 均为低集成度离线工具：不接入服务启动、不安装 worker、不触碰正式数据），两个工具连同正式 worker 均为离线开发期工具，整体尚非生产就绪。
+> **状态：WP4C（方案 A 收敛）当前交付物是安全 DB-only reconcile analyzer**（`pnpm reconcile-jsonl` / bin `pi-agent-server-reconcile-jsonl`）：只读 DB 引用（session id / project id / pi_session_file）+ 纯字符串/lexical 规范布局绑定，输出 counts、固定 issue codes 与 opaque 引用（sha256），**绝不扫描文件系统、不读取任何 JSONL**。因此本工具**不能探测 orphan、lost 或 JSONL 损坏**（报告以固定 `filesystemNotScanned` / `cannotDetect` 字段明确声明），也**不执行任何处置**：`--apply` 立即 fail-closed，无任何确认词可绕过；不存在物理 delete/move/quarantine、DB 写入、outbox enqueue 或 v2 migration。真实 filesystem reconcile（探测 orphan/lost/JSONL 有效性并处置）留给未来受审计的 native helper（单独、尚未启动的事项）。WP4B 物理 executor 仍未实施（WP4B 与 WP4C 均为低集成度离线工具：不接入服务启动、不安装 worker、不触碰正式数据），两个工具连同正式 worker 均为离线开发期工具，整体尚非生产就绪。
 
 ## 1. 职责与边界
 
@@ -85,12 +85,12 @@ Issue codes（固定、有限）：
 - WP4C 物理处置（orphan 删除 / lost 恢复 / quarantine）、启动/定时 reconcile 与 outbox 写入**未实施**；`--apply` 立即 fail-closed（退出码 2），不存在任何确认词/维护窗口词可以绕过；
 - 分析只读、不生成操作，因此不会带来误删/越界风险；执行路径需要另行评审（native helper 为单独事项）。
 
-## 4. 门禁与测试
+## 4. 验证入口
 
-- `pnpm test`（无 PG URL）：核心/CLI 集成用例全跑——DB-only 分类矩阵（default/nondefault 固定段布局、同段数伪目录拒绝、null unmaterialized、id mismatch、错误前缀、跨卷/伪 root、NUL/UNC 拒绝、traversal 拒绝、非法 file name、canonical 重复检测的 **owner 优先且与输入/ID 顺序无关**、DATA_DIR 纯字符串契约且不要求存在）、报告 redaction（无路径/URL/session id/prompt 内容、`filesystemNotScanned`/`cannotDetect` 固定字段、executable:false）、缺失 DB 零创建（无 DB/WAL/SHM）、已有 DB 字节指纹不变、`--apply` 零写 fail-closed、未知/重复参数退出码 2 且不回显原值、只读引用运行时契约（SQLite 始终注册；PG 按既有门控）、CLI 主入口源码级零 fs（无 `node:fs`/realpath；SQLite 只读打开为唯一必要 FS）、PG URL 严格校验与 options 严格解析（仅 `search_path` 被接受并合并只读/lock；其余拒绝且错误脱敏）；`tests/postgres/reconcile-jsonl.test.ts` 与 PG 引用契约按既有门控 skip；
-- `pnpm test:reconcile-jsonl-pg`：**强制真实 PostgreSQL reconcile 门禁**（无 `PI_TEST_PG_URL` 非零失败），在随机专属 schema 上跑只读分析用例：fixture 用 `runPostgresMigrations` apply（**含 ledger**）、种子数据一律 **$1 参数绑定（绝不用 ident() 拼值）**、**不创建/写入任何文件**（DATA_DIR 只是词法绑定字符串）；门禁环境 URL 先经严格校验（协议/host/database/fragment）；只读连接由生产代码（`enforceReadOnlyPostgresUrl`）构造——严格解析仅 `search_path` options 并合并 `default_transaction_read_only=on` 与 `lock_timeout`（`SHOW` 三断言：schema 可见 + 服务端只读 + 有界 lock），迁移 verify 只读可用、写操作被服务端拒绝、零 DB 变化、finally 语义可靠 DROP SCHEMA CASCADE；**绝不创建任何 LOGIN role / 不使用 CREATEROLE**——真实 CLI（`scripts/reconcile-jsonl.ts` 经 tsx）直接使用随机 schema URL（`search_path` options），并验证随机 schema 隔离、只读、零 DB 变化、stdout/stderr 无 URL/path/credential 泄漏、URL options 含非 search_path 内容时 CLI fail-closed；
-- `pnpm build:reconcile-jsonl`：**先清空 `dist-reconcile` 再编译**，编译只包含**最小依赖闭包**（tsconfig.reconcile-jsonl.json 只收录入口与 `src/{application,file-operations,storage}` 的必要模块），compiled-CLI smoke 与 npm install bin smoke 均执行禁止文件/符号链接卫生检查 + **闭包断言**（dist-reconcile 不含 `server/start` runtime、backup/cutover、outbox writer / WP4B planner 域模块等文件系统副作用模块），并验证 dry-run 零写与指纹、缺失 DB 零创建、DATA_DIR 纯字符串契约且不要求存在、`--apply` exit 2、未知参数 exit 2、报告无绝对/相对路径、包内无残留产物；
-- `pnpm verify`（日常）、`pnpm verify:release`（发布）均接入 `build:reconcile-jsonl`；发布链额外接入 `test:reconcile-jsonl-pg`。**WP4C 已验收**：用户提供的完整真实 PG16+age `verify:release` 成功证据包含真实 PostgreSQL reconcile gate 及 compiled/npm smoke；本文不记录或推导测试数量。
+- `pnpm test`：DB-only 分类、只读、脱敏、fail-closed 和缺失 DB 零创建测试；
+- `pnpm test:reconcile-jsonl-pg`：真实 PostgreSQL 只读门禁，缺少 `PI_TEST_PG_URL` 时非零退出；
+- `pnpm build:reconcile-jsonl`：最小编译闭包、compiled/npm smoke 与禁止文件系统副作用模块检查；
+- `pnpm verify:release` 汇总上述发布门禁。具体用例以测试源码和 `package.json` 为准，不在本文复制。
 
 ## 5. 相关文档
 

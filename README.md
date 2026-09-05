@@ -2,41 +2,37 @@
 
 # pi-agent-server
 
-An Agent Server that turns the Pi Agent runtime into a long-running, session-oriented HTTP/SSE service. It handles request authentication and caller identity resolution, project and session lifecycle, persistence, streaming task control, concurrency, and tool permissions.
+A long-running, session-oriented HTTP/SSE server around the Pi Agent runtime. It provides project and session management, streaming task control, persistence, concurrency limits, IP-based admission, route RBAC, and configurable tool access. The React/Vite app in `web/` is an optional standalone client; Fastify does not serve it.
 
-Users and integrators can interact with the service through its HTTP/SSE API and build their own UI, workflows, or business systems on top of it. A separate Web UI (built with React and Vite, in `web/`) is included as a standalone client; it is not the only or required UI, and it is not part of the server itself.
+> **Status: Release Candidate (RC). Not production-ready.**
 
-> **Status:** Release Candidate (RC)
+## Current boundaries
 
-> **Important limits**
->
-> - **PostgreSQL** storage is implemented, but real acceptance is claimed only when the `PI_TEST_PG_URL`-gated PostgreSQL integration suite is run in the current environment. Without that URL, PostgreSQL tests are not acceptance evidence and are not reported as passed. It is only used when enabled explicitly (`PI_STORAGE_DIALECT=postgres` + `PI_DATABASE_URL`). It is **not production-ready**: service startup is not yet wired to formal migration, backup, or rollback (RC stage).
-> - **Backup/restore status:** WP3's offline SQLite/PG backup, restore, pre-migration and runbook cores are implemented. Real PostgreSQL and age gates are environment-gated; this checkout makes no real-PG/age acceptance claim unless the required URL and binaries are present and the gate runs. Published pre-reset/pre-migration packages return a creation-time identity (manifest-ciphertext SHA-256 plus source-roots/binding digests) that `verifyPublishedBackup` re-checks against the published bytes; SQLite pre-reset backups additionally bind the full DB/WAL/SHM surface at snapshot-generation time. Restore selects the authenticated historical migration prefix (including v0), verifies its physical schema without migrating, and validates/counts every v1 `file_operations` row. PostgreSQL restore rejects authenticated public/source schemas (an unconfigured libpq default `public` namespace is only a bootstrap target), requires the canonical explicit empty `pi_restore_*` target contract, and does not publish a zero-byte dump. All WP3 tools are offline dev-time tools, not wired into service startup; service-level formal backup/rollback/runtime integration is not implemented, so WP3 remains not production-ready.
-> - **Strict backup completeness foundation: ✅ accepted.** The opt-in `--require-complete-session-references` gate is fail-closed before final publish/`COMPLETE` and is bound to the final snapshot. The supplied complete real PG16+age `verify:release` evidence after the fixture repair includes the strict completeness compiled/npm gates and the real PostgreSQL CLI gate passing. This accepts the backup-core/CLI foundation only; **WP5C Option B remains formed, reviewable, and NOT accepted without an actual deployment drill** covering helper/timer → textfile → Prometheus → Alertmanager. No test counts are recorded.
-> - **WP4A status: ✅ accepted; later lifecycle work remains.** The v1 Manifest migration adds a persistent `file_operations` outbox on both SQLite and PostgreSQL. Session/project deletion enqueues relative, whitelist-checked JSONL paths in one locked database transaction, preserves the outbox without cascading, and never calls `unlink`; lease tokens fence stale workers, lazy JSONL creation has a durable path reservation, and restore validates/counts each outbox row. This acceptance is based on the supplied successful real PG16+age `verify:release` evidence; no test counts are asserted. WP4B has **not** implemented a physical executor (including unlink) or quarantine — only a safe read-only planner exists today (see next bullet); WP4C is accepted as a safe read-only DB-only reconcile analyzer only (see the WP4C bullet below). WP5A (minimal ops gate, ✅ accepted — see the WP5A bullet below) has been accepted based on the supplied real PG16+age `verify:release` evidence; the remaining WP5 items are WP5B (durable request-idempotency/shutdown-persistence hardening — **DEFERRED by the user's decision; not complete**), WP5C (Option B backup freshness deployment contract — formed, reviewable, NOT accepted; **no acceptance without an actual deployment drill**; covers backup-freshness alerting, see the WP5C bullet below) and future retention automation (not started, not scheduled); RPO/RTO (24h/4h), 30-day retention and drill cadence are confirmed operational policy, not implemented acceptance loops; WP6 has not started. No outbox worker is installed and HTTP never drives execution.
-> - **WP5B status: DEFERRED by the user's decision; not complete.** The current behavior is limited to **in-memory in-flight dedupe plus persisted terminal-result reads**; if the process crashes before the terminal state is persisted, the same `requestId` may execute again. The service makes no exactly-once or durable at-most-once guarantee. Re-trigger WP5B when side-effect tools are formally enabled, multiple instances are deployed, the service is public, or a strict replay-prevention requirement is explicitly introduced. This decision changes no code or tests. **WP5 and WP5C remain unaccepted.**
-> - **WP4B status: ✅ accepted (Plan A scope: safe read-only planner only; no physical execution).** The offline CLI (`pnpm file-ops` / bin `pi-agent-server-file-ops`) is a **read-only planner**: it lists/counts pending, expired-processing (crashed lease) and due-failed operations plus safe state/error counts from the persistent `file_operations` outbox (only `store.list()`, zero claims/lease/complete/fail, no filesystem access, no operation generation). SQLite is opened `readOnly` — a missing DB is never created (no DB/WAL/SHM) and existing DB bytes stay fingerprint-identical; PostgreSQL requires explicit `PI_STORAGE_DIALECT=postgres` + `PI_DATABASE_URL` and the connection enforces `default_transaction_read_only=on`. `--apply` fails closed immediately (exit code 2): the WP4B physical executor/quarantine is **not implemented**, no confirmation token can bypass this, and reports/errors are redacted (counts/error codes only, never relative/absolute paths). Acceptance evidence from the supplied successful real PG16+age `verify:release` run includes the file-ops planner gate and compiled/npm smoke; no test counts are recorded or inferred. The following safeguards are part of the accepted read-only planner scope: `last_error` is restricted to a fixed finite error-code allowlist (repository read, planner report keys and restore validation all enforce the same policy; unknown free text, relative paths and `credential=` values map to `unsafeErrors`/fallback code, never JSON keys); unknown CLI arguments are rejected without echoing the raw argv; the mandatory real-PostgreSQL gate now actually runs the planner CLI's PG branch (source entry via tsx; the random dedicated schema is bound through the URL's `search_path` options — strictly parsed by the CLI, which allows only `search_path` and merges `default_transaction_read_only=on` plus a bounded `lock_timeout`; **no LOGIN role is ever created, no CREATEROLE is used**) and verifies random-schema isolation, read-only, zero DB changes and no URL/path/credential leakage, while the readOnly test URL keeps both the schema `search_path` and the read-only constraint (with `SHOW search_path`/`SHOW transaction_read_only`/`SHOW lock_timeout` assertions); `build`/`build:backup`/`build:file-ops` clean their output directories before compiling and the compiled/npm-package smokes assert no residual executor/file-system-policy/error-codes artifacts and no symlinks in published trees. The planner accurately states that execution requires an audited external ops tool or a future native helper (a separate, not-yet-started item). The offline CLI does not start the service or a worker. WP4A's outbox schema/repository/lease contract is unchanged and remains the future executor foundation. WP4C is accepted as a safe read-only DB-only reconcile analyzer only (see the WP4C bullet below). The real-PostgreSQL planner gate (`pnpm test:file-ops-pg`) is wired into `verify:release` and fails closed without `PI_TEST_PG_URL`; the supplied evidence shows that the gate ran successfully. See [docs/file-operations.md](docs/file-operations.md).
-> - **WP4C status: ✅ accepted (Plan A: safe **DB-only** reconcile analyzer only).** The offline CLI (`pnpm reconcile-jsonl` / bin `pi-agent-server-reconcile-jsonl`) performs a **read-only DB reference analysis**: it fetches only read-only DB references (session id/project id/`pi_session_file` — never title/system prompt/cwd/owner content) through a dedicated port/repository and applies pure string/lexical validation against the specified `DATA_DIR` string (explicit, absolute, non-root, no traversal — **existence is not required and nothing is ever scanned**): canonical layout binding is `DATA_DIR/sessions/<sessionId>/<file>` for the default project and `DATA_DIR/projects/<projectId>/sessions/<sessionId>/<file>` for other projects — **fixed literal segments are validated verbatim** (same-segment-count pseudo directories such as `sessions2/`/`Projects/`/`project/`/`foo/` are rejected), and NUL/UNC/traversal/empty/parsed-root-or-volume-mismatch/id-mismatch/invalid file names are all rejected; `pi_session_file = NULL` sessions count as normal unmaterialized (not an issue); duplicate references are grouped by canonical reference with **owner priority independent of input/ID order** (the member whose session/project ids fully match the layout identity is the owner and counts valid; every other member of an owned group is a duplicate; a group with no owner is fully invalid). **The analyzer never touches the filesystem — no recursive traversal, no stat/open/read, no JSONL parsing — so it cannot detect orphan/lost/JSONL-corruption states**: the report carries fixed `filesystemNotScanned: true` and `cannotDetect: { orphanFile: false, lostFile: false, jsonlValidity: false }` fields and only fixed issue codes (`invalid_reference`, `duplicate_reference`) with counts and opaque sha256 references (never paths, URLs, DATA_DIR, session ids or prompt content), with `executable:false`. `--apply` fails closed immediately (exit code 2): no delete/move/quarantine, no DB writes, no outbox enqueue, no v2 migration, and no confirmation token can bypass this. SQLite is opened `readOnly` — a missing DB is never created (no DB/WAL/SHM) and existing DB bytes stay fingerprint-identical (the CLI's main-entry detection is filesystem-free — pure path/fileURL comparison — so the SQLite read is the only necessary file access); migration-head verification is read-only. PostgreSQL requires explicit `PI_STORAGE_DIALECT=postgres` + `PI_DATABASE_URL` with a **strictly validated connection URL** (protocol/host/database explicit, no fragment) and **strict `options` parsing allowing only `search_path`** (any other option is rejected, fail-closed — never passed through, never degrading to a writable connection); the CLI merges `default_transaction_read_only=on` plus a bounded `lock_timeout` and uses bounded connect/query/statement timeouts. **WP4C is accepted** based on the supplied complete real PG16+age `verify:release` success evidence, which includes the real-PostgreSQL reconcile gate and compiled/npm smokes; no test counts are recorded or inferred. The no-login-role gate fixture runs the real CLI directly against a random dedicated schema bound via `search_path` options, asserts server-side read-only + schema visibility, applies fixture migrations with the ledger and parameter binding only, and reliably drops the schema in `finally` semantics. `build:reconcile-jsonl` enforces a **minimal dependency closure** (tsconfig includes only the entry plus `src/{application,file-operations,storage}` modules; smokes assert the dist tree contains no server/start runtime, backup/cutover, outbox-writer or WP4B planner-domain filesystem side-effect modules). Real filesystem reconcile (orphan/lost/JSONL-corruption detection and remediation) is reserved for a future audited native helper (separate, not-yet-started item). The offline CLI does not start the service or a worker. See [docs/reconcile-jsonl.md](docs/reconcile-jsonl.md).
-> - **WP5A status: ✅ accepted — minimal ops gate (process readiness/metrics only; request idempotency and shutdown persistence are unchanged).** Two probe endpoints are served beside `/health`, behind the same source-IP admission gate as every other route (`/readyz` is token-free for any admitted role; `/metrics` is admin/operator-only and still demands the Bearer token on the actual GET when its profile is `tokenRequired`): `GET /readyz` reports only that **this process** completed safe startup and the selected migration gate passed (`200 {"ready":true,"migrationGate":"off","schema":"rc-bootstrap"}` explicitly means **RC bootstrap ready, not a schema endorsement**; with `PI_MIGRATION_GATE=verify` passed it reports `schema:"migration-head"`; not ready → `503`; startup failure means the process never listens; the request path never migrates or writes the database), and `GET /metrics` exposes a fixed small Prometheus text surface (`pi_agent_server_ready`, `pi_agent_server_start_time_seconds`, `pi_agent_server_uptime_seconds`, `pi_agent_server_migration_gate_enabled`, `pi_agent_server_migration_gate_verified`, `pi_agent_server_storage_dialect_info` safe label) with `Cache-Control: no-store`, route-level strict GET-only (HEAD is suppressed only on `/readyz` and `/metrics` via `exposeHeadRoute: false` — `HEAD /readyz`/`HEAD /metrics` → 404 — while `/health` and every other GET route keep Fastify's default HEAD behavior), fail-closed rendering, and no new Prometheus dependency. Readiness is fail-closed: `ready` requires `ready && (migrationGate="off" || migrationGateVerified)` and a known storage dialect — inconsistent/unknown states render `503` / `pi_agent_server_ready 0`, never a false positive — and `startServer` validates `migrationGate` at runtime (only the exact `"off"`/`"verify"` literals; any other value rejects before any resource is created). The status object is maintained by `startServer` (gate actually passed → `migrationGateVerified`; `listen` succeeded → `ready`; `preClose` lowers both best-effort — no new shutdown guarantee). **Explicit scope boundary:** WP5A is **not** backup freshness, is **not** a scheduler, and is **not** production readiness, and it does **not** change request idempotency (the existing in-memory `requestId` dedupe plus persisted terminal-result reads stay as-is) or shutdown persistence (close order and storage cleanup keep their existing semantics) — no backup scheduler/timer, no retention, no backup-missing/stale alerts, no RPO/RTO default thresholds, no restore-drill scheduling. Those WP5 items are **not** WP5B: WP5B is limited to durable request-idempotency/shutdown-persistence hardening and is **DEFERRED by the user's decision; not complete**; backup-freshness alerting is covered by **WP5C (Option B backup freshness deployment contract) — formed, reviewable, NOT accepted (no acceptance without an actual deployment drill)** (see the WP5C bullet below); retention automation remains a future work package (not started); WP6 has not started. The real-PostgreSQL wiring gate (`tests/postgres/start-ops-pg.test.ts`) is `PI_TEST_PG_URL`-gated; the supplied real PG16+age `verify:release` evidence includes this gate and compiled/smoke passes. No test counts are recorded or inferred. See [docs/operations.md](docs/operations.md) and [docs/phase-3-data-retention-plan.md](docs/phase-3-data-retention-plan.md).
-> - **WP5C status: Option B backup freshness deployment contract formed — reviewable, NOT accepted (no acceptance without an actual deployment drill); Option A scanner abandoned.** The earlier “root-owned Node deployment helper/template” form has been **converged**: no copyable root Node helper source, shell script, systemd unit, launchd plist or run script ships in this repository, and **no cross-OS atomic-publish implementation is claimed**; no in-repo scanner/observer code, CLI, tests, or build artifacts for backup scanning ship either (the dist hygiene check forbids the abandoned scanner's compiled artifacts, `health-core.*`). The deliverable is a deployment contract + acceptance checklist ([docs/backup-freshness-exporter.md](docs/backup-freshness-exporter.md)), plus the landed actual deployment drill SOP ([docs/backup-freshness-drill-sop.md](docs/backup-freshness-drill-sop.md)); the drill is **DEFERRED by the user's decision**, requires renewed target authorization, and forbids production data/services; all automated entry points are **deployment-audited helper/timers (see contract)** and there are no pnpm/CLI automated-timer examples (`pnpm backup` is a manual dev-only command). The contract requires the deployment to audit and prove: **fixed build artifacts** (the entire `dist-backup` runtime closure and its ancestor chain are root-owned, non-symlink, and not group/world-writable; the compiled backup CLI runs only under an exact pinned node binary ≥ 22.19, never AGENT_CWD/pnpm); approved absolute paths or a controlled root-owned safe PATH for `age`/`age-keygen`/`pg_dump`/`pg_restore`, with the helper verifying each resolved binary and version and rejecting uncontrolled PATH; a **fixed ≤ 12h cadence** (fixed 12h default; no daily 24h example; random delay ≤ 300s counted in the budget); **secrets never in any argv** (restricted root 0600 env config, strict single `KEY=VALUE` semantics, env-channel only — never in argv/unit/plist/logs); the **service auth token file service-account 0600** (backup user cannot read its content; precise traverse-only (search, no list) ACL on every ancestor — Linux `setfacl` / macOS `chmod +a`; no root-preflight substitute); the **per-target** node_exporter textfile metric `pi_agent_server_backup_last_success_timestamp_seconds` (conservative backup-start wall-clock epoch) updated **only after** that target's backup CLI exits 0 **and** its machine-readable published-output validation passes (dry-run rejected; **automation must invoke the CLI with the strict flag `--require-complete-session-references` — the machine contract is exactly one `backup-json-report:` line with status=published/strict=true/dryRun=false/missingSessionReferences=0, so a strict success implies zero missing session references, and any missing reference fails non-zero before publish/COMPLETE with a desensitized count-only error; manual runs without the strict flag keep the default compatible behavior and never constitute freshness; dry-run never counts**; published path inside `BACKUP_ROOT`, owned by the backup user) — **failure never updates it** (it stays at the last success time); **target root/ACL/atomicity are deployment-audited** (textfile directory root-owned 0750, node_exporter group read-only, full ancestor chain root-owned/non-symlink/without group-or-world write; atomic replacement proven on the target OS — no fd-safety or cross-OS claim); PromQL unified on the **independent persistent inventory metric `pi_agent_server_backup_expected_target_info{job,cluster,instance}=1`** (generated by the monitoring control plane, not the monitored target) joined with actual freshness/up/textfile metrics using the complete `(job, cluster, instance)` tuple; Q1–Q3 require exact tuple counts, cross-job/cluster instance uniqueness, and bidirectional inventory/actual set equality, with inventory-`unless`-actual missing rules (no global `absent()`), plus stale (`time() - metric > 24h`)/future-timestamp/exporter-down/scrape-error rules. Alertmanager is configured externally; nothing here is installed by this codebase. Explicitly excluded: in-repo backup scanning, age identity handling, service integration, repo-owned timers/helpers/scripts, automatic backup, and retention deletion. The in-repo read-only scanner (Option A) is **abandoned**; future native in-process metrics or age-identity-based freshness are separate discussion items. **Not accepted (reviewable)** — no test counts are recorded or inferred; no acceptance without an actual deployment drill.
-> - **Controlled cutover status (WP2A): implementation and reviewer re-review fixes are present; current acceptance is environment-gated and is not claimed without real PG/age evidence; the actual reset has not been started.** The offline controlled-cutover CLI (`pnpm cutover` / bin `pi-agent-server-cutover`) and an opt-in strict startup migration gate (`PI_MIGRATION_GATE=verify`, read-only ledger/head check, default off) are implemented, with mandatory real-age and real-PostgreSQL drill gates wired into `verify:release`. The **actual cutover has NOT been executed** — no real user SQLite/PG/JSONL has ever been reset by this tool; running it against a real target requires explicit operator authorization. After the WP2A re-review, the reviewer-required hardening (P0–P3) is in place: (1) the PostgreSQL cutover performs the same controlled JSONL cleanup as SQLite — after a verified pre-reset backup it clears only the `sessions/`/`projects/` roots under `DATA_DIR`, preserving `models.json` and never touching credentials (checked by the real-PG CLI/compiled/installed-bin drills when their gate prerequisites are present); (2) the cutover path-safety resolver includes `PI_AUTH_PATH`/`PI_AGENT_DIR`, requires an explicit absolute `DATA_DIR` that never equals/contains/is contained in `AGENT_CWD`, and rejects any overlap — in either direction, through realpath aliases — between the resolved credential, the whole canonical `agentDir` root (including `PI_AGENT_DIR=DATA_DIR`, ancestors, and symlinks), or `agentDir/models.json` and the reset surface (custom credential names/locations are protected by resolved path, never by the `auth.json` file name; the backup whitelist and the pre-reset re-check enforce the same); (3) `migrationGate="verify"` runs on a dedicated gate Pool/Kysely that is always destroyed (also on failure) before a fresh actual Pool bootstraps the service — the SQLite gate is truly read-only: a missing database is never created, the snapshot copy connection opens `readOnly: true`, and existing DB/WAL/SHM remain stat+byte fingerprint-identical; (4) published backup packages bind the canonical source roots plus a SQLite DB stat/content fingerprint or a PostgreSQL database/schema identity, and the cutover revalidates the binding immediately before the destructive step — any target change or identity mismatch before DDL fails with zero reset (a replaced SQLite DB inode/dev/nlink/fingerprint is rejected; the PG authenticated target must equal `--target-schema`/the current schema; for PG, if revalidation passes but DDL/COMMIT later fails, the JSONL cleanup that ran before the DDL transaction cannot be undone, so the pre-reset backup must be preserved for manual restore); (5) `--maintenance-window` accepts only the exact literal `CONFIRMED` (case/whitespace variants are rejected); (6) for `kind=pre-reset`, the SQLite binding covers the full DB/WAL/SHM surface (existence/dev/ino/nlink/mode/size/mtime/SHA-256) and is FIXED at snapshot-generation time: fingerprinted immediately before the `VACUUM INTO`, re-asserted right after it against the verified identical state, and then written into the manifest as one immutable baseline before any JSONL/age work runs — later publish/reset steps only COMPARE against that binding (re-collection is never allowed to replace the baseline), so any change — including a WAL-only commit between the snapshot and the manifest — fails the backup and any later cutover with zero deletion (daily `sqlite-online` backups keep no no-write requirement); (7) the PostgreSQL binding additionally covers cluster/server identity — `pg_control_system().system_identifier` (preferred, read as text), database/schema OIDs, server address/port, and `cluster_name` — captured inside ONE dedicated read-only `REPEATABLE READ` transaction on a single pool client that also exports its snapshot via `pg_export_snapshot()`: `pg_dump --snapshot=<id>` consumes exactly that snapshot while the transaction is held open for the whole dump, and an unsupported or failed export fails the backup closed; the cutover reset path holds one re-verified dedicated pool client and performs the identity revalidation plus `DROP SCHEMA`/`CREATE SCHEMA`/`GRANT` inside that same client/transaction (no pool switching; `DROP DATABASE` is never issued); the revalidation fails closed when the system identifier is unavailable or empty (same-name hashes are never trusted) or when any bound identity drifts (revalidation failure happens before DDL starts, so JSONL and schema are both zero-deletion), and the backup refuses a connection whose `current_database()` differs from the URL database; if DDL or COMMIT fails, the schema change rolls back but the JSONL cleanup that ran before the DDL transaction cannot be undone — the pre-reset backup must be preserved for manual operator restore, with no automatic restore/down/retry; (8) backup creation returns a published-package identity (manifest-ciphertext SHA-256 plus source-roots/binding digests), `verifyPublishedBackup` re-hashes the published manifest ciphertext, COMPLETE marker, and payloads against that creation identity, and a manifest ciphertext or COMPLETE marker replaced after creation fails with zero reset — without ever decrypting the manifest with a private identity; (9) the compiled/npm cutover failure smokes exercise a single verbatim-mismatched confirmation token and a dedicated fail fixture directory. WP2B (actual cutover execution) remains incomplete — it requires explicit user/operator authorization and is never automatic; nothing here is a production-readiness claim. See [docs/cutover-runbook.md](docs/cutover-runbook.md).
-> - **WP5D status: WP5D-1 (policy core), WP5D-2 (HTTP network admission), and WP5D-3 (route role authorization) are ✅ accepted, based on the user's supplied complete real PG16+age `pnpm verify:release` success evidence from a new release run after `workspaceRoots`/`PI_DEFAULT_WORKSPACE_ROOT` were removed and commit `5e84a9da` was submitted. **WP5D-4 owner transfer is ✅ accepted** (see [docs/owner-transfer.md](docs/owner-transfer.md)), based on the supplied complete real PG16+age `pnpm verify:release` success evidence: the real PostgreSQL owner-transfer gate, real age gate, and compiled + installed-npm PostgreSQL E2E smoke all passed; no test counts are recorded. The current RC decision still means intranet deployments do no workspace enforcement and workspace security is deferred until public exposure. This acceptance scope covers WP5D only; WP5 as a whole remains incomplete: WP5B is DEFERRED and WP5C's deployment drill is not accepted.** The IP access policy core (WP5D-1: strict CIDR/IP canonicalization with `::ffff:` mapped-to-v4 normalization, JSON v1 policy parser, pure resolver, SHA-256 Bearer-token helper with non-short-circuit per-profile constant-time comparison and exact-IP binding, env parser with mandatory `PI_ALLOWED_CLIENT_CIDRS` (the former `PI_DEFAULT_WORKSPACE_ROOT` was removed by the current RC decision and is no longer read), and the hardened policy-file loader) is now wired into HTTP: `main.ts` rejects the legacy `INTRANET_CIDRS`/`TOKENS` and **any** `TRUST_PROXY` environment variable (values never echoed; identity is always the direct TCP peer IP via `request.raw.socket.remoteAddress` — never `X-Forwarded-For` or `request.ip`), and parses the mandatory variables plus the optional policy file (secure load). `startServer` and `buildApp` enforce a strict runtime `ipAccess` configuration **before creating any resource**: missing/forged config and legacy `intranetCidrs`/`tokens`/`trustProxy` fields fail fast (JS/typed bypass included). A **global `onRequest` admission** covers all HTTP routes including `/health`, `/readyz`, `/metrics` and `/v1`: outside-CIDR / disabled / unparseable socket IP → `403` (fail-closed; 401/403 bodies never echo the raw IP/token/path); on `/v1` and `/metrics`, `tokenRequired` profiles require a Bearer token for **actual requests and non-preflight OPTIONS** (missing/wrong → `401`; token-off profiles ignore Bearer entirely), except a compliant browser CORS preflight (`OPTIONS` + `Origin` + `Access-Control-Request-Method`) is token-exempt and then evaluated by the CORS origin policy; `/health` and `/readyz` are the only token-free probes — any admitted IP/role reaches them with no token (liveness/readiness must never be blocked by token issues; role gating is WP5D-3). Identity and owner keys are the canonical IP (`::ffff:a.b.c.d` → v4); tokens never bypass CIDR and never transfer across IPs. Only `request.user` (canonical-IP identity) and `request.access` (public profile — **no token hashes**) are injected; logs carry `subjectHash` only — never raw IPs or tokens. **WP5D-3 (route role authorization)** — design implemented; included in the accepted WP5D status above: every route explicitly declares a permission (`src/server/route-rbac.ts` central `ROUTE_PERMISSIONS`; global `onRequest` default-deny hook; decision purely on `request.access.role`). Frozen matrix: `/health`/`/readyz` accept any admitted role (and never require a token); `/metrics` is admin/operator only — and when that profile is `tokenRequired` the **actual GET still requires the Bearer token** (CORS preflight exempt); `operator` gets `403` on **all** `/v1` (including read GETs); `viewer` may only read (`GET /v1/models`, `GET /v1/projects`, `GET /v1/sessions`, `GET /v1/sessions/:id/export`, and SSE `GET /v1/sessions/:id/events`) and gets fixed `403` on **all** POST/PATCH/DELETE (including messages/steer/follow-ups/abort) with zero service side effects; `user`/`admin` keep the existing own-resource behavior, still owner-isolated. **Read-only paths never materialize runtimes (reviewer P1/P2)**: `GET /v1/sessions/:id/export` for any role — live runtime → live export; unmaterialized + no `piSessionFile` → `{ messages: [], lastEventId: 0 }`; persisted-but-uninstantiated → injected read-only `SessionHistoryReader` (same `{role,text}` projection as live export, file-fingerprint-verified zero-write, sanitized errors; never `createAdapter`/DB/session-file writes). SSE runs closing (`503`) and quota (`429`) checks **before any runtime creation** (rejections have zero side effects); a `viewer` only does `registry.getExisting` — a session that exists but has no live runtime returns the stable controlled state **`204 No Content`** (no stream exists to subscribe to; distinct from `404` missing/forbidden), while `user`/`admin` get/create the runtime after those checks. Access still rides on owner isolation first: cross-owner access returns the same `404` as a missing resource, and `admin` does **not** get cross-owner read (explicitly out of scope). Missing/unknown/forged `request.access.role` fails closed to the fixed `403` body, and a route registered without an explicit permission fails closed too. A compliant CORS preflight is still admitted and answered by the CORS policy without any role/token gate (role gating applies to the actual request only). **Removed / deferred (current RC user decision)**: workspace security (`workspaceRoots`/`PI_DEFAULT_WORKSPACE_ROOT`) was removed entirely — IP-RBAC does **not** restrict cwd or Agent-tool absolute paths/OS permissions and is **not** a sandbox; public exposure is prohibited, and workspace/sandbox security is deferred to a future OIDC/IAM + workspace/sandbox design. Admin cross-owner read does not exist (DB schema untouched; old `real-auth`/`trust-proxy-policy` modules removed). **WP5D-4 (owner transfer) — ✅ accepted**: the offline CLI `pnpm owner-transfer` / bin `pi-agent-server-owner-transfer` changes DB-level resource ownership between two canonical IP identities (IP→IP) and updates only `projects.owner_key`/`sessions.owner_key`; it never carries policy-file tokens or roles across (recipient keeps its own IP profile). It requires the exact confirmation word `--confirm-transfer TRANSFER_IP_OWNERSHIP` plus `--maintenance-window CONFIRMED` (an operator declaration, not a process lock), follows a fixed order (strict `pre-owner-transfer` encrypted backup → `verifyPublishedBackup` → target binding revalidation → transactional transfer/verify), refuses to merge into an occupied target owner, and preserves the shared default project row (owner `''`); any failure is zero-write/rollback with no automatic restore, and reports expose only subject SHA-256 hashes/counts/backup metadata. Unit tests, the real-age SQLite gate, the real PG+age random-schema gate, and an independent dist (`dist-owner-transfer`) with compiled/installed-bin smokes are wired into `verify`/`verify:release`; the supplied complete real PG16+age `pnpm verify:release` success evidence shows the real PostgreSQL owner-transfer gate, real age gate, and compiled + installed-npm PostgreSQL E2E smoke all passed; no test counts are recorded. **No legacy account/token owner migration exists**: this RC never had production public-network token data, so there is nothing to migrate — early-development databases are wiped (RC delete-and-rebuild) or reset via the controlled offline cutover (`pnpm cutover`), never converted in place. See [docs/owner-transfer.md](docs/owner-transfer.md) and [docs/ip-rbac-design.md](docs/ip-rbac-design.md).
-> - **PostgreSQL client compatibility:** the backup core and mandatory gate safely query `SHOW server_version_num` and parse both `pg_dump --version` and `pg_restore --version`. All three PostgreSQL majors must match; a mismatch fails before `pg_dump`/`pg_restore` with a safe diagnostic that contains only the client/server majors and “install matching client”. Dumps are not filtered or modified.
-> - The web UI is a **separate Web UI, built with React and Vite** (`web/`). The Fastify server does **not** serve `web/dist`; you run the UI yourself (`pnpm web` / `pnpm web:mock`) and open it in a browser.
+- **Single instance only:** one pi-agent-server process per logical SQLite database or PostgreSQL schema and its associated `DATA_DIR`. Shared-storage replicas and overlapping rolling upgrades are unsupported.
+- **Intranet only:** caller identity is the canonical direct TCP peer IP. Every route is gated by mandatory `PI_ALLOWED_CLIENT_CIDRS`; forwarded-IP headers are never trusted. Public exposure is prohibited until future OIDC/IAM and workspace/sandbox work is complete.
+- **Not a sandbox:** IP-RBAC does not restrict project `cwd`, absolute tool paths, or OS permissions. The default tool allowlist is read-only. WP5B durable idempotency/shutdown hardening must be completed before enabling `bash`/`edit`/`write`, multiple instances, or public access; no runtime guard currently enforces that policy.
+- **Logical deletion only:** deleting projects or sessions removes database-visible resources and records JSONL cleanup in `file_operations`. No worker drains the outbox and no physical JSONL unlink occurs.
+- **Local encrypted backups:** offline SQLite/PostgreSQL backup and restore tooling uses age encryption and a local `BACKUP_ROOT`. It does not cover simultaneous host/disk and backup loss. The age identity/private key is managed by operations and supplied only during restore.
+- **Recovery policy:** RPO target is 24 hours; backup retention is 30 days with manual cleanup. RTO target is 4 hours, but signoff is deferred until the service is in use and has a representative data scale.
+- **Backup semantics are changing:** current strict backup mode fails on a missing session-file reference and backup currently parses JSONL lines. The approved target is missing-as-empty, opaque JSONL backup, and invalid-as-empty restore. That target is not implemented yet; see [the Phase 3 status ledger](docs/phase-3-data-retention-plan.md).
+- **Migration behavior is changing:** current `PI_MIGRATION_GATE` defaults to `off`; `verify` is opt-in and never migrates. The approved target defaults it to `verify` and adds an explicit managed/RC data mode, still with no automatic migration or reset. That target is not implemented yet.
 
 ## Highlights
 
-- **HTTP + SSE API** — streaming answers over Server-Sent Events, with `steer`, `follow-up` and `abort` controls.
-- **Sessions & workspaces** — multiple projects (each with its own working directory) and per-user sessions, isolated by identity.
-- **Web UI** — manage projects and sessions, pick the model and thinking level, and inspect the live event stream in an inspector pane.
-- **Persistence** — full conversation history in Pi JSONL session files; project/session metadata, request idempotency, and the file-cleanup outbox in SQLite (default) or PostgreSQL (explicit opt-in). Deletion only enqueues cleanup; it never unlinks synchronously.
-- **Security isolation** — a dedicated server `agentDir` (it does not load your personal `~/.pi/agent` extensions/skills), loopback binding by default, and mandatory IP-based network admission (WP5D-2) plus role-based route authorization (WP5D-3): every route is gated by the direct TCP peer IP against `PI_ALLOWED_CLIENT_CIDRS`; `/v1` profiles may bind a Bearer token to an exact IP (`tokenRequired`) and carry a role (`admin`/`user`/`viewer`/`operator`) that each route checks against an explicit permission (default-deny).
+- HTTP/JSON API plus Server-Sent Events.
+- `steer`, `follow-up`, and `abort` controls while a task is running.
+- Per-IP ownership isolation for projects and sessions.
+- SQLite by default; explicit PostgreSQL opt-in.
+- Pi JSONL conversation history plus database metadata and terminal request-idempotency records.
+- Central default-deny route RBAC with `viewer`, `user`, `operator`, and `admin` roles.
+- Optional exact-IP-bound Bearer tokens through a secure policy file.
 
-## Quick Start
+## Quick start
 
 ### Prerequisites
 
-- **Node.js >= 22.19.0** and **pnpm** (the web app is a pnpm workspace member).
+- Node.js >= 22.19.0
+- pnpm
 
 ```bash
 git clone <repository-url>
@@ -44,259 +40,144 @@ cd pi-agent-server
 pnpm install
 ```
 
-### Zero-credential mock experience
-
-No model credentials needed — the mock server runs a built-in fake agent and an in-memory SQLite database.
+### Mock server and Web UI
 
 ```bash
-# Terminal 1: mock server on http://127.0.0.1:8081
+# Terminal 1
 pnpm mock
 
-# Terminal 2: web UI on http://127.0.0.1:5173 (proxies /v1 and /health to the mock)
+# Terminal 2
 pnpm web:mock
 ```
 
-Open **http://127.0.0.1:5173** in your browser.
+Open <http://127.0.0.1:5173>. The mock server uses an in-memory database and a fake agent; no model credentials are required.
 
-Notes:
+### Real server
 
-- The mock server configures the same admission as production: allowed CIDRs `127.0.0.0/8` + `10.0.0.0/8`, so browser requests through the Vite proxy (source `127.0.0.1`) are admitted with the default token-off profile — **no token needed**.
-- The mock replies with canned messages — there is **no real model** behind it.
-
-### Real models
-
-Credentials can come from three sources:
-
-1. **Default — your pi CLI auth file:** the server reads `~/.pi/agent/auth.json` by default (the same file the pi CLI uses).
-2. **`PI_AUTH_PATH`** — point the server at a dedicated credentials file (recommended for deployments).
-3. **`PI_MODEL_PROVIDER` + `PI_MODEL_API_KEY`** — inject a runtime API key for the default provider (not persisted to disk).
-
-Optional, to change the default model for new sessions:
+`PI_ALLOWED_CLIENT_CIDRS` is mandatory. It is matched against the direct socket peer IP for every route, including probes.
 
 ```bash
-export PI_DEFAULT_MODEL=provider/modelId   # only the first "/" splits provider from model id
-export PI_DEFAULT_THINKING_LEVEL=medium    # off | minimal | low | medium | high | xhigh | max
-```
-
-### Start the backend API server
-
-Start only the Fastify Agent Server (the Web UI is optional). The network-admission variable is **mandatory** — startup fails fast when it is missing:
-
-```bash
-# API server on http://127.0.0.1:8080
-export PI_ALLOWED_CLIENT_CIDRS=127.0.0.0/8,10.0.0.0/8  # REQUIRED: allowed client CIDRs (direct TCP peer IP)
+export PI_ALLOWED_CLIENT_CIDRS=127.0.0.0/8,10.0.0.0/8
 pnpm dev
 ```
 
-All HTTP routes — including the `/health`, `/readyz`, `/metrics` probes — are IP-gated first by the **direct TCP peer IP**, so your client IP (loopback included) must be inside `PI_ALLOWED_CLIENT_CIDRS`. Setting the legacy `INTRANET_CIDRS` / `TOKENS` / `TRUST_PROXY` variables rejects startup.
+The default credential source is `~/.pi/agent/auth.json`. For a deployment, point `PI_AUTH_PATH` at a dedicated service credential file. A runtime default API key may instead be injected with `PI_MODEL_PROVIDER` and `PI_MODEL_API_KEY`.
 
-For a persistent local SQLite deployment initialized through the migration workflow, use explicit absolute paths and verify the migration head at startup:
+Optional model defaults:
 
 ```bash
-export AGENT_CWD="$PWD"
-export DATA_DIR="$HOME/Library/Application Support/pi-agent-server"
-export DB_PATH="$DATA_DIR/pi-agent-server.db"
-export PI_ALLOWED_CLIENT_CIDRS=127.0.0.0/8,10.0.0.0/8  # REQUIRED (see quick start above)
+export PI_DEFAULT_MODEL=provider/modelId
+export PI_DEFAULT_THINKING_LEVEL=medium
+```
+
+For a persistent migrated database, configure absolute `AGENT_CWD`, `DATA_DIR`, and `DB_PATH`, initialize or upgrade it through the offline migration procedure, then start with:
+
+```bash
 export PI_MIGRATION_GATE=verify
-export PI_BACKUP_STAGING_ROOT="$HOME/Library/Application Support/pi-agent-server-backup-staging"
-
-pnpm dev
 ```
 
-`PI_MIGRATION_GATE=verify` only verifies the migration ledger; it never migrates, resets, or rebuilds data. Initialize an empty persistent database first with the offline migration workflow in the [cutover runbook](docs/cutover-runbook.md). Stop a foreground server with `Ctrl-C`.
+`verify` checks the immutable migration ledger and schema head; it never applies migrations or resets data. See [Backup and restore](docs/backup-restore.md).
 
-### Optional: start the Web UI
+Start the optional standalone Web UI with `pnpm web`.
 
-In a second terminal, start the separate Web UI on http://127.0.0.1:5173; it proxies `/v1` and `/health` to the backend on port 8080:
+## API overview
 
-```bash
-pnpm web
-```
-
-## Usage
-
-### Web UI
-
-The UI lets you create/rename/delete sessions, switch projects, set a session's model and thinking level, watch streaming answers, and open the right-hand **Inspector** to follow the raw SSE event stream. Access is IP-gated like every other client: your browser's source IP must be inside `PI_ALLOWED_CLIENT_CIDRS`. When a `/v1` profile requires a token, the UI shows a Bearer-token field (kept **in browser memory only**, never written to `localStorage`). **A `403` cannot be fixed by entering a token** — `403` means the request is outside the allowed CIDRs, disabled, or the socket IP is unparseable — or, for admitted clients, that the request's `role` is not authorized for that route; tokens never bypass the CIDR gate.
-
-### HTTP API
-
-API routes live under `/v1` (JSON). Every route — including the `/health`, `/readyz` and `/metrics` probes — first passes the source-IP admission gate (`PI_ALLOWED_CLIENT_CIDRS` + optional `PI_IP_ACCESS_POLICY_FILE`): `/health` and `/readyz` are token-free for any admitted client, while `/metrics` is admin/operator-only and still demands the Bearer token on the actual GET when the profile is `tokenRequired`. Quick index:
+All routes first pass direct-peer-IP admission. `/health` and `/readyz` are token-free for any admitted role. `/metrics` is restricted to `admin`/`operator` and still requires the IP-bound token when that profile has `tokenRequired=true`.
 
 | Method | Route | Purpose |
 | --- | --- | --- |
-| `GET` | `/health` | Liveness (IP-gated; token-free, any admitted role) |
-| `GET` | `/readyz` | Readiness (IP-gated; token-free, any admitted role; WP5A ✅ accepted: this process's startup + migration gate only — see [Ops probes](#ops-probes-readyz-and-metrics-wp5a-accepted)) |
-| `GET` | `/metrics` | Prometheus text exposition (IP-gated; admin/operator only; `tokenRequired` profile still demands Bearer token on actual GET; WP5A ✅ accepted fixed small surface — see [Ops probes](#ops-probes-readyz-and-metrics-wp5a-accepted)) |
-| `GET` | `/v1/models` | Available models, thinking levels, server default model/thinking level |
-| `GET` | `/v1/projects` | List projects |
-| `POST` | `/v1/projects` | Create a project (`name` + `cwd`) |
-| `DELETE` | `/v1/projects/:id` | Delete a project |
-| `GET` | `/v1/sessions?projectId=` | List sessions |
-| `POST` | `/v1/sessions` | Create a session (optionally with project + model config) |
-| `PATCH` | `/v1/sessions/:id` | Rename a session |
-| `PATCH` | `/v1/sessions/:id/config` | Change model / thinking level |
-| `DELETE` | `/v1/sessions/:id` | Delete a session |
-| `POST` | `/v1/sessions/:id/messages` | Submit a prompt (`requestId` + `prompt` required; `202` = accepted/queued) |
-| `GET` | `/v1/sessions/:id/events` | SSE event stream (resume via `Last-Event-ID`; viewer on a session without a live runtime → stable `204`) |
-| `POST` | `/v1/sessions/:id/steer` | Steer the running task (text) |
-| `POST` | `/v1/sessions/:id/follow-ups` | Ask a follow-up (text) |
-| `POST` | `/v1/sessions/:id/abort` | Abort the running task |
-| `GET` | `/v1/sessions/:id/export` | Export a `{ messages, lastEventId }` snapshot — read-only, never materializes a runtime |
+| `GET` | `/health` | Liveness |
+| `GET` | `/readyz` | Process startup and migration-gate readiness |
+| `GET` | `/metrics` | Fixed Prometheus process/readiness surface |
+| `GET` | `/v1/models` | Available models and defaults |
+| `GET` / `POST` | `/v1/projects` | List or create projects |
+| `DELETE` | `/v1/projects/:id` | Logically delete a project |
+| `GET` / `POST` | `/v1/sessions` | List or create sessions |
+| `PATCH` / `DELETE` | `/v1/sessions/:id` | Rename or logically delete a session |
+| `PATCH` | `/v1/sessions/:id/config` | Change model/thinking configuration |
+| `POST` | `/v1/sessions/:id/messages` | Submit a prompt (`requestId` required) |
+| `GET` | `/v1/sessions/:id/events` | SSE stream; viewer with no live runtime receives `204` |
+| `POST` | `/v1/sessions/:id/steer` | Steer a running task |
+| `POST` | `/v1/sessions/:id/follow-ups` | Queue a follow-up |
+| `POST` | `/v1/sessions/:id/abort` | Abort a task |
+| `GET` | `/v1/sessions/:id/export` | Read-only message snapshot; never creates a runtime |
 
-> Exact response shapes evolve during RC — **the running API (see `src/server/app.ts`) is authoritative**.
+The running API in `src/server/app.ts` is authoritative during RC.
 
-### Curl examples
+## Access control
 
-```bash
-# 1. Liveness (IP admission gate only; token-free)
-curl http://127.0.0.1:8080/health
-# {"status":"ok"}
-
-# 2. Create a session from an allowed IP (inside PI_ALLOWED_CLIENT_CIDRS → no token required)
-curl -i -X POST http://127.0.0.1:8080/v1/sessions \
-  -H 'Content-Type: application/json' \
-  -d '{"title":"demo"}'
-# 201 + the session record
-
-# Send a prompt (requestId + prompt are required; 202 = accepted)
-curl -i -X POST http://127.0.0.1:8080/v1/sessions/<SESSION_ID>/messages \
-  -H 'Content-Type: application/json' \
-  -d '{"requestId":"req-1","prompt":"Hello"}'
-# 202 {"status":"accepted"} ; the streamed answer is delivered via GET /v1/sessions/<id>/events
-
-# 3. /v1 tokenRequired profile (optional; see PI_IP_ACCESS_POLICY_FILE)
-# The token is bound to ONE exact IP: it only authenticates requests whose direct TCP peer IP
-# matches the policy entry — it never lets a CIDR-outside client in (there is no "public-host" mode).
-curl http://<bound-ip-or-host>:8080/v1/models -H "Authorization: Bearer <TOKEN>"
-```
-
-### Ops probes: /readyz and /metrics (WP5A, ✅ accepted)
-
-Two ops probes are served beside `/health` for operator monitoring — all three probes sit behind the source-IP admission gate described below (`/readyz` is token-free and accepts any admitted role; `/metrics` is admin/operator-only and still demands the Bearer token for the actual GET when the profile is `tokenRequired`):
+Startup requires an explicit CIDR allowlist:
 
 ```bash
-# Liveness: process alive? (unchanged RC semantics)
-curl http://127.0.0.1:8080/health
-# {"status":"ok"}
-
-# Readiness: this process completed safe startup and the selected migration gate passed?
-curl http://127.0.0.1:8080/readyz
-# gate off:   200 {"ready":true,"migrationGate":"off","schema":"rc-bootstrap"}
-# gate verify:200 {"ready":true,"migrationGate":"verify","schema":"migration-head"}
-# not ready:  503 {"ready":false,...}
-
-# Metrics: fixed small Prometheus surface (text/plain; version=0.0.4; no-store)
-curl http://127.0.0.1:8080/metrics
+export PI_ALLOWED_CLIENT_CIDRS=127.0.0.0/8,10.0.0.0/8
 ```
 
-**All three probes are IP-gated first:** the admission gate covers `/health`, `/readyz` and `/metrics`, so outside-CIDR / disabled / unparseable-socket-IP clients get `403` before any probe logic runs. `/health` and `/readyz` accept **any admitted role and never require a token** (liveness/readiness must not be blocked by token issues); `/metrics` is role-gated **admin/operator only**, and when its profile is `tokenRequired` the **actual `GET` still requires the Bearer token** (a compliant CORS preflight stays token-exempt, as everywhere).
+An optional absolute `PI_IP_ACCESS_POLICY_FILE` may define exact-IP profiles with:
 
-`/readyz` reports **only this process's** startup state — it never runs migrations, never writes the database, and with `migrationGate` off it explicitly reports **RC bootstrap ready, not a schema endorsement**. Effective readiness is fail-closed (`ready && (off || verified)`; inconsistent/unknown → 503/0). `/metrics` is **route-level strict GET only**: only `/readyz` and `/metrics` set `exposeHeadRoute: false`, so `HEAD /readyz`/`HEAD /metrics` → 404 while `/health` and every other GET route keep Fastify's default HEAD (`HEAD /health` returns 200). It exposes a fixed surface — `pi_agent_server_ready`, `pi_agent_server_start_time_seconds`, `pi_agent_server_uptime_seconds`, `pi_agent_server_migration_gate_enabled`, `pi_agent_server_migration_gate_verified`, `pi_agent_server_storage_dialect_info{dialect="..."}` — with `Cache-Control: no-store` and fail-closed rendering; no URL/path/session/prompt/DB-count metrics exist.
+- `role`: `viewer`, `user`, `operator`, or `admin`;
+- `disabled`;
+- `tokenRequired` and globally unique `sha256:<64-lowercase-hex>` token hashes.
 
-**WP5A scope boundary (explicit):** WP5A delivers process readiness/metrics only. It does **not** change request idempotency or shutdown persistence (the existing in-memory `requestId` dedupe and the existing close/storage order are untouched), and it is **not** backup freshness, is **not** a scheduler, and is **not** production readiness: there is no backup scheduler/timer, retention, backup-missing/stale alerts, RPO/RTO default thresholds, or restore-drill scheduling. Those WP5 items are **not** part of WP5B (DEFERRED by the user's decision and not complete — limited to durable request-idempotency/shutdown-persistence hardening); **WP5C (Option B backup freshness deployment contract) has formed — reviewable, NOT accepted (no acceptance without an actual deployment drill)** ([docs/backup-freshness-exporter.md](docs/backup-freshness-exporter.md)); retention automation remains a future work package (not started); WP6 has not started. Details: [docs/operations.md](docs/operations.md) and [docs/phase-3-data-retention-plan.md](docs/phase-3-data-retention-plan.md).
+An unregistered IP inside an allowed CIDR receives `role=user` with token disabled. Tokens cannot bypass CIDR admission, change role, or move between IPs. Cross-owner resources remain hidden with `404`; `admin` does not have cross-owner access.
+
+Legacy `INTRANET_CIDRS`, `TOKENS`, and `TRUST_PROXY`, plus removed workspace settings, cause startup to fail. See [IP-RBAC design](docs/ip-rbac-design.md).
 
 ## Configuration
 
-All settings are environment variables (parsing lives in `src/main.ts`).
-
-| Variable | Default | Notes |
+| Variable | Current default | Notes |
 | --- | --- | --- |
-| `PORT` | `8080` | HTTP listen port |
-| `HOST` | `127.0.0.1` | Bind address; expose only behind a firewall/proxy |
-| `DATA_DIR` | current working directory | Server data directory: session JSONL, server `agentDir`, SQLite file |
-| `DB_PATH` | `<DATA_DIR>/pi-agent-server.db` | SQLite database file |
-| `PI_AUTH_PATH` | `~/.pi/agent/auth.json` | Credentials file (shared with the pi CLI by default) |
-| `PI_MODEL_PROVIDER` | unset | Default provider for runtime API-key injection |
-| `PI_MODEL_API_KEY` | unset | Runtime API key for the default provider (not persisted) |
-| `PI_DEFAULT_MODEL` | unset | `provider/modelId` used as the default for new sessions |
-| `PI_DEFAULT_THINKING_LEVEL` | unset (Pi default) | `off` / `minimal` / `low` / `medium` / `high` / `xhigh` / `max` |
-| `PI_DEFAULT_WORKSPACE_ROOT` | **REMOVED — setting it rejects startup** | Removed setting; startup fails even when the property is present with `undefined`. This service has **no workspace enforcement**; workspace security is deferred until public exposure. |
-| `TOKENS` | **DEPRECATED — setting it rejects startup** | Legacy static public-network mapping `token1:acct1,token2:acct2`; removed by WP5D-2 (values never echoed). Use `PI_ALLOWED_CLIENT_CIDRS` + optional `PI_IP_ACCESS_POLICY_FILE` instead |
-| `INTRANET_CIDRS` | **DEPRECATED — setting it rejects startup** | Legacy intranet CIDRs with implicit default; removed by WP5D-2. Use `PI_ALLOWED_CLIENT_CIDRS` (explicit, mandatory) |
-| `TOOLS` | unset → `read,ls,find,grep` | Tool allowlist; `bash`/`edit`/`write` must be listed explicitly |
-| `TRUST_PROXY` | **DEPRECATED — setting it rejects startup** | Removed by WP5D-2: identity is always the direct TCP peer IP (`request.raw.socket.remoteAddress`); `X-Forwarded-For`/`request.ip` are never used |
-| `CORS_ORIGINS` | empty (CORS off) | Comma-separated allowed browser origins |
-| `PI_STORAGE_DIALECT` | `sqlite` | `sqlite` or `postgres`; blank/empty normalizes to `sqlite`, unknown non-empty fails fast |
-| `PI_DATABASE_URL` | unset | Required when `PI_STORAGE_DIALECT=postgres`; missing → fail at startup (no silent fallback) |
-| `PI_BACKUP_STAGING_ROOT` | `$HOME/Library/Application Support/pi-agent-server-backup-staging` | Backup/migrate/cutover CLIs only: explicit absolute current-user 0700 root for the private plaintext staging directory (SQLite `VACUUM INTO` snapshot / `pg_dump` output / JSONL copies). Default is the per-user config staging root (never the shared OS temp dir); the root's full ancestor chain must be non-sticky, not group/world writable, and owned by the current user or root. Never inside the backup root or its parent; the backup root's parent never needs to be writable |
-| `PI_MIGRATION_GATE` | `off` | Strict startup migration gate: `verify` read-only checks the migration ledger/head before schema bootstrap and fails fast on empty/legacy/stale databases (explicit instruction to run the offline cutover/migrate); never auto-migrates or resets; unknown non-empty values fail fast |
-| `PI_ALLOWED_CLIENT_CIDRS` | **required, no default** | Comma-separated canonical allowed client CIDRs (WP5D-1 core; **WP5D-2 enforced**): every HTTP route (including `/health`/`/readyz`/`/metrics`) is IP-gated first — outside-CIDR/disabled/unparseable socket IP → 403 |
-| `PI_IP_ACCESS_POLICY_FILE` | unset | Optional IP access policy file (JSON v1, absolute path; WP5D-1 core; **WP5D-2 enforced**): exact-IP overrides for `role`/`disabled`/`tokenRequired`/token `sha256` hashes (the former `workspaceRoots` field was removed — if present it is rejected as an unknown field), securely loaded (symlink/perms/owner/TOCTOU checks). **WP5D-3 enforces the `role` field**: it gates every route (default-deny; no-role profiles default to `user`) |
+| `PORT` | `8080` | HTTP port |
+| `HOST` | `127.0.0.1` | Bind address |
+| `DATA_DIR` | process cwd | JSONL, service agent directory, and default SQLite location |
+| `DB_PATH` | `<DATA_DIR>/pi-agent-server.db` | SQLite file |
+| `PI_STORAGE_DIALECT` | `sqlite` | `sqlite` or explicit `postgres` |
+| `PI_DATABASE_URL` | unset | Required with PostgreSQL |
+| `PI_ALLOWED_CLIENT_CIDRS` | **none; required** | Canonical direct-peer CIDRs |
+| `PI_IP_ACCESS_POLICY_FILE` | unset | Optional absolute JSON v1 policy path |
+| `PI_AUTH_PATH` | `~/.pi/agent/auth.json` | Use a dedicated service file outside development |
+| `PI_MODEL_PROVIDER` / `PI_MODEL_API_KEY` | unset | Runtime default-provider credential injection |
+| `PI_DEFAULT_MODEL` | unset | `provider/modelId` |
+| `PI_DEFAULT_THINKING_LEVEL` | Pi default | `off` through `max` |
+| `TOOLS` | `read,ls,find,grep` | Side-effect tools require explicit configuration and the WP5B deployment gate |
+| `CORS_ORIGINS` | empty | Comma-separated browser origins |
+| `PI_MIGRATION_GATE` | `off` | Current code accepts `off` or read-only `verify`; target default is `verify`, not implemented |
+| `PI_BACKUP_STAGING_ROOT` | per-user private application directory | Offline backup/migration/cutover plaintext staging |
 
-## Data & Storage
+`PI_DEFAULT_WORKSPACE_ROOT`, `defaultWorkspaceRoot`, and `workspaceRoots` were removed and are rejected even when explicitly present with `undefined` through runtime configuration.
 
-- **SQLite (default)** — project/session metadata, request idempotency, and the v1 `file_operations` outbox live in a SQLite file at `DB_PATH` (WAL mode, foreign keys on). PostgreSQL uses the same logical schema and repository contract. The outbox is **not drained yet**: the offline `pnpm file-ops` CLI (WP4B) is currently a read-only planner only (no physical executor), and future lifecycle workers do not exist — never by HTTP requests and never automatically.
-- **Conversation history** — the Pi SDK writes full history as JSONL session files: `<DATA_DIR>/sessions/<sessionId>/` for the default project and `<DATA_DIR>/projects/<projectId>/sessions/<sessionId>` for extra projects. The DB records the JSONL path so sessions are restored after a restart.
-- **Server agent directory** — `<DATA_DIR>/.pi-agent` holds server-side agent config (`models.json` etc.) and does not inherit your personal `~/.pi/agent`.
-- **Credentials** — default `~/.pi/agent/auth.json`, overridable with `PI_AUTH_PATH`.
-- **Schema** — tables/columns/indexes are generated from a single runtime Schema Manifest (`src/storage/schema-manifest.ts`); details in [docs/database-design.md](docs/database-design.md).
-- **PostgreSQL** — real acceptance is **`PI_TEST_PG_URL`-gated** and is not claimed when that URL is absent (shared dialect-neutral repository contract, real unique-constraint mapping, old-schema fail-fast); the storage integration suite is only acceptance evidence when it runs against the current real PostgreSQL instance. Enable it explicitly with `PI_STORAGE_DIALECT=postgres` + `PI_DATABASE_URL`; a blank dialect stays on SQLite and an unknown non-empty dialect fails fast. WP3B2's offline `pg_dump`/`pg_restore` core and reviewer P0/P1 fixes are complete, and its mandatory real PG binary `pg_dump`/`pg_restore` gate is acceptance evidence only when it runs with a matching client. Restore uses the canonical explicit empty `pi_restore_*` contract, rejects authenticated public/source schemas, and can locate a non-public source schema from the target catalog without a target URL `search_path` (the unconfigured libpq default `public` namespace is only a bootstrap target). **The libpq client major must match the test server major and both `pg_dump` and `pg_restore` must use that same major.** Safely inspect the server with `psql ... -Atc 'SHOW server_version_num'`; install/use `libpq@<server-major>` (or the equivalent matching-major package) and put its `bin` first in `PATH`. Do not assume major 18. To re-run the gated suite locally, use the Podman setup in [docs/postgres-podman-test.md](docs/postgres-podman-test.md). Service-level migration/backup/rollback integration is not production-ready.
+## Persistence and operations
 
-## Security & Limitations
+- Metadata lives in SQLite or PostgreSQL; full conversation history lives in Pi-managed JSONL files.
+- DELETE writes a durable cleanup intent to `file_operations`, but the repository supplies only a read-only planner. Physical execution is outside the current scope.
+- Backup, restore, migration, cutover, reconciliation, and owner-transfer tools are offline commands. They do not start the service or install timers/workers.
+- PostgreSQL requires matching server, `pg_dump`, and `pg_restore` major versions.
+- Real PostgreSQL/age acceptance claims require the corresponding environment-gated release checks to run; a skipped gate is not acceptance evidence.
 
-- Binds to **127.0.0.1** by default; open it up only through a controlled network/firewall.
-- **Network admission (WP5D-2):** all HTTP routes are gated by the **direct TCP peer IP** (`request.raw.socket.remoteAddress`; `X-Forwarded-For` and `request.ip` are always ignored). Only clients inside `PI_ALLOWED_CLIENT_CIDRS` are admitted — outside / `disabled` policy entries / unparseable socket IPs get `403` on every route including probes and CORS preflights. `/health` and `/readyz` are IP-gate only (no token/role gate); on `/v1` **and `/metrics`**, profiles with `tokenRequired` demand a Bearer token for actual requests and non-preflight OPTIONS (missing/wrong → `401`; token-off profiles ignore Bearer), with the sole browser exception of a compliant CORS preflight (`OPTIONS` + `Origin` + `Access-Control-Request-Method`), which is then checked by the configured CORS origin policy and is never role-gated. Identity and owner keys are the canonical IP; there is **no token-issuance endpoint**.
-- **Route role authorization (WP5D-3):** every route explicitly declares a permission and a global default-deny hook checks `request.access.role` against it (central `ROUTE_PERMISSIONS` in `src/server/route-rbac.ts`). Frozen matrix: `/health`/`/readyz` accept any admitted role (token-free); `/metrics` is **admin/operator only** (user/viewer → fixed `403`; a `tokenRequired` profile still demands the token for the actual GET); `operator` is **denied all of `/v1`** (`403` even for read GETs); `viewer` is **read-only** (`GET /v1/models`, `/v1/projects`, `/v1/sessions`, session export, SSE events — all other `/v1` routes including messages/steer/follow-ups/abort → fixed `403` with zero service side effects); `user`/`admin` keep the existing own-resource routes and remain **owner-isolated** (cross-owner access → the same `404`; **admin cross-owner read is NOT implemented**). Export and SSE are zero-materialization read paths: export never creates a runtime (unmaterialized sessions export `{messages:[], lastEventId:0}` or the read-only file projection; never `createAdapter`/DB/file writes), and viewer SSE on a session without a live runtime returns **stable `204`** (with live runtime → subscribable stream; closing/quota checks run before any runtime creation). The `403` body is a fixed constant that never leaks role/IP/path; missing or unknown roles fail closed; a route registered without an explicit permission fails closed too.
-- **Current authentication scope:** callers are identified by their canonical source IP (one IP = one user). An optional policy file may bind SHA-256 token hashes to exact IPs (`tokenRequired`) and mark IPs `disabled`; tokens never bypass CIDR and never transfer across IPs. There is no user login system, no token-issuance API, and no per-user identity management beyond the IP profile. **WP5D-4 owner transfer (✅ accepted)** — an offline CLI (`pnpm owner-transfer` / bin `pi-agent-server-owner-transfer`, see [docs/owner-transfer.md](docs/owner-transfer.md)) may move a canonical IP's DB-level resource ownership (`projects.owner_key`/`sessions.owner_key` only, IP→IP) behind the exact confirmation chain `--confirm-transfer TRANSFER_IP_OWNERSHIP` + `--maintenance-window CONFIRMED`, but it never migrates policy-file IP entries, token bindings, or roles.
-- **Not a sandbox, and does not limit working directories:** IP-RBAC (network admission + route role authorization) decides only *who may call which routes*; it does **not** restrict the agent working directory (`cwd`), Agent-tool absolute paths, or OS-level permissions. Deploy on intranet/controlled networks only; **public exposure is prohibited** until a future OIDC/IAM + workspace/sandbox design lands (see [docs/ip-rbac-design.md](docs/ip-rbac-design.md) §7).
-- **Planned improvements (not yet implemented):** Full user login and Identity & Access Management (IAM), encompassing three layers — Authentication (user login), Identity (caller identity resolution beyond source IP), and Authorization (permission checks). Planned capabilities include OAuth/OIDC integration, Access Tokens (the decided auth mechanism; session-based auth is excluded), API Key lifecycle management (generation, rotation, revocation, expiration), fine-grained permission scopes, and audit logging. No timeline or implementation details are committed at this stage. The detailed roadmap (terminology, target architecture, data-model direction, phased work packages, and open decisions) is documented in [docs/identity-access-plan.md](docs/identity-access-plan.md). The IP access policy track (WP5D) is **✅ accepted (WP5D-1 core + WP5D-2 HTTP network admission + WP5D-3 route role authorization)**, based on the user's supplied complete real PG16+age `pnpm verify:release` success evidence from a new release run after `workspaceRoots`/`PI_DEFAULT_WORKSPACE_ROOT` were removed and commit `5e84a9da` was submitted. IP-RBAC is **not** a sandbox and does **not** restrict cwd or Agent-tool absolute paths/OS permissions; workspace/sandbox security is deferred until public exposure. Admin cross-owner read remains not implemented; **WP5D-4 owner transfer is ✅ accepted**, limited to DB-level canonical IP→IP resource ownership changes (only `projects.owner_key`/`sessions.owner_key`; policy-file IP entries, token bindings, and roles never migrate). See [docs/owner-transfer.md](docs/owner-transfer.md) and [docs/ip-rbac-design.md](docs/ip-rbac-design.md).
-- The default tool allowlist is **read-only** (`read`, `ls`, `find`, `grep`); `bash`, `edit` and `write` are disabled unless explicitly listed in `TOOLS`.
-- `POST /v1/projects` accepts a client-supplied `cwd` — do **not** expose it on public production deployments, because an authenticated client could create workspaces on arbitrary local paths.
-- The web UI keeps tokens **in browser memory only** (no `localStorage`). A UI `403` means the client IP is outside `PI_ALLOWED_CLIENT_CIDRS` (or disabled / unparseable) — entering a token cannot fix it — or, for admitted clients, that the `role` is not authorized for that route.
-- Behind a reverse proxy: `TRUST_PROXY` is rejected (deprecated); either run the service directly reachable (TLS-terminating proxy egress IPs belong in `PI_ALLOWED_CLIENT_CIDRS`) or isolate network paths — forwarded client IPs are never trusted. Configure `CORS_ORIGINS` for browser clients (cross-origin SSE included).
-- **PG/age status** — validated only by current, explicitly run real gates: `PI_TEST_PG_URL` is required for PG, and the age gates require `age`/`age-keygen`. Without those prerequisites, the result is skipped or fails closed, never “passed”. WP4A's storage/outbox/restore hardening is accepted based on the supplied real PG16+age gate evidence; WP4B's safe read-only planner is accepted based on the supplied evidence (physical executor, including unlink, retry/quarantine are **not implemented**); WP4C is accepted as a safe DB-only reconcile analyzer (Plan A) only (it never scans the filesystem and cannot detect orphan/lost/JSONL corruption; the supplied complete real PG16+age `verify:release` evidence includes its real-PostgreSQL gate and compiled/npm smokes); WP5A is **✅ accepted** (process readiness/metrics only, **not** backup freshness or production readiness, **not** changing request idempotency or shutdown persistence) based on the supplied real PG16+age `verify:release` evidence; WP5C (Option B backup freshness exporter) has a formed **deployment contract**, reviewable — **not accepted; no acceptance without an actual deployment drill** (deployment-audited helper/timer at a fixed ≤ 12h cadence + per-target node_exporter textfile metric `pi_agent_server_backup_last_success_timestamp_seconds` updated only after verified publish, failure never updates it, secrets never in argv, service token unreadable by the backup user, target root/ACL/atomicity deployment-audited, expected target labels + missing/stale/future/exporter rules with uniqueness acceptance queries; no in-repo helper source/timer templates or cross-OS atomic-publish claim; the in-repo Option A scanner is **abandoned**; see [docs/backup-freshness-exporter.md](docs/backup-freshness-exporter.md)); the remaining WP5 items are WP5B (durable idempotency/shutdown persistence — **DEFERRED by the user's decision; not complete**), WP5C (deployment contract — formed, reviewable, not accepted without a deployment drill) and future retention automation (not started); WP6 has not started. Still **not production-ready**: service-level migration, backup, rollback and lifecycle integration is not implemented — treat as RC-only.
+See [Operations](docs/operations.md), [Backup and restore](docs/backup-restore.md), and [Database design](docs/database-design.md).
 
-## Development & Testing
+## Development
 
 ```bash
-pnpm test               # server tests (vitest)
-pnpm typecheck          # TypeScript check (no emit)
-pnpm verify             # daily gate: typecheck + test + build:backup + build:file-ops + build:reconcile-jsonl + build:owner-transfer
-pnpm test:postgres      # real-PG integration tests only; FAILS (exit 1) when PI_TEST_PG_URL is missing/blank
-pnpm test:pg-backup     # mandatory real pg_dump/pg_restore + age backup gate; preflights server/client majors and fails closed on mismatch
-pnpm test:migration-prebackup # mandatory WP3C real PG pre-migration-backup gate; fails closed without URL/tools
-pnpm cutover             # offline controlled-cutover CLI (WP2A; destructive only behind the full confirmation chain — see docs/cutover-runbook.md)
-pnpm test:cutover        # mandatory real-age SQLite cutover drill gate (runs test:age first); fails closed without age/age-keygen
-pnpm test:cutover-pg     # mandatory real-PostgreSQL cutover drill gate (random pi_cutover_* schema; library-level + real CLI E2E incl. JSONL reset/binding/redaction/fail paths); fails closed without URL/tools
-pnpm file-ops            # offline WP4B read-only planner CLI: default/--dry-run lists/counts outbox operations; --apply fails closed (executor not implemented) — see docs/file-operations.md
-pnpm test:file-ops-pg    # mandatory real-PostgreSQL WP4B planner gate (random dedicated schema); fails closed without PI_TEST_PG_URL
-pnpm build:file-ops      # compile dist-file-ops + compiled CLI smoke + npm-installed bin smoke (dry-run zero-write, missing-DB zero-creation, --apply fail-closed, redacted reports)
-pnpm reconcile-jsonl     # offline WP4C DB-only reconcile analyzer CLI (Plan A): default/--dry-run analyzes read-only DB references with pure lexical DATA_DIR layout binding (never scans the filesystem; cannot detect orphan/lost/JSONL corruption); --apply fails closed (no executor) — see docs/reconcile-jsonl.md
-pnpm test:reconcile-jsonl-pg # mandatory real-PostgreSQL WP4C reconcile gate (random dedicated schema); fails closed without PI_TEST_PG_URL
-pnpm build:reconcile-jsonl # compile dist-reconcile (minimal dependency closure only: entry + src/{application,file-operations,storage}; no server/backup/cutover/outbox modules) + compiled CLI smoke + npm-installed bin smoke (dry-run zero-write, missing-DB zero-creation, lexical-only DATA_DIR contract, --apply fail-closed, redacted reports, filesystemNotScanned)
-pnpm test:restore-real  # real age integration + SQLite restore-core gate
-pnpm owner-transfer     # offline WP5D-4 DB-only IP→IP owner-transfer CLI (destructive only behind the exact confirmation chain — see docs/owner-transfer.md)
-pnpm test:owner-transfer # mandatory real-age SQLite owner-transfer drill gate (runs test:age first); fails closed without age/age-keygen
-pnpm test:owner-transfer-pg # mandatory real-PostgreSQL owner-transfer gate (random isolated business schema; real app schema + migration ledger; apply/dry-run/occupied-rollback); fails closed without URL/tools
-pnpm build:owner-transfer # compile dist-owner-transfer + compiled CLI smoke + npm-installed bin smoke (wrong-confirmation, dry-run zero-write, apply, occupied-target rollback, redacted reports, real-PG optional)
-pnpm verify:release     # full release gate: typecheck + test + test:postgres + test:pg-backup + test:migration-prebackup + test:cutover + test:cutover-pg + test:file-ops-pg + test:reconcile-jsonl-pg + test:age (called by test:restore-real) + test:restore-real + test:owner-transfer + test:owner-transfer-pg + build + build:migrate + build:backup + build:cutover + build:file-ops + build:reconcile-jsonl + build:owner-transfer (requires PI_TEST_PG_URL and all real binaries)
-pnpm build              # build the server (dist/)
-
-pnpm --filter web test  # web unit tests
-pnpm --filter web build # build the web app (tsc -b && vite build)
-pnpm e2e                # Playwright end-to-end (starts its own mock backend + Vite server)
+pnpm test
+pnpm typecheck
+pnpm verify
+pnpm verify:release     # requires real PostgreSQL and age prerequisites
+pnpm build
+pnpm --filter web test
+pnpm --filter web build
+pnpm e2e
 ```
 
-- **Release gate (P0):** a release must not claim full acceptance while `typecheck` was not run, the PG tests were skipped, the real PG backup gate was skipped, the real cutover drill gates were skipped, the real WP4B planner PG gate was skipped, the real WP4C reconcile PG gate was skipped, the real age restore gate was skipped, or the real owner-transfer gates (`test:owner-transfer`, `test:owner-transfer-pg`) were skipped. `pnpm verify:release` runs `typecheck` + `test` + `test:postgres` + `test:pg-backup` + `test:migration-prebackup` + `test:cutover` + `test:cutover-pg` + `test:file-ops-pg` + `test:reconcile-jsonl-pg` + `test:age` (called by `test:restore-real`) + `test:restore-real` + `test:owner-transfer` + `test:owner-transfer-pg` + `build` + `build:migrate` + `build:backup` + `build:cutover` + `build:file-ops` + `build:reconcile-jsonl` + `build:owner-transfer`; `release:rc` calls `verify:release` before publishing. `pnpm verify` covers the daily loop (typecheck + test + build:backup + build:file-ops + build:reconcile-jsonl + build:owner-transfer) without requiring a database. WP4C (Plan A) is accepted based on the supplied evidence that its real-PostgreSQL reconcile gate and compiled/npm smokes ran successfully.
-- **Age is a release-gate dependency:** `test:restore-real` first runs `test:age`, which requires both `age` and `age-keygen`. If either binary is unavailable, the complete release verification fails closed (non-zero) rather than skipping the restore gate. `build:cutover` additionally runs the compiled and installed-bin cutover E2E against a real random `pi_cutover_*` PostgreSQL schema when `PI_TEST_PG_URL` and the required binaries are set (otherwise that section prints a skip note while the mandatory `test:cutover-pg` gate still fails closed without the URL).
-- **PG integration tests vs. plain test skip (keep them distinct):**
-  - `pnpm test` (no `PI_TEST_PG_URL`): the `tests/postgres/` group is **skipped** (existing gate; never reported as passing / never connects).
-  - `pnpm test:postgres` (no `PI_TEST_PG_URL`): **exits non-zero with a clear reason** (release gate — skipping is not acceptance). Uses a cross-platform Node runner (`scripts/test-postgres.ts`), never prints the connection string.
-  - With `PI_TEST_PG_URL` set, both `pnpm test` and `pnpm test:postgres` run the real-PG cases (`tests/postgres/`); `pnpm test:pg-backup` additionally requires `pg_dump`, `pg_restore`, age and age-keygen and runs the isolated dump→encrypt→restore gate. Use `pnpm verify:release` for the complete acceptance loop.
-- **e2e** — not shipped as "green" in this RC; run `pnpm e2e` locally to verify (first run: `pnpm --filter web exec playwright install` to fetch browsers).
-- Architecture & core data flow: [docs/architecture.md](docs/architecture.md). Storage design: [docs/database-design.md](docs/database-design.md).
+Specialized offline and PostgreSQL gate commands are documented in [docs/operations.md](docs/operations.md), [docs/postgres-podman-test.md](docs/postgres-podman-test.md), and `package.json`.
 
 ## Documentation
 
-- [docs/architecture.md](docs/architecture.md) — architecture and core data flow
-- [docs/database-design.md](docs/database-design.md) — SQLite / PostgreSQL schema design
-- [docs/pi-sdk-api.md](docs/pi-sdk-api.md) — Pi SDK usage index (the HTTP surface is defined in `src/server/app.ts`)
-- [docs/postgres-podman-test.md](docs/postgres-podman-test.md) — local PostgreSQL testing with Podman
-- [docs/operations.md](docs/operations.md) — offline migration/pre-backup operations runbook and gates
-- [docs/cutover-runbook.md](docs/cutover-runbook.md) — WP2A controlled-cutover runbook (implemented; current PG/age acceptance is environment-gated; the actual cutover has not been executed)
-- [docs/owner-transfer.md](docs/owner-transfer.md) — WP5D-4 offline DB-only IP→IP owner transfer (✅ accepted; exact confirmation chain; pre-owner-transfer backup kind)
-- [docs/backup-restore.md](docs/backup-restore.md) — SQLite/PostgreSQL backup, restore, and drill contract
-- [docs/backup-freshness-drill-sop.md](docs/backup-freshness-drill-sop.md) — WP5C Option B actual deployment drill SOP; landed, but the drill is **DEFERRED by the user's decision** and requires renewed target authorization; strict foundation accepted separately, **WP5C/WP5 remain unaccepted**, and no production data/services are permitted
+Start with the [documentation index](docs/README.md). Key references:
 
-Internal phase plans and archived documents (`docs/archive/`) are not user-facing entry points.
+- [Architecture](docs/architecture.md)
+- [Database design](docs/database-design.md)
+- [IP-RBAC design](docs/ip-rbac-design.md)
+- [Phase 3 status ledger](docs/phase-3-data-retention-plan.md)
+- [Backup and restore](docs/backup-restore.md)
+- [Operations index](docs/operations.md)
+- [Future public IAM plan](docs/identity-access-plan.md)

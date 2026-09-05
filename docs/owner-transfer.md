@@ -1,9 +1,10 @@
 # IP→IP Owner Transfer 设计（WP5D-4）
 
-> **状态：✅ 已验收** —— 离线 CLI `owner-transfer` 已实现。用户提供的完整真实 PG16+age
-> `pnpm verify:release` 成功证据中，真实 PostgreSQL owner-transfer gate、真实 age gate，以及
-> compiled + installed-npm PostgreSQL E2E smoke 均通过。本文不记录测试数量。本工具从未对任何
-> 真实用户 SQLite/PG/JSONL 执行过转移；对真实目标执行需运维/用户明确授权。
+> **状态：离线 CLI `owner-transfer` 已实现。** 本工具从未对任何真实用户 SQLite/PG/JSONL 执行过转移；
+> 对真实目标执行需运维/用户明确授权。
+> **当前契约：备份恒为 strict（hard-code `requireCompleteSessionReferences: true`）**——任一缺失的 session
+> reference 都在发布备份前 fail-closed，绝不接受不完整备份作为转移锚点。「missing-as-empty」目标尚未实现，
+> 不得按已实现对待。
 >
 > 关联文档：[ip-rbac-design.md](ip-rbac-design.md) §7、[identity-access-plan.md](identity-access-plan.md)、
 > [backup-restore.md](backup-restore.md)、[database-design.md](database-design.md)、[needs.md](../needs.md) §4.2/§7。
@@ -151,7 +152,7 @@ CLI 非零退出、不输出成功；备份保留、绝不自动 restore。
 （`idle → revalidating → revalidated → transacting → done`，任一步失败 → `failed`；
 dry-run 走独立 one-shot 路径），全部 fail-closed、绝不覆盖 in-flight client：
 
-- **锁模型（reviewer P1 修复）**：`revalidate(verification)` 租用专用 client 后，先
+- **锁模型**：`revalidate(verification)` 租用专用 client 后，先
   **在事务外**以参数化 `SELECT pg_advisory_lock($1)`（$1 = `POSTGRES_MIGRATION_LOCK_KEY`）
   取得 **session-level** advisory lock（与迁移引擎在事务内持有的同 key xact lock 冲突，
   因此与并发 migration/transfer 串行化），取得后才 `BEGIN ISOLATION LEVEL REPEATABLE
@@ -162,11 +163,11 @@ dry-run 走独立 one-shot 路径），全部 fail-closed、绝不覆盖 in-flig
   UPDATE 两列 → post 校验 → COMMIT。复验与写入之间**不存在 ROLLBACK/重连窗口**；
   事务快照自复验起不变。复验失败即本事务 ROLLBACK，且后续 apply 不再重建事务
   （fail-closed）。跳过复验直接 `transfer("apply")` 一律拒绝（零 connect、零写入）。
-- **解锁契约（reviewer P1 修复）**：事务 COMMIT/ROLLBACK **之后**显式
+- **解锁契约**：事务 COMMIT/ROLLBACK **之后**显式
   `SELECT pg_advisory_unlock($1)` 并验证返回 true，**之后才** release 归还池；
   解锁未确认 true / 解锁查询失败 / 事务结束失败 → `release(error)` 销毁连接
   （可能仍持锁，绝不回池；错误/cleanup 路径同此规则）。
-- **一次性状态机（reviewer P1 修复）**：revalidate 只允许在 idle 执行一次（并发/重复
+- **一次性状态机**：revalidate 只允许在 idle 执行一次（并发/重复
   一律拒绝，零加连）；`transfer("apply")` 只允许在 revalidated 执行一次（跳过复验/
   复验失败/进行中/完成后复用全部拒绝）；`transfer("dry-run")` 是独立 one-shot 路径
   （READ ONLY 事务，可无 backup/binding，只计划不写入，以 ROLLBACK + 解锁验证结束），
@@ -189,35 +190,13 @@ dry-run 走独立 one-shot 路径），全部 fail-closed、绝不覆盖 in-flig
   替换为稳定文案（`sanitizeOwnerTransferDiagnostic` + `renderOwnerTransferCliError`）。
 - 报告字段白名单：`status/mode/dialect/sourceSubjectHash/targetSubjectHash/transfer.*/backup.*/notes`。
 
-## 8. 测试与门禁
+## 8. 验证入口
 
-- 单元：`tests/owner-transfer/owner-transfer-args.test.ts`（参数 failclosed）、
-  `tests/owner-transfer/owner-transfer-core.test.ts`（转移语义/回滚/只改 owner_key/dry-run 只读）、
-  `tests/owner-transfer/owner-transfer-pg-gate.test.ts`（mock client 回归：session advisory lock
-  先于 BEGIN 的参数化取得、同 client 同快照至 COMMIT 后显式 unlock 验证 true 才 release、
-  unlock 未确认/失败销毁连接、dry-run 独立 one-shot READ ONLY、跳过复验 apply fail-closed、
-  并发/重复 revalidate、完成后复用、apply 过程中 cleanup 均 fail-closed（一次性状态机）、
-  双引号别名与 count-distinct=2 schema 检查）、
-  `tests/owner-transfer/owner-transfer-cli-error-boundary.test.ts`（统一错误边界：稳定类别；
-  ECONNREFUSED IPv4/IPv6 环回与 DNS NXDOMAIN hostname 进程级断言不泄露 IP/URL/路径）。
-- 真实 SQLite age 门禁：`pnpm test:owner-transfer`（先跑 `pnpm test:age`；环境变量
-  `PI_RUN_REAL_AGE_OWNER_TRANSFER=1`）——临时 fixture 全链路 apply（strict 备份通过），
-  并断言 **missing JSONL 时无 COMPLETE 且 owner 零变**（strict completeness 计数错误，
-  备份 root 不产出包）。
-- 真实 PG+age 门禁：`pnpm test:owner-transfer-pg`（`scripts/test-owner-transfer-pg.ts`，
-  强制 runner，缺 URL/二进制 fail-closed）——随机隔离业务 schema（真实 app schema +
-  migration ledger），全链路 apply / dry-run 零写 / target 非空回滚（复验后同事务）/ 缺引用
-  JSONL 零发布零写，绝不碰 public 与其它 schema。
-- 构建 smoke：`pnpm build:owner-transfer` → `scripts/smoke-owner-transfer-compiled.mjs`（隔离
-  SQLite fixture + 可选真实 PG 随机 schema；wrong-confirmation/dry-run/apply/occupied-rollback/
-  **missing-jsonl（无 COMPLETE、owner 零变、stderr 脱敏）**）
-  与 `scripts/smoke-owner-transfer-package.mjs`（npm pack → install → bin E2E，含同样的
-  missing-jsonl fail-closed 断言）。
+- `pnpm test:owner-transfer`：SQLite + real age 全链路；
+- `pnpm test:owner-transfer-pg`：隔离 PostgreSQL schema + real age 全链路；
+- `pnpm build:owner-transfer`：compiled 与安装包 smoke；
+- `pnpm verify:release` 汇总发布门禁。具体用例以测试源码和 `package.json` 为准。
 
-## 9. 完成定义（✅ 已验收）
+## 9. 已决策但尚未实现的备份语义
 
-1. 单测/typecheck/全量 test/build 绿；
-2. 真实 SQLite age 门禁与真实 PG+age 随机隔离 schema 门禁已在完整 `verify:release` 中实际
-   执行并通过；
-3. 双库（SQLite/PG）行为一致；
-4. 文档（本文、backup-restore、ip-rbac-design、identity-access-plan、README 双语文档）同步。
+缺失 session reference 的目标语义是 missing-as-empty：pre-owner-transfer 备份仍可发布，未来恢复时对应 `pi_session_file` 归一为 `NULL`。当前 CLI 仍 hard-code `requireCompleteSessionReferences: true`，缺失引用会导致零发布、零 owner 变更。实现切换后必须同步更新本文件、测试和发布门禁。

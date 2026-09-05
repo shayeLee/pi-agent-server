@@ -1,23 +1,40 @@
-# Backup and restore procedure
+# 备份与恢复 Runbook
 
-This is the RC backup/restore contract for offline operator use. It covers the SQLite and PostgreSQL cores, but does not claim production readiness. The repository does not start services, schedule backups, perform retention, or automatically roll back a migration. The WP5C Option B deployment-chain drill SOP is [backup-freshness-drill-sop.md](backup-freshness-drill-sop.md); it is landed, but the actual drill is **DEFERRED by the user's decision** and requires renewed target authorization. Strict backup completeness foundation is accepted separately; **WP5C and WP5 remain unaccepted**.
+本文是 SQLite/PostgreSQL 备份、恢复和 migration pre-backup 的权威操作文档。工作包状态见 [Phase 3 状态台账](phase-3-data-retention-plan.md)，备份新鲜度部署见 [backup-freshness-exporter.md](backup-freshness-exporter.md)。
 
-## Backup package contract
+## 1. 固定边界
 
-`pnpm backup -- create` (manual dev invocation only — automated deployments run a **deployment-audited helper/timer** against the fixed compiled bin per the WP5C Option B deployment contract, see [backup-freshness-exporter.md](backup-freshness-exporter.md); no pnpm/CLI automated timer example exists) and migration pre-backup use the shared encrypted backup core:
+- 备份写入本机绝对路径 `BACKUP_ROOT`；不做异地/独立故障域副本，因此不覆盖主机、磁盘与备份目录同时丢失。
+- 使用 age recipient 公钥加密。age identity 私钥由运维托管，只在恢复时通过受控路径提供，不进入仓库、应用服务、备份包、argv 或日志。
+- 凭证和 auth 文件不进入备份；PostgreSQL 凭证使用私有临时 `PGPASSFILE`。
+- 仓库不安装 scheduler、retention worker，也不自动回滚 migration。
+- 每个 logical DB/schema + `DATA_DIR` 只允许一个服务实例；migration 和 restore 前必须停服务并确认无 writer。
 
-- SQLite uses a read-only source and `VACUUM INTO` for a consistent database snapshot; whitelisted JSONL and server `agentDir/models.json` files are included.
-- PostgreSQL queries the effective non-system application schema and runs `pg_dump --format=custom --no-owner --no-privileges --schema=<effective-schema> --snapshot=<id>`. The schema is explicitly selected; public/system schemas are rejected. Identity verification, the cluster-identity queries, and `pg_export_snapshot()` all run inside one dedicated read-only `REPEATABLE READ` transaction on a single pool client, and the dump consumes exactly that exported snapshot while the transaction is held open for the whole dump; an unsupported or failed snapshot export fails the backup closed.
-- The manifest and every payload are age-encrypted. `COMPLETE` is written last and binds the package to the encrypted manifest hash. Published packages are atomic and private. Pre-reset/pre-migration creation results also return a published-package identity (manifest-ciphertext SHA-256 plus source-roots/binding digests) that `verifyPublishedBackup` re-checks against the published bytes, so a manifest ciphertext or COMPLETE marker replaced after creation fails without any private-identity decryption; SQLite pre-reset backups additionally bind the full DB/WAL/SHM surface at snapshot-generation time: the binding is fingerprinted immediately before the `VACUUM INTO`, re-asserted right after it against the verified identical state, and then fixed as the manifest's immutable baseline — publish/reset steps only compare against it and never re-collect a replacement baseline.
-- **Strict backup completeness foundation: ✅ accepted.** The supplied complete real PG16+age `verify:release` evidence after the fixture repair includes the strict completeness compiled/npm gates and the real PostgreSQL CLI gate passing; no test counts are recorded. This accepts the backup-core/CLI foundation only. Strict completeness remains opt-in per run: `--require-complete-session-references` makes any missing session reference fail closed before publish/COMPLETE (see the strict mode paragraph below); default runs keep recording missing references in the encrypted manifest. **Exception — owner-transfer backups are ALWAYS strict**: the offline owner-transfer CLI hard-codes `requireCompleteSessionReferences: true` on both its SQLite and PostgreSQL pre-owner-transfer backups (not a flag), so an incomplete baseline can never become the transfer's recovery anchor. **WP5C Option B remains formed, reviewable, and NOT accepted without an actual deployment drill** covering helper/timer → textfile → Prometheus → Alertmanager.
-- Credentials and auth files are excluded. PostgreSQL credentials are used through a temporary private `PGPASSFILE` for client tools, never in argv, logs, or manifests.
-- Staging is split into two surfaces. Plaintext staging (the SQLite `VACUUM INTO` snapshot, `pg_dump` output, whitelisted JSONL copies, and the manifest plaintext) lives in a private per-user 0700 directory under an independent root: by default the per-user config staging root `$HOME/Library/Application Support/pi-agent-server-backup-staging` (created 0700 on first use) — never the shared OS temporary directory — or an explicit absolute current-user 0700 root via `PI_BACKUP_STAGING_ROOT` (or the `stagingRoot` option). The root's FULL existing ancestor chain is validated on every use: every component must be a non-sticky, non-group/world-writable directory owned by the current user or root; sticky (shared) or third-party ancestors are rejected outright. It is never placed inside the backup root or its parent, and rejected outright if configured there — so the backup root's parent never needs to be writable and an existing backup root works even when its parent is read-only. The staging directory FD is held for the whole backup and revalidated (fstat + O_NOFOLLOW reopen, dev/ino identity) before every sensitive staging operation, so a path rename/substitution between operations fails closed. Publish staging lives inside the backup root and holds only ciphertext (`payload/*.age`, `manifest.json.age`, `COMPLETE`), so publication is one same-filesystem atomic rename. Both staging surfaces are removed on every failure path; the published package therefore contains ciphertext and `COMPLETE` only.
-- `pre-migration` is a manifest kind reserved for the migration CLI. `pre-owner-transfer` is a manifest kind reserved for the owner-transfer CLI (WP5D-4, see [owner-transfer.md](owner-transfer.md)): SQLite pre-owner-transfer backups use the same full DB/WAL/SHM tree binding captured at snapshot-generation time as `pre-reset`; PostgreSQL pre-owner-transfer backups use the same cluster/database/schema identity binding (and the owner-transfer tool alone may opt into `public` as the authenticated business schema — **that opt-in (`allowPublicSchema: true`) is rejected for every backup kind other than `pre-owner-transfer`**, and the owner-transfer CLI hard-codes the strict completeness gate, so a missing session reference fails any pre-owner-transfer backup before publish/COMPLETE). Restore accepts the kind and drills it as a full snapshot/dump with unchanged recovery semantics. They are not different encryption formats.
-- **WP5D-4 owner-transfer status: ✅ accepted.** The supplied complete real PG16+age `pnpm verify:release` success evidence includes the real PostgreSQL owner-transfer gate, the real age gate, and the compiled + installed-npm PostgreSQL E2E smoke, all passing. This is acceptance evidence for the offline tool only; it has never been run against real user data and does not authorize such execution. No test counts are recorded. WP5 remains incomplete: WP5B is DEFERRED and the WP5C deployment drill is not accepted.
-- The authenticated `migrationLedger` selects the immutable migration prefix represented by the package. Restore verifies that prefix's ledger checksums and physical schema; it never applies a pending migration. Therefore a v0 package is restored as v0 by v1 code and must be upgraded separately with the offline migration command. A package with `present: false` is an explicit legacy branch: restore accepts only a complete known v0/v1 physical schema, reports `legacy: true`, and never infers or applies a migration.
-- For v1 packages, restore validates every `file_operations` row (state, lease fields, timestamps, kind, and relative JSONL path) and includes its row count in the report. Invalid or inconsistent outbox data fails closed before publication.
+## 2. 当前行为与已决策目标
 
-Create a normal daily backup with explicit absolute paths:
+以下目标**尚未实现**，操作员必须以“当前行为”理解现有 CLI。
+
+| 场景 | 当前代码 | 已决策目标 |
+| --- | --- | --- |
+| DB 引用的 JSONL 缺失 | 普通备份记录到 manifest 后发布；`--require-complete-session-references` 与 owner-transfer strict 路径会失败 | 一律按 `missing-as-empty` 记录并允许发布 |
+| backup 读取已有 JSONL | 稳定复制时逐行 `JSON.parse`，非法内容导致失败 | 仅作 opaque bytes 稳定复制，不检查内容合法性 |
+| restore 遇到 manifest 中的 missing | 保留一个指向不存在目标的路径 | 对应 `sessions.pi_session_file` 写为 `NULL` |
+| restore 遇到内容无效 JSONL | 整体恢复失败 | 丢弃该历史、对应引用写为 `NULL`，报告 `invalidSessionHistories` 数量 |
+| 包/密文/hash 损坏 | 整体失败 | 仍整体失败；不得降级为空历史 |
+
+目标落地时将退役或重定义 `--require-complete-session-references`，并同步更新机器报告与 WP5C 契约。在此之前，不得按目标语义部署自动备份。
+
+## 3. 备份包契约
+
+- **SQLite**：以 `VACUUM INTO` 生成数据库一致性快照，再稳定复制白名单内 JSONL 和服务 `agentDir/models.json`。
+- **PostgreSQL**：在一个专用只读 `REPEATABLE READ` 连接上完成身份校验与 `pg_export_snapshot()`，`pg_dump --format=custom --no-owner --no-privileges --schema=<schema> --snapshot=<id>` 消费同一快照。
+- manifest 与每个 payload 均由 age 加密；记录 plaintext/ciphertext hash 与 size。
+- `COMPLETE` 最后写入并绑定 encrypted manifest hash；只有同文件系统原子 rename 完成后的目录才算发布。
+- plaintext staging 必须是私有 0700 目录，不能位于 backup root 或其父目录；失败路径清理 staging。backup root 内 staging 只含密文。
+- restore 验证 `COMPLETE`、manifest、payload hash、migration ledger、schema 以及 package allowlist。任何密文、hash、manifest 或解密错误都 fail-closed。
+- v1 包恢复时校验 `file_operations` 行，但绝不执行其中的删除任务。
+
+## 4. 人工备份
 
 ```bash
 AGENT_CWD=/absolute/application/cwd \
@@ -25,73 +42,73 @@ DATA_DIR=/absolute/application/data \
 DB_PATH=/absolute/application/data/pi-agent-server.db \
 PI_STORAGE_DIALECT=sqlite \
 pnpm backup -- create \
-  --backup-root /absolute/separate/backup-root \
-  --age-recipient-file /absolute/secure/age-recipient-file
+  --backup-root /absolute/backup-root \
+  --age-recipient-file /absolute/secure/age-recipients
 ```
 
-**Strict completeness mode (opt-in)** — pass `--require-complete-session-references` to the create command (exact flag; duplicate/unknown arguments fail closed). Under strict mode ANY missing whitelisted session reference fails the backup with a non-zero exit **before any final publish/COMPLETE**, staging is cleaned, and the error is stable and desensitized (count only — never a session id, path, or reference detail); dry-run fails identically. **The strict binding is the FINAL snapshot, not the pre-staging inspection:** SQLite re-reads the reference set from the finished `VACUUM INTO` snapshot and re-validates it against the exact payload collection before the first ciphertext is published — closing the inspect→snapshot online-write window (a concurrent writer that adds/updates a session row, deletes a referenced JSONL file, or points at a file created after inspection fails the strict backup closed instead of publishing an incomplete package); PostgreSQL reads references inside the same dedicated snapshot-exporting transaction the dump consumes, so its binding is the exported snapshot by construction. Default (flag absent) keeps the legacy compatible behavior unchanged: missing references are recorded in the encrypted manifest and the backup still publishes. On a strict published success the CLI additionally prints exactly one stable machine-readable line `backup-json-report: {"dialect":"sqlite"|"postgres","status":"published","strict":true,"dryRun":false,"finalPath":"...","payloadCount":N,"missingSessionReferences":0}` (human text output is unchanged). The machine line is never printed on dry-run, on failure, or without the strict flag — so only strict + published success can be counted as freshness advancement, and the **WP5C Option B deployment contract requires automation to pass the strict flag**; manual runs without it never constitute freshness (see [backup-freshness-exporter.md](backup-freshness-exporter.md) §1/§2).
-
-The migration CLI applies the same core automatically, but only after `--maintenance-window CONFIRMED`, an absolute backup root, and an absolute recipient file are supplied. There is no `--skip-backup` escape hatch.
-
-## Tool and permission checks
-
-Install and pin the `age`/`age-keygen` version used by the deployment. The recipient file must contain public `age1...` recipients only, be a non-symlink regular file, and be readable only by the operator/service account. Keep package and source directories non-group/world-writable.
-
-For PostgreSQL, pin matching-major `pg_dump` and `pg_restore` binaries. The server major (`SHOW server_version_num`), `pg_dump` major, and `pg_restore` major must be equal. A mismatch fails closed before dump/restore; the migration prebackup also runs `pg_restore --list` against the staged custom archive before deleting plaintext. The PG test gate also requires a disposable test URL and permissions to create/drop its isolated schema or database; never use a real production URL. Without the test URL, no real-PG acceptance claim is made.
-
-## Pre-migration sequence
-
-0. **Major-migration restore drill, completed BEFORE the window opens**: drill the most recent successful daily backup (or a dedicated drill backup created in advance) in an isolated environment and record the report — see [backup-freshness-exporter.md](backup-freshness-exporter.md) §10. The pre-migration backup does not exist yet and can never be the drill input.
-1. Stop the service and every possible writer with the deployment's service manager.
-2. Independently confirm no service process remains. The CLI confirmation is an operator statement, not a lock; it cannot detect or stop another process.
-3. Run `--dry-run` and review the target and pending migration plan.
-4. Run `--apply --backup-root ABSOLUTE_DIR --age-recipient-file ABSOLUTE_FILE --maintenance-window CONFIRMED` **immediately — no pause**: the service is already stopped and the pre-migration backup created inside `--apply` is the actual recovery anchor; an operator pause after the drill only extends the unprotected window.
-5. Confirm the output is the secret-free JSON success result. It includes the backup id, `kind`, encrypted manifest checksum, and pre-backup ledger version.
-6. Run `--verify` before starting the service. Start the service only through the deployment procedure and observe health separately.
-
-The apply command never calls `startServer`, scheduler, retention, outbox, or IAM code. It does not perform SQLite-to-PostgreSQL data migration.
-
-## Dry-run and verify
+PostgreSQL 改为显式设置：
 
 ```bash
-pnpm migrate -- --dry-run
+PI_STORAGE_DIALECT=postgres
+PI_DATABASE_URL=postgresql://...
+```
+
+要求：
+
+- `AGENT_CWD`、`DATA_DIR`、`DB_PATH`、backup root、recipient file 均使用绝对路径；
+- recipient file 只包含公钥 recipient，0600 或更严格，非 symlink regular file；
+- `age`/`age-keygen` 版本固定；PostgreSQL server、`pg_dump`、`pg_restore` major 完全一致；
+- `--dry-run` 不发布任何包；
+- 当前 `--require-complete-session-references` 的行为见 §2，它不是目标自动化契约。
+
+`pnpm backup` 只用于人工开发/演练。自动备份由部署方审核的 helper/timer 调用固定编译产物。
+
+## 5. Migration 前置备份
+
+正式 migration 顺序固定：
+
+1. 在窗口前用最近可用备份完成隔离恢复演练；
+2. 停服务并独立确认无 writer；
+3. `pnpm migrate -- --dry-run` 审核目标与计划；
+4. 无停顿执行 `--apply`，由 CLI 创建并验证 pre-migration 加密备份后才迁移；
+5. 执行 `pnpm migrate -- --verify`；
+6. 仅在 verify 成功后启动服务并检查 `/readyz`。
+
+```bash
+pnpm migrate -- --apply \
+  --backup-root "$BACKUP_ROOT" \
+  --age-recipient-file "$AGE_RECIPIENT_FILE" \
+  --maintenance-window CONFIRMED
 pnpm migrate -- --verify
 ```
 
-Both modes use read-only inspection. They require explicit absolute `AGENT_CWD` and target paths and must not create a missing SQLite target. `--apply` is the only mode that creates a backup and writes migrations.
+`CONFIRMED` 不是进程锁。CLI 不自动 startServer、down、restore 或 retry。迁移失败时保留 pre-migration 包，由运维评估恢复。
 
-## Failure and manual restore
-
-- If backup, age, `COMPLETE`, manifest, payload hash, target, schema, or version checks fail, migration must not run.
-- If migration fails, retain the published valid pre-migration package. Never run an automatic down migration or automatic restore. The database transaction may roll back its own DDL, but the JSONL store is separate.
-- If post-migration verification fails, treat the change as unaccepted. Stop writers, preserve the package, and have an operator choose a separately reviewed restore.
-
-SQLite restore is a drill into a new absolute target root. The default restore-only path records restore-time and integrity evidence only; it cannot sign off the 4h RTO. A separately authorized full RTO signoff must use an isolated target-like environment and synthetic, non-sensitive data, then time restore → `PI_MIGRATION_GATE=verify` startup → `/health`/`/readyz` plus a synthetic non-sensitive business check → serviceable, followed by shutdown and cleanup; it must never become a formal service or receive production traffic.
+## 6. 隔离恢复
 
 ```bash
 pnpm restore -- restore \
   --input-backup /absolute/backup-root/backup-<id> \
   --target-root /absolute/isolated/restore-target \
-  --age-identity-file /absolute/secure/age-identity
+  --age-identity-file /absolute/ops-managed/age-identity
 ```
 
-Use `--dry-run` first when appropriate. The identity/private key is never stored in the package and must never be supplied as the recipient file. The restore drill decrypts, checks hashes and manifest policy, remaps session paths into the new root, verifies the authenticated historical schema/ledger and the reconstructed SQLite/JSONL relationship, and does not migrate the database. An example compatibility drill is: restore a v0 package, then run `pnpm migrate -- --apply` against the isolated restored database and verify that it reaches v1. A major-migration drill instead uses the most recent successful daily backup (or a dedicated pre-window drill backup), and must be completed and recorded before the formal pre-migration apply, which then runs immediately with no pause (see the Pre-migration sequence above).
+- 先在明确隔离的新目标上执行，禁止覆盖源数据库、正式 schema 或正式 `DATA_DIR`。
+- SQLite restore 写入新的绝对 target root；PostgreSQL restore 需要明确的 disposable empty database/schema，拒绝 `public` 和系统 schema。
+- restore 不自动迁移；恢复旧版本包后，需对隔离目标另行执行 migration apply/verify。
+- age identity 由运维在执行时提供。一次成功解密和恢复演练是“私钥可用”的必要证据。
+- 目标 missing/invalid-as-empty 语义落地前，当前恢复行为仍以 §2 为准。
 
-PostgreSQL restore requires an explicitly disposable empty target contract and a target URL supplied out-of-band; it must use a temporary isolated database/schema, matching `pg_restore` major, and a private credential mechanism. Do not restore into the source or into `public`/system schemas. It applies the same authenticated-prefix/explicit-legacy rules as SQLite, verifies the actual current historical head and `file_operations` row contract, then reports counts. A v0 dump is upgraded only by a separate offline migration run against the isolated target. Verify catalog shape, migration head, row counts, JSONL paths, and application connectivity before any reviewed cutover. The tool does not perform an automatic restore after a failed migration.
+## 7. 失败处理
 
-## RPO/RTO and retention
+- 备份、age、manifest、hash、target、schema 或版本校验失败：不执行后续 migration，不更新 freshness。
+- migration 失败：保留已发布 pre-migration 包，不自动 down 或恢复。
+- restore 失败：不发布部分 target；保存脱敏错误和证据，由运维处理。
+- 日志和证据不得包含数据库 URL、密码、token、age identity、原始 argv、会话路径或正文。
 
-- **RPO = 24h**: full backup every 12 hours (fixed cadence, ≤ 12h; at least one full backup per day, margin over the 24h RPO) via a **deployment-audited helper/timer** (not a service-process scheduler; see the WP5C Option B deployment contract in [backup-freshness-exporter.md](backup-freshness-exporter.md)). Maximum data loss window = time between last successful backup and failure.
-- **RTO = 4h**: default restore execution only produces restore-time/integrity evidence and cannot by itself sign off the 4h target. Full RTO signoff must be separately authorized and timed in an isolated target-like environment using synthetic, non-sensitive business data: `restore → start with PI_MIGRATION_GATE=verify → /health, /readyz, and a synthetic non-sensitive business check → serviceable`. Stop the isolated service and clean up immediately afterward; do not formally serve or receive production traffic. Only a complete run `<=4h` with phase timestamps can sign off RTO.
-- **Backup retention = 30 days**: documented as the operational policy. **Automatic deletion is NOT implemented yet, not scheduled** — over-retained backups are cleaned manually by an operator until a future work package delivers automated retention (explicitly out of WP5B and WP5C scope).
-- **Restore drill cadence (confirmed)**: quarterly + before every major migration. A manual restore or manual backup run may exercise the path, but cannot serve as scheduler/cadence acceptance; at least one normal scheduler-originated run must record a non-sensitive configuration summary, previous/next trigger, actual start, and `<=12h` trigger interval. Re-run that evidence after platform scheduling configuration changes.
-- **Monitoring (confirmed)**: Prometheus metrics (exposed by the **WP5C Option B backup freshness deployment contract** — a **deployment-audited helper/timer** schedules the fixed compiled backup CLI from the complete root-owned/non-symlink/non-group-world-writable `dist-backup` runtime closure and its ancestor chain under an exact pinned node ≥ 22.19 at a fixed ≤ 12h cadence (fixed 12h default; no 24h-interval example allowed); `age`/`age-keygen`/`pg_dump`/`pg_restore` use only audited absolute paths or a controlled root-owned safe PATH, with resolved binary/version verification and no uncontrolled PATH; secrets never appear in any argv (restricted root 0600 config consumed in-process; env-channel only), the service auth token file stays service-account 0600 (backup user cannot read its content; precise traverse-only ACL on every ancestor — no root-preflight substitute); the per-target node_exporter textfile metric `pi_agent_server_backup_last_success_timestamp_seconds` is updated **only after** the backup CLI's exit 0 plus a machine-readable published-output validation (dry-run rejected) for that target, and **failure never updates it** (it stays at the last success time); target root/ACL/atomicity are **deployment-audited** (no cross-OS atomic-publish implementation is claimed by this repo); Prometheus uses the independent persistent inventory metric `pi_agent_server_backup_expected_target_info{job,cluster,instance}=1` from the monitoring control plane (not the monitored target), matched to actual freshness/up/textfile on the complete tuple, with the exact freshness-missing rule `(I and up==1) unless F` (not `I unless A`, and no global `absent()`), stale/future/exporter rules, and Q1–Q3 exact-count/cross-job-cluster/set-equality acceptance queries; see [backup-freshness-exporter.md](backup-freshness-exporter.md); contract formed, **reviewable, not accepted — no acceptance without an actual deployment drill**) + **external Alertmanager** (not part of this codebase). Alertmanager consumes Prometheus metrics and fires backup-freshness alerts against the 24h RPO threshold.
-- Online backup (fixed 12h cadence) is driven by a **deployment-audited helper/timer** (not a service-process scheduler). The timer configuration is managed and audited at the deployment layer and is not installed by this codebase; no pnpm/CLI automated timer examples exist (`pnpm backup` is manual dev only). Until the WP5C Option B deployment contract is operationally verified by an actual deployment drill (contract reviewable but **not accepted**; WP5B remains the durable-idempotency design note only, not started; retention automation remains a future work package; the in-repo Option A scanner has been **abandoned**; future native/age-identity approaches remain separate discussion items), RPO/RTO have no automated acceptance loop — the values above are operational target commitments.
+## 8. RPO、RTO、保留期
 
-Off-host replication, encryption-key custody/rotation, and the exact stop/start procedure remain deployment decisions.
-
-## Offline outbox planner (WP4B, ✅ accepted — read-only, no executor)
-
-WP4B is **accepted only within the safe read-only planner scope**; it has **not implemented** a physical executor or quarantine (方案 A): the offline CLI (`pnpm file-ops` / bin `pi-agent-server-file-ops`) is a **read-only planner** that lists/counts pending, expired-processing and due-failed `file_operations` rows plus safe state/error counts — zero claims, zero writes, no filesystem access, no operation generation. `--apply` fails closed (exit code 2) with no bypassable confirmation words. SQLite is opened `readOnly` (a missing DB is never created; no WAL/SHM sidecars); PostgreSQL requires explicit `PI_STORAGE_DIALECT=postgres` + `PI_DATABASE_URL` and enforces `default_transaction_read_only=on`. Execution requires an audited external ops tool or a future native helper (a separate, not-yet-started item). The backup/restore contract above contains **no quarantine root**: the WP4A backup contract is unchanged. Acceptance is based on the real PostgreSQL planner gate (`pnpm test:file-ops-pg`) running in the accepting environment. See [file-operations.md](file-operations.md).
-
-**WP4C (Plan A: safe DB-only reconcile analyzer, ✅ accepted — no executor)** is accepted within its DB-only scope: the offline CLI (`pnpm reconcile-jsonl` / bin `pi-agent-server-reconcile-jsonl`) analyzes read-only DB references (session id/project id/`pi_session_file` only) with pure string/lexical canonical-layout binding under a specified `DATA_DIR` string. It **never scans the filesystem and never reads JSONL** (fixed `filesystemNotScanned: true` / `cannotDetect` fields in the report), so orphan/lost/JSONL-corruption states **cannot be detected**; it rejects traversal/empty/wrong-root/id-mismatch/invalid file names and detects duplicate canonical references, reporting only counts, fixed issue codes (`invalid_reference`/`duplicate_reference`) and opaque sha256 references — never paths/URLs/prompt content, `executable:false`, zero deletes/moves/quarantine, zero DB writes, zero outbox enqueue, zero v2 migration, `--apply` fails closed (exit 2). Acceptance is based on the real PostgreSQL reconcile gate (`pnpm test:reconcile-jsonl-pg`) running in the accepting environment; physical filesystem reconcile and remediation (orphan cleanup / lost-file restore) remain unimplemented for a future audited native helper. See [reconcile-jsonl.md](reconcile-jsonl.md).
+- **RPO 目标：24 小时**。部署计划以固定不超过 12 小时的完整备份节奏留出执行和告警预算。
+- **RTO 目标：4 小时；signoff 延期**。项目投入使用且有代表性数据规模后，再授权隔离环境完成 `restore → migration verify → start → health/readyz → 合成业务检查 → serviceable` 全流程计时；此前只记录功能性恢复证据，不宣称 RTO 已验收。
+- **备份保留：30 天**。自动删除未实现；由运维人工审核并清理过期备份。
+- **恢复演练：每季度及重大 migration 前**。当前 RTO signoff 延期不取消功能性恢复演练要求。

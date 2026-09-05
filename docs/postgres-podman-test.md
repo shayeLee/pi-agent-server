@@ -1,6 +1,6 @@
 # macOS + Podman 临时 PostgreSQL 测试流程
 
-本文档固化本机使用 Podman 运行临时 PostgreSQL 容器、执行 Phase 2 PG 集成测试的完整步骤。
+本文档固化本机使用 Podman 运行临时 PostgreSQL 容器、执行 PG 集成测试的完整步骤。
 
 ## 适用范围
 
@@ -108,7 +108,7 @@ volta run pnpm test:pg-backup
 volta run pnpm test
 ```
 
-**复跑 PG 门控测试**：设置 `PI_TEST_PG_URL` 后，`tests/postgres/` 下的存储、migration、prebackup 与 backup 门控会真实连接执行，不再以 skip 呈现；用例数以当次 reporter 输出为准，不在本文固定。历史存储集成门控（`postgres.integration.test.ts` + `repository-contract.test.ts`）曾由 `volta run pnpm verify:release` 在真实 PG URL 下通过，结论见 [database-design.md](database-design.md) §9；本流程亦可随时重新验证。
+**复跑 PG 门控测试**：设置 `PI_TEST_PG_URL` 后，`tests/postgres/` 下的存储、migration、prebackup 与 backup 门控会真实连接执行，不再以 skip 呈现。
 
 **三个 PG 门控的独立命令**（均要求 `PI_TEST_PG_URL`；缺失 URL 或 age/`pg_dump`/`pg_restore` 等必需依赖时必须非零失败，不能把 skip 称为通过）：`test:postgres` 覆盖 `tests/postgres/` 全部 PG 文件，因此同样执行完整工具门禁；runner 会向子进程设置 required 标志，并用 Vitest reporter 证据确认实际用例执行，普通 root `pnpm test` 不设置该标志、仍可条件 skip。
 

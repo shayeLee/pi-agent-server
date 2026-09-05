@@ -1,10 +1,10 @@
 # WP4B 离线 file_operations planner：设计与运维 runbook
 
-> **状态：WP4B（方案 A）✅ 已验收，范围仅限安全只读 planner。** 当前交付物只列出/统计持久 `file_operations` outbox 的操作与安全错误/状态计数，**不执行任何文件操作**。`--apply` 立即 fail-closed，无任何确认词可绕过。物理 executor（包括 unlink）、retry/quarantine 仍未实现，真正执行留给未来受审计的 native helper（单独、尚未启动的事项）。**WP4C（方案 A 收敛 DB-only reconcile analyzer）✅ 已验收**（见 [reconcile-jsonl.md](reconcile-jsonl.md)），WP5/WP6 也未开始；该离线工具不启动正式服务或 worker，整体尚非生产就绪。**验收证据**：用户提供的真实 PG16+age `verify:release` 成功证据包含 file-ops planner gate 及 compiled/npm smoke；本文不记录或推导测试数量。发布产物卫生（build 先清理输出 + 禁止残留 executor/file-system-policy/error-codes 文件与符号链接检查）、last_error 固定 allowlist 错误策略（仓库/planner/restore 三处一致）、未知 CLI 参数不回显原始 argv 等约束均纳入已验收范围。
+> **状态：WP4B（方案 A）当前范围仅限安全只读 planner。** 当前交付物只列出/统计持久 `file_operations` outbox 的操作与安全错误/状态计数，**不执行任何文件操作**。`--apply` 立即 fail-closed，无任何确认词可绕过。物理 executor（包括 unlink）、retry/quarantine 仍未实现，真正执行留给未来受审计的 native helper（单独、尚未启动的事项）。**WP4C 为 DB-only reconcile analyzer**（见 [reconcile-jsonl.md](reconcile-jsonl.md)）：只读 DB 引用分析，绝不扫描文件系统、不读取 JSONL。WP5B 是正式启用副作用工具、多个服务实例或公网部署前的条件性部署门禁（当前代码不提供因 `TOOLS` 配置而拒绝启动的 runtime fail-fast）。该离线工具不启动正式服务或 worker，整体尚非生产就绪。约束（发布产物卫生：build 先清理输出 + 禁止残留 executor/file-system-policy/error-codes 文件与符号链接检查；last_error 固定 allowlist 错误策略（仓库/planner/restore 三处一致）；未知 CLI 参数不回显原始 argv）均属于当前代码契约。
 
 ## 1. 职责与边界
 
-`file_operations` outbox（WP4A，已验收）持久化待执行的 JSONL 删除操作。WP4B（方案 A）提供：
+`file_operations` outbox（WP4A）持久化待执行的 JSONL 删除操作。WP4B（方案 A）提供：
 
 - **只读 planner** `src/file-operations/planner.ts`：唯一数据来源是 `store.list()`（WP4A 仓库契约、纯 SELECT）；对 `pending`、lease 已过期的 `processing`（崩溃残留）、`available_at` 已到的 `failed` 记录分别计数，并按状态与脱敏 error code 统计；
 - **显式 CLI** `scripts/file-ops.ts`（bin `pi-agent-server-file-ops`）：只支持默认 / `--dry-run` 只读计划；SQLite 以 `readOnly` 打开（缺失 DB 绝不创建 DB/WAL/SHM），PostgreSQL 连接串**严格校验**（协议/host/database 显式、禁止 fragment）且 `options` **只允许 `search_path`**（严格解析，其余一律拒绝），并合并 `default_transaction_read_only=on` 与有界 lock_timeout；CLI 主入口识别零 fs（纯 path/fileURL 判断）；
@@ -65,18 +65,18 @@ pnpm file-ops -- run
 - WP4B 物理执行器（claim → unlink/quarantine → complete/fail）与 quarantine 布局的纯 Node 实现已按要求**移除**（包括 `file-system-policy.ts`、执行器核心与相关测试）；仓库中不再存在任何路径式 physical executor 或可被内部调用的副作用 API；
 - WP4A 的 outbox schema/repository/lease 契约**原样保留**（含 claim/fencing、脱敏 error、相对路径白名单），是未来执行器（受审计外部工具或 native helper）的基础；
 - planner 只读、不生成操作，因此不会带来误删/越界风险；执行路径需要另行评审（native helper 为单独事项）。
-- **WP4C（方案 A 收敛）DB-only reconcile analyzer 已验收**：只读 DB 引用 + 纯字符串规范布局绑定，固定 issue codes + opaque 引用，`executable:false`，零处置、绝不扫描文件系统/不读取 JSONL，不能探测 orphan/lost/JSONL 损坏；用户提供的完整真实 PG16+age `verify:release` 成功证据包含真实 PG reconcile gate 及 compiled/npm smoke，本文不记录或推导测试数量；详见 [reconcile-jsonl.md](reconcile-jsonl.md)。
+- **WP4C（方案 A 收敛）DB-only reconcile analyzer**：只读 DB 引用 + 纯字符串规范布局绑定，固定 issue codes + opaque 引用，`executable:false`，零处置、绝不扫描文件系统/不读取 JSONL，不能探测 orphan/lost/JSONL 损坏；详见 [reconcile-jsonl.md](reconcile-jsonl.md)。
 
-## 4. 门禁与测试
+## 4. 验证入口
 
-- `pnpm test`（无 PG URL）：planner 单元/CLI 集成用例全跑——dry-run 零写、缺失 DB 零创建（无 DB/WAL/SHM）、已有 DB 字节指纹不变、`--apply` 零写零调用 fail-closed、未知参数退出码 2 且不回显原值、无路径泄漏；`tests/postgres/file-operation-planner.test.ts` 按既有门控 skip；
-- `pnpm test:file-ops-pg`：**强制真实 PG planner 门禁**（无 `PI_TEST_PG_URL` 非零失败），在随机专属 schema 上跑只读计划用例：零写、无路径泄漏；门禁环境 URL 先经严格校验；只读连接由生产代码（`enforceReadOnlyPostgresUrl`）构造——严格解析仅 `search_path` options 并合并 `default_transaction_read_only=on` 与 `lock_timeout`（`SHOW` 断言：schema 可见 + 服务端只读 + 有界 lock）且写操作被服务端拒绝；**门禁实际运行 source CLI PG 分支**（`scripts/file-ops.ts` 经 tsx），**随机 schema 通过 URL 的 `search_path` options 绑定——绝不创建任何 LOGIN role / 不使用 CREATEROLE**，验证随机 schema 隔离、只读、零 DB 变化、stdout/stderr 无 URL/path/credential 泄漏、finally 语义可靠 DROP SCHEMA；该门禁已包含在用户提供的成功 `verify:release` 证据中。
-- `pnpm build:file-ops`：**先清空 `dist-file-ops` 再编译**（残留的旧 executor/file-system-policy/error-codes 编译产物不可能进入发布产物），compiled-CLI smoke 与 npm install bin smoke 均执行禁止文件/符号链接卫生检查（dry-run 零写与指纹、missing DB 零创建、`--apply` exit 2、未知参数 exit 2、报告无绝对路径、包内无残留产物）；build / build:backup 同样先清理输出目录，backup 的 compiled/npm smoke 也带卫生检查；
-- `pnpm verify`（日常）、`pnpm verify:release`（发布）均接入 `build:file-ops`；发布链额外接入 `test:file-ops-pg`。用户提供的真实 PG16+age `verify:release` 成功证据包含 file-ops planner gate 及 compiled/npm smoke，因此 WP4B 方案 A 的安全只读 planner 已验收；本文不记录或推导测试数量。
+- `pnpm test`：planner 与 CLI 的只读、fail-closed、脱敏和缺失 DB 零创建测试；
+- `pnpm test:file-ops-pg`：真实 PostgreSQL 只读门禁，缺少 `PI_TEST_PG_URL` 时非零退出；
+- `pnpm build:file-ops`：编译产物与安装包 smoke，并检查不存在旧 physical executor 残留；
+- `pnpm verify:release` 汇总上述发布门禁。具体用例以测试源码和 `package.json` 为准，不在本文复制。
 
 ## 5. 相关文档
 
-- WP4C 方案 A 收敛（DB-only reconcile analyzer，✅ 已验收）：[reconcile-jsonl.md](reconcile-jsonl.md)
+- WP4C 方案 A 收敛（DB-only reconcile analyzer）：[reconcile-jsonl.md](reconcile-jsonl.md)
 - [数据保留计划](phase-3-data-retention-plan.md)（WP4B 状态与工作包）
 - [备份与恢复](backup-restore.md)（WP4A backup contract；无 quarantine 载荷）
 - [运维 runbook](operations.md)（离线工具入口）

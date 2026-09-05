@@ -1,39 +1,21 @@
 # IP Access Policy 设计（WP5D）
 
-> 状态：**✅ 已验收（当前 RC）** —— 当前 RC 用户决策收窄 WP5D 范围：
-> 内网不做 workspace 强制；workspace 安全（workspaceRoots 选定/工具根限制）仅公网暴露前需要，**整体延期**。
-> 因此 `workspaceRoots`/`PI_DEFAULT_WORKSPACE_ROOT` 从本设计（策略 JSON v1、env/运行时配置、access profile）
-> 中**完整移除**：策略 JSON 中出现 workspaceRoots 即按未知字段 failfast，绝不保留解析但不用。WP5D-1/WP5D-2/WP5D-3
-> **✅ 已验收**，依据用户提供的在移除 `workspaceRoots`/`PI_DEFAULT_WORKSPACE_ROOT` 并提交 `5e84a9da` 之后的新 release run 中，
-> 完整真实 PG16+age `pnpm verify:release` 成功证据。本次验收仅针对 WP5D，WP5 整体仍未完成（WP5B DEFERRED，
-> WP5C deployment drill 未验收）。—— policy core（WP5D-1）与 HTTP 网络准入接线（WP5D-2）均已实现并接线；
-> **WP5D-3（role 授权矩阵）已落地并随代码/test/build 齐全**：每路由显式 permission、全局 default-deny、403 固定
-> 不泄 role/IP/path、CORS 预检不做 role、SSE viewer 只读（无 runtime 返回稳定 204、有 runtime 可订阅）、会话导出真只读
-> （绝不实例化 runtime）。
-> **明确未做（WP5D 范围外或 future）**：admin 跨 owner 只读、workspace/sandbox 安全（工具根限制、路径逃逸防护；公网暴露前
-> 才需要）—— 本阶段 admin 与其他角色一样受 owner 隔离，**IP-RBAC 不是 sandbox**：不限制 cwd 或 Agent 工具的
-> 绝对路径/OS 权限；公网暴露禁止（需未来 OIDC/IAM + workspace/sandbox 设计），无任何 DB schema 变更。
-> **WP5D-4（owner transfer）✅ 已验收**（见 [owner-transfer.md](owner-transfer.md)）：离线
-> CLI `owner-transfer` 只做 DB 层 IP→IP 转移（仅更新 projects.owner_key / sessions.owner_key，不迁移策略 IP 条目/…token/角色）。
-> 用户提供的完整真实 PG16+age `pnpm verify:release` 成功证据中，真实 PostgreSQL owner-transfer gate、真实 age gate，
-> 以及 compiled + installed-npm PostgreSQL E2E smoke 均通过。确认词 + 维护窗口（声明而非进程锁） + strict
-> pre-owner-transfer 备份 → verify → binding 复验 → 事务内 transfer/verify 的范围保持不变；本文不记录测试数量。
->
-> 关联文档：[needs.md](../needs.md) §4.2/§7、[identity-access-plan.md](identity-access-plan.md)、[architecture.md](architecture.md)。
+> 当前 RC 以**直接 TCP 对端 IP**作为身份：`PI_ALLOWED_CLIENT_CIDRS` 显式必填，可选 `PI_IP_ACCESS_POLICY_FILE` 提供 per-IP role/disabled/token 画像；逐路由 RBAC 默认拒绝。IP-RBAC 不是 filesystem sandbox，公网暴露禁止。owner transfer 见 [owner-transfer.md](owner-transfer.md)，未来公网 IAM 见 [identity-access-plan.md](identity-access-plan.md)，工作包状态见 [Phase 3 状态台账](phase-3-data-retention-plan.md)。
 
 ## 1. 动机与范围
 
-RC 阶段的接入控制依赖 `INTRANET_CIDRS`（内网来源 IP 免 token）与静态 `TOKENS` 映射（公网 Bearer token），两者都是过渡机制（见 [identity-access-plan.md](identity-access-plan.md) §2）。WP5D 以一次小型、可独立验收的交付切入 IAM 路线图：把「哪些客户端 IP 能访问、以什么角色访问、是否需要出示 token」固化为显式、可审计、fail-fast 的**策略核心**。
+RC 阶段的接入控制把「哪些客户端 IP 能访问、以什么角色访问、是否需要出示 token」固化为显式、可审计、fail-fast 的
+**策略核心**：直接 TCP 对端 IP → CIDR gate →（可选）精确 IP 策略画像 → 逐路由 RBAC。旧变量 `INTRANET_CIDRS`/
+`TOKENS`/`TRUST_PROXY` 已废弃：设置即拒绝启动，无任何兼容迁移路径（见 §3）。
 
-WP5D-1 交付 **core**：CIDR/IP canonical 化与匹配、策略 JSON v1 解析、纯函数决策解析器、token 校验助手、环境变量解析与策略文件安全加载，以及单测/文档。**不修改**数据库 schema、不引入 owner transfer。
+WP5D-1 交付 **core**：CIDR/IP canonical 化与匹配、策略 JSON v1 解析、纯函数决策解析器、token 校验助手、环境变量解析与策略文件安全加载。**不修改**数据库 schema、不引入 owner transfer。
 
-WP5D-2 交付 **HTTP 接线**：startServer/buildApp 强制准入配置（failfast）、全局 onRequest admission（覆盖探针与 `/v1`）、旧变量/旧字段/TRUST_PROXY 拒绝启动、探针与 `/v1` 的 401/403 语义、全套测试与 mock/e2e 适配。**不执行** role 授权（WP5D-3）与 workspace 安全（当前 RC 决策：整体延期）。
+WP5D-2 交付 **HTTP 接线**：startServer/buildApp 强制准入配置（failfast）、全局 onRequest admission（覆盖探针与 `/v1`）、旧变量/旧字段/TRUST_PROXY 拒绝启动、探针与 `/v1` 的 401/403 语义。**不执行** role 授权（WP5D-3）与 workspace 安全（当前 RC 决策：整体延期）。
 
 WP5D-3 交付 **role 授权矩阵**：基于 `request.access.role` 的逐路由授权（每路由显式 permission、全局
 default-deny、纯函数决策）、探针/metrics/operator/viewer/user/admin 冻结矩阵（见 §6）、403 固定响应体
-（不泄 role/IP/path）、CORS 预检不做 role、SSE viewer 只读可/写拒绝零痛点、矩阵与 failclosed/副作用
-test 表、文档与双语 README 标注。**不执行** admin 跨 owner 只读、workspace/sandbox 安全（current RC
-决策：整体延期）、owner transfer。
+（不泄 role/IP/path）、CORS 预检不做 role、SSE viewer 只读、矩阵与 failclosed/副作用语义。**不执行** admin 跨
+owner 只读、workspace/sandbox 安全（current RC 决策：整体延期）、owner transfer。
 
 ## 2. 冻结决策（本工作包已定，不得在实现中偏离）
 
@@ -188,10 +170,10 @@ tokenRequired，不换角色）；未登记 IP 默认 `user`。
   隔离由 OS 账号、容器与网络边界负责。**公网暴露禁止**：公网部署不得开放本服务（含 `POST /v1/projects`
   的任意 cwd 创建项目接口，见 needs.md §7）；workspace/sandbox 安全设计（收窄工具/会话可见根、防路径
   逃逸）随未来 OIDC/IAM 工作包一起做。
-- **owner transfer 仅 DB 层面，且只存在 IP→IP 形态**：`owner-transfer` 离线 CLI（WP5D-4，**✅ 已验收**，见 [owner-transfer.md](owner-transfer.md)）在数据库层变更 owner 映射（把一个 IP 身份资源归属转到另一个 IP 身份，仅更新 projects.owner_key / sessions.owner_key）；**不迁移**政策文件的 IP 条目与 token 绑定、不迁移角色——接收方继承自己的 IP 画像，与资源原 owner 的画像无关。
+- **owner transfer 仅 DB 层面，且只存在 IP→IP 形态**：`owner-transfer` 离线 CLI（WP5D-4，见 [owner-transfer.md](owner-transfer.md)）在数据库层变更 owner 映射（把一个 IP 身份资源归属转到另一个 IP 身份，仅更新 projects.owner_key / sessions.owner_key）；**不迁移**政策文件的 IP 条目与 token 绑定、不迁移角色——接收方继承自己的 IP 画像，与资源原 owner 的画像无关。
 - **无 legacy 账号/token 迁移（RC 决策）**：新 RC **不存在** legacy 账号/token 的 owner 迁移——正式旧公网 token 数据从未存在，因此不实现任何「旧 token/旧账号 → 新主体」迁移代码，也不存在 owner transfer 的账号维度。早期开发数据按 RC 语义**删库重建 / 经受控离线 cutover（`pnpm cutover`）reset**，绝不在位转换（详见 [database-design.md](database-design.md) §7 与 [identity-access-plan.md](identity-access-plan.md) WP5D 注记）。
 - **不做**：token 签发/轮换/撤销接口（无签发端点）、OIDC/账号体系（见 identity-access-plan 工作包 1–2）、基于 header 的客户端 IP 推导、审计落库（WP5D-2 接线时按 needs.md §7 要求补齐鉴权审计埋点）。
-- 单实例假设不变；多实例部署策略文件的一致性由部署层负责（同文件、同内容；加载期校验相同）。
+- **只支持单实例**：每个 logical DB/schema + `DATA_DIR` 同时只允许一个 pi-agent-server；多实例共享同一存储不受支持。未来如启动多实例改造，策略分发一致性、共享 JSONL、分布式协调与 WP5B 必须一起重新设计。
 
 ## 8. 策略文件加载安全（`readIpAccessPolicyFile`）
 
@@ -224,50 +206,3 @@ tokenRequired，不换角色）；未登记 IP 默认 `user`。
   tokenRequired 缺失/错误 → `401`（沿用「缺少或无效的 Bearer Token」），token off 忽略 Bearer；
   `/health`、`/readyz` 仅 IP gate（任意 admitted role，免 token）。
 - 鉴权审计按 needs.md §7 埋点沿用 `subjectHash`（IP 派生哈希）关联，不记录原始 IP。
-
-## 10. 验收状态与证据（WP5D-1 core / WP5D-2 接线 / WP5D-3 role 授权）
-
-> 统一口径：**WP5D-1 policy core、WP5D-2 HTTP 网络准入与 WP5D-3 role 授权 → ✅ 已验收**
-> （依据用户提供的在移除 workspaceRoots / `PI_DEFAULT_WORKSPACE_ROOT` 并提交 `5e84a9da` 之后的新 release run 中，完整真实 PG16+age
-> `pnpm verify:release` 成功证据）。本文不记录测试数量。本次仅针对 WP5D，WP5 整体仍未完成：WP5B 按用户决定 DEFERRED，
-> WP5C deployment drill 未验收。
-
-- **WP5D-1（✅ 已验收）**：`src/core/cidr.ts`（兼容层 + 严格 canonical 层）、
-  `src/core/ip-access-policy.ts`（类型/解析/解析器/token 助手）、`src/core/ip-access-config.ts`（env 解析）、
-  `src/core/ip-access-policy-file.ts`（安全加载）已落地；单测：`tests/core/cidr.test.ts`（旧用例原样保留为兼容契约）、
-  `tests/core/ip-access-policy.test.ts`、`tests/core/ip-access-config.test.ts`、`tests/core/ip-access-policy-file.test.ts`。
-  当前 RC 变更：`workspaceRoots`/`PI_DEFAULT_WORKSPACE_ROOT` 整体移除（策略 JSON 出现即未知字段 failfast）。
-- **WP5D-2（✅ 已验收）**：`src/server/network-admission.ts`（`createAdmission` 全局准入 +
-  运行时严格校验 + `extractBearerToken`；token gate 覆盖 `/v1` 与 `/metrics`，`/health`/`/readyz` 免 token）、
-  `app.ts` 全局 onRequest 接线（覆盖探针与 `/v1`，401/403 语义）、`start.ts`
-  （`ipAccess` 必填校验、旧字段拒绝、`rejectLegacyStartEnv`）、`main.ts`（env 解析 + 策略安全加载 + 旧变量拒绝）、
-  `scripts/mock-server.ts`（准入配置对齐）。旧模块 `real-auth.ts`/`trust-proxy-policy.ts`/`auth.ts` 已删除。
-  单测：`tests/server/auth.test.ts`（准入契约：CIDR/disabled/bad-ip/token/探针/运行时校验/旧变量拒绝）、
-  `tests/server/network-admission.test.ts`（buildApp 全局准入 + 真实 listen 的 TCP 对端身份：XFF 无效、
-  mapped v4 canonical owner、CIDR 外含有效 token 仍 403、probes CIDR 外 403、policy disabled/token 用例；
-  `/metrics` tokenRequired 实际 GET 需 token、预检例外）；
-  既有 HTTP/start 测试全部迁移到 ipAccess + remoteAddress；e2e mock 服务同语义。
-- 门禁：`pnpm typecheck`、`pnpm test`（全量）、`pnpm build` 通过；**当前 RC 变更后的门禁需随
-  新 release run 的证据已确认 accepted**。
-- **WP5D-3（✅ 已验收）**：`src/server/route-rbac.ts`（`ROUTE_PERMISSIONS` 中央权限定义 +
-  `evaluateRouteAuthorization` 纯函数决策 + `requirePermission` 每路由显式声明 + `routeRbacOnRequest` 全局
-  default-deny hook + 固定 `FORBIDDEN_BODY`）；`app.ts` 全路由显式 `config.permission`（探针/`/v1`），hook 注册于
-  CORS 之后（预检不做 role）。
-  **reviewer P1/P2/P3 修复（本版已含）**：
-  1. **只读导出**：`SessionService.exportSession` 不再经 getOrCreate 实例化 runtime——已有 runtime 走活会话
-     导出；未持久化返回空消息/游标 0；已持久化经 `SessionHistoryReader`（`createSessionHistoryReader`：
-     SDK 公开只读 API 纯内存解析 + 读取前后文件 stat+sha256 指纹零写验证 + 错误脱敏）与 `PiAgentAdapter`
-     同一 `projectExportMessages` 投影；`start.ts` 生产注入；无 reader 注入 failclosed 脱敏错误。
-  2. **SSE 顺序与 viewer 语义**：关闭（503）与配额（429）检查先于任何 runtime 创建（零副作用）；viewer 只
-     `registry.getExisting`，无 runtime → 稳定 204，有 runtime → 订阅；user/admin 通过后 getOrCreate。
-  3. **测试**：export 持久化/未实例化 spy+fingerprint；SSE viewer existing/nonexisting；429/503；
-     piSessionFile 不变、createAdapter 0（见 `tests/server/session-export.test.ts`、
-     `tests/server/session-history-reader.test.ts`、`tests/server/sse.test.ts`、
-     `tests/server/route-rbac.test.ts`）。
-  单测：`tests/server/route-rbac.test.ts`（矩阵：每角色 × 每路由类别——探针/metrics/纯读 GET/创建写/own 资源
-  export-rename-config-delete-messages-steer-follow-ups-abort；unknown/forged access failclosed（纯函数 + 未声明
-  路由 default-deny）；metrics 仅 admin/operator；401 保持 token 语义；CORS 预检不做 role；user/admin 跨 owner
-  404 不变（admin 暂不跨 owner）；SSE viewer 只读可（有 runtime 200、无 runtime 204）、writes 拒且零 service side
-  effects——会话记录逐字节不变、runtime/adapter 未创建）。
-- **明确未做（WP5D-3 范围内不声称）**：admin 跨 owner 只读（admin 与其他角色一样 owner 隔离）、workspace/
-sandbox 安全（当前 RC 决策整体延期；workspaceRoots 已移除）。**WP5D-4 owner transfer**（DB 层 IP→IP，不迁移策略 entry）✅ 已验收——见 [owner-transfer.md](owner-transfer.md)。

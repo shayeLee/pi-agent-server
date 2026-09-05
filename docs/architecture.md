@@ -29,9 +29,13 @@
 > runtime 返回稳定 204）、user/admin 维持 own-resource 行为（仍 owner 隔离，admin 暂不跨
 > owner）；每路由显式 permission、未声明即 default-deny 403。IP-RBAC 不限制 cwd 或 Agent 工具的
 > 绝对路径/OS 权限（不是 sandbox；workspace 安全 当前 RC 决策整体延期）。
-> WP5D-1 policy core、WP5D-2 HTTP 网络准入与 WP5D-3 role 授权已 ✅ 验收，依据用户提供的在移除 workspaceRoots/`PI_DEFAULT_WORKSPACE_ROOT` 并提交 `5e84a9da` 之后的新 release run 中，完整真实 PG16+age `pnpm verify:release` 成功证据；本次验收仅针对 WP5D，WP5 整体仍未完成（WP5B DEFERRED，WP5C deployment drill 未验收）；admin cross-owner read 未实现；**WP5D-4 owner transfer（DB 层 IP→IP 离线 CLI）✅ 已验收**——用户提供的完整真实 PG16+age `pnpm verify:release` 成功证据中，真实 PostgreSQL owner-transfer gate、真实 age gate，以及 compiled + installed-npm PostgreSQL E2E smoke 均通过；见 [owner-transfer.md](owner-transfer.md)。本文不记录测试数量。
-> ④⑤⑥⑦⑧ 的编排集中在 [`src/runtime/session-runtime.ts`](src/runtime/session-runtime.ts)（`submitMessage` → `doSubmit` → `runStreamingTask` → `settle`）。
-> HTTP 层（[`src/server/app.ts`](src/server/app.ts)）只把决策映射为状态码（202 放行 / 409 冲突 / 429 排队满），不承载业务编排。
+> WP5B 是正式启用副作用工具、多个服务实例或公网部署前的条件性部署门禁：当前代码不提供因 `TOOLS` 配置而拒绝
+> 启动的 runtime fail-fast；WP5B 当前行为仅为进程内 in-flight 去重与持久化终态读取，终态落库前崩溃仍可能导致
+> 相同 `requestId` 重执行，不承诺 exactly-once 或 durable at-most-once。admin cross-owner read 未实现（仍 owner 隔离）。
+> **WP5D-4 owner transfer** 为 DB 层 IP→IP 离线 CLI（仅更新 projects/sessions 的 owner_key，不迁移策略 IP 条目/
+> token/角色），见 [owner-transfer.md](owner-transfer.md)。
+> ④⑤⑥⑦⑧ 的编排集中在 [`src/runtime/session-runtime.ts`](../src/runtime/session-runtime.ts)（`submitMessage` → `doSubmit` → `runStreamingTask` → `settle`）。
+> HTTP 层（[`src/server/app.ts`](../src/server/app.ts)）只把决策映射为状态码（202 放行 / 409 冲突 / 429 排队满），不承载业务编排。
 
 ### 控制链路（streaming 期间，旁路）
 
@@ -57,9 +61,9 @@ HTTP 路由在 `app.ts`，应用逻辑在 `session-service.ts`，编排在 `sess
 - **会话 JSONL** — `src/server/start.ts` 的 `createAdapter`：只记录 `piSessionFile` 路径，不直接读写文件；同会话由状态机串行保证单文件无并发写。
 - **数据库（SQLite）** — 读代码顺序：
   1. `src/server/start.ts` 创建 `DatabaseSync`（`timeout: 5000` + `enableForeignKeyConstraints: true`），初始化后 `ensureDefaultProject`（默认项目落库，`owner_key=''` 共享）
-  2. `src/storage/bootstrap.ts`：文件库启用 WAL（`:memory:` 跳过）+ Kysely schema builder 幂等 bootstrap（全部 `IF NOT EXISTS`，只面向新库/已是当前 schema 的库；RC 阶段无旧库兼容/版本化迁移，演进走完整重建）
+  2. `src/storage/bootstrap.ts`：文件库启用 WAL（`:memory:` 跳过）+ Kysely schema builder 幂等 bootstrap（全部 `IF NOT EXISTS`，只面向新库/已是当前 schema 的库）；启动 migration 门禁当前默认 `off`，`PI_MIGRATION_GATE=verify` 只读校验 migration ledger/head 且绝不自动迁移；目标是 gate 默认 `verify` 并另增 `managed`/`rc` 数据模式（尚未实现）
   3. 三个 Repository（`kysely-session-repository.ts` / `kysely-project-repository.ts` / `kysely-idempotency-repository.ts`）仅 CRUD；项目删除由 Kysely `transaction` 与 FK `ON DELETE CASCADE` 兜底（`sessions.project_id → projects.id`）
-  - **本质**：`DatabaseSync` 同步 API + 单线程事件循环 → 进程内天然串行（一个 `db.run()` 返回前事件循环不切走）；并发风险只在多实例（WAL 单写者 + busy timeout 兑底）。
+  - **本质**：`DatabaseSync` 同步 API + 单线程事件循环 → 进程内天然串行（一个 `db.run()` 返回前事件循环不切走）；并发风险只在多实例。**一个逻辑 SQLite 库 / PG schema 及其关联 DATA_DIR 只支持一个 pi-agent-server 实例**——多实例共享同一 DB/schema+DATA_DIR 不受支持（WAL 单写者 + busy timeout 仅兑底）。
 
 ## 二、目录职责
 
@@ -76,7 +80,7 @@ HTTP 路由在 `app.ts`，应用逻辑在 `session-service.ts`，编排在 `sess
 
 ## 三、解耦边界
 
-1. **依赖方向单向**：`core/`、`application/`、`runtime/` 不依赖 Fastify、SQLite、Pi SDK、厂商类型；外部实现（`server/`、`storage/`、`agent/pi-agent-adapter.ts`）通过 [`src/application/ports/`](src/application/ports/) 的接口被核心调用（依赖倒置）。
+1. **依赖方向单向**：`core/`、`application/`、`runtime/` 不依赖 Fastify、SQLite、Pi SDK、厂商类型；外部实现（`server/`、`storage/`、`agent/pi-agent-adapter.ts`）通过 [`src/application/ports/`](../src/application/ports/) 的接口被核心调用（依赖倒置）。
 2. **纯逻辑优先**：①准入（CIDR/disabled/token 判定）与 ④⑤⑥ 均为纯逻辑，集中在 `src/core/`（`cidr.ts`、`ip-access-policy.ts`）与 `src/server/network-admission.ts`（接线闭包，无 IO）。
 3. **厂商协议隔离**：`src/provider-adapters/` 只做「厂商流 → 规范事件」的归一化，绝不执行工具、不进入 HTTP/存储/工具授权路径；工具执行始终走 Pi 原生白名单路径。
 4. **执行唯一入口**：适配器只产生规范化调用事件，Pi Agent 的工具白名单、schema 校验、权限钩子是唯一执行路径。
