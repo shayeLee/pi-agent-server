@@ -13,6 +13,15 @@ const projectRoot = path.dirname(fileURLToPath(import.meta.url));
 process.env.PI_BACKUP_STAGING_ROOT = path.join(projectRoot, "node_modules", ".pi-test-staging");
 mkdirSync(process.env.PI_BACKUP_STAGING_ROOT, { recursive: true, mode: 0o700 });
 
+// Hermetic credential location for the whole test run: backup/migrate/cutover
+// cores resolve the REAL per-user auth file (~/.pi/agent/auth.json) when no
+// explicit path is supplied, which is host-dependent (on some hosts that file
+// is absent or protected; a host credential must never decide test outcomes).
+// Pointing PI_AUTH_PATH (the same variable the CLIs honor) at a private
+// non-existent fixture path under node_modules keeps every test hermetic;
+// tests that exercise explicit authPath options still override this default.
+process.env.PI_AUTH_PATH = path.join(projectRoot, "node_modules", ".pi-test-auth", "auth-not-backed-up.json");
+
 export default defineConfig({
   test: {
     // 根目录只跑服务端测试；web/ 子包有独立的 vitest 配置

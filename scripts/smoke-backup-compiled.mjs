@@ -20,6 +20,10 @@ const backupRoot = path.join(directory, "backups");
 const dbPath = path.join(dataDir, "pi-agent-server.db");
 const recipient = path.join(directory, "recipient.txt");
 const identity = path.join(directory, "identity");
+// Hermetic credential path: the build smoke must never depend on the real
+// per-user auth file (~/.pi/agent/auth.json); this fixture path does not
+// exist and is only an overlap-check input.
+const authPath = path.join(directory, "auth-not-backed-up.json");
 
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, { ...options, stdio: options.stdio ?? "pipe", encoding: "utf8" });
@@ -66,7 +70,7 @@ try {
   createAgeKey();
   await createFixture();
   const create = run(process.execPath, ["dist-backup/scripts/backup.js", "create", "--backup-root", backupRoot, "--age-recipient-file", recipient], {
-    cwd: process.cwd(), env: { ...process.env, AGENT_CWD: process.cwd(), DATA_DIR: dataDir, DB_PATH: dbPath },
+    cwd: process.cwd(), env: { ...process.env, AGENT_CWD: process.cwd(), DATA_DIR: dataDir, DB_PATH: dbPath, PI_AUTH_PATH: authPath },
   });
   const packages = readdirSync(backupRoot).filter((entry) => entry.startsWith("backup-"));
   if (create.status !== 0 || packages.length !== 1) throw new Error("compiled backup E2E did not publish a package");
@@ -77,7 +81,31 @@ try {
   // Keep the safety-failure smoke separate from the successful E2E path.
   const failed = spawnSync(process.execPath, ["dist-backup/scripts/restore.js", "restore", "--input-backup", dataDir, "--target-root", path.join(directory, "bad-target"), "--age-identity-file", identity], { cwd: process.cwd(), env: { ...process.env }, encoding: "utf8" });
   if (failed.status === 0 || failed.stdout.includes(dataDir) || failed.stderr.includes(dataDir) || existsSync(path.join(directory, "bad-target"))) throw new Error("compiled restore safe-failure smoke failed");
-  console.log("compiled backup/restore E2E and safe-failure smoke: ok");
+
+  // Strict completeness mode (compiled CLI, real age): strict published
+  // success emits exactly one stable machine report line; any missing session
+  // reference fails non-zero with a desensitized error, publishes nothing and
+  // leaves no staging/COMPLETE residue.
+  const strictArgs = ["dist-backup/scripts/backup.js", "create", "--backup-root", backupRoot, "--age-recipient-file", recipient, "--require-complete-session-references"];
+  const strictOk = spawnSync(process.execPath, strictArgs, { cwd: process.cwd(), env: { ...process.env, AGENT_CWD: process.cwd(), DATA_DIR: dataDir, DB_PATH: dbPath, PI_AUTH_PATH: authPath }, encoding: "utf8" });
+  if (strictOk.status !== 0) throw new Error(`compiled strict backup E2E failed: ${strictOk.stderr}`);
+  const strictLine = strictOk.stdout.split(/\r?\n/).find((line) => line.startsWith("backup-json-report: "));
+  if (!strictLine) throw new Error("compiled strict backup did not emit the machine report line");
+  const strictReport = JSON.parse(strictLine.slice("backup-json-report: ".length));
+  if (strictReport.status !== "published" || strictReport.strict !== true || strictReport.dryRun !== false || strictReport.missingSessionReferences !== 0 || !strictReport.finalPath?.startsWith(backupRoot) || typeof strictReport.payloadCount !== "number") throw new Error("compiled strict machine report is invalid");
+  if (readdirSync(backupRoot).filter((entry) => entry.startsWith("backup-")).length !== 2) throw new Error("compiled strict backup did not publish a second package");
+
+  const missingDb = new DatabaseSync(dbPath);
+  missingDb.prepare("INSERT INTO sessions (id,owner_key,project_id,title,created_at,updated_at,pi_session_file,capability_versions) VALUES (?,?,?,?,?,?,?,?)").run("strict-missing-session", "owner", "p", "missing", 1, 1, path.join(dataDir, "sessions", "gone", "history.jsonl"), JSON.stringify({ schema: 1 }));
+  missingDb.close();
+  const strictFailed = spawnSync(process.execPath, strictArgs, { cwd: process.cwd(), env: { ...process.env, AGENT_CWD: process.cwd(), DATA_DIR: dataDir, DB_PATH: dbPath, PI_AUTH_PATH: authPath }, encoding: "utf8" });
+  if (strictFailed.status === 0) throw new Error("compiled strict backup did not fail on a missing session reference");
+  const strictOutput = `${strictFailed.stdout}${strictFailed.stderr}`;
+  if (!strictOutput.includes("strict completeness")) throw new Error("compiled strict failure message is missing");
+  if (strictOutput.includes("strict-missing-session") || strictOutput.includes("backup-json-report:") || strictOutput.includes(path.join("sessions", "gone"))) throw new Error("compiled strict failure leaked a reference, path, or machine success line");
+  if (readdirSync(backupRoot).filter((entry) => entry.startsWith("backup-")).length !== 2) throw new Error("compiled strict failure published a package");
+  if (readdirSync(backupRoot).some((entry) => entry.includes("staging") || entry === "COMPLETE")) throw new Error("compiled strict failure left staging/COMPLETE residue");
+  console.log("compiled backup/restore E2E, safe-failure smoke and strict completeness smoke: ok");
 } finally {
   rmSync(process.env.PI_BACKUP_STAGING_ROOT, { recursive: true, force: true });
   rmSync(directory, { recursive: true, force: true });

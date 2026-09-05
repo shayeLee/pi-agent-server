@@ -22,6 +22,10 @@ const backupRoot = path.join(directory, "backups");
 const dbPath = path.join(dataDir, "pi-agent-server.db");
 const recipient = path.join(directory, "recipient.txt");
 const identity = path.join(directory, "identity");
+// Hermetic credential path: the build smoke must never depend on the real
+// per-user auth file (~/.pi/agent/auth.json); this fixture path does not
+// exist and is only an overlap-check input.
+const authPath = path.join(directory, "auth-not-backed-up.json");
 
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, { ...options, stdio: options.stdio ?? "pipe", encoding: "utf8" });
@@ -88,16 +92,26 @@ try {
   createAgeKey();
   await createFixture(runSqliteMigrations);
   run(backupBin, ["create", "--backup-root", backupRoot, "--age-recipient-file", recipient], {
-    cwd: process.cwd(), env: { ...process.env, AGENT_CWD: process.cwd(), DATA_DIR: dataDir, DB_PATH: dbPath },
+    cwd: process.cwd(), env: { ...process.env, AGENT_CWD: process.cwd(), DATA_DIR: dataDir, DB_PATH: dbPath, PI_AUTH_PATH: authPath },
   });
   const packages = existsSync(backupRoot) ? readdirSync(backupRoot).filter((entry) => entry.startsWith("backup-")) : [];
   if (packages.length !== 1) throw new Error("installed backup bin did not publish a package");
   verifyRestore(restoreBin, path.join(backupRoot, packages[0]));
 
+  // Strict completeness mode through the installed npm bin: only strict +
+  // published success emits the machine report line (real age).
+  const strict = spawnSync(backupBin, ["create", "--backup-root", backupRoot, "--age-recipient-file", recipient, "--require-complete-session-references"], { cwd: process.cwd(), env: { ...process.env, AGENT_CWD: process.cwd(), DATA_DIR: dataDir, DB_PATH: dbPath, PI_AUTH_PATH: authPath }, encoding: "utf8" });
+  if (strict.status !== 0) throw new Error(`installed strict backup E2E failed: ${strict.stderr}`);
+  const strictLine = strict.stdout.split(/\r?\n/).find((line) => line.startsWith("backup-json-report: "));
+  if (!strictLine) throw new Error("installed strict backup did not emit the machine report line");
+  const strictReport = JSON.parse(strictLine.slice("backup-json-report: ".length));
+  if (strictReport.status !== "published" || strictReport.strict !== true || strictReport.dryRun !== false || strictReport.missingSessionReferences !== 0 || !strictReport.finalPath?.startsWith(backupRoot) || typeof strictReport.payloadCount !== "number") throw new Error("installed strict machine report is invalid");
+  if (readdirSync(backupRoot).filter((entry) => entry.startsWith("backup-")).length !== 2) throw new Error("installed strict backup did not publish a second package");
+
   // Keep the safety-failure smoke independent of the successful E2E path.
   const failed = spawnSync(restoreBin, ["restore", "--input-backup", dataDir, "--target-root", path.join(directory, "bad-target"), "--age-identity-file", identity], { cwd: process.cwd(), env: { ...process.env }, encoding: "utf8" });
   if (failed.status === 0 || failed.stdout.includes(dataDir) || failed.stderr.includes(dataDir) || existsSync(path.join(directory, "bad-target"))) throw new Error("installed restore safe-failure smoke failed");
-  console.log("installed npm backup/restore E2E and safe-failure smoke: ok");
+  console.log("installed npm backup/restore E2E, safe-failure smoke and strict completeness smoke: ok");
 } finally {
   rmSync(process.env.PI_BACKUP_STAGING_ROOT, { recursive: true, force: true });
   rmSync(directory, { recursive: true, force: true });

@@ -20,26 +20,27 @@ import { tmpdir, homedir } from "node:os";
 import { createPostgresPool } from "../storage/postgres-bootstrap.js";
 import type { Pool } from "pg";
 import {
+  abortActiveAgeChild,
+  ageAdapter,
+  assertStrictCompleteness,
   collectWhitelistedFiles,
-  openPlaintextStaging,
   encryptFileTo,
   encryptStableSource,
   hashFile,
+  openPlaintextStaging,
+  syncDirectoryBestEffort,
   syncDirectoryTreeBestEffort,
   validateReferences,
   validateRegular,
   writePrivate,
-  syncDirectoryBestEffort,
-  ageAdapter,
-  abortActiveAgeChild,
   type AgeAdapter,
   type AgeEncryptFileOptions,
   type BackupFileRecord,
   type MissingSessionReference,
+  type PlaintextStagingHandle,
+  type PlannedSourceFile,
   type PostgresBackupManifest,
   type PostgresBackupSourceRoots,
-  type PlannedSourceFile,
-  type PlaintextStagingHandle,
   type PublishedBackupIdentity,
 } from "./backup-core.js";
 import { stableSerialize } from "../storage/migration-manifest.js";
@@ -311,6 +312,19 @@ export interface PostgresBackupOptions {
   readonly databaseUrl: string;
   readonly paths: PostgresBackupPaths;
   readonly dryRun?: boolean;
+  /**
+   * Opt-in strict completeness gate (CLI: `--require-complete-session-references`).
+   * When true, ANY missing whitelisted session reference fails the backup
+   * fail-closed BEFORE any publish/COMPLETE (dry-run included), with a stable
+   * desensitized error (count only). The gate is bound to the FINAL snapshot:
+   * PostgreSQL reads references inside the same dedicated REPEATABLE READ
+   * transaction that exports the pg_dump snapshot, so there is no
+   * inspect→snapshot online-write window (SQLite re-reads the reference set
+   * from the finished VACUUM INTO snapshot instead). Default (absent/false)
+   * keeps the legacy compatible behavior: missing references are recorded in
+   * the encrypted manifest and the backup still publishes.
+   */
+  readonly requireCompleteSessionReferences?: boolean;
   readonly age?: AgeAdapter;
   /** Hard per-child age budget; defaults to AGE_PROCESS_TIMEOUT_MS (see its sizing note in backup-core). */
   readonly ageProcessTimeoutMs?: number;
@@ -875,6 +889,10 @@ export async function createPostgresBackup(options: PostgresBackupOptions): Prom
         : await defaultSessionReferences(tx, target.schema);
       collected = collectWhitelistedFiles(resolved.dataDir, resolved.agentDir);
       missing = validateReferences(references, resolved.dataDir, collected.files);
+      // Opt-in strict completeness gate: any missing session reference fails
+      // BEFORE any staging/publish/COMPLETE work (dry-run included), so a
+      // strict backup can never publish an incomplete package.
+      assertStrictCompleteness(options.requireCompleteSessionReferences, missing);
       ledger = await readLedger(tx, target.schema);
       // Same-transaction snapshot export: pg_dump --snapshot consumes exactly
       // this snapshot for as long as this transaction stays open. A server

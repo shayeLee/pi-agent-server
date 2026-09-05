@@ -3,7 +3,8 @@
 //   不可能进入新发布产物（tsc 不会删除 outDir 中已不存在的源文件产物）；
 // - `check`：递归断言目录树内没有任何符号链接（防止经 symlink 走私源码/文件）且
 //   没有任何被移除模块的残留文件名（executor / file-system-policy / error-codes，
-//   这些只属于已移除的 WP4B 物理执行器，不允许出现在任何 dist 产物中）。
+//   这些只属于已移除的 WP4B 物理执行器；health-core 只属于已放弃的 WP5C 方案 A
+//   backup health scanner——均不允许出现在任何 dist 产物中）。
 //
 // 用法：
 //   node scripts/dist-hygiene.mjs clean dist [dist-backup ...]
@@ -18,6 +19,9 @@ const FORBIDDEN_DIST_BASENAMES = new Set([
   "file-system-policy.js", "file-system-policy.d.ts", "file-system-policy.js.map", "file-system-policy.d.ts.map",
   // 已移除执行器的错误码模块（last_error 现在只用 file-operation-policy 的 allowlist）。
   "error-codes.js", "error-codes.d.ts", "error-codes.js.map", "error-codes.d.ts.map",
+  // WP5C 方案 A backup health scanner（已放弃，绝不回归）：health-core 只能来自
+  // 被放弃的仓库内只读 backup-health scanner（曾编译产出 dist/backup-health/）。
+  "health-core.js", "health-core.d.ts", "health-core.js.map", "health-core.d.ts.map",
 ]);
 
 /** 递归检查：先探符号链接，再检查残留文件名。 */

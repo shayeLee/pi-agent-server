@@ -105,6 +105,136 @@ describe("SQLite online backup core (WP3A)", () => {
     expect(result.manifest?.missingSessionReferences).toHaveLength(1);
   });
 
+  it("strict mode fails closed on any missing session reference before publish/COMPLETE and is desensitized", async () => {
+    const f = fixture();
+    const missing = path.join(f.dataDir, "sessions", "gone", "history.jsonl");
+    putSession(f.dbPath, "missing-strict", missing);
+    let error: unknown;
+    try {
+      await createSqliteBackup({ paths: makePaths(f), age: fakeAge(), requireCompleteSessionReferences: true });
+    } catch (caught) { error = caught; }
+    const message = error instanceof Error ? error.message : String(error);
+    expect(message).toMatch(/strict completeness: 1 session reference\(s\) are missing/);
+    // 错误稳定脱敏：只含计数，绝不泄露 session id 或缺失路径。
+    expect(message).not.toContain("missing-strict");
+    expect(message).not.toContain("gone");
+    expect(message).not.toContain(f.root);
+    // 未发布任何包/COMPLETE，无 staging 残留。
+    expect(existsSync(f.backupRoot)).toBe(false);
+    // dry-run 同样 fail-closed（strict 不会把 dry-run 当成成功）。
+    await expect(createSqliteBackup({ paths: makePaths(f), dryRun: true, age: fakeAge(), requireCompleteSessionReferences: true }))
+      .rejects.toThrow(/strict completeness: 1 session reference\(s\) are missing/);
+    expect(existsSync(f.backupRoot)).toBe(false);
+  });
+
+  it("strict mode publishes COMPLETE when every session reference is present", async () => {
+    const f = fixture();
+    const sessionFile = path.join(f.dataDir, "sessions", "s1", "history.jsonl");
+    writeFileSync(sessionFile, '{"ok":true}\n', { mode: 0o600 });
+    putSession(f.dbPath, "s1", sessionFile);
+    const result = await createSqliteBackup({ paths: makePaths(f), age: fakeAge(), requireCompleteSessionReferences: true });
+    expect(result.finalPath).toBeTruthy();
+    expect(existsSync(path.join(result.finalPath!, "COMPLETE"))).toBe(true);
+    expect(result.missingSessionReferences).toEqual([]);
+    expect(result.manifest?.missingSessionReferences).toEqual([]);
+  });
+
+  it("strict is bound to the final VACUUM snapshot: a session row added between inspection and the snapshot fails closed with zero publish", async () => {
+    const f = fixture();
+    writeFileSync(path.join(f.dataDir, "sessions", "s1", "history.jsonl"), '{"type":"session"}\n', { mode: 0o600 });
+    // Pre-switch to WAL so the concurrent writer is never blocked by the
+    // backup's read-only source connection (same warmup as the pre-reset test).
+    const warmup = new DatabaseSync(f.dbPath);
+    warmup.exec("PRAGMA journal_mode=WAL");
+    warmup.close();
+    const writer = new DatabaseSync(f.dbPath);
+    // The write lands deterministically AFTER the inspect-time reference
+    // check (which runs before any staging) and BEFORE the VACUUM INTO: the
+    // ensureAvailable hook is the only code between inspection and staging.
+    const lateFile = path.join(f.dataDir, "sessions", "late", "history.jsonl");
+    const age: AgeAdapter = {
+      ...fakeAge(),
+      ensureAvailable() {
+        writer.prepare("INSERT INTO sessions VALUES (?, ?)").run("late-session", lateFile);
+      },
+    };
+    let error: unknown;
+    try {
+      try {
+        await createSqliteBackup({ paths: makePaths(f), age, requireCompleteSessionReferences: true });
+      } catch (caught) { error = caught; }
+      const message = error instanceof Error ? error.message : String(error);
+      expect(message).toMatch(/strict completeness: 1 session reference\(s\) are missing/);
+      // 稳定脱敏：只含计数，绝不泄露这个并发写入的 session id 或路径。
+      expect(message).not.toContain("late-session");
+      expect(message).not.toContain("late");
+      // 零发布：backup root 无 backup-* 包，也不留 publish/plaintext staging 残留。
+      expect(readdirSync(f.backupRoot).filter((entry) => entry.startsWith("backup-") || entry.includes("staging") || entry === "COMPLETE")).toEqual([]);
+      // 证明在线写窗口真实存在：源库（即 VACUUM INTO 的内容来源）在写入后确实
+      // 包含该迟到行——若不做快照绑定重读，strict 会带着这个缺口照常发布。
+      const check = new DatabaseSync(f.dbPath, { readOnly: true });
+      try {
+        const row = check.prepare("SELECT id, pi_session_file FROM sessions WHERE id = ?").get("late-session") as { id: string; pi_session_file: string } | undefined;
+        expect(row).toBeDefined();
+        expect(row!.pi_session_file).toBe(lateFile);
+      } finally { check.close(); }
+    } finally {
+      writer.close();
+    }
+    // 非 strict 默认兼容行为不受影响：同样的并发写入照常发布，且快照包含该迟到行
+    // 而 payload 不含其文件——这正是 strict 现在关闭的缺口（legacy 行为保持原样）。
+    const f2 = fixture();
+    writeFileSync(path.join(f2.dataDir, "sessions", "s1", "history.jsonl"), '{"type":"session"}\n', { mode: 0o600 });
+    const warmup2 = new DatabaseSync(f2.dbPath);
+    warmup2.exec("PRAGMA journal_mode=WAL");
+    warmup2.close();
+    const writer2 = new DatabaseSync(f2.dbPath);
+    const age2: AgeAdapter = {
+      ...fakeAge(),
+      ensureAvailable() {
+        writer2.prepare("INSERT INTO sessions VALUES (?, ?)").run("late-session", path.join(f2.dataDir, "sessions", "late", "history.jsonl"));
+      },
+    };
+    try {
+      const result = await createSqliteBackup({ paths: makePaths(f2), age: age2 });
+      expect(result.finalPath).toBeTruthy();
+      expect(existsSync(path.join(result.finalPath!, "COMPLETE"))).toBe(true);
+      const dbPayload = fakeAge().decrypt(readFileSync(path.join(result.finalPath!, "payload/database.sqlite.age")));
+      writeFileSync(path.join(f2.root, "decrypted.db"), dbPayload);
+      const checked = new DatabaseSync(path.join(f2.root, "decrypted.db"), { readOnly: true });
+      try {
+        expect(checked.prepare("SELECT id FROM sessions WHERE id = ?").get("late-session")).toBeTruthy();
+      } finally { checked.close(); }
+      expect(existsSync(path.join(result.finalPath!, "payload/sessions/late/history.jsonl.age"))).toBe(false);
+    } finally { writer2.close(); }
+  });
+
+  it("strict re-validates the payload collection against the snapshot: a reference to a file created after inspection fails closed", async () => {
+    const f = fixture();
+    writeFileSync(path.join(f.dataDir, "sessions", "s1", "history.jsonl"), '{"type":"session"}\n', { mode: 0o600 });
+    const warmup = new DatabaseSync(f.dbPath);
+    warmup.exec("PRAGMA journal_mode=WAL");
+    warmup.close();
+    const writer = new DatabaseSync(f.dbPath);
+    // 并发写入同时创建新会话文件并插入引用：文件存在但不在 inspect 阶段收集的
+    // payload 集合里，strict 必须在发布前以快照绑定失败（而不是发布一个
+    // 声明完整却没有该 payload 的包）。
+    const freshFile = path.join(f.dataDir, "sessions", "fresh", "history.jsonl");
+    const age: AgeAdapter = {
+      ...fakeAge(),
+      ensureAvailable() {
+        mkdirSync(path.dirname(freshFile), { recursive: true, mode: 0o700 });
+        writeFileSync(freshFile, '{"type":"session","id":"fresh-header"}\n', { mode: 0o600 });
+        writer.prepare("INSERT INTO sessions VALUES (?, ?)").run("fresh-session", freshFile);
+      },
+    };
+    try {
+      await expect(createSqliteBackup({ paths: makePaths(f), age, requireCompleteSessionReferences: true }))
+        .rejects.toThrow(/not part of the whitelisted payload collection/);
+      expect(readdirSync(f.backupRoot).filter((entry) => entry.startsWith("backup-") || entry.includes("staging") || entry === "COMPLETE")).toEqual([]);
+    } finally { writer.close(); }
+  });
+
   it("fails fast for an external session reference and does not publish a backup", async () => {
     const f = fixture();
     const outside = path.join(f.root, "outside.jsonl");

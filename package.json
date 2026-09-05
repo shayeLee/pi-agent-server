@@ -37,7 +37,7 @@
     "node": ">=22.19.0"
   },
   "scripts": {
-    "build": "node scripts/dist-hygiene.mjs clean dist && tsc -p tsconfig.build.json",
+    "build": "node scripts/dist-hygiene.mjs clean dist && tsc -p tsconfig.build.json && node scripts/dist-hygiene.mjs check dist",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run",
     "test:watch": "vitest",

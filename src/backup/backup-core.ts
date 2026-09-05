@@ -288,6 +288,20 @@ export interface BackupOptions {
   /** The published manifest kind. Pre-migration is only selected by the offline migration CLI. */
   readonly backupKind?: BackupKind;
   readonly dryRun?: boolean;
+  /**
+   * Opt-in strict completeness gate (CLI: `--require-complete-session-references`).
+   * When true, ANY missing whitelisted session reference fails the backup
+   * fail-closed BEFORE any publish/COMPLETE (dry-run included), with a stable
+   * desensitized error (count only). The gate is bound to the FINAL snapshot,
+   * not to the pre-staging inspection: SQLite re-reads the reference set from
+   * the finished VACUUM INTO snapshot and re-validates it against the exact
+   * payload collection (closing the inspect→snapshot online-write window), and
+   * PostgreSQL reads references inside the same snapshot-exporting
+   * transaction the dump consumes. Default (absent/false) keeps the legacy
+   * compatible behavior: missing references are recorded in the encrypted
+   * manifest and the backup still publishes.
+   */
+  readonly requireCompleteSessionReferences?: boolean;
   readonly age?: AgeAdapter;
   /** Hard per-child age budget; defaults to AGE_PROCESS_TIMEOUT_MS (see its sizing note). */
   readonly ageProcessTimeoutMs?: number;
@@ -680,6 +694,57 @@ function defaultSessionReferences(db: DatabaseSync): readonly SessionFileReferen
   });
 }
 
+/**
+ * Opt-in strict completeness gate, shared by the SQLite and PostgreSQL cores.
+ * When enabled, any missing session reference fails the backup fail-closed
+ * BEFORE any publish/COMPLETE (dry-run included). The error is stable and
+ * desensitized: only the count is reported — never a session id, path, or
+ * reference detail.
+ *
+ * The gate is bound to the FINAL snapshot, not to the pre-staging
+ * inspection: `createSqliteBackup` re-reads the reference set from the
+ * finished VACUUM INTO snapshot and re-validates it against the exact
+ * payload collection, so a concurrent writer that slips a change into the
+ * inspect→snapshot window still fails the backup closed; PostgreSQL reads
+ * references inside the same snapshot-exporting transaction the dump
+ * consumes (see `assertStrictSnapshotCompleteness`).
+ */
+export function assertStrictCompleteness(requireComplete: boolean | undefined, missing: readonly MissingSessionReference[]): void {
+  if (requireComplete !== true || missing.length === 0) return;
+  fail(`strict completeness: ${missing.length} session reference(s) are missing; refusing to publish an incomplete backup`);
+}
+
+/**
+ * Strict-mode re-verification bound to the FINAL SQLite snapshot. The
+ * inspection-time reference check runs before any staging exists; a
+ * concurrent writer can still add/change a session row, delete a referenced
+ * JSONL file, or point at a file created after inspection between that
+ * inspection and the VACUUM INTO. Strict therefore re-reads the reference
+ * set from the finished snapshot and re-validates it against the exact
+ * payload collection (`files`): any gap fails the backup closed BEFORE any
+ * ciphertext publish/COMPLETE with the same stable desensitized count-only
+ * error, and the cleanup path removes both staging surfaces. A fire-and-
+ * forget reference that is not part of the collected payload (for example a
+ * row added while the backup was running) fails identically instead of
+ * silently widening or shrinking the payload.
+ */
+function assertStrictSnapshotCompleteness(options: BackupOptions, snapshotPath: string, dataDir: string, files: readonly PlannedSourceFile[]): void {
+  if (options.requireCompleteSessionReferences !== true) return;
+  let snapshotDb: DatabaseSync | undefined;
+  try {
+    try { snapshotDb = new DatabaseSync(snapshotPath, { readOnly: true, timeout: 5000 }); }
+    catch { fail("SQLite snapshot could not be re-opened for the strict completeness re-check"); }
+    const query = options.querySessionReferences ?? defaultSessionReferences;
+    const snapshotMissing = validateReferences(query(snapshotDb), dataDir, files);
+    // Same stable desensitized error (count only) as the inspection-time gate.
+    assertStrictCompleteness(true, snapshotMissing);
+  } finally {
+    if (snapshotDb) {
+      try { snapshotDb.close(); } catch { /* a close failure must not mask the original error */ }
+    }
+  }
+}
+
 export function validateReferences(references: readonly SessionFileReference[], dataDir: string, files: readonly PlannedSourceFile[]): MissingSessionReference[] {
   const roots = [path.join(dataDir, "sessions"), path.join(dataDir, "projects")];
   const byPath = new Map(files.map((file) => [canonicalForComparison(file.sourcePath), file]));
@@ -699,7 +764,10 @@ export function validateReferences(references: readonly SessionFileReference[], 
       continue;
     }
     validateRegular(resolved, "referenced session file");
-    if (!byPath.has(resolved)) fail("sessions.pi_session_file points to a file excluded from the whitelist");
+    // Reachable both for genuinely excluded files (auth-file) and for files
+    // created after the whitelist collection that the payload will not
+    // contain; either way the reference is not part of the payload.
+    if (!byPath.has(resolved)) fail("sessions.pi_session_file points to a file that is not part of the whitelisted payload collection");
   }
   return missing;
 }
@@ -1236,6 +1304,12 @@ export async function createSqliteBackup(options: BackupOptions): Promise<Backup
   };
   try {
     const inspection = await inspectSource(options, source, resolved.dataDir, resolved.agentDir);
+    // Opt-in strict completeness gate: any missing session reference fails
+    // BEFORE any staging/publish/COMPLETE work (dry-run included). For SQLite
+    // the gate is re-run against the final VACUUM INTO snapshot before the
+    // first ciphertext is published (assertStrictSnapshotCompleteness below),
+    // so the strict binding is the snapshot, not the inspection state.
+    assertStrictCompleteness(options.requireCompleteSessionReferences, inspection.missing);
     if (dryRun) {
       // Dry-run reads plaintext only, so it stages in the private plaintext
       // root too; the backup root is never created or written by a dry-run.
@@ -1298,6 +1372,16 @@ export async function createSqliteBackup(options: BackupOptions): Promise<Backup
       treeBinding = postSnapshot;
     }
     validateRegular(plainSnapshot, "SQLite snapshot");
+    // Strict completeness is bound to the FINAL snapshot, not to the
+    // inspection state: re-read the reference set from the finished VACUUM
+    // INTO snapshot and re-validate it against the exact payload collection.
+    // This closes the inspect→snapshot online-write window (a concurrent
+    // writer that adds/updates a session row, deletes a referenced JSONL
+    // file, or points at a file created after inspection would otherwise
+    // publish an incomplete strict package); the check runs BEFORE any
+    // ciphertext publish/COMPLETE, and failing cleanup removes both staging
+    // surfaces and leaves no publish residue.
+    assertStrictSnapshotCompleteness(options, plainSnapshot, resolved.dataDir, inspection.files);
     const snapshot = hashFile(plainSnapshot);
     // Pre-reset closes its inspection connection before any payload work: the
     // binding is already fixed above, the source stays untouched from here on,

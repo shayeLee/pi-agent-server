@@ -421,6 +421,52 @@ describe("PostgreSQL backup core fake-process safety (WP3B2)", () => {
     await expect(createPostgresBackup({ storageDialect: "sqlite", databaseUrl: "postgres://u:p@example.test/source_db", paths: backupPaths(f), age: fakeAge(), pgClient: sourceClient(f), pgProcess: new FakePgProcess() })).rejects.toThrow(/explicit PI_STORAGE_DIALECT/);
     await expect(createPostgresBackup({ storageDialect: "postgres", databaseUrl: "postgres://u:p@example.test", paths: backupPaths(f), age: fakeAge(), pgClient: sourceClient(f), pgProcess: new FakePgProcess() })).rejects.toThrow(/database/);
   });
+
+  it("strict mode fails closed on any missing session reference before publish/COMPLETE and is desensitized", async () => {
+    const f = fixture();
+    const missing = path.join(f.dataDir, "sessions", "gone", "history.jsonl");
+    const source = sourceClient(f);
+    const strictClient: PgBackupClient = {
+      async query<T extends Record<string, unknown>>(text: string, values?: readonly unknown[]) {
+        if (text.includes("FROM \"app_schema\".\"sessions\"")) return { rows: [{ id: "missing-strict", pi_session_file: missing } as unknown as T] };
+        return source.query<T>(text, values);
+      },
+    };
+    let error: unknown;
+    try {
+      await createPostgresBackup({
+        storageDialect: "postgres", databaseUrl: "postgres://u:p@example.test/source_db", paths: backupPaths(f), age: fakeAge(),
+        pgClient: strictClient, pgProcess: pgProcessAdapter, pgDumpBinary: controlledPgExecutable(f), pgRestoreBinary: controlledPgExecutable(f, "pg_restore"),
+        requireCompleteSessionReferences: true,
+      });
+    } catch (caught) { error = caught; }
+    const message = error instanceof Error ? error.message : String(error);
+    expect(message).toMatch(/strict completeness: 1 session reference\(s\) are missing/);
+    // 错误稳定脱敏：只含计数，绝不泄露 session id、缺失路径或本机路径。
+    expect(message).not.toContain("missing-strict");
+    expect(message).not.toContain("gone");
+    expect(message).not.toContain(f.root);
+    expect(existsSync(f.backupRoot)).toBe(false);
+    // dry-run 同样 fail-closed。
+    await expect(createPostgresBackup({
+      storageDialect: "postgres", databaseUrl: "postgres://u:p@example.test/source_db", paths: backupPaths(f), age: fakeAge(),
+      pgClient: strictClient, pgProcess: new FakePgProcess(), requireCompleteSessionReferences: true, dryRun: true,
+    })).rejects.toThrow(/strict completeness/);
+    expect(existsSync(f.backupRoot)).toBe(false);
+  });
+
+  it("strict mode publishes COMPLETE when every session reference is present", async () => {
+    const f = fixture();
+    const result = await createPostgresBackup({
+      storageDialect: "postgres", databaseUrl: "postgres://u:p@example.test/source_db", paths: backupPaths(f), age: fakeAge(),
+      pgClient: sourceClient(f), pgProcess: pgProcessAdapter, pgDumpBinary: controlledPgExecutable(f), pgRestoreBinary: controlledPgExecutable(f, "pg_restore"),
+      requireCompleteSessionReferences: true,
+    });
+    expect(result.finalPath).toBeTruthy();
+    expect(existsSync(path.join(result.finalPath!, "COMPLETE"))).toBe(true);
+    expect(result.missingSessionReferences).toEqual([]);
+    expect(result.manifest?.missingSessionReferences).toEqual([]);
+  });
 });
 
 /** Object inside a non-system namespace, as reported by the target inventory query. */
@@ -1205,4 +1251,165 @@ describeRealPgBackup("real PostgreSQL pg_dump/pg_restore gate (WP3B2)", () => {
       }
     }
   }, 180_000);
+
+  it("strict completeness: a missing session reference publishes no package", async () => {
+    const root = mkdtempSync(path.join(tmpdir(), "pi-pg-strict-real-"));
+    const database = randomName("pi_w3b2_strict_");
+    const schema = randomName("pi_w3b2_strict_schema_");
+    const url = databaseUrl(pgUrl!, database, schema);
+    const dataDir = path.join(root, "data");
+    const backupRoot = path.join(root, "backups");
+    mkdirSync(dataDir, { recursive: true, mode: 0o700 });
+    // 引用必须位于白名单根内（sessions/<id>/<file> 布局）但文件缺失。
+    const missing = path.join(dataDir, "sessions", "gone", "history.jsonl");
+    const recipient = path.join(root, "recipient");
+    let pool: Pool | undefined;
+    let kysely: Awaited<ReturnType<typeof createPostgresKysely>> | undefined;
+    try {
+      await (await adminPool()).query(`CREATE DATABASE "${database}"`);
+      pool = createPostgresPool(url);
+      await pool.query(`CREATE SCHEMA "${schema}"`);
+      kysely = createPostgresKysely(pool);
+      await runPostgresMigrations(kysely);
+      await pool.query("INSERT INTO projects (id, name, cwd, owner_key, created_at) VALUES ($1,$2,$3,$4,$5)", ["00000000-0000-4000-8000-000000000041", "strict", "/tmp/strict", "owner", 1]);
+      await pool.query("INSERT INTO sessions (id, owner_key, project_id, title, created_at, updated_at, pi_session_file, capability_versions) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)", ["00000000-0000-4000-8000-000000000042", "owner", "00000000-0000-4000-8000-000000000041", "strict", 1, 1, missing, "{}"]);
+      await kysely.destroy();
+      kysely = undefined;
+      pool = undefined;
+      expect(spawnSync("age-keygen", ["--output", path.join(root, "identity")], { stdio: "ignore" }).status).toBe(0);
+      const publicKey = spawnSync("age-keygen", ["-y", path.join(root, "identity")], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+      expect(publicKey.status).toBe(0);
+      writeFileSync(recipient, `${publicKey.stdout.trim()}\n`, { mode: 0o600 });
+      let error: unknown;
+      try {
+        await createPostgresBackup({
+          storageDialect: "postgres",
+          databaseUrl: url,
+          paths: { dataDir, backupRoot, ageRecipientFile: recipient, authPath: path.join(root, "auth-not-backed-up.json") },
+          requireCompleteSessionReferences: true,
+        });
+      } catch (caught) { error = caught; }
+      const message = error instanceof Error ? error.message : String(error);
+      expect(message).toMatch(/strict completeness: 1 session reference\(s\) are missing/);
+      expect(message).not.toContain("gone");
+      // 严格缺失 → 零发布：backup root 下没有任何 backup-* 包（也没有 staging 残留）。
+      const entries = existsSync(backupRoot) ? readdirSync(backupRoot) : [];
+      expect(entries.filter((entry) => entry.startsWith("backup-") || entry.includes("staging") || entry === "COMPLETE")).toEqual([]);
+    } finally {
+      await kysely?.destroy().catch(() => undefined);
+      if (pool && !pool.ending) await pool.end().catch(() => undefined);
+      await (await adminPool()).query(`DROP DATABASE IF EXISTS "${database}"`).catch(() => undefined);
+      rmSync(root, { recursive: true, force: true });
+    }
+  }, 180_000);
+
+  /** Dedicated database/schema + age keys for running the REAL backup CLI. */
+  async function cliStrictFixture(complete: boolean): Promise<{ root: string; database: string; schema: string; url: string; dataDir: string; backupRoot: string; recipient: string; staging: string }> {
+    const root = mkdtempSync(path.join(tmpdir(), "pi-pg-cli-strict-"));
+    // Plaintext staging must stay OUTSIDE the backup root AND its parent
+    // (see assertStagingOutsideBackupSurface): a staging path under this
+    // fixture root would sit inside the backup root's parent (root/backups)
+    // and be rejected by the product's deliberate safety contract. Use a
+    // dedicated private root like the smoke scripts do.
+    const staging = mkdtempSync(path.join(tmpdir(), "pi-pg-cli-strict-staging-"));
+    const database = randomName("pi_w3b2_cli_");
+    const schema = randomName("pi_w3b2_cli_schema_");
+    const url = databaseUrl(pgUrl!, database, schema);
+    const dataDir = path.join(root, "data");
+    const backupRoot = path.join(root, "backups");
+    mkdirSync(dataDir, { recursive: true, mode: 0o700 });
+    const session = path.join(dataDir, "sessions", "cli", "history.jsonl");
+    if (complete) {
+      mkdirSync(path.dirname(session), { recursive: true, mode: 0o700 });
+      writeFileSync(session, '{"type":"session","id":"cli-header"}\n', { mode: 0o600 });
+    }
+    const recipient = path.join(root, "recipient");
+    let pool: Pool | undefined;
+    let kysely: Awaited<ReturnType<typeof createPostgresKysely>> | undefined;
+    try {
+      await (await adminPool()).query(`CREATE DATABASE "${database}"`);
+      pool = createPostgresPool(url);
+      await pool.query(`CREATE SCHEMA "${schema}"`);
+      kysely = createPostgresKysely(pool);
+      await runPostgresMigrations(kysely);
+      await pool.query("INSERT INTO projects (id, name, cwd, owner_key, created_at) VALUES ($1,$2,$3,$4,$5)", ["00000000-0000-4000-8000-000000000051", "cli-strict", "/tmp/cli-strict", "owner", 1]);
+      await pool.query("INSERT INTO sessions (id, owner_key, project_id, title, created_at, updated_at, pi_session_file, capability_versions) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)", ["00000000-0000-4000-8000-000000000052", "owner", "00000000-0000-4000-8000-000000000051", "cli-strict", 1, 1, complete ? session : path.join(dataDir, "sessions", "gone", "history.jsonl"), "{}"]);
+      await kysely.destroy();
+      kysely = undefined;
+      pool = undefined;
+      expect(spawnSync("age-keygen", ["--output", path.join(root, "identity")], { stdio: "ignore" }).status).toBe(0);
+      const publicKey = spawnSync("age-keygen", ["-y", path.join(root, "identity")], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+      expect(publicKey.status).toBe(0);
+      writeFileSync(recipient, `${publicKey.stdout.trim()}\n`, { mode: 0o600 });
+      return { root, database, schema, url, dataDir, backupRoot, recipient, staging };
+    } catch (error) {
+      await kysely?.destroy().catch(() => undefined);
+      if (pool && !pool.ending) await pool.end().catch(() => undefined);
+      await (await adminPool()).query(`DROP DATABASE IF EXISTS "${database}"`).catch(() => undefined);
+      rmSync(root, { recursive: true, force: true });
+      rmSync(staging, { recursive: true, force: true });
+      throw error;
+    }
+  }
+
+  it("CLI strict completeness: a real PostgreSQL strict published success emits exactly one machine report line, redacted", async () => {
+    const fixtureData = await cliStrictFixture(true);
+    const { root, database, url, backupRoot, recipient, staging } = fixtureData;
+    try {
+      const cli = spawnSync("pnpm", ["exec", "tsx", "scripts/backup.ts", "--", "create", "--backup-root", backupRoot, "--age-recipient-file", recipient, "--require-complete-session-references"], {
+        cwd: process.cwd(),
+        env: { ...process.env, AGENT_CWD: process.cwd(), DATA_DIR: fixtureData.dataDir, PI_STORAGE_DIALECT: "postgres", PI_DATABASE_URL: url, PI_AUTH_PATH: path.join(root, "auth-not-backed-up.json"), PI_BACKUP_STAGING_ROOT: staging },
+        encoding: "utf8",
+      });
+      const output = `${cli.stdout}${cli.stderr}`;
+      // 诊断可见：断言失败时完整 stdout+stderr 随消息展示，避免再次抓不到 CLI 根因。
+      expect(cli.status, `CLI exited ${cli.status}, expected 0; stdout+stderr:\n${output}`).toBe(0);
+      // 机器契约：恰好一行 backup-json-report（绝不重复、绝不缺少）。
+      const lines = cli.stdout.split(/\r?\n/).filter((line) => line.startsWith("backup-json-report: "));
+      expect(lines).toHaveLength(1);
+      const report = JSON.parse(lines[0]!.slice("backup-json-report: ".length));
+      expect(report).toMatchObject({ dialect: "postgres", status: "published", strict: true, dryRun: false, missingSessionReferences: 0 });
+      expect(typeof report.payloadCount).toBe("number");
+      expect(report.finalPath.startsWith(backupRoot)).toBe(true);
+      expect(existsSync(path.join(report.finalPath, "COMPLETE"))).toBe(true);
+      // 脱敏：URL、postgres:// 凭证形态、密码都不允许出现在 CLI 输出里。
+      expect(output).not.toContain(url);
+      expect(output).not.toMatch(/postgres(?:ql)?:\/\//);
+      const password = new URL(url).password;
+      if (password) expect(output).not.toContain(password);
+      expect(cli.stdout).not.toContain("dry-run");
+    } finally {
+      await (await adminPool()).query(`DROP DATABASE IF EXISTS "${database}"`).catch(() => undefined);
+      rmSync(root, { recursive: true, force: true });
+      rmSync(staging, { recursive: true, force: true });
+    }
+  }, 240_000);
+
+  it("CLI strict completeness: a missing session reference publishes nothing, leaves no staging and emits no machine report", async () => {
+    const fixtureData = await cliStrictFixture(false);
+    const { root, database, backupRoot, recipient, staging } = fixtureData;
+    try {
+      const cli = spawnSync("pnpm", ["exec", "tsx", "scripts/backup.ts", "--", "create", "--backup-root", backupRoot, "--age-recipient-file", recipient, "--require-complete-session-references"], {
+        cwd: process.cwd(),
+        env: { ...process.env, AGENT_CWD: process.cwd(), DATA_DIR: fixtureData.dataDir, PI_STORAGE_DIALECT: "postgres", PI_DATABASE_URL: fixtureData.url, PI_AUTH_PATH: path.join(root, "auth-not-backed-up.json"), PI_BACKUP_STAGING_ROOT: staging },
+        encoding: "utf8",
+      });
+      const output = `${cli.stdout}${cli.stderr}`;
+      // 诊断可见：断言失败时完整 stdout+stderr 随消息展示。
+      expect(cli.status, `unexpected CLI success; stdout+stderr:\n${output}`).not.toBe(0);
+      // 稳定脱敏的计数错误：绝不泄露 session id、缺失路径或 URL。
+      expect(output).toMatch(/strict completeness: 1 session reference\(s\) are missing/);
+      expect(output).not.toContain("gone");
+      expect(output).not.toContain("backup-json-report:");
+      expect(output).not.toContain(fixtureData.url);
+      // 零发布、零 staging：backup root 未创建；staging 根下无可疑子目录。
+      expect(existsSync(backupRoot)).toBe(false);
+      const stagingEntries = existsSync(staging) ? readdirSync(staging) : [];
+      expect(stagingEntries.filter((entry) => entry.includes("staging") || entry === "COMPLETE")).toEqual([]);
+    } finally {
+      await (await adminPool()).query(`DROP DATABASE IF EXISTS "${database}"`).catch(() => undefined);
+      rmSync(root, { recursive: true, force: true });
+      rmSync(staging, { recursive: true, force: true });
+    }
+  }, 240_000);
 });

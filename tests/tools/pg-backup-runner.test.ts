@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { spawnSync } from "node:child_process";
 import { PG_BACKUP_TEST_FILE, PG_BACKUP_URL_ENV, checkPgBackupBinaries, checkPgBackupClientMajorCompatibility, probePgBackupBinary, readPgBackupClientVersions, resolvePgBackupUrl } from "../../scripts/test-pg-backup.js";
 
 describe("test:pg-backup mandatory gate", () => {
@@ -38,5 +39,17 @@ describe("test:pg-backup mandatory gate", () => {
 
   it("runs only the dedicated real backup/restore test file", () => {
     expect(PG_BACKUP_TEST_FILE).toBe("tests/postgres/pg-backup.test.ts");
+  });
+
+  it("the runner CLI fails closed with a missing gate URL and claims no acceptance", () => {
+    const env = { ...process.env };
+    delete env[PG_BACKUP_URL_ENV];
+    const result = spawnSync("pnpm", ["exec", "tsx", "scripts/test-pg-backup.ts"], { cwd: process.cwd(), env, encoding: "utf8" });
+    expect(result.status).not.toBe(0);
+    const output = `${result.stdout}${result.stderr}`;
+    expect(output).toContain(PG_BACKUP_URL_ENV);
+    // 门禁未执行：不存在任何成功/通过/验收断言（不称过）。
+    expect(output).toMatch(/未执行/);
+    expect(output).not.toMatch(/passed|accepted|验收通过|门禁通过/);
   });
 });
