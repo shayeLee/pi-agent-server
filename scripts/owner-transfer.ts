@@ -95,7 +95,7 @@ async function runSqliteApply(cli: OwnerTransferCliOptions, environment: Storage
   const sourceOwnerKey = ownerKeyForIp(cli.sourceIp);
   const targetOwnerKey = ownerKeyForIp(cli.targetIp);
   const result = await runOwnerTransfer(authorization, {
-    createBackup: () => createSqliteBackup({ paths: { ...paths, authPath: target.authPath }, backupKind: "pre-owner-transfer", requireCompleteSessionReferences: true, stagingRoot: environment.PI_BACKUP_STAGING_ROOT }),
+    createBackup: () => createSqliteBackup({ paths: { ...paths, authPath: target.authPath }, backupKind: "pre-owner-transfer", stagingRoot: environment.PI_BACKUP_STAGING_ROOT }),
     verifyBackup: verifyPublishedBackup,
     revalidateBeforeTransfer: (verification) => revalidateSqliteOwnerTransferTarget(environment, cli, target, verification),
     transfer: () => {
@@ -152,12 +152,10 @@ async function runPostgres(cli: OwnerTransferCliOptions, environment: StorageEnv
         databaseUrl: storage.databaseUrl,
         paths: { dataDir: paths.dataDir, agentDir: paths.agentDir, authPath: paths.authPath, backupRoot: paths.backupRoot, ageRecipientFile: paths.ageRecipientFile },
         backupKind: "pre-owner-transfer",
-        allowPublicSchema: true,
-        // Owner-transfer backups are always strict: a missing session reference
-        // fails the backup closed BEFORE any publish/COMPLETE (hard-coded, not
-        // an operator flag — an incomplete pre-transfer baseline must never be
-        // accepted as the recovery anchor for a transfer).
-        requireCompleteSessionReferences: true,
+        // Missing session references are missing-as-empty (confirmed Phase 3
+        // semantics): they are recorded in the encrypted manifest and the
+        // pre-owner-transfer backup still publishes. A later restore of this
+        // anchor normalizes the corresponding sessions.pi_session_file to NULL.
         stagingRoot: environment.PI_BACKUP_STAGING_ROOT,
         onStage: report,
       }),

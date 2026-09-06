@@ -14,8 +14,8 @@ A long-running, session-oriented HTTP/SSE server around the Pi Agent runtime. It
 - **Logical deletion only:** deleting projects or sessions removes database-visible resources and records JSONL cleanup in `file_operations`. No worker drains the outbox and no physical JSONL unlink occurs.
 - **Local encrypted backups:** offline SQLite/PostgreSQL backup and restore tooling uses age encryption and a local `BACKUP_ROOT`. It does not cover simultaneous host/disk and backup loss. The age identity/private key is managed by operations and supplied only during restore.
 - **Recovery policy:** RPO target is 24 hours; backup retention is 30 days with manual cleanup. RTO target is 4 hours, but signoff is deferred until the service is in use and has a representative data scale.
-- **Backup semantics are changing:** current strict backup mode fails on a missing session-file reference and backup currently parses JSONL lines. The approved target is missing-as-empty, opaque JSONL backup, and invalid-as-empty restore. That target is not implemented yet; see [the Phase 3 status ledger](docs/phase-3-data-retention-plan.md).
-- **Migration behavior is changing:** current `PI_MIGRATION_GATE` defaults to `off`; `verify` is opt-in and never migrates. The approved target defaults it to `verify` and adds an explicit managed/RC data mode, still with no automatic migration or reset. That target is not implemented yet.
+- **Backup/runtime compatibility (Phase 3):** SQLite/PostgreSQL backup (including `--dry-run`) requires the exact canonical single-baseline source ledger before encryption, publication, success reporting, or freshness advancement; missing/legacy multi-row/checksum-mismatched ledgers fail closed. A DB reference to a missing JSONL remains missing-as-empty and may publish once that DB gate passes; JSONL is opaque during backup. Restore degrades a present-but-invalid history to empty (reference set to NULL, reported) while package-level age/hash/manifest integrity still fails the whole restore. Runtime and restore accept only current Pi JSONL v3; v1/v2 histories are never SDK-migrated (`migrateSessionEntries` is not used) and are fail-fast at runtime / invalid-as-empty during restore. Legacy backup packages remain **not recoverable**.
+- **Migration startup gate:** `PI_MIGRATION_GATE` is fixed to read-only `verify`; `off` (including `PI_DATA_MODE=rc`) is rejected before resources are created. The service never bootstraps a baseline: run the offline migration, then start only after it verifies the canonical single baseline. `PI_DATA_MODE` remains a deployment classification and cannot relax this requirement.
 
 ## Highlights
 
@@ -76,7 +76,7 @@ For a persistent migrated database, configure absolute `AGENT_CWD`, `DATA_DIR`, 
 export PI_MIGRATION_GATE=verify
 ```
 
-`verify` checks the immutable migration ledger and schema head; it never applies migrations or resets data. See [Backup and restore](docs/backup-restore.md).
+`verify` checks the immutable migration ledger and schema head; it never applies migrations, resets data, or bootstraps a baseline. PostgreSQL must use a non-`public`, non-system effective `current_schema()`. See [Backup and restore](docs/backup-restore.md).
 
 Start the optional standalone Web UI with `pnpm web`.
 
@@ -140,8 +140,9 @@ Legacy `INTRANET_CIDRS`, `TOKENS`, and `TRUST_PROXY`, plus removed workspace set
 | `PI_DEFAULT_THINKING_LEVEL` | Pi default | `off` through `max` |
 | `TOOLS` | `read,ls,find,grep` | Side-effect tools require explicit configuration and the WP5B deployment gate |
 | `CORS_ORIGINS` | empty | Comma-separated browser origins |
-| `PI_MIGRATION_GATE` | `off` | Current code accepts `off` or read-only `verify`; target default is `verify`, not implemented |
-| `PI_BACKUP_STAGING_ROOT` | per-user private application directory | Offline backup/migration/cutover plaintext staging |
+| `PI_DATA_MODE` | `managed` | Deployment classification only; it cannot relax the required offline-migrated/verified baseline |
+| `PI_MIGRATION_GATE` | `verify` | Fixed read-only startup verification; `off` is rejected and startup never bootstraps/migrates |
+| `PI_BACKUP_STAGING_ROOT` | per-user private application directory | Offline backup/migration plaintext staging |
 
 `PI_DEFAULT_WORKSPACE_ROOT`, `defaultWorkspaceRoot`, and `workspaceRoots` were removed and are rejected even when explicitly present with `undefined` through runtime configuration.
 
@@ -149,8 +150,8 @@ Legacy `INTRANET_CIDRS`, `TOKENS`, and `TRUST_PROXY`, plus removed workspace set
 
 - Metadata lives in SQLite or PostgreSQL; full conversation history lives in Pi-managed JSONL files.
 - DELETE writes a durable cleanup intent to `file_operations`, but the repository supplies only a read-only planner. Physical execution is outside the current scope.
-- Backup, restore, migration, cutover, reconciliation, and owner-transfer tools are offline commands. They do not start the service or install timers/workers.
-- PostgreSQL requires matching server, `pg_dump`, and `pg_restore` major versions.
+- Backup, restore, migration, reconciliation, and owner-transfer tools are offline commands. They do not start the service or install timers/workers.
+- PostgreSQL requires matching server, `pg_dump`, and `pg_restore` major versions, and a non-`public`, non-system effective application schema.
 - Real PostgreSQL/age acceptance claims require the corresponding environment-gated release checks to run; a skipped gate is not acceptance evidence.
 
 See [Operations](docs/operations.md), [Backup and restore](docs/backup-restore.md), and [Database design](docs/database-design.md).

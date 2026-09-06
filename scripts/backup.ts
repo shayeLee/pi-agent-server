@@ -10,44 +10,43 @@ import { resolveBackupCliPaths, resolveStorageConfig, type StorageEnvironment } 
 
 export interface BackupCliOptions {
   readonly dryRun: boolean;
-  /** Opt-in strict completeness gate: any missing session reference fails the backup before publish. */
-  readonly requireCompleteSessionReferences: boolean;
   readonly backupRoot: string;
   readonly ageRecipientFile: string;
 }
 
 /**
  * Stable machine-readable success contract for the WP5C Option B deployment
- * contract (helpers/timers; see docs/backup-freshness-exporter.md). The line
- * is emitted ONLY on a strict, published success — never on dry-run, never on
- * failure, never without `--require-complete-session-references`. External
- * automation may treat (exit 0 + exactly one such line with
- * status=published/strict=true/dryRun=false/missingSessionReferences=0 and a
- * finalPath inside BACKUP_ROOT) as the only freshness advancement; dry-run
- * and non-strict runs never qualify.
+ * contract (helpers/timers; see docs/backup-freshness-exporter.md).
+ * `--dry-run` is subject to the same source-ledger gate and emits no success
+ * line. A missing/legacy/multi-row/checksum-mismatched ledger therefore exits
+ * non-zero before encryption/publication and cannot advance freshness.
+ *
+ * Missing session
+ * references are missing-as-empty: they are counted in the report and never
+ * block publication. External automation may treat (exit 0 + exactly one such
+ * line with status=published/dryRun=false and a finalPath inside BACKUP_ROOT)
+ * as the only freshness advancement.
  */
 export const BACKUP_MACHINE_REPORT_PREFIX = "backup-json-report";
 
-export function backupMachineReportLine(dialect: "sqlite" | "postgres", result: { readonly finalPath: string | null; readonly files: readonly unknown[]; readonly missingSessionReferences: readonly unknown[] }, requireCompleteSessionReferences: boolean): string | null {
-  if (requireCompleteSessionReferences !== true || !result.finalPath || result.missingSessionReferences.length !== 0) return null;
+export function backupMachineReportLine(dialect: "sqlite" | "postgres", result: { readonly finalPath: string | null; readonly files: readonly unknown[]; readonly missingSessionReferences: readonly unknown[] }): string | null {
+  if (!result.finalPath) return null;
   return `${BACKUP_MACHINE_REPORT_PREFIX}: ${JSON.stringify({
     dialect,
     status: "published",
-    strict: true,
     dryRun: false,
     finalPath: result.finalPath,
     payloadCount: result.files.length,
-    missingSessionReferences: 0,
+    missingSessionReferences: result.missingSessionReferences.length,
   })}`;
 }
 
 export function parseBackupArgs(args: readonly string[]): BackupCliOptions {
   const actual = args[0] === "--" ? args.slice(1) : args;
   if (actual.length === 0 || actual[0] !== "create") {
-    throw new Error("用法：pnpm backup -- create --backup-root ABSOLUTE_DIR --age-recipient-file ABSOLUTE_FILE [--dry-run] [--require-complete-session-references]");
+    throw new Error("用法：pnpm backup -- create --backup-root ABSOLUTE_DIR --age-recipient-file ABSOLUTE_FILE [--dry-run]");
   }
   let dryRun = false;
-  let requireCompleteSessionReferences = false;
   let backupRoot: string | undefined;
   let ageRecipientFile: string | undefined;
   for (let index = 1; index < actual.length; index++) {
@@ -55,9 +54,6 @@ export function parseBackupArgs(args: readonly string[]): BackupCliOptions {
     if (arg === "--dry-run") {
       if (dryRun) throw new Error("用法：--dry-run 只能出现一次");
       dryRun = true;
-    } else if (arg === "--require-complete-session-references") {
-      if (requireCompleteSessionReferences) throw new Error("用法：--require-complete-session-references 只能出现一次");
-      requireCompleteSessionReferences = true;
     } else if (arg === "--backup-root") {
       if (backupRoot !== undefined || !actual[index + 1]) throw new Error("用法：需要一个 --backup-root 绝对路径");
       backupRoot = actual[++index];
@@ -69,7 +65,7 @@ export function parseBackupArgs(args: readonly string[]): BackupCliOptions {
     }
   }
   if (!backupRoot || !ageRecipientFile) throw new Error("用法：--backup-root 与 --age-recipient-file 都是必需的");
-  return { dryRun, requireCompleteSessionReferences, backupRoot, ageRecipientFile };
+  return { dryRun, backupRoot, ageRecipientFile };
 }
 
 function redactMessage(error: unknown): string {
@@ -99,24 +95,23 @@ async function main(): Promise<void> {
       databaseUrl: storage.databaseUrl,
       paths: { dataDir: paths.dataDir, agentDir: paths.agentDir, authPath: paths.authPath, backupRoot: paths.backupRoot, ageRecipientFile: paths.ageRecipientFile },
       dryRun: cli.dryRun,
-      requireCompleteSessionReferences: cli.requireCompleteSessionReferences,
       stagingRoot: environment.PI_BACKUP_STAGING_ROOT,
     });
     if (result.dryRun) console.log(`backup dry-run: no writes; ${result.files.length} whitelisted payload(s), ${result.missingSessionReferences.length} missing session reference(s)`);
     else {
       console.log(`backup created: ${result.finalPath}; ${result.files.length} encrypted payload(s), ${result.missingSessionReferences.length} missing session reference(s)`);
-      const machine = backupMachineReportLine("postgres", result, cli.requireCompleteSessionReferences);
+      const machine = backupMachineReportLine("postgres", result);
       if (machine) console.log(machine);
     }
     return;
   }
-  const result = await createSqliteBackup({ paths, dryRun: cli.dryRun, requireCompleteSessionReferences: cli.requireCompleteSessionReferences, stagingRoot: environment.PI_BACKUP_STAGING_ROOT });
+  const result = await createSqliteBackup({ paths, dryRun: cli.dryRun, stagingRoot: environment.PI_BACKUP_STAGING_ROOT });
   if (result.dryRun) {
     console.log(`backup dry-run: no writes; ${result.files.length} whitelisted payload(s), ${result.missingSessionReferences.length} missing session reference(s)`);
   } else {
     console.log(`backup created: ${result.finalPath}; ${result.files.length} encrypted payload(s), ${result.missingSessionReferences.length} missing session reference(s)`);
-    if (result.missingSessionReferences.length > 0) console.log("backup note: missing session references are recorded in the encrypted manifest and were not included");
-    const machine = backupMachineReportLine("sqlite", result, cli.requireCompleteSessionReferences);
+    if (result.missingSessionReferences.length > 0) console.log("backup note: missing session references are recorded in the encrypted manifest and were not included (missing-as-empty)");
+    const machine = backupMachineReportLine("sqlite", result);
     if (machine) console.log(machine);
   }
 }

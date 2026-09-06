@@ -1,13 +1,15 @@
 // WP5A startServer 接线：可注入运行状态对象由真实启动路径维护。
-// - SQLite 无门禁：readyz 明确 RC bootstrap ready（非 schema 背书）；metrics dialect=sqlite、gate 0/0；
-// - SQLite gate=verify（已迁移库）：readyz migration-head；metrics gate 1/1；探针请求零 DB 写入；
-// - 门禁失败 → startServer 拒绝（无监听，即 ready false 语义），/health//readyz//metrics 均不可达；
+// - SQLite 显式 rc+off（disposable RC）：readyz 明确 RC bootstrap ready（非 schema 背书）；
+//   metrics dialect=sqlite、gate 0/0；
+// - SQLite gate=verify（已迁移库，managed 默认）：readyz migration-head；metrics gate 1/1；探针零 DB 写入；
+// - managed+off 在任何资源创建前被拒；门禁失败 → startServer 拒绝（无监听，即 ready false 语义），
+//   /health//readyz//metrics 均不可达；
 // - 关闭开始（preClose）→ readyz 立即 503，不再误报 ready。
 import { DatabaseSync } from "node:sqlite";
 import {
   createHash,
 } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, statSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
@@ -53,35 +55,12 @@ function dbBytesFingerprint(dbPath: string): string {
 }
 
 describe("startServer WP5A 接线（SQLite）", () => {
-  it("无门禁：readyz=RC bootstrap ready，metrics dialect=sqlite、gate 0/0，health 语义不变，探针零写库", async () => {
+  it("off 被拒绝：服务不提供 RC bootstrap 启动路径", async () => {
     const dir = makeTempDir();
     const dbPath = join(dir, "pi-agent-server.db");
-    const app = await startServer(baseConfig({ dbPath }));
-    try {
-      const health = await app.inject({ method: "GET", url: "/health" });
-      expect(health.statusCode).toBe(200);
-      expect(health.json()).toEqual({ status: "ok" });
-
-      const readyz = await app.inject({ method: "GET", url: "/readyz" });
-      expect(readyz.statusCode).toBe(200);
-      expect(readyz.headers["cache-control"]).toBe("no-store");
-      expect(readyz.json()).toEqual({ ready: true, migrationGate: "off", schema: "rc-bootstrap" });
-
-      const metrics = await app.inject({ method: "GET", url: "/metrics" });
-      expect(metrics.statusCode).toBe(200);
-      expect(metrics.body).toContain("pi_agent_server_ready 1");
-      expect(metrics.body).toContain("pi_agent_server_migration_gate_enabled 0");
-      expect(metrics.body).toContain("pi_agent_server_migration_gate_verified 0");
-      expect(metrics.body).toContain('pi_agent_server_storage_dialect_info{dialect="sqlite"} 1');
-      // 探针请求（多次）前后 DB 字节指纹一致：readiness/metrics 路径零写库副作用。
-      const before = dbBytesFingerprint(dbPath);
-      await app.inject({ method: "GET", url: "/readyz" });
-      await app.inject({ method: "GET", url: "/metrics" });
-      await app.inject({ method: "GET", url: "/readyz" });
-      expect(dbBytesFingerprint(dbPath)).toBe(before);
-    } finally {
-      await app.close();
-    }
+    await expect(startServer(baseConfig({ dataMode: "rc", migrationGate: "off", dbPath })))
+      .rejects.toThrow(/migrationGate "off" 已删除/);
+    expect(existsSync(dbPath)).toBe(false);
   });
 
   it("gate=verify（已迁移库）：readyz=migration-head，metrics gate 1/1，无自动迁移副作用", async () => {
@@ -100,7 +79,8 @@ describe("startServer WP5A 接线（SQLite）", () => {
     } finally {
       db.close();
     }
-    const app = await startServer(baseConfig({ migrationGate: "verify", dbPath }));
+    // 默认 dataMode=managed + 显式 verify：正式受管路径。
+    const app = await startServer(baseConfig({ dataMode: "managed", migrationGate: "verify", dbPath }));
     try {
       const readyz = await app.inject({ method: "GET", url: "/readyz" });
       expect(readyz.statusCode).toBe(200);
@@ -128,15 +108,25 @@ describe("startServer WP5A 接线（SQLite）", () => {
     const dir = makeTempDir();
     const dbPath = join(dir, "pi-agent-server.db");
     await expect(startServer(baseConfig({ migrationGate: "verify", dbPath })))
-      .rejects.toThrow(/startup migration gate.*cutover.*migrate/s);
+      .rejects.toThrow(/startup migration gate.*migrate/s);
     // 无监听实例可注入/连接：没有任何端点声称 ready。
     expect(dbBytesFingerprint(dbPath)).toBe(dbBytesFingerprint(dbPath));
+  });
+
+  it("off：startServer 在任何资源创建前拒绝（不监听、无任何端点）", async () => {
+    const dir = makeTempDir();
+    const dbPath = join(dir, "pi-agent-server.db");
+    await expect(startServer(baseConfig({ dataMode: "managed", migrationGate: "off", dbPath })))
+      .rejects.toThrow(/migrationGate "off" 已删除/);
+    expect(existsSync(dbPath)).toBe(false);
   });
 
   it("关闭后进程不再提供任何端点（ready 语义：关闭即不可达，不误报）", async () => {
     const dir = makeTempDir();
     const dbPath = join(dir, "pi-agent-server.db");
-    const app = await startServer(baseConfig({ dbPath }));
+    const db = new DatabaseSync(dbPath);
+    try { await runSqliteMigrations(db, { mode: "apply" }); } finally { db.close(); }
+    const app = await startServer(baseConfig({ migrationGate: "verify", dbPath }));
     const readyz = await app.inject({ method: "GET", url: "/readyz" });
     expect(readyz.statusCode).toBe(200);
     await app.close();

@@ -1,6 +1,6 @@
 # WP5C：单实例本机备份新鲜度契约
 
-> **状态**：部署契约已形成，但实际演练 deferred、未验收。最新 missing-as-empty 机器报告语义尚未落地，因此当前不得部署本契约。工作包状态见 [Phase 3 状态台账](phase-3-data-retention-plan.md)，演练步骤见 [backup-freshness-drill-sop.md](backup-freshness-drill-sop.md)。
+> **状态**：部署契约已形成，但实际演练 deferred、未验收。missing-as-empty 机器报告语义已随 backup/restore 目标语义落地（见 [backup-restore.md](backup-restore.md#2-已落地语义)）。工作包状态见 [Phase 3 状态台账](phase-3-data-retention-plan.md)，演练步骤见 [backup-freshness-drill-sop.md](backup-freshness-drill-sop.md)。
 
 ## 1. 范围
 
@@ -21,7 +21,7 @@
 
 ## 2. 成功与失败
 
-目标机器报告语义如下，**尚未实现**：
+已落地机器报告语义如下：
 
 ```text
 backup-json-report: {
@@ -43,8 +43,6 @@ helper 只有在以下条件全部满足后才更新 freshness：
 5. 没有超时、被杀、输出解析失败或发布后验证失败。
 
 `missingSessionReferences` 可以大于零：缺失历史按业务决策视为空，不阻止发布或 freshness 前进。backup 不解析 JSONL 内容。包/密文/hash、age、数据库快照或发布失败仍不得更新指标。
-
-**当前代码差异**：机器成功报告只由 `--require-complete-session-references` strict 成功路径产生，且要求 missing 为零；backup 还会逐行解析 JSONL。部署前必须先完成 [backup/restore 目标语义](backup-restore.md#2-当前行为与已决策目标)，移除 helper 对 `strict=true`/missing=0 的依赖。
 
 ## 3. 指标
 

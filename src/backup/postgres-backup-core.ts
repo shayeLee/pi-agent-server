@@ -17,12 +17,15 @@ import {
 } from "node:fs";
 import path from "node:path";
 import { tmpdir, homedir } from "node:os";
-import { createPostgresPool } from "../storage/postgres-bootstrap.js";
-import type { Pool } from "pg";
+import { createPostgresKysely, createPostgresPool } from "../storage/postgres-bootstrap.js";
+import type { Pool, PoolClient } from "pg";
+import type { Kysely } from "kysely";
+import type { DatabaseSchema } from "../storage/db-schema.js";
+import { assertPostgresMigrationLedgerContract } from "../storage/migration-engine.js";
 import {
   abortActiveAgeChild,
   ageAdapter,
-  assertStrictCompleteness,
+  bindReferencesToPayload,
   collectWhitelistedFiles,
   encryptFileTo,
   encryptStableSource,
@@ -30,7 +33,6 @@ import {
   openPlaintextStaging,
   syncDirectoryBestEffort,
   syncDirectoryTreeBestEffort,
-  validateReferences,
   validateRegular,
   writePrivate,
   type AgeAdapter,
@@ -43,7 +45,16 @@ import {
   type PostgresBackupSourceRoots,
   type PublishedBackupIdentity,
 } from "./backup-core.js";
-import { stableSerialize } from "../storage/migration-manifest.js";
+import {
+  migrationPrefixForLedger,
+  POSTGRES_PHYSICAL_TYPES,
+  stableSerialize,
+  type MigrationLedgerSnapshot,
+} from "../storage/migration-manifest.js";
+import { schemaManifest } from "../storage/schema-manifest.js";
+import { assertSchemaCompatible } from "../storage/schema-compatibility.js";
+import { assertPostgresApplicationSchema } from "../storage/postgres-schema-guard.js";
+
 import {
   BACKUP_STAGE_BUDGET_MS,
   withStageTimeout,
@@ -64,6 +75,16 @@ export interface PgBackupClient {
   ): Promise<{ readonly rows: readonly T[] }>;
   end?: () => Promise<void>;
 }
+
+/**
+ * Result shape of the canonical physical-schema recoverability gate. The
+ * production entry point always requires the canonical single baseline
+ * (`version === 0 && pending === 0`); anything else refuses the backup.
+ */
+export type VerifyPostgresSourceSchema = (
+  client: PgBackupClient,
+  schema: string,
+) => Promise<{ readonly version: number | null; readonly pending: number }>;
 
 /** One dedicated connection leased from a pool; release() returns it. */
 export interface PgBackupPoolClient {
@@ -304,37 +325,14 @@ export interface PostgresBackupPaths {
 }
 
 export interface PostgresBackupOptions {
-  /** The published manifest kind. Pre-migration is only selected by the offline migration CLI; pre-reset only by the offline cutover CLI; pre-owner-transfer only by the offline owner-transfer CLI. */
-  readonly backupKind?: "postgresql" | "pre-migration" | "pre-reset" | "pre-owner-transfer";
-  /**
-   * Owner-transfer only: allow the public schema as the authenticated business
-   * schema. Honored EXCLUSIVELY when `backupKind` is `pre-owner-transfer`; with
-   * any other kind the backup fails closed (allowPublicSchema=true is rejected).
-   * The owner-transfer tool explicitly permits a public business schema while
-   * still rejecting system/restore-drill/cutover-drill schemas at its own
-   * validation layer; the general backup core keeps rejecting public unless this
-   * opt-in flag is set.
-   */
-  readonly allowPublicSchema?: boolean;
+  /** Pre-migration is selected only by the offline migration CLI; pre-owner-transfer only by the offline owner-transfer CLI. */
+  readonly backupKind?: "postgresql" | "pre-migration" | "pre-owner-transfer";
   /** Must be the literal explicit dialect selection, never an implicit default. */
   readonly storageDialect: string;
   /** Explicit PI_DATABASE_URL value. It is used only to construct the client. */
   readonly databaseUrl: string;
   readonly paths: PostgresBackupPaths;
   readonly dryRun?: boolean;
-  /**
-   * Opt-in strict completeness gate (CLI: `--require-complete-session-references`).
-   * When true, ANY missing whitelisted session reference fails the backup
-   * fail-closed BEFORE any publish/COMPLETE (dry-run included), with a stable
-   * desensitized error (count only). The gate is bound to the FINAL snapshot:
-   * PostgreSQL reads references inside the same dedicated REPEATABLE READ
-   * transaction that exports the pg_dump snapshot, so there is no
-   * inspect→snapshot online-write window (SQLite re-reads the reference set
-   * from the finished VACUUM INTO snapshot instead). Default (absent/false)
-   * keeps the legacy compatible behavior: missing references are recorded in
-   * the encrypted manifest and the backup still publishes.
-   */
-  readonly requireCompleteSessionReferences?: boolean;
   readonly age?: AgeAdapter;
   /** Hard per-child age budget; defaults to AGE_PROCESS_TIMEOUT_MS (see its sizing note in backup-core). */
   readonly ageProcessTimeoutMs?: number;
@@ -592,9 +590,22 @@ async function hasTable(client: PgBackupClient, schema: string, table: string): 
   }
 }
 
+function assertCanonicalSingleBaselineLedger(ledger: PostgresBackupManifest["migrationLedger"], label: string): void {
+  if (!ledger.present) fail(`${label} has no authenticated migration ledger; refusing to create a backup`);
+  try {
+    const prefix = migrationPrefixForLedger(ledger as MigrationLedgerSnapshot);
+    if (prefix.length !== 1 || prefix[0]!.version !== 0) {
+      fail(`${label} is not the canonical single-baseline migration ledger; refusing to create a backup`);
+    }
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith("backup:")) throw error;
+    fail(`${label} is not the canonical single-baseline migration ledger; refusing to create a backup`);
+  }
+}
+
 async function readLedger(client: PgBackupClient, schema: string): Promise<PostgresBackupManifest["migrationLedger"]> {
   if (!(await hasTable(client, schema, "schema_migrations"))) {
-    return { present: false, appliedCount: 0, appliedVersion: null, checksums: [], rows: [], pending: 0 };
+    fail("source PostgreSQL migration ledger is missing; refusing to create a backup");
   }
   try {
     const result = await client.query<{ version: unknown; name: unknown; checksum: unknown; applied_at: unknown }>(
@@ -610,7 +621,9 @@ async function readLedger(client: PgBackupClient, schema: string): Promise<Postg
       rows.push({ version, name: row.name, checksum: row.checksum, applied_at: appliedAt });
     }
     if (rows.some((row, index) => row.version !== index)) fail("PostgreSQL migration ledger is not contiguous");
-    return { present: true, appliedCount: rows.length, appliedVersion: rows.length ? rows.at(-1)!.version : null, checksums: rows.map((row) => row.checksum), rows, pending: 0 };
+    const ledger = { present: true, appliedCount: rows.length, appliedVersion: rows.length ? rows.at(-1)!.version : null, checksums: rows.map((row) => row.checksum), rows, pending: 0 };
+    assertCanonicalSingleBaselineLedger(ledger, "source PostgreSQL migration ledger");
+    return ledger;
   } catch (error) {
     if (error instanceof Error && error.message.startsWith("backup:")) throw error;
     fail("PostgreSQL migration ledger inspection failed");
@@ -786,16 +799,32 @@ export async function runPgProcess(
   if (result.code !== 0) throw processFailure(command, result, diagnosticValues(env, io, sensitiveValues));
 }
 
+/**
+ * Run `pg_restore --list` to READ (never connect to) a custom-format archive and
+ * return its raw TOC listing. The restore core parses this output to
+ * authenticate the archive's actual schema(s) before any target object is
+ * created. No target database is connected; only the archive is read.
+ */
+export async function listPgRestoreArchive(
+  processAdapter: PgProcessAdapter,
+  binary: string,
+  archivePath: string,
+  env: NodeJS.ProcessEnv,
+  sensitiveValues: readonly string[] = [],
+): Promise<Buffer> {
+  let result: PgProcessResult;
+  try {
+    result = await processAdapter.run({ command: binary, args: ["--list", archivePath], env, timeoutMs: PG_PROCESS_TIMEOUT_MS });
+  } catch {
+    fail(`${binary} --list failed`);
+  }
+  if (result.code !== 0) throw processFailure(`${binary} --list`, result, diagnosticValues(env, undefined, sensitiveValues));
+  return result.stdout;
+}
+
 function checkStorageSelection(options: PostgresBackupOptions): void {
   if (options.storageDialect !== "postgres") fail("PostgreSQL backup requires explicit PI_STORAGE_DIALECT=postgres");
   if (typeof options.databaseUrl !== "string" || options.databaseUrl.trim() === "") fail("PostgreSQL backup requires explicit PI_DATABASE_URL");
-  // Owner-transfer-only opt-in: public as the authenticated business schema is
-  // permitted EXCLUSIVELY for kind=pre-owner-transfer (the owner-transfer tool's
-  // own schema validator still rejects system/restore-drill/cutover-drill
-  // schemas). Any other kind with allowPublicSchema=true fails closed here.
-  if (options.allowPublicSchema === true && options.backupKind !== "pre-owner-transfer") {
-    fail("allowPublicSchema is reserved for pre-owner-transfer backups only; refusing a public-schema backup for any other kind");
-  }
 }
 
 /**
@@ -815,8 +844,67 @@ function injectedClientPool(injected: PgBackupClient): PgBackupPool {
   };
 }
 
-/** Create an encrypted, atomic PostgreSQL pg_dump backup. Offline explicit tool only. */
-export async function createPostgresBackup(options: PostgresBackupOptions): Promise<PostgresBackupResult> {
+/**
+ * Build a Kysely that executes every catalog query on ONE caller-owned
+ * dedicated PostgreSQL client. The driver's pool face is a minimal
+ * single-client passthrough: the backup owns the connection's transaction and
+ * lifetime, so release()/end() are no-ops and the dedicated client is never
+ * opened or closed here.
+ */
+function buildPostgresKyselyOnClient(client: PgBackupClient): Kysely<DatabaseSchema> {
+  const fauxPool = {
+    async connect(): Promise<PoolClient> {
+      return {
+        query: (text: string | { text: string; values?: readonly unknown[] }, values?: readonly unknown[]) =>
+          typeof text === "string" ? client.query(text, values) : client.query(text.text, text.values),
+        release: () => undefined,
+        // processID is absent → the driver falls back to pg_backend_pid().
+      } as unknown as PoolClient;
+    },
+    async end(): Promise<void> {},
+    // Kysely only reads pool.Client/options for control-connection cancellation,
+    // which the read-only verify path never invokes.
+  } as unknown as Pool;
+  return createPostgresKysely(fauxPool);
+}
+
+/**
+ * Read-only canonical physical-schema recoverability gate shared with restore's
+ * strict verification. It runs the same manifest-driven migrate-verify that
+ * restore uses, on the SAME dedicated read-only connection (and therefore the
+ * same REPEATABLE READ snapshot) that pg_dump consumes, and never writes the
+ * source. A source with a correct ledger but a missing/incompatible canonical
+ * table, column, constraint, index, or extra object fails here. Because it
+ * runs on the dump's snapshot connection, a schema drift can never slip
+ * between verification and dump.
+ */
+export async function defaultVerifyPostgresSourceSchema(client: PgBackupClient, schema: string): Promise<{ readonly version: number | null; readonly pending: number }> {
+  // The caller's dedicated client is already inside the REPEATABLE READ READ
+  // ONLY snapshot transaction: run the catalog verification on it without ever
+  // opening/closing a nested transaction (a nested COMMIT would end the
+  // snapshot the dump depends on).
+  const kysely = buildPostgresKyselyOnClient(client);
+  try {
+    const effectiveSchema = await assertPostgresApplicationSchema(kysely);
+    if (effectiveSchema !== schema) fail("PostgreSQL verify current_schema does not match the authenticated target schema; refusing a backup");
+    await assertPostgresMigrationLedgerContract(kysely);
+    const verdict = await assertSchemaCompatible(kysely, "PostgreSQL", POSTGRES_PHYSICAL_TYPES, schemaManifest);
+    if (verdict !== "complete") fail("PostgreSQL backup source is not the canonical single-baseline physical schema; refusing to create a backup");
+    // The single canonical baseline ledger (version 0, no pending) is validated
+    // by the backup's own readLedger; the recoverability contract above is the
+    // complete physical schema + ledger form in the dump snapshot.
+    return { version: 0, pending: 0 };
+  } finally {
+    // destroy() only ends the faux pool; the caller-owned dedicated client is preserved.
+    await kysely.destroy();
+  }
+}
+
+/**
+ * Shared backup core. The verifier is a required parameter so the production
+ * entry point can never skip the canonical physical-schema gate.
+ */
+async function runPostgresBackup(options: PostgresBackupOptions, verifySourceSchema: VerifyPostgresSourceSchema): Promise<PostgresBackupResult> {
   checkStorageSelection(options);
   const parsed = parsePostgresConnectionUrl(options.databaseUrl);
   const age = options.age ?? ageAdapter;
@@ -898,23 +986,40 @@ export async function createPostgresBackup(options: PostgresBackupOptions): Prom
       if (target.database !== parsed.database) {
         fail(`PostgreSQL connection current_database (${target.database}) does not match the URL database; refusing to bind a dump identity to a different database`);
       }
+      // Non-public/non-system schema guard runs immediately after the target
+      // identity is authenticated, before any server/cluster catalog probe.
+      // There is no business `public` schema (rejected for every backup kind),
+      // and neither PostgreSQL's system schemas nor any non-safe-identifier
+      // schema may be used as the dump source.
+      if (target.schema === "public" || target.schema === "information_schema" || target.schema.startsWith("pg_")) {
+        fail("PostgreSQL backup source schema is not an allowed non-public application schema");
+      }
       serverMajor = await queryPostgresServerMajor(tx);
       clusterIdentity = await queryClusterIdentity(tx);
-      if (target.schema === "information_schema" || target.schema.startsWith("pg_")) fail("PostgreSQL backup source schema is not an allowed application schema");
-      // Public is rejected by the general backup core unless the owner-transfer
-      // opt-in flag allows it (its own validation layer still rejects system /
-      // restore-drill / cutover-drill schemas).
-      if (!options.allowPublicSchema && target.schema === "public") fail("PostgreSQL backup source schema is not an allowed non-public application schema");
       references = options.querySessionReferences
         ? await options.querySessionReferences(tx, target.schema)
         : await defaultSessionReferences(tx, target.schema);
       collected = collectWhitelistedFiles(resolved.dataDir, resolved.agentDir);
-      missing = validateReferences(references, resolved.dataDir, collected.files);
-      // Opt-in strict completeness gate: any missing session reference fails
-      // BEFORE any staging/publish/COMPLETE work (dry-run included), so a
-      // strict backup can never publish an incomplete package.
-      assertStrictCompleteness(options.requireCompleteSessionReferences, missing);
+      // The dedicated REPEATABLE READ transaction is the same snapshot consumed
+      // by pg_dump. Bind every reference from it to either an exact payload
+      // path or a missing-as-empty manifest row; no second directory walk.
+      const bound = bindReferencesToPayload(references, resolved.dataDir, collected.files);
+      collected = { ...collected, files: bound.files };
+      missing = bound.missing;
       ledger = await readLedger(tx, target.schema);
+      // Recoverability gate: after the schema guard (which already rejected
+      // public/system first) and the canonical ledger check, verify that the
+      // source is the complete current canonical physical schema exactly as
+      // restore's strict migrate-verify requires. It runs on the SAME dedicated
+      // REPEATABLE READ READ ONLY transaction (tx) that pg_dump consumes, so the
+      // verified schema and the dumped schema are one and the same snapshot;
+      // a separate-connection verify would be a same-snapshot bypass. The
+      // production entry point always runs the canonical gate on tx; the
+      // test-only factory injects a verifier ONLY for offline unit tests.
+      const sourceCheck = await verifySourceSchema(tx, target.schema);
+      if (sourceCheck.version !== 0 || sourceCheck.pending !== 0) {
+        fail("PostgreSQL backup source is not the canonical single-baseline physical schema; refusing to create a backup");
+      }
       // Same-transaction snapshot export: pg_dump --snapshot consumes exactly
       // this snapshot for as long as this transaction stays open. A server
       // without pg_export_snapshot() (or a failed export) fails the backup
@@ -1128,6 +1233,35 @@ export async function createPostgresBackup(options: PostgresBackupOptions): Prom
       fail(`cleanup failed after the backup: ${cleanupErrors.map((cleanupError) => cleanupError instanceof Error ? cleanupError.message : String(cleanupError)).join("; ")}`);
     }
   }
+}
+
+/**
+ * Create an encrypted, atomic PostgreSQL pg_dump backup. Offline explicit tool
+ * only. Production MUST use this entry point: it always runs the canonical
+ * physical-schema recoverability gate (`defaultVerifyPostgresSourceSchema`) on
+ * the SAME dedicated snapshot connection that pg_dump consumes. The public
+ * `PostgresBackupOptions` exposes no verifier, so a caller can never replace
+ * or bypass the canonical gate through this API.
+ */
+export async function createPostgresBackup(options: PostgresBackupOptions): Promise<PostgresBackupResult> {
+  return runPostgresBackup(options, defaultVerifyPostgresSourceSchema);
+}
+
+/**
+ * TEST-ONLY factory. Deliberately NOT exported through the public `backup`
+ * barrel: production code must reach the backup only through
+ * `createPostgresBackup`, which always runs the canonical gate. Offline unit
+ * tests (which cannot materialize the complete physical schema without a
+ * server) inject a fake verifier here to model a canonical source. The verifier
+ * MUST still satisfy the canonical contract (`version === 0 && pending === 0`) or
+ * the backup is refused, and it runs on the SAME dedicated REPEATABLE READ
+ * READ ONLY snapshot client that pg_dump consumes.
+ */
+export async function createPostgresBackupForTest(
+  options: PostgresBackupOptions,
+  verifySourceSchema: VerifyPostgresSourceSchema,
+): Promise<PostgresBackupResult> {
+  return runPostgresBackup(options, verifySourceSchema);
 }
 
 export { identity as postgresIdentity, quoteIdentifier as quotePostgresIdentifier };

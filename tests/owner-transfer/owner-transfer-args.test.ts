@@ -94,8 +94,8 @@ describe("owner-transfer CLI args (failclosed)", () => {
   });
 
   it("accepts an optional PG --target-schema", () => {
-    const cli = parseOwnerTransferArgs(args({ targetSchema: "public" }));
-    expect(cli.targetSchema).toBe("public");
+    const cli = parseOwnerTransferArgs(args({ targetSchema: "business_schema" }));
+    expect(cli.targetSchema).toBe("business_schema");
   });
 });
 
@@ -109,14 +109,14 @@ describe("owner-transfer key derivation and schema validation", () => {
     expect(subjectHashForIp("10.1.2.3")).not.toContain("10.1.2.3");
   });
 
-  it("allows public and dedicated business schemas; rejects whitespace-padded names", () => {
-    expect(validateOwnerTransferSchema("public")).toBe("public");
+  it("rejects public and accepts dedicated business schemas; rejects whitespace-padded names", () => {
+    expect(() => validateOwnerTransferSchema("public")).toThrow(/public is never allowed/);
     expect(validateOwnerTransferSchema("business_schema")).toBe("business_schema");
     expect(() => validateOwnerTransferSchema("  business_schema ")).toThrow(/owner-transfer/);
   });
 
   it("rejects forbidden PG schemas", () => {
-    for (const schema of ["information_schema", "pg_catalog", "pg_toast", "pi_restore_drill", "pi_cutover_x", "1bad", "bad-name", ""]) {
+    for (const schema of ["public", "information_schema", "pg_catalog", "pg_toast", "pi_restore_drill", "pi_cutover_x", "1bad", "bad-name", ""]) {
       expect(() => validateOwnerTransferSchema(schema)).toThrow(/owner-transfer/);
     }
   });

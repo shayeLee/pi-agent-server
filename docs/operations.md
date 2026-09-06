@@ -17,8 +17,8 @@
 | --- | --- | --- |
 | SQLite/PostgreSQL 备份 | `pnpm backup -- create` / `pi-agent-server-backup` | [backup-restore.md](backup-restore.md) |
 | 隔离恢复 | `pnpm restore -- restore` / `pi-agent-server-restore` | [backup-restore.md](backup-restore.md) |
-| 离线 migration apply/verify | `pnpm migrate -- ...` / `pi-agent-server-migrate` | [backup-restore.md](backup-restore.md) |
-| legacy disposable RC cutover | `pnpm cutover -- ...` | [cutover-runbook.md](cutover-runbook.md) |
+| 离线 migration bootstrap/apply/verify | `pnpm migrate -- ...` / `pi-agent-server-migrate` | [backup-restore.md](backup-restore.md) |
+| legacy disposable RC 数据 | 已移除受控 cutover 工具；无 ledger 或非唯一 canonical baseline 的库由 bootstrap/migration 引擎 fail-fast 拒绝，需手动重置数据库后用 `pnpm migrate -- --bootstrap-baseline --bootstrap-confirm CONFIRMED` 重建唯一 canonical baseline | — |
 | IP→IP owner transfer | `pnpm owner-transfer -- ...` | [owner-transfer.md](owner-transfer.md) |
 | outbox 只读统计 | `pnpm file-ops -- run` | [file-operations.md](file-operations.md) |
 | DB 引用只读分析 | `pnpm reconcile-jsonl -- run` | [reconcile-jsonl.md](reconcile-jsonl.md) |
@@ -29,7 +29,7 @@
 
 ## 通用安全规则
 
-1. migration、cutover、owner transfer 都是离线操作；先由 service manager 停止服务并独立确认无 writer。
+1. migration、owner transfer 都是离线操作；先由 service manager 停止服务并独立确认无 writer。
 2. `--maintenance-window CONFIRMED` 只是操作员声明，不是进程锁。
 3. destructive/apply 操作必须先完成加密备份和包验证；失败时不自动 down、restore 或 retry。
 4. restore 只能指向隔离的新目标，禁止覆盖源数据库、正式 schema 或正式 `DATA_DIR`。
@@ -39,9 +39,12 @@
 
 ## Migration 启动门禁
 
-**当前代码**：`PI_MIGRATION_GATE=verify` 为 opt-in，默认 `off`；`verify` 只读检查 ledger/head，不执行 migration。
+**当前实现（Phase 3 第 1 项）**：
 
-**已决策目标，尚未实现**：`PI_MIGRATION_GATE` 默认 `verify`；增加独立 `managed`/`rc` 数据模式，`managed` 必须搭配 `verify`，只有显式 disposable `rc` 才允许 `off`。所有模式都只校验，不自动 migration/reset。首次建立或升级 schema 仍使用离线 migration CLI。
+- 数据模式 `PI_DATA_MODE`（默认 `managed`）：`managed` = 正式受管数据，`rc` = 显式 disposable 的 RC 数据；未知非空值拒绝启动。
+- `PI_MIGRATION_GATE`（默认 `verify`）为 verify-only：启动前只读检查 migration ledger/head（空库/无 ledger 库/非唯一 canonical baseline/落后库 fail-fast），**绝不自动 migration/reset**；显式 `off` 一律拒绝。
+- `PI_DATA_MODE=managed` 与 `PI_DATA_MODE=rc` 均必须搭配 `PI_MIGRATION_GATE=verify`；`off` 已删除并在任何资源创建前 fail-fast。
+- 完全空 SQLite DB 或完全空 non-public/non-system PostgreSQL schema 必须离线执行 `pnpm migrate -- --bootstrap-baseline --bootstrap-confirm CONFIRMED`；该命令不可混用 backup/maintenance 参数且不会创建 pre-backup。已有唯一 canonical baseline 的数据库才执行 `pnpm migrate -- --apply`，并经过已验证 pre-backup→apply→verify。
 
 ## 验证
 

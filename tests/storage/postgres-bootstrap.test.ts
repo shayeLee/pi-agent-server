@@ -12,6 +12,7 @@ import {
   createPostgresKysely,
   createPostgresPool,
   initializePostgresDatabase,
+  initializePostgresDatabaseVerifyOnly,
 } from "../../src/storage/postgres-bootstrap.js";
 import type { DatabaseSchema } from "../../src/storage/db-schema.js";
 import type { SchemaManifest } from "../../src/storage/schema-manifest.js";
@@ -111,6 +112,7 @@ function recordingPool(options: { failOnCreateIndex?: boolean } = {}): {
   const client = {
     async query(text: string) {
       queries.push(text);
+      if (text.includes("current_schema() AS schema")) return { rows: [{ schema: "app_schema" }] };
       if (options.failOnCreateIndex && /create index/i.test(text)) {
         throw new Error('column "missing_column" does not exist');
       }
@@ -125,6 +127,35 @@ function recordingPool(options: { failOnCreateIndex?: boolean } = {}): {
   } as unknown as Pool;
   return { pool, queries };
 }
+
+describe("initializePostgresDatabaseVerifyOnly（服务启动专用：严格只读 verify，绝不 bootstrap、失败释放 Pool）", () => {
+  it("空 schema fail-fast（无 ledger、无 managed 表），且不发出任何 CREATE TABLE/INDEX DDL，失败路径 pool.end 恰一次", async () => {
+    const queries: string[] = [];
+    const client = {
+      async query(text: string) {
+        queries.push(text);
+        if (/current_schema\(\) AS schema/i.test(text)) return { rows: [{ schema: "app_schema" }] };
+        if (/information_schema\.tables/i.test(text)) return { rows: [] };
+        return { rows: [] };
+      },
+      release() {},
+    };
+    const end = vi.fn(() => Promise.resolve());
+    const pool = {
+      options: {},
+      connect: () => Promise.resolve(client),
+      end,
+    } as unknown as Pool;
+
+    await expect(initializePostgresDatabaseVerifyOnly(pool)).rejects.toThrow(/database has not been initialized/);
+
+    // verify-only 绝不 bootstrap：没有任何建表/建索引 DDL
+    expect(queries.some((q) => /create\s+table/i.test(q))).toBe(false);
+    expect(queries.some((q) => /create\s+index/i.test(q))).toBe(false);
+    // 失败路径 destroy → pool.end 恰一次
+    expect(end).toHaveBeenCalledTimes(1);
+  });
+});
 
 describe("PG 原子 bootstrap：advisory lock + 事务回滚 + 重试", () => {
   it("中途 DDL 失败 → 事务回滚（无 COMMIT）、先取 advisory lock（按当前库键控）才 preflight", async () => {

@@ -157,14 +157,14 @@ describePg("PostgreSQL 集成测试（PI_TEST_PG_URL 门控；随机 schema 隔�
   });
 
   describe("bootstrap：Manifest → PG DDL（表/列/FK/索引/无迁移表）", () => {
-    it("4 张表齐备，无 kysely_migration 表", async () => {
+    it("5 张表齐备（含 schema_migrations 基线 ledger），无 kysely_migration 表", async () => {
       const tables = (
         await pool.query(
           `SELECT table_name FROM information_schema.tables WHERE table_schema = $1 ORDER BY table_name`,
           [schema],
         )
       ).rows.map((r) => r.table_name as string);
-      expect(tables).toEqual(["file_operations", "idempotency", "projects", "sessions"]);
+      expect(tables).toEqual(["file_operations", "idempotency", "projects", "schema_migrations", "sessions"]);
       const migrationTables = (
         await pool.query(
           `SELECT count(*)::int AS n FROM information_schema.tables WHERE table_schema = $1 AND table_name LIKE 'kysely_%'`,
@@ -256,10 +256,12 @@ describePg("PostgreSQL 集成测试（PI_TEST_PG_URL 门控；随机 schema 隔�
       expect(col?.column_default).toContain(DEFAULT_PROJECT_ID);
     });
 
-    it("6 个显式索引齐备，outbox key 唯一且 claim 非唯一，含 updated_at DESC；PK 自动索引被排除", async () => {
+    it("6 个显式业务索引 + schema_migrations 的 name UNIQUE 索引齐备，outbox key 唯一且 claim 非唯一，含 updated_at DESC；PK 自动索引被排除", async () => {
       // PostgreSQL 会为每个 PRIMARY KEY / UNIQUE 约束自动创建索引（如 projects_pkey、sessions_pkey、
-      // idempotency_pk）。这里仅查询 indisprimary = false 的非主键索引（PK 索引自动排除），
-      // 只验证 Manifest 显式声明的 4 个业务索引；且断言它们全部 indisunique=false（业务索引非唯一）。
+      // idempotency_pk、schema_migrations_pkey）。这里仅查询 indisprimary = false 的非主键索引
+      // （PK 索引自动排除）。除 Manifest 显式声明的 6 个业务索引外，bootstrap 的 schema_migrations
+      // 基线 ledger 的 name UNIQUE 约束也会生成一个非主键 UNIQUE索引（schema_migrations_name_key），
+      // 它必须被纳入 —— 且除 outbox key（idx_file_operations_key）外是唯一的 UNIQUE 索引。
       const indexes = (
         await pool.query(
           `SELECT ic.relname AS indexname,
@@ -276,11 +278,13 @@ describePg("PostgreSQL 集成测试（PI_TEST_PG_URL 门控；随机 schema 隔�
       ).rows as Array<{ indexname: string; indexdef: string; indisunique: boolean }>;
       const names = indexes.map((r) => r.indexname).sort();
       expect(names).toEqual(
-        ["idx_file_operations_claim", "idx_file_operations_key", "idx_idempotency_created_at", "idx_projects_owner", "idx_sessions_owner_project", "idx_sessions_owner_updated"].sort(),
+        ["idx_file_operations_claim", "idx_file_operations_key", "idx_idempotency_created_at", "idx_projects_owner", "idx_sessions_owner_project", "idx_sessions_owner_updated", "schema_migrations_name_key"].sort(),
       );
-      // Manifest 声明的 4 个业务索引显式非唯一（无 unique: true）
+      // 6 个 Manifest 业务索引显式非唯一（无 unique: true），仅 outbox key 与 ledger 的
+      // name 约束索引是 UNIQUE。
+      const uniqueIndexNames = new Set(["idx_file_operations_key", "schema_migrations_name_key"]);
       for (const row of indexes) {
-        expect(row.indisunique, `索引 ${row.indexname} unique 语义`).toBe(row.indexname === "idx_file_operations_key");
+        expect(row.indisunique, `索引 ${row.indexname} unique 语义`).toBe(uniqueIndexNames.has(row.indexname));
       }
       const ownerUpdated = indexes.find((r) => r.indexname === "idx_sessions_owner_updated")!;
       expect(ownerUpdated.indexdef).toMatch(/owner_key/);
@@ -557,7 +561,7 @@ describePg("PostgreSQL 集成测试（PI_TEST_PG_URL 门控；随机 schema 隔�
   });
 
   describe("旧 schema 严格兼容性 preflight：任何 DDL 之前 fail-fast（与 SQLite 同契约），失败路径释放自己的 Pool", () => {
-    it("旧 sessions 表缺 Manifest 列（且缺 projects/idempotency 表）时 initializePostgresDatabase 拒绝、无 DDL、Pool 已释放", async () => {
+    it("旧 managed 表但缺 schema_migrations ledger 时 initializePostgresDatabase 以 legacy fail-closed 拒绝、无 DDL、Pool 已释放", async () => {
       const oldSchema = safeSchemaName();
       const oldPool = new Pool({
         connectionString: withSchemaSearchPath(pgUrl!, oldSchema),
@@ -566,9 +570,10 @@ describePg("PostgreSQL 集成测试（PI_TEST_PG_URL 门控；随机 schema 隔�
       // 用独立 schema + 独立 Pool：不触碰共享 fixture；bootstrap 失败路径 destroy → 默认会 pool.end
       try {
         await oldPool.query(`CREATE SCHEMA ${oldSchema}`);
-        // 构造「表已存在但形态旧」：只建旧的 sessions（缺 Manifest 的 capability_versions，
-        // 且没有 projects / idempotency）。严格 preflight 在**任何建表/建索引 DDL 之前**
-        // 发现库中已含 managed 表 → 立即 fail-fast（不允许只建缺失表/只补索引）。
+        // 构造「表已存在但无 ledger」的 legacy 形态：只建旧的 sessions（缺 Manifest 的
+        // capability_versions，且没有 projects / idempotency / schema_migrations）。
+        // 严格 preflight 在**任何建表/建索引 DDL 之前**发现库中已含 managed 表但无 ledger
+        // → 立即以 legacy fail-closed 拒绝（不允许只建缺失表/只补索引/只补 ledger）。
         await oldPool.query(`
           CREATE TABLE sessions (
             id TEXT PRIMARY KEY,
@@ -584,14 +589,16 @@ describePg("PostgreSQL 集成测试（PI_TEST_PG_URL 门控；随机 schema 隔�
             system_prompt TEXT
           )
         `);
-        // 捕获同一次失败（不得对已因失败关闭的 Pool 再次 initialize）：一次断言 不兼容 +
-        // capability_versions 信息，另一次断言失败路径已释放 Pool（关闭后拒绝新查询）。
+        // 捕获同一次失败（不得对已因失败关闭的 Pool 再次 initialize）：一次断言 legacy
+        // 门禁 fail-closed（managed 表无 ledger → 拒绝采用），另一次断言失败路径已释放 Pool。
         const err = await initializePostgresDatabase(oldPool).then(() => null, (e: unknown) => e);
         expect(err).toBeInstanceOf(Error);
         const message = (err as Error).message;
-        expect(message).toMatch(/不兼容/);
-        expect(message).toMatch(/capability_versions/);
-        expect(message).toMatch(/ALTER/); // 明确声明未执行任何 ALTER/补列/建表/建索引
+        // 旧 managed 表但缺 schema_migrations ledger：preflight 在任何 DDL 之前以
+        // legacy fail-closed 拒绝（不执行任何 ALTER/补列/建表/建索引），不存在旧「不兼容」文案。
+        expect(message).toMatch(/managed tables exist without the migration ledger/);
+        expect(message).toMatch(/legacy database/);
+        expect(message).toMatch(/apply the single baseline/);
         // 失败路径内 destroy（释放 Pool）：可观测断言（pg-pool 硬错误）
         await expect(oldPool.query("SELECT 1")).rejects.toThrow(/Cannot use a pool after calling end on the pool/);
       } finally {
@@ -606,7 +613,7 @@ describePg("PostgreSQL 集成测试（PI_TEST_PG_URL 门控；随机 schema 隔�
       }
     });
 
-    it("列名齐全但物理类型/FK 与 Manifest 不一致 → 完整契约检查 fail-fast，Pool 已释放", async () => {
+    it("列名齐全但缺 schema_migrations ledger（即便物理形态完整）→ legacy fail-closed 拒绝，Pool 已释放", async () => {
       const badSchema = safeSchemaName();
       const badPool = new Pool({
         connectionString: withSchemaSearchPath(pgUrl!, badSchema),
@@ -614,9 +621,10 @@ describePg("PostgreSQL 集成测试（PI_TEST_PG_URL 门控；随机 schema 隔�
       });
       try {
         await badPool.query(`CREATE SCHEMA ${badSchema}`);
-        // 3 张表全部存在且列名与 Manifest 完全一致，但：projects.created_at 用 TEXT（应为 BIGINT）、
-        // sessions 缺 FK（应指向 projects.id ON DELETE CASCADE）。列名齐全不再是被放行的理由——
-        // preflight 必须验证物理类型/FK 等完整契约后 fail-fast（不执行任何 ALTER/补列/建索引）。
+        // 3 张表全部存在且列名与 Manifest 完全一致（物理形态足够「完整」），但没有任何
+        // schema_migrations ledger。preflight 现在以「managed 表无 ledger = legacy 库」的
+        // fail-closed 拒绝 —— ledger 身份是权威，空有表形不再被放行（不执行任何
+        // ALTER/补列/建索引）。
         await badPool.query(`
           CREATE TABLE projects (
             id UUID PRIMARY KEY,
@@ -650,9 +658,10 @@ describePg("PostgreSQL 集成测试（PI_TEST_PG_URL 门控；随机 schema 隔�
         const err = await initializePostgresDatabase(badPool).then(() => null, (e: unknown) => e);
         expect(err).toBeInstanceOf(Error);
         const message = (err as Error).message;
-        expect(message).toMatch(/不兼容/);
-        expect(message).toMatch(/created_at/); // 物理类型不匹配被点名
-        expect(message).toMatch(/外键/); // FK 缺失/不匹配被点名
+        // 同样走 managed 表无 ledger 的 legacy fail-closed（旧「不兼容」文案不再出现）。
+        expect(message).toMatch(/managed tables exist without the migration ledger/);
+        expect(message).toMatch(/legacy database/);
+        expect(message).toMatch(/apply the single baseline/);
         await expect(badPool.query("SELECT 1")).rejects.toThrow(/Cannot use a pool after calling end on the pool/);
       } finally {
         if (!(badPool as { ending?: boolean }).ending) await badPool.end();

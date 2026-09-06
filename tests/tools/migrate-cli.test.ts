@@ -5,7 +5,6 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:f
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { assertCliMigrationHead, parseMode, readPostgresTarget, redactedMessage } from "../../scripts/migrate.js";
-import { runSqliteMigrations } from "../../src/storage/migration-engine.js";
 import { resolveMigrationCliPaths, summarizePostgresTarget } from "../../src/storage/storage-config.js";
 
 describe("offline migration CLI", () => {
@@ -119,16 +118,103 @@ describe("offline migration CLI", () => {
     expect(output).not.toContain(url);
   });
 
-  it("reports an absolute target; dry-run/verify existing SQLite remain read-only", async () => {
+  it("requires an explicit confirmation for bootstrap-baseline and rejects backup mixing", () => {
+    expect(() => parseMode(["--bootstrap-baseline"])).toThrow(/bootstrap-confirm/);
+    expect(parseMode(["--bootstrap-baseline", "--bootstrap-confirm", "CONFIRMED"])).toBe("bootstrap-baseline");
+    expect(() => parseMode(["--bootstrap-baseline", "--bootstrap-confirm", "not-confirmed"])).toThrow(/必须为 CONFIRMED/);
+    expect(() => parseMode(["--bootstrap-baseline", "--bootstrap-confirm", "CONFIRMED", "--backup-root", "/tmp/b"])).toThrow(/不接受 backup/);
+    expect(() => parseMode(["--bootstrap-baseline", "--bootstrap-confirm", "CONFIRMED", "--age-recipient-file", "/tmp/r"])).toThrow(/不接受 backup/);
+    expect(() => parseMode(["--bootstrap-baseline", "--bootstrap-confirm", "CONFIRMED", "--maintenance-window", "CONFIRMED"])).toThrow(/不接受 backup/);
+    expect(() => parseMode(["--apply", "--backup-root", "/tmp/b", "--age-recipient-file", "/tmp/r", "--maintenance-window", "CONFIRMED", "--bootstrap-confirm", "CONFIRMED"])).toThrow(/不接受 --bootstrap-confirm/);
+  });
+
+  it("dry-run and verify reject any apply/bootstrap parameter", () => {
+    expect(() => parseMode(["--dry-run", "--backup-root", "/tmp/b"])).toThrow(/dry-run.*不接受|不接受.*dry-run/);
+    expect(() => parseMode(["--verify", "--age-recipient-file", "/tmp/r"])).toThrow(/verify.*不接受|不接受.*verify/);
+    expect(() => parseMode(["--verify", "--maintenance-window", "CONFIRMED"])).toThrow(/verify.*不接受|不接受.*verify/);
+    expect(() => parseMode(["--dry-run", "--bootstrap-confirm", "CONFIRMED"])).toThrow(/不接受.*bootstrap-confirm|dry-run/);
+    expect(() => parseMode(["--verify", "--backup-root", "/tmp/b", "--age-recipient-file", "/tmp/r", "--maintenance-window", "CONFIRMED"])).toThrow(/verify.*不接受|不接受.*verify/);
+  });
+
+  it("rejects duplicate flags regardless of mode", () => {
+    expect(() => parseMode(["--apply", "--backup-root", "/tmp/a", "--backup-root", "/tmp/b", "--age-recipient-file", "/tmp/r", "--maintenance-window", "CONFIRMED"])).toThrow(/重复参数 --backup-root/);
+    expect(() => parseMode(["--apply", "--backup-root", "/tmp/a", "--age-recipient-file", "/tmp/r", "--age-recipient-file", "/tmp/s", "--maintenance-window", "CONFIRMED"])).toThrow(/重复参数 --age-recipient-file/);
+    expect(() => parseMode(["--apply", "--backup-root", "/tmp/a", "--age-recipient-file", "/tmp/r", "--maintenance-window", "CONFIRMED", "--maintenance-window=CONFIRMED"])).toThrow(/重复参数 --maintenance-window/);
+    expect(() => parseMode(["--bootstrap-baseline", "--bootstrap-confirm", "CONFIRMED", "--bootstrap-confirm", "CONFIRMED"])).toThrow(/重复参数 --bootstrap-confirm/);
+    expect(() => parseMode(["--bootstrap-baseline", "--bootstrap-confirm=CONFIRMED", "--bootstrap-confirm", "CONFIRMED"])).toThrow(/重复参数 --bootstrap-confirm/);
+  });
+
+  it("bootstraps an empty SQLite database through the CLI and refuses a non-empty one", () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-migrate-cli-bootstrap-"));
+    const dataDir = join(dir, "data");
+    const dbPath = join(dataDir, "bootstrap.db");
+    mkdirSync(dataDir, { recursive: true, mode: 0o700 });
+    const env = { ...process.env, AGENT_CWD: process.cwd(), DATA_DIR: dataDir, PI_STORAGE_DIALECT: "sqlite", DB_PATH: dbPath };
+    try {
+      const ok = spawnSync("pnpm", ["exec", "tsx", "scripts/migrate.ts", "--", "--bootstrap-baseline", "--bootstrap-confirm", "CONFIRMED"], {
+        cwd: process.cwd(), env, encoding: "utf8",
+      });
+      expect(ok.status, `${ok.stdout}${ok.stderr}`).toBe(0);
+      const machine = JSON.parse(ok.stdout.trim().split(/\r?\n/).at(-1)!);
+      expect(machine.status).toBe("success");
+      expect(machine.mode).toBe("bootstrap-baseline");
+      expect(machine.migration.status).toBe("applied");
+      expect(machine.migration.appliedVersion).toBe(0);
+      expect(machine.migration.pending).toBe(0);
+      expect(machine.verify.status).toBe("verified");
+      expect(machine.verify.pending).toBe(0);
+      expect(machine.verify.appliedVersion).toBe(machine.migration.appliedVersion);
+      const db = new DatabaseSync(dbPath);
+      const ledger = db.prepare("SELECT version, name FROM schema_migrations ORDER BY version").all();
+      db.close();
+      expect(JSON.stringify(ledger)).toBe(JSON.stringify([{ version: 0, name: "initial-schema" }]));
+
+      // A second bootstrap on the now-initialized database must refuse: it is no longer empty.
+      const again = spawnSync("pnpm", ["exec", "tsx", "scripts/migrate.ts", "--", "--bootstrap-baseline", "--bootstrap-confirm", "CONFIRMED"], {
+        cwd: process.cwd(), env, encoding: "utf8",
+      });
+      expect(again.status).not.toBe(0);
+      expect(`${again.stdout}${again.stderr}`).toMatch(/non-empty SQLite|refusing/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses bootstrap on a SQLite database that already contains an arbitrary table", () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-migrate-cli-bootstrap-user-table-"));
+    const dataDir = join(dir, "data");
+    const dbPath = join(dataDir, "user.db");
+    mkdirSync(dataDir, { recursive: true, mode: 0o700 });
+    try {
+      const db = new DatabaseSync(dbPath);
+      db.exec("CREATE TABLE arbitrary_user_table (id INTEGER PRIMARY KEY)");
+      db.close();
+      const result = spawnSync("pnpm", ["exec", "tsx", "scripts/migrate.ts", "--", "--bootstrap-baseline", "--bootstrap-confirm", "CONFIRMED"], {
+        cwd: process.cwd(), env: { ...process.env, AGENT_CWD: process.cwd(), DATA_DIR: dataDir, PI_STORAGE_DIALECT: "sqlite", DB_PATH: dbPath }, encoding: "utf8",
+      });
+      expect(result.status).not.toBe(0);
+      expect(`${result.stdout}${result.stderr}`).toMatch(/non-empty SQLite|any table|refusing/);
+      const check = new DatabaseSync(dbPath);
+      const tables = check.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as Array<{ name: string }>;
+      check.close();
+      expect(tables.some((table) => table.name === "arbitrary_user_table")).toBe(true);
+      expect(tables.some((table) => table.name === "schema_migrations")).toBe(false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("reports an absolute target; dry-run/verify existing SQLite remain read-only", () => {
     const dir = mkdtempSync(join(tmpdir(), "pi-migrate-cli-existing-"));
     const dataDir = join(dir, "data");
     const dbPath = join(dataDir, "target.db");
     mkdirSync(dataDir, { recursive: true, mode: 0o700 });
-    const initialized = new DatabaseSync(dbPath);
-    await runSqliteMigrations(initialized, { mode: "apply" });
-    initialized.close();
+    const env = { ...process.env, AGENT_CWD: process.cwd(), DATA_DIR: dataDir, PI_STORAGE_DIALECT: "sqlite", DB_PATH: dbPath };
+    const bootstrap = spawnSync("pnpm", ["exec", "tsx", "scripts/migrate.ts", "--", "--bootstrap-baseline", "--bootstrap-confirm", "CONFIRMED"], {
+      cwd: process.cwd(), env, encoding: "utf8",
+    });
+    expect(bootstrap.status, `${bootstrap.stdout}${bootstrap.stderr}`).toBe(0);
     try {
-      const env = { ...process.env, AGENT_CWD: process.cwd(), DATA_DIR: dataDir, PI_STORAGE_DIALECT: "sqlite", DB_PATH: dbPath };
       const before = readFileSync(dbPath);
       const dry = spawnSync("pnpm", ["exec", "tsx", "scripts/migrate.ts", "--", "--dry-run"], {
         cwd: process.cwd(), env, encoding: "utf8",

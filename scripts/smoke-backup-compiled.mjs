@@ -82,30 +82,31 @@ try {
   const failed = spawnSync(process.execPath, ["dist-backup/scripts/restore.js", "restore", "--input-backup", dataDir, "--target-root", path.join(directory, "bad-target"), "--age-identity-file", identity], { cwd: process.cwd(), env: { ...process.env }, encoding: "utf8" });
   if (failed.status === 0 || failed.stdout.includes(dataDir) || failed.stderr.includes(dataDir) || existsSync(path.join(directory, "bad-target"))) throw new Error("compiled restore safe-failure smoke failed");
 
-  // Strict completeness mode (compiled CLI, real age): strict published
-  // success emits exactly one stable machine report line; any missing session
-  // reference fails non-zero with a desensitized error, publishes nothing and
-  // leaves no staging/COMPLETE residue.
-  const strictArgs = ["dist-backup/scripts/backup.js", "create", "--backup-root", backupRoot, "--age-recipient-file", recipient, "--require-complete-session-references"];
-  const strictOk = spawnSync(process.execPath, strictArgs, { cwd: process.cwd(), env: { ...process.env, AGENT_CWD: process.cwd(), DATA_DIR: dataDir, DB_PATH: dbPath, PI_AUTH_PATH: authPath }, encoding: "utf8" });
-  if (strictOk.status !== 0) throw new Error(`compiled strict backup E2E failed: ${strictOk.stderr}`);
-  const strictLine = strictOk.stdout.split(/\r?\n/).find((line) => line.startsWith("backup-json-report: "));
-  if (!strictLine) throw new Error("compiled strict backup did not emit the machine report line");
-  const strictReport = JSON.parse(strictLine.slice("backup-json-report: ".length));
-  if (strictReport.status !== "published" || strictReport.strict !== true || strictReport.dryRun !== false || strictReport.missingSessionReferences !== 0 || !strictReport.finalPath?.startsWith(backupRoot) || typeof strictReport.payloadCount !== "number") throw new Error("compiled strict machine report is invalid");
-  if (readdirSync(backupRoot).filter((entry) => entry.startsWith("backup-")).length !== 2) throw new Error("compiled strict backup did not publish a second package");
+  // Machine report contract (Phase 3 missing-as-empty): every published backup
+  // emits exactly one stable machine report line; a missing session reference
+  // does NOT fail — it publishes and reports the count.
+  const publishArgs = ["dist-backup/scripts/backup.js", "create", "--backup-root", backupRoot, "--age-recipient-file", recipient];
+  const published2 = spawnSync(process.execPath, publishArgs, { cwd: process.cwd(), env: { ...process.env, AGENT_CWD: process.cwd(), DATA_DIR: dataDir, DB_PATH: dbPath, PI_AUTH_PATH: authPath }, encoding: "utf8" });
+  if (published2.status !== 0) throw new Error(`compiled backup E2E failed: ${published2.stderr}`);
+  const reportLine = published2.stdout.split(/\r?\n/).find((line) => line.startsWith("backup-json-report: "));
+  if (!reportLine) throw new Error("compiled backup did not emit the machine report line");
+  const report = JSON.parse(reportLine.slice("backup-json-report: ".length));
+  if (report.status !== "published" || report.dryRun !== false || report.missingSessionReferences !== 0 || report.strict !== undefined || !report.finalPath?.startsWith(backupRoot) || typeof report.payloadCount !== "number") throw new Error("compiled machine report is invalid");
+  if (readdirSync(backupRoot).filter((entry) => entry.startsWith("backup-")).length !== 2) throw new Error("compiled backup did not publish a second package");
 
+  // Missing-as-empty：缺失引用照常发布，机器报告计数（绝不泄露引用/路径）。
   const missingDb = new DatabaseSync(dbPath);
-  missingDb.prepare("INSERT INTO sessions (id,owner_key,project_id,title,created_at,updated_at,pi_session_file,capability_versions) VALUES (?,?,?,?,?,?,?,?)").run("strict-missing-session", "owner", "p", "missing", 1, 1, path.join(dataDir, "sessions", "gone", "history.jsonl"), JSON.stringify({ schema: 1 }));
+  missingDb.prepare("INSERT INTO sessions (id,owner_key,project_id,title,created_at,updated_at,pi_session_file,capability_versions) VALUES (?,?,?,?,?,?,?,?)").run("missing-session", "owner", "p", "missing", 1, 1, path.join(dataDir, "sessions", "gone", "history.jsonl"), JSON.stringify({ schema: 1 }));
   missingDb.close();
-  const strictFailed = spawnSync(process.execPath, strictArgs, { cwd: process.cwd(), env: { ...process.env, AGENT_CWD: process.cwd(), DATA_DIR: dataDir, DB_PATH: dbPath, PI_AUTH_PATH: authPath }, encoding: "utf8" });
-  if (strictFailed.status === 0) throw new Error("compiled strict backup did not fail on a missing session reference");
-  const strictOutput = `${strictFailed.stdout}${strictFailed.stderr}`;
-  if (!strictOutput.includes("strict completeness")) throw new Error("compiled strict failure message is missing");
-  if (strictOutput.includes("strict-missing-session") || strictOutput.includes("backup-json-report:") || strictOutput.includes(path.join("sessions", "gone"))) throw new Error("compiled strict failure leaked a reference, path, or machine success line");
-  if (readdirSync(backupRoot).filter((entry) => entry.startsWith("backup-")).length !== 2) throw new Error("compiled strict failure published a package");
-  if (readdirSync(backupRoot).some((entry) => entry.includes("staging") || entry === "COMPLETE")) throw new Error("compiled strict failure left staging/COMPLETE residue");
-  console.log("compiled backup/restore E2E, safe-failure smoke and strict completeness smoke: ok");
+  const missingPublished = spawnSync(process.execPath, publishArgs, { cwd: process.cwd(), env: { ...process.env, AGENT_CWD: process.cwd(), DATA_DIR: dataDir, DB_PATH: dbPath, PI_AUTH_PATH: authPath }, encoding: "utf8" });
+  if (missingPublished.status !== 0) throw new Error(`compiled backup did not publish with a missing reference: ${missingPublished.stderr}`);
+  const missingLine = missingPublished.stdout.split(/\r?\n/).find((line) => line.startsWith("backup-json-report: "));
+  if (!missingLine) throw new Error("compiled backup with a missing reference did not emit the machine report line");
+  const missingReport = JSON.parse(missingLine.slice("backup-json-report: ".length));
+  if (missingReport.status !== "published" || missingReport.dryRun !== false || missingReport.missingSessionReferences !== 1 || missingReport.strict !== undefined) throw new Error("compiled machine report did not count the missing reference as missing-as-empty");
+  if (missingPublished.stdout.includes("missing-session") || missingPublished.stdout.includes(path.join("sessions", "gone"))) throw new Error("compiled backup leaked a reference/path on the missing path");
+  if (readdirSync(backupRoot).filter((entry) => entry.startsWith("backup-")).length !== 3) throw new Error("compiled backup with a missing reference did not publish a third package");
+  console.log("compiled backup/restore E2E, safe-failure smoke and missing-as-empty machine smoke: ok");
 } finally {
   rmSync(process.env.PI_BACKUP_STAGING_ROOT, { recursive: true, force: true });
   rmSync(directory, { recursive: true, force: true });

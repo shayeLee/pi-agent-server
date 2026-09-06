@@ -1,10 +1,11 @@
 import { DatabaseSync } from "node:sqlite";
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { createSqliteBackup, type AgeAdapter } from "../../src/backup/backup-core.js";
+import { bindReferencesToPayload, createSqliteBackup, type AgeAdapter } from "../../src/backup/backup-core.js";
+import { createCanonicalSqliteBaseline, insertCanonicalSession } from "./sqlite-fixture.js";
 
 const cleanups: string[] = [];
 afterEach(() => { for (const directory of cleanups.splice(0)) rmSync(directory, { recursive: true, force: true }); });
@@ -19,9 +20,7 @@ function fixture(): { root: string; dataDir: string; dbPath: string; backupRoot:
   mkdirSync(path.join(dataDir, ".pi-agent"), { recursive: true, mode: 0o700 });
   const dbPath = path.join(dataDir, "pi-agent-server.db");
   const db = new DatabaseSync(dbPath);
-  db.exec("CREATE TABLE sessions (id TEXT PRIMARY KEY, pi_session_file TEXT)");
-  db.exec("CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name TEXT, checksum TEXT, applied_at INTEGER)");
-  db.prepare("INSERT INTO schema_migrations VALUES (0, 'initial', 'abc', 1)").run();
+  createCanonicalSqliteBaseline(db);
   db.close();
   const recipient = path.join(root, "recipient.txt");
   writeFileSync(recipient, "# test\nage1testrecipient\n", { mode: 0o600 });
@@ -37,7 +36,7 @@ function fakeAge(): AgeAdapter & { decrypt(bytes: Buffer): Buffer } {
 
 function putSession(dbPath: string, id: string, file: string): void {
   const db = new DatabaseSync(dbPath);
-  db.prepare("INSERT INTO sessions VALUES (?, ?)").run(id, file);
+  insertCanonicalSession(db, id, file);
   db.close();
 }
 
@@ -96,6 +95,61 @@ describe("SQLite online backup core (WP3A)", () => {
     expect(`${encryptedPayloads} ${encryptedManifest}`).not.toContain("payload-secret");
   });
 
+  it("fails closed before encryption or publication for a missing, multi-row, or checksum-mismatched source ledger (including dry-run)", async () => {
+    for (const mutate of [
+      (db: DatabaseSync) => db.exec("DROP TABLE schema_migrations"),
+      (db: DatabaseSync) => db.prepare("INSERT INTO schema_migrations VALUES (1, 'legacy-extra', ?, 2)").run("b".repeat(64)),
+      (db: DatabaseSync) => db.prepare("UPDATE schema_migrations SET checksum = ? WHERE version = 0").run("0".repeat(64)),
+    ]) {
+      const f = fixture();
+      const db = new DatabaseSync(f.dbPath);
+      try { mutate(db); } finally { db.close(); }
+      for (const dryRun of [false, true]) {
+        await expect(createSqliteBackup({ paths: makePaths(f), dryRun, age: fakeAge() })).rejects.toThrow(/migration ledger|single-baseline/);
+      }
+      expect(existsSync(f.backupRoot)).toBe(false);
+    }
+  });
+
+  it("fails closed before encryption or publication when the canonical ledger is correct but the physical schema is missing a canonical table/column/index (including dry-run)", async () => {
+    for (const mutate of [
+      (db: DatabaseSync) => db.exec("DROP TABLE projects"),
+      (db: DatabaseSync) => db.exec("ALTER TABLE sessions DROP COLUMN system_prompt"),
+      (db: DatabaseSync) => db.exec("DROP INDEX idx_projects_owner"),
+    ]) {
+      const f = fixture();
+      putSession(f.dbPath, "s1", path.join(f.dataDir, "sessions", "s1", "history.jsonl"));
+      const db = new DatabaseSync(f.dbPath);
+      try { mutate(db); } finally { db.close(); }
+      for (const dryRun of [false, true]) {
+        await expect(createSqliteBackup({ paths: makePaths(f), dryRun, age: fakeAge() }))
+          .rejects.toThrow(/physical schema|不兼容|incompatible|物理契约/);
+      }
+      // 发布前失败：backup root 从不创建，无 COMPLETE，无发布目录。
+      expect(existsSync(f.backupRoot)).toBe(false);
+    }
+  });
+
+  it("fails closed before encryption or publication when an extra object exists beyond the canonical physical schema (including dry-run)", async () => {
+    for (const mutate of [
+      (db: DatabaseSync) => db.exec("CREATE TABLE extra_table (id INTEGER PRIMARY KEY)"),
+      (db: DatabaseSync) => db.exec("CREATE INDEX idx_extra_index ON projects(name)"),
+      (db: DatabaseSync) => db.exec("CREATE VIEW extra_view AS SELECT id FROM projects"),
+      (db: DatabaseSync) => db.exec("CREATE TRIGGER extra_trig AFTER INSERT ON projects BEGIN SELECT 1; END"),
+    ]) {
+      const f = fixture();
+      putSession(f.dbPath, "s1", path.join(f.dataDir, "sessions", "s1", "history.jsonl"));
+      const db = new DatabaseSync(f.dbPath);
+      try { mutate(db); } finally { db.close(); }
+      for (const dryRun of [false, true]) {
+        await expect(createSqliteBackup({ paths: makePaths(f), dryRun, age: fakeAge() }))
+          .rejects.toThrow(/physical schema|不兼容|incompatible|物理契约|额外表/);
+      }
+      // 发布前失败：backup root 从不创建，无 COMPLETE，无发布目录。
+      expect(existsSync(f.backupRoot)).toBe(false);
+    }
+  });
+
   it("reports missing in-root session references without claiming inclusion", async () => {
     const f = fixture();
     const missing = path.join(f.dataDir, "sessions", "gone", "history.jsonl");
@@ -105,45 +159,36 @@ describe("SQLite online backup core (WP3A)", () => {
     expect(result.manifest?.missingSessionReferences).toHaveLength(1);
   });
 
-  it("strict mode fails closed on any missing session reference before publish/COMPLETE and is desensitized", async () => {
+  it("binds an exact referenced file missing from an earlier payload plan without another directory scan", () => {
+    const f = fixture();
+    const session = path.join(f.dataDir, "sessions", "s1", "history.jsonl");
+    writeFileSync(session, '{"type":"session"}\n', { mode: 0o600 });
+    const bound = bindReferencesToPayload([{ sessionId: "s1", file: session }], realpathSync(f.dataDir), []);
+    expect(bound.missing).toEqual([]);
+    expect(bound.files).toEqual([{ sourcePath: realpathSync(session), relativePath: "sessions/s1/history.jsonl", kind: "jsonl" }]);
+  });
+
+  it("treats missing session references as missing-as-empty: records them in the manifest and still publishes (fail-open, never strict)", async () => {
     const f = fixture();
     const missing = path.join(f.dataDir, "sessions", "gone", "history.jsonl");
-    putSession(f.dbPath, "missing-strict", missing);
-    let error: unknown;
-    try {
-      await createSqliteBackup({ paths: makePaths(f), age: fakeAge(), requireCompleteSessionReferences: true });
-    } catch (caught) { error = caught; }
-    const message = error instanceof Error ? error.message : String(error);
-    expect(message).toMatch(/strict completeness: 1 session reference\(s\) are missing/);
-    // 错误稳定脱敏：只含计数，绝不泄露 session id 或缺失路径。
-    expect(message).not.toContain("missing-strict");
-    expect(message).not.toContain("gone");
-    expect(message).not.toContain(f.root);
-    // 未发布任何包/COMPLETE，无 staging 残留。
-    expect(existsSync(f.backupRoot)).toBe(false);
-    // dry-run 同样 fail-closed（strict 不会把 dry-run 当成成功）。
-    await expect(createSqliteBackup({ paths: makePaths(f), dryRun: true, age: fakeAge(), requireCompleteSessionReferences: true }))
-      .rejects.toThrow(/strict completeness: 1 session reference\(s\) are missing/);
-    expect(existsSync(f.backupRoot)).toBe(false);
-  });
-
-  it("strict mode publishes COMPLETE when every session reference is present", async () => {
-    const f = fixture();
-    const sessionFile = path.join(f.dataDir, "sessions", "s1", "history.jsonl");
-    writeFileSync(sessionFile, '{"ok":true}\n', { mode: 0o600 });
-    putSession(f.dbPath, "s1", sessionFile);
-    const result = await createSqliteBackup({ paths: makePaths(f), age: fakeAge(), requireCompleteSessionReferences: true });
+    putSession(f.dbPath, "missing-as-empty", missing);
+    const result = await createSqliteBackup({ paths: makePaths(f), age: fakeAge() });
     expect(result.finalPath).toBeTruthy();
     expect(existsSync(path.join(result.finalPath!, "COMPLETE"))).toBe(true);
-    expect(result.missingSessionReferences).toEqual([]);
-    expect(result.manifest?.missingSessionReferences).toEqual([]);
+    expect(result.missingSessionReferences).toEqual([{ sessionId: "missing-as-empty", path: "sessions/gone/history.jsonl", status: "missing" }]);
+    expect(result.manifest?.missingSessionReferences).toHaveLength(1);
+    // 缺失引用不影响发布；dry-run 同样成功并记录缺失。
+    const dry = await createSqliteBackup({ paths: makePaths(f), dryRun: true, age: fakeAge() });
+    expect(dry.dryRun).toBe(true);
+    expect(dry.finalPath).toBeNull();
+    expect(dry.missingSessionReferences).toHaveLength(1);
   });
 
-  it("strict is bound to the final VACUUM snapshot: a session row added between inspection and the snapshot fails closed with zero publish", async () => {
+  it("binds concurrent snapshot-window references: a missing late history is recorded missing-as-empty", async () => {
     const f = fixture();
     writeFileSync(path.join(f.dataDir, "sessions", "s1", "history.jsonl"), '{"type":"session"}\n', { mode: 0o600 });
     // Pre-switch to WAL so the concurrent writer is never blocked by the
-    // backup's read-only source connection (same warmup as the pre-reset test).
+    // backup's read-only source connection while the concurrent writer remains active.
     const warmup = new DatabaseSync(f.dbPath);
     warmup.exec("PRAGMA journal_mode=WAL");
     warmup.close();
@@ -155,61 +200,31 @@ describe("SQLite online backup core (WP3A)", () => {
     const age: AgeAdapter = {
       ...fakeAge(),
       ensureAvailable() {
-        writer.prepare("INSERT INTO sessions VALUES (?, ?)").run("late-session", lateFile);
+        insertCanonicalSession(writer, "late-session", lateFile);
       },
     };
-    let error: unknown;
     try {
+      const result = await createSqliteBackup({ paths: makePaths(f), age });
+      expect(result.finalPath).toBeTruthy();
+      expect(existsSync(path.join(result.finalPath!, "COMPLETE"))).toBe(true);
+      // 快照包含迟到行（VACUUM INTO 的内容来源）。最终 snapshot 引用集是
+      // 权威来源：文件仍缺失时必须明确记录 missing-as-empty。
+      const dbPayload = fakeAge().decrypt(readFileSync(path.join(result.finalPath!, "payload/database.sqlite.age")));
+      writeFileSync(path.join(f.root, "decrypted.db"), dbPayload);
+      const checked = new DatabaseSync(path.join(f.root, "decrypted.db"), { readOnly: true });
       try {
-        await createSqliteBackup({ paths: makePaths(f), age, requireCompleteSessionReferences: true });
-      } catch (caught) { error = caught; }
-      const message = error instanceof Error ? error.message : String(error);
-      expect(message).toMatch(/strict completeness: 1 session reference\(s\) are missing/);
-      // 稳定脱敏：只含计数，绝不泄露这个并发写入的 session id 或路径。
-      expect(message).not.toContain("late-session");
-      expect(message).not.toContain("late");
-      // 零发布：backup root 无 backup-* 包，也不留 publish/plaintext staging 残留。
-      expect(readdirSync(f.backupRoot).filter((entry) => entry.startsWith("backup-") || entry.includes("staging") || entry === "COMPLETE")).toEqual([]);
-      // 证明在线写窗口真实存在：源库（即 VACUUM INTO 的内容来源）在写入后确实
-      // 包含该迟到行——若不做快照绑定重读，strict 会带着这个缺口照常发布。
-      const check = new DatabaseSync(f.dbPath, { readOnly: true });
-      try {
-        const row = check.prepare("SELECT id, pi_session_file FROM sessions WHERE id = ?").get("late-session") as { id: string; pi_session_file: string } | undefined;
+        const row = checked.prepare("SELECT id, pi_session_file FROM sessions WHERE id = ?").get("late-session") as { id: string; pi_session_file: string } | undefined;
         expect(row).toBeDefined();
         expect(row!.pi_session_file).toBe(lateFile);
-      } finally { check.close(); }
+      } finally { checked.close(); }
+      expect(existsSync(path.join(result.finalPath!, "payload/sessions/late/history.jsonl.age"))).toBe(false);
+      expect(result.manifest?.missingSessionReferences).toEqual([{ sessionId: "late-session", path: "sessions/late/history.jsonl", status: "missing" }]);
     } finally {
       writer.close();
     }
-    // 非 strict 默认兼容行为不受影响：同样的并发写入照常发布，且快照包含该迟到行
-    // 而 payload 不含其文件——这正是 strict 现在关闭的缺口（legacy 行为保持原样）。
-    const f2 = fixture();
-    writeFileSync(path.join(f2.dataDir, "sessions", "s1", "history.jsonl"), '{"type":"session"}\n', { mode: 0o600 });
-    const warmup2 = new DatabaseSync(f2.dbPath);
-    warmup2.exec("PRAGMA journal_mode=WAL");
-    warmup2.close();
-    const writer2 = new DatabaseSync(f2.dbPath);
-    const age2: AgeAdapter = {
-      ...fakeAge(),
-      ensureAvailable() {
-        writer2.prepare("INSERT INTO sessions VALUES (?, ?)").run("late-session", path.join(f2.dataDir, "sessions", "late", "history.jsonl"));
-      },
-    };
-    try {
-      const result = await createSqliteBackup({ paths: makePaths(f2), age: age2 });
-      expect(result.finalPath).toBeTruthy();
-      expect(existsSync(path.join(result.finalPath!, "COMPLETE"))).toBe(true);
-      const dbPayload = fakeAge().decrypt(readFileSync(path.join(result.finalPath!, "payload/database.sqlite.age")));
-      writeFileSync(path.join(f2.root, "decrypted.db"), dbPayload);
-      const checked = new DatabaseSync(path.join(f2.root, "decrypted.db"), { readOnly: true });
-      try {
-        expect(checked.prepare("SELECT id FROM sessions WHERE id = ?").get("late-session")).toBeTruthy();
-      } finally { checked.close(); }
-      expect(existsSync(path.join(result.finalPath!, "payload/sessions/late/history.jsonl.age"))).toBe(false);
-    } finally { writer2.close(); }
   });
 
-  it("strict re-validates the payload collection against the snapshot: a reference to a file created after inspection fails closed", async () => {
+  it("binds a file created before the final snapshot as an exact payload without a second directory scan", async () => {
     const f = fixture();
     writeFileSync(path.join(f.dataDir, "sessions", "s1", "history.jsonl"), '{"type":"session"}\n', { mode: 0o600 });
     const warmup = new DatabaseSync(f.dbPath);
@@ -217,21 +232,23 @@ describe("SQLite online backup core (WP3A)", () => {
     warmup.close();
     const writer = new DatabaseSync(f.dbPath);
     // 并发写入同时创建新会话文件并插入引用：文件存在但不在 inspect 阶段收集的
-    // payload 集合里，strict 必须在发布前以快照绑定失败（而不是发布一个
-    // 声明完整却没有该 payload 的包）。
+    // payload 集合里。最终 snapshot 绑定按精确引用把该文件加入 payload，
+    // 无需再次扫描会话目录。
     const freshFile = path.join(f.dataDir, "sessions", "fresh", "history.jsonl");
     const age: AgeAdapter = {
       ...fakeAge(),
       ensureAvailable() {
         mkdirSync(path.dirname(freshFile), { recursive: true, mode: 0o700 });
         writeFileSync(freshFile, '{"type":"session","id":"fresh-header"}\n', { mode: 0o600 });
-        writer.prepare("INSERT INTO sessions VALUES (?, ?)").run("fresh-session", freshFile);
+        insertCanonicalSession(writer, "fresh-session", freshFile);
       },
     };
     try {
-      await expect(createSqliteBackup({ paths: makePaths(f), age, requireCompleteSessionReferences: true }))
-        .rejects.toThrow(/not part of the whitelisted payload collection/);
-      expect(readdirSync(f.backupRoot).filter((entry) => entry.startsWith("backup-") || entry.includes("staging") || entry === "COMPLETE")).toEqual([]);
+      const result = await createSqliteBackup({ paths: makePaths(f), age });
+      expect(result.finalPath).toBeTruthy();
+      expect(existsSync(path.join(result.finalPath!, "COMPLETE"))).toBe(true);
+      expect(existsSync(path.join(result.finalPath!, "payload/sessions/fresh/history.jsonl.age"))).toBe(true);
+      expect(result.manifest?.missingSessionReferences).toEqual([]);
     } finally { writer.close(); }
   });
 
@@ -244,11 +261,18 @@ describe("SQLite online backup core (WP3A)", () => {
     expect(existsSync(f.backupRoot)).toBe(false);
   });
 
-  it("rejects half JSONL and retries a changing JSONL source as one stability unit", async () => {
+  it("backs up arbitrary JSONL bytes as opaque data (no JSON.parse) and retries a changing source as one stability unit", async () => {
+    // 非 JSON/半行内容不再被校验：JSONL 在 backup 阶段是 opaque bytes，逐字节
+    // 稳定复制后加密发布（内容合法性由 restore 的 invalid-as-empty 处理）。
     const f = fixture();
     const file = path.join(f.dataDir, "sessions", "s1", "history.jsonl");
-    writeFileSync(file, '{"unfinished":\n', { mode: 0o600 });
-    await expect(createSqliteBackup({ paths: makePaths(f), age: fakeAge() })).rejects.toThrow(/exceeded/);
+    const bytes = Buffer.from('{"unfinished":\nraw-bytes-not-json\u0000binary', "utf8");
+    writeFileSync(file, bytes, { mode: 0o600 });
+    const result = await createSqliteBackup({ paths: makePaths(f), age: fakeAge() });
+    expect(result.finalPath).toBeTruthy();
+    expect(existsSync(path.join(result.finalPath!, "COMPLETE"))).toBe(true);
+    const decrypted = fakeAge().decrypt(readFileSync(path.join(result.finalPath!, "payload/sessions/s1/history.jsonl.age")));
+    expect(decrypted).toEqual(bytes);
 
     const changing = fixture();
     const changingFile = path.join(changing.dataDir, "sessions", "s1", "history.jsonl");
@@ -321,53 +345,14 @@ describe("SQLite online backup core (WP3A)", () => {
     const writer = new DatabaseSync(f.dbPath);
     try {
       writer.exec("PRAGMA journal_mode=WAL");
-      writer.exec("CREATE TABLE wal_probe (value TEXT)");
-      writer.prepare("INSERT INTO wal_probe VALUES (?)").run("written-before-backup");
+      // Introduce WAL content by writing to a canonical table: a probe table
+      // would be an extra object and correctly fail the physical-schema gate.
+      writer.exec("INSERT INTO projects (id, name, cwd, owner_key, created_at) VALUES ('wal-probe', 'writer', '/wal', 'owner', 1)");
       const before = readFileSync(f.dbPath);
       const result = await createSqliteBackup({ paths: makePaths(f), age: fakeAge() });
       expect(result.finalPath).toBeTruthy();
       expect(readFileSync(f.dbPath)).toEqual(before);
     } finally { writer.close(); }
-  });
-
-  it("fixes the pre-reset tree binding at snapshot time: a WAL-only write between the snapshot and the manifest fails the backup with zero publication", async () => {
-    const f = fixture();
-    writeFileSync(path.join(f.dataDir, "sessions", "s1", "history.jsonl"), '{"type":"session"}\n', { mode: 0o600 });
-    // 预先把库切到 WAL（备份前完成，避免 journal-mode 头部变化污染对比）。
-    const warmup = new DatabaseSync(f.dbPath);
-    warmup.exec("PRAGMA journal_mode=WAL");
-    warmup.close();
-    // writer 连接贯穿整个备份：第一次 age 调用发生在 VACUUM INTO 之后、manifest
-    // 写入之前 —— 此时做 WAL-only 写入（不 checkpoint，主 DB 文件不变）。
-    const writer = new DatabaseSync(f.dbPath);
-    const age: AgeAdapter = {
-      encrypt(input, recipient) {
-        writer.prepare("CREATE TABLE IF NOT EXISTS wal_probe (value TEXT)").run();
-        writer.prepare("INSERT INTO wal_probe VALUES (?)").run("wal-only-commit-after-snapshot");
-        return fakeAge().encrypt(input, recipient);
-      },
-    };
-    try {
-      // binding 已在快照后立即固定：发布前只与该 immutable binding 比较，禁止重新
-      // 采集替换基准 —— 因此 WAL-only 写入必须让备份失败，绝不发布。
-      await expect(createSqliteBackup({ paths: makePaths(f), backupKind: "pre-reset", age }))
-        .rejects.toThrow(/source SQLite WAL changed after the backup was taken/);
-      expect(existsSync(f.backupRoot) ? readdirSync(f.backupRoot) : []).toEqual([]);
-    } finally { writer.close(); }
-    // 零删除：源数据完好。
-    expect(existsSync(path.join(f.dataDir, "sessions", "s1", "history.jsonl"))).toBe(true);
-  });
-
-  it("keeps the published pre-reset manifest binding immutable from the verified snapshot state", async () => {
-    const f = fixture();
-    writeFileSync(path.join(f.dataDir, "sessions", "s1", "history.jsonl"), '{"type":"session"}\n', { mode: 0o600 });
-    const result = await createSqliteBackup({ paths: makePaths(f), backupKind: "pre-reset", age: fakeAge() });
-    expect(result.finalPath).toBeTruthy();
-    const binding = result.manifest?.sourceTreeBinding;
-    expect(binding).toBeDefined();
-    // manifest 写入的 binding 即快照时点的状态：与当前磁盘状态一致（无后续写入）。
-    expect(binding?.db.sha256).toBe(createHash("sha256").update(readFileSync(f.dbPath)).digest("hex"));
-    expect(binding?.wal.exists).toBe(false);
   });
 
   it("rejects the resolved custom credential location by path, never by the auth.json file name", async () => {

@@ -8,14 +8,43 @@ export type MigrationGateMode = "off" | "verify";
 const MIGRATION_GATE_MODES = new Set<MigrationGateMode>(["off", "verify"]);
 
 /**
- * startServer 入口的 migrationGate 运行时校验（failclosed）：只接受精确字面量 "off" / "verify"；
- * undefined/null → "off"（默认）。任何其他值（JS/typed bypass）在创建任何资源之前拒绝启动，
- * 且回显时绝不包含原始值（统一消息，不泄漏配置内容）。
+ * startServer 入口的 migrationGate 运行时校验：只接受精确字面量 "off" / "verify"；
+ * undefined/null → "verify"。`off` 仅在随后 enforceDataModeGate 中被统一拒绝；将
+ * 词法校验与部署策略分开保留状态对象/测试隔离兼容性。
  */
 export function validateMigrationGate(value: unknown): MigrationGateMode {
-  if (value === undefined || value === null) return "off";
+  if (value === undefined || value === null) return "verify";
   if (MIGRATION_GATE_MODES.has(value as MigrationGateMode)) return value as MigrationGateMode;
   throw new Error('migrationGate 只支持 "off" / "verify"（当前值不回显），收到未知值时拒绝启动');
+}
+
+/**
+ * 数据模式保留用于区分部署配置，但不改变启动迁移安全边界：所有模式都必须先离线建立
+ * 并 verify 单一基线；服务启动不接受 off，也不执行 bootstrap/migration/reset。
+ */
+export type DataMode = "managed" | "rc";
+
+const DATA_MODES = new Set<DataMode>(["managed", "rc"]);
+
+/**
+ * startServer 入口的 dataMode 运行时校验（failclosed）：只接受精确字面量 "managed" / "rc"；
+ * undefined/null → "managed"（Phase 3 默认）。任何其他值（JS/typed bypass）在创建任何资源
+ * 之前拒绝启动，且回显时绝不包含原始值（统一消息，不泄漏配置内容）。
+ */
+export function validateDataMode(value: unknown): DataMode {
+  if (value === undefined || value === null) return "managed";
+  if (DATA_MODES.has(value as DataMode)) return value as DataMode;
+  throw new Error('dataMode 只支持 "managed" / "rc"（当前值不回显），收到未知值时拒绝启动');
+}
+
+/**
+ * managed/rc 仅为部署分类；两者均必须先离线迁移并 verify，服务启动不能自行
+ * bootstrap baseline 或接受 migrationGate="off"。
+ */
+export function enforceDataModeGate(_dataMode: DataMode, gate: MigrationGateMode): void {
+  if (gate === "off") {
+    throw new Error('dataMode=managed 必须搭配 migrationGate "verify"；migrationGate "off" 已删除，服务必须先由离线 migration 建立并 verify 基线（当前值不回显）');
+  }
 }
 
 /** 安全 label：只暴露方言名，绝不包含连接串/主机/路径。 */
@@ -25,8 +54,8 @@ export type StorageDialectLabel = "sqlite" | "postgres" | "unknown";
  * 进程级运行状态（可注入、可原地更新）。
  * - ready：安全启动已完成（存储初始化成功、选用的 migration gate 通过、listen 成功）；
  *   启动失败时进程根本不会监听，ready 恒为 false。
- * - migrationGateVerified：仅当启用 gate（"verify"）且启动校验通过时为 true；
- *   "off" 时恒为 false——ready=true + gate=off 只代表 RC bootstrap 完成，不背书 schema。
+ * - migrationGateVerified：服务入口只会注入 verify，且仅在启动门禁通过时为 true；
+ *   off 仅是非生产状态对象兼容值。
  */
 export type OperationStatus = {
   ready: boolean;
@@ -47,7 +76,8 @@ export function processStartTimestamp(): number {
 const DEFAULT_OPERATION_STATUS: Omit<OperationStatus, "processStartedAt"> = {
   ready: false,
   readyAt: null,
-  migrationGate: "off",
+  // 与 Phase 3 默认一致：gate 缺省 = "verify"（未校验通过 → 恒 not-ready，failclosed）。
+  migrationGate: "verify",
   migrationGateVerified: false,
   storageDialect: "unknown",
 };
@@ -67,19 +97,16 @@ export type ReadyzBody = {
   ready: boolean;
   migrationGate: MigrationGateMode;
   /**
-   * schema 背书语义：
-   * - migrationGate=off → 恒为 "rc-bootstrap"（明确不是 schema 背书）；
-   * - migrationGate=verify + 校验通过 → "migration-head"；
-   * - migrationGate=verify 但未校验通过 → "not-verified"（配合 ready=false）；
-   * - "unknown" 仅用于 failclosed 兜底（含迁移 gate 值未知/状态读取异常）。
+   * schema 背书语义：服务启动只接受 verify；成功为 "migration-head"，否则为
+   * "not-verified"。"rc-bootstrap" 仅保留给非生产状态对象兼容测试。
    */
   schema: "rc-bootstrap" | "migration-head" | "not-verified" | "unknown";
 };
 
 /**
  * Failclosed 有效 readiness（P2）：`ready === true` **且**（gate=off，或 gate=verify 且已校验通过）
- * **且** storageDialect 已知（非 "unknown"）。任何不一致（ready=true 但 verify 未通过）、未知 gate 值
- * 或未知 dialect 一律不算 ready——/readyz 503、/metrics ready 0，绝不误报。
+ * **且** storageDialect 已知（非 "unknown"）。服务入口永不注入 off；它只保留给非生产状态对象。
+ * 任何不一致、未知 gate 值或未知 dialect 一律不算 ready。
  */
 export function isEffectiveReady(
   ops: Pick<
@@ -91,13 +118,12 @@ export function isEffectiveReady(
   if (ops.storageDialect === "unknown") return false;
   if (ops.migrationGate === "off") return true;
   if (ops.migrationGate === "verify") return ops.migrationGateVerified === true;
-  // 未知 gate 值：状态对象损坏，failclosed。
   return false;
 }
 
 /**
  * /readyz 渲染。对未知 migrationGate 值抛错（failclosed），由路由统一返回最小兜底体
- * （{ready:false, migrationGate:"off", schema:"unknown"}），与本模块不泄漏内部细节的原则一致。
+ * （{ready:false, migrationGate:"verify", schema:"unknown"}），与本模块不泄漏内部细节的原则一致。
  */
 export function readyzBody(
   ops: Pick<OperationStatus, "ready" | "migrationGate" | "migrationGateVerified" | "storageDialect">,

@@ -240,10 +240,6 @@ describeGate("WP5D-4 real PostgreSQL owner-transfer gate (random isolated schema
           databaseUrl: environment.PI_DATABASE_URL,
           paths: { dataDir: paths.dataDir, agentDir: paths.agentDir, authPath: paths.authPath, backupRoot: paths.backupRoot, ageRecipientFile: paths.ageRecipientFile },
           backupKind: "pre-owner-transfer",
-          allowPublicSchema: true,
-          // Owner-transfer backups are always strict; the fixture is complete, so
-          // the strict gate passes and every reference must be present.
-          requireCompleteSessionReferences: true,
         }),
         verifyBackup: verifyPublishedBackup,
         revalidateBeforeTransfer: (verification) => gate.revalidate(verification),
@@ -361,10 +357,10 @@ describeGate("WP5D-4 real PostgreSQL owner-transfer gate (random isolated schema
     cleanupDirs.push(root);
     const fixture = writeFixture(root, MISSING_IDS, false);
     // The ghost reference uses the real project-session layout, but its file is
-    // absent. This makes strict completeness, rather than unsafe layout, fail.
+    // absent. Under missing-as-empty (Phase 3), the pre-owner-transfer backup
+    // still publishes and the transfer proceeds.
     const ghostFile = path.join(fixture.dataDir, "projects", MISSING_IDS.projectId, "sessions", MISSING_IDS.ghostSessionId, "history.jsonl");
     await admin!.query(`INSERT INTO ${ident(schema)}.sessions (id, owner_key, project_id, title, created_at, updated_at, pi_session_file, capability_versions) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`, [MISSING_IDS.ghostSessionId, SOURCE_OWNER, MISSING_IDS.projectId, "t", 1, 1, ghostFile, "{}"]);
-    const before = await readOwners(schema);
     const databaseName = await currentDatabaseName();
 
     const cli = parseOwnerTransferArgs([
@@ -383,30 +379,32 @@ describeGate("WP5D-4 real PostgreSQL owner-transfer gate (random isolated schema
     const pool = createPostgresPool(environment.PI_DATABASE_URL, { connectionTimeoutMillis: 5_000, statementTimeoutMs: 20_000, queryTimeoutMs: 20_000 });
     const gate = openPostgresOwnerTransferGate(pool, databaseName, schema, SOURCE_OWNER, TARGET_OWNER);
     try {
-      await expect(runOwnerTransfer(authorizeOwnerTransfer(cli), {
+      // Missing-as-empty（Phase 3 已确认语义）：pre-owner-transfer 备份照常发布，
+      // 缺失引用记入 manifest；owner 转移不受影响并成功完成。
+      const report = await runOwnerTransfer(authorizeOwnerTransfer(cli), {
         createBackup: () => createPostgresBackup({
           storageDialect: "postgres",
           databaseUrl: environment.PI_DATABASE_URL,
           paths: { dataDir: paths.dataDir, agentDir: paths.agentDir, authPath: paths.authPath, backupRoot: paths.backupRoot, ageRecipientFile: paths.ageRecipientFile },
           backupKind: "pre-owner-transfer",
-          allowPublicSchema: true,
-          requireCompleteSessionReferences: true,
         }),
         verifyBackup: verifyPublishedBackup,
         revalidateBeforeTransfer: (verification) => gate.revalidate(verification),
         transfer: () => gate.transfer("apply"),
-      }, { dialect: "PostgreSQL", sourceSubjectHash: subjectHashForIp(SOURCE), targetSubjectHash: subjectHashForIp(TARGET) })).rejects.toThrow(/strict completeness: 1 session reference/);
-
-      // Zero owner changes.
+      }, { dialect: "PostgreSQL", sourceSubjectHash: subjectHashForIp(SOURCE), targetSubjectHash: subjectHashForIp(TARGET) });
+      expect(report.status).toBe("success");
+      expect(report.backup.kind).toBe("pre-owner-transfer");
+      // 缺失引用不阻止转移：owner 行照常转移（包括 ghost session）。
       const after = await readOwners(schema);
-      expect(after).toEqual(before);
-
-      // No COMPLETE marker / no published package: the strict gate fails the
-      // backup before the backup root is materialized.
-      if (existsSync(fixture.backupRoot)) {
-        const packages = readdirSync(fixture.backupRoot);
-        expect(packages.filter((entry) => entry.startsWith("backup-"))).toHaveLength(0);
-      }
+      expect(after.projects[DEFAULT_PROJECT_ID]).toBe("");
+      expect(after.projects[MISSING_IDS.projectId]).toBe(TARGET_OWNER);
+      expect(after.sessions[MISSING_IDS.defaultSessionId]).toBe(TARGET_OWNER);
+      expect(after.sessions[MISSING_IDS.projectSessionId]).toBe(TARGET_OWNER);
+      expect(after.sessions[MISSING_IDS.ghostSessionId]).toBe(TARGET_OWNER);
+      // 备份已发布：backup root 下存在带 COMPLETE 的包。
+      const packages = existsSync(fixture.backupRoot) ? readdirSync(fixture.backupRoot).filter((entry) => entry.startsWith("backup-")) : [];
+      expect(packages.length).toBe(1);
+      expect(existsSync(path.join(fixture.backupRoot, packages[0]!, "COMPLETE"))).toBe(true);
     } finally {
       await gate.cleanup();
       await pool.end().catch(() => undefined);

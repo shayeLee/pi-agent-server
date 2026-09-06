@@ -70,8 +70,6 @@ describe("owner-transfer CLI error boundary (unit)", () => {
     expect(kept.message).toContain("merge is not supported");
     const verifyKept = renderOwnerTransferCliError(new Error("owner-transfer: post-transfer verification failed: the source owner still holds resources; rolling back"));
     expect(verifyKept.message).toContain("the source owner still holds resources; rolling back");
-    const strict = renderOwnerTransferCliError(new Error("backup: strict completeness: 1 session reference(s) are missing; refusing to publish an incomplete backup"));
-    expect(strict.message).toMatch(/strict completeness: 1 session reference/);
     // Raw pg/client text is never passed through.
     const withSecrets = renderOwnerTransferCliError(new Error("connect ECONNREFUSED 192.168.1.9:5432 postgres://user:pass@192.168.1.9/db /private/tmp/secret/path.sql"));
     expect(withSecrets.code).toBe("connection");

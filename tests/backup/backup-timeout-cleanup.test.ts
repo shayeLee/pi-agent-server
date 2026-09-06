@@ -6,6 +6,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { Readable, Writable } from "node:stream";
 import { afterEach, describe, expect, it } from "vitest";
+import { migrationChecksum, migrationDefinitions } from "../../src/storage/migration-manifest.js";
+import { createCanonicalSqliteBaseline } from "./sqlite-fixture.js";
 import {
   AGE_PROCESS_TIMEOUT_MS,
   createSqliteBackup,
@@ -14,7 +16,7 @@ import {
 } from "../../src/backup/backup-core.js";
 import {
   createPgProcessAdapter,
-  createPostgresBackup,
+  createPostgresBackupForTest,
   type PgBackupPool,
   type PgBackupPoolClient,
   type PgProcessAdapter,
@@ -57,8 +59,7 @@ function baseFixture(prefix: string): {
 function sqliteDb(dataDir: string): string {
   const dbPath = path.join(dataDir, "pi-agent-server.db");
   const db = new DatabaseSync(dbPath);
-  db.exec("CREATE TABLE sessions (id TEXT PRIMARY KEY, pi_session_file TEXT)");
-  db.exec("CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name TEXT, checksum TEXT, applied_at INTEGER)");
+  createCanonicalSqliteBaseline(db);
   db.close();
   return dbPath;
 }
@@ -117,7 +118,7 @@ function pgSourceClient(fixture: ReturnType<typeof baseFixture>) {
         const table = values?.[1];
         return { rows: [{ present: table === "schema_migrations" || table === "sessions" }] as unknown as readonly T[] };
       }
-      if (text.includes("FROM \"app_schema\".\"schema_migrations\"")) return { rows: [{ version: 0, name: "initial-schema", checksum: "a".repeat(64), applied_at: 1 }] as unknown as readonly T[] };
+      if (text.includes("FROM \"app_schema\".\"schema_migrations\"")) return { rows: [{ version: 0, name: "initial-schema", checksum: migrationChecksum(migrationDefinitions[0]!), applied_at: 1 }] as unknown as readonly T[] };
       if (text.includes("FROM \"app_schema\".\"sessions\"")) return { rows: [{ id: "session-1", pi_session_file: session }] as unknown as readonly T[] };
       throw new Error(`unexpected fake source query: ${text}`);
     },
@@ -172,7 +173,7 @@ describe("stage timeout cleanup: hung pg_dump child (confirmed settle, zero leak
       },
     };
     const started = Date.now();
-    const error = await createPostgresBackup({
+    const error = await createPostgresBackupForTest({
       storageDialect: "postgres",
       databaseUrl: "postgres://u:p@example.test/source_db",
       paths: { dataDir: fixture.dataDir, backupRoot: fixture.backupRoot, ageRecipientFile: fixture.recipient },
@@ -181,7 +182,7 @@ describe("stage timeout cleanup: hung pg_dump child (confirmed settle, zero leak
       pgPool: source.pool,
       pgProcess: hungDump,
       stageTimeoutMs: { pgDump: 400 },
-    }).catch((caught: unknown) => caught);
+}, async () => ({ version: 0, pending: 0 })).catch((caught: unknown) => caught);
     // The rejection happened ONLY after the aborted action really settled:
     // never earlier, and bounded by the confirmed settle (not an unbounded hang).
     expect(settledAt).toBeGreaterThan(0);
@@ -243,7 +244,7 @@ describe("stage timeout cleanup: hung pg_dump child (confirmed settle, zero leak
     }) as unknown as typeof spawn;
     const adapter = createPgProcessAdapter(spawnImpl);
     const started = Date.now();
-    const error = await createPostgresBackup({
+    const error = await createPostgresBackupForTest({
       storageDialect: "postgres",
       databaseUrl: "postgres://u:p@example.test/source_db",
       paths: { dataDir: fixture.dataDir, backupRoot: fixture.backupRoot, ageRecipientFile: fixture.recipient },
@@ -252,7 +253,7 @@ describe("stage timeout cleanup: hung pg_dump child (confirmed settle, zero leak
       pgPool: source.pool,
       pgProcess: adapter,
       stageTimeoutMs: { pgDump: 300 },
-    }).catch((caught: unknown) => caught);
+}, async () => ({ version: 0, pending: 0 })).catch((caught: unknown) => caught);
     // The run promise was NOT settled by the kill error: the gate rejected the
     // timeout only after the killed child's close was confirmed, and only then
     // did the transaction rollback / staging removal run.

@@ -15,7 +15,7 @@ scheduler → fixed backup CLI → published report → textfile
 
 只使用合成 SQLite/PostgreSQL fixture、测试 age recipient/identity、隔离 backup root、textfile 目录和 receiver。不得使用正式数据库、JSONL、密钥、服务、备份目录或监控接收方。
 
-最新 missing-as-empty 机器报告语义尚未实现；代码目标落地前本 SOP 为 **NO-GO**。
+missing-as-empty 机器报告语义已随 backup/restore 目标语义落地（见 [backup-restore.md](backup-restore.md#2-已落地语义)）；实际演练仍为 NO-GO（未授权、未执行）。
 
 ## 2. Preflight
 

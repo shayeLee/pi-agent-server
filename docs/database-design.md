@@ -1,6 +1,6 @@
 # 数据库设计（RC / SQLite + PostgreSQL）
 
-> RC 阶段 SQLite 详细设计，单一事实来源的表/字段/约束/索引/查询、幂等与 file-operation outbox 规则。本文可独立阅读，但源码为准：schema 定义与建库 DDL 的**唯一来源**是 `src/storage/schema-manifest.ts`（当前 head 为 v1，运行时 Manifest 含编译期/运行期校验），`DatabaseSchema` 类型由其推导（`src/storage/schema-types.ts`，`db-schema.ts` 仅为兼容 re-export）；查询与存储规则见 `src/storage/kysely-*-repository.ts` / `src/runtime/runtime-registry.ts` / `src/application/ports/*-store-port.ts`。
+> RC 阶段 SQLite 详细设计，单一事实来源的表/字段/约束/索引/查询、幂等与 file-operation outbox 规则。本文可独立阅读，但源码为准：schema 定义与建库 DDL 的**唯一来源**是 `src/storage/schema-manifest.ts`（当前为唯一 canonical baseline，运行时 Manifest 含编译期/运行期校验），`DatabaseSchema` 类型由其推导（`src/storage/schema-types.ts`，`db-schema.ts` 仅为兼容 re-export）；查询与存储规则见 `src/storage/kysely-*-repository.ts` / `src/runtime/runtime-registry.ts` / `src/application/ports/*-store-port.ts`。
 >
 > **当前状态**：RC 阶段 SQLite + PostgreSQL 双方言，schema Manifest 为唯一来源。WP4A 的 `file_operations` 持久
 > outbox 保留（删除事务只 enqueue，绝不物理删除文件）；WP4B 提供安全只读 planner（物理 executor 包括 unlink、
@@ -12,7 +12,7 @@
 
 - **当前形态**：RC（Release Candidate）阶段的 SQLite schema，以 Kysely 0.29.5 + `node:sqlite` 薄适配器 + `SqliteDialect` 承载。
 - **源码依据**：
-  - **Schema 唯一来源（已落地，当前 v1）**：`src/storage/schema-manifest.ts` 的 `schemaManifest`（`defineSchema` 返回值）声明全部表/列/逻辑类型/nullable/default/PK/FK/索引，经编译期字面量校验（PK/FK/索引列必须引用已声明列，FK 目标表/列须存在）+ 运行期结构校验（唯一性/声明顺序/枚举值）后深冻结；
+  - **Schema 唯一来源（已落地，唯一 canonical baseline）**：`src/storage/schema-manifest.ts` 的 `schemaManifest`（`defineSchema` 返回值）声明全部表/列/逻辑类型/nullable/default/PK/FK/索引，经编译期字面量校验（PK/FK/索引列必须引用已声明列，FK 目标表/列须存在）+ 运行期结构校验（唯一性/声明顺序/枚举值）后深冻结；
   - 类型推导：`src/storage/schema-types.ts` 从 manifest 推导 `DatabaseSchema`（逻辑列类型 → TS 类型：uuid/text/json→`string`、integer/bigint→`number`，nullable 追加 `| null`）；`src/storage/db-schema.ts` 只做 `DatabaseSchema` 的兼容 re-export（不再手写表 interface）；
   - 建库 DDL：`src/storage/bootstrap.ts` 的 `initializeDatabase()` 消费 Manifest，仅做逻辑类型→SQLite 物理类型映射并用 `Kysely.schema.createTable(...)` / `createIndex(...)` 幂等建表/索引/外键（全部 `IF NOT EXISTS`）；
   - 行映射与查询：`src/storage/kysely-project-repository.ts` / `kysely-session-repository.ts` / `kysely-idempotency-repository.ts` / `kysely-file-operation-repository.ts` 的 `toRecord()` 与 Port 实现；
@@ -21,9 +21,9 @@
 
 ### Schema Manifest 单一来源（已落地，工作包 B/WP4A）
 
-- **运行时 Schema Manifest 是唯一手工声明**：`src/storage/schema-manifest.ts` 的 `schemaManifest`（当前 v1）同时是字段/约束/索引的唯一来源与 `DatabaseSchema` 推导（`schema-types.ts`）的依据；不再有第二份手工字段定义。
+- **运行时 Schema Manifest 是唯一手工声明**：`src/storage/schema-manifest.ts` 的 `schemaManifest`（唯一 canonical baseline）同时是字段/约束/索引的唯一来源与 `DatabaseSchema` 推导（`schema-types.ts`）的依据；不再有第二份手工字段定义。
 - **`db-schema.ts` 仅为派生类型出口**：`DatabaseSchema` 由 Manifest 自动推导（逻辑列类型 → TS 类型，nullable 追加 `| null`），`db-schema.ts` 只 re-export，**不再手维护**，也没有各业务表或 `FileOperationsTable` 手工 interface；各 Repository 的行类型直接引用 `DatabaseSchema`，无第二份手工字段声明。
-- **bootstrap 只做方言映射**：`initializeDatabase()` 不再列出字段/索引/FK，而是消费 Manifest + SQLite 逻辑类型映射（`uuid/text/json → TEXT`、`integer/bigint → INTEGER`）逐表幂等建库；DDL 与当前已知 schema 一致（单列 PK 仍为列级内联，复合 PK 仍为命名约束 `idempotency_pk`，FK 仍 ON DELETE CASCADE，v0 的 4 个索引加上 v1 outbox 的 2 个索引）。唯一差异：主键列由 bootstrap 显式 `notNull()`（Manifest 校验也强制 PK 列不可 nullable）——较历史 DDL 更严格，但符合「主键值不可为 NULL」的业务语义。
+- **bootstrap 只做方言映射**：`initializeDatabase()` 不再列出字段/索引/FK，而是消费 Manifest + SQLite 逻辑类型映射（`uuid/text/json → TEXT`、`integer/bigint → INTEGER`）逐表幂等建库；DDL 与当前已知 schema 一致（单列 PK 仍为列级内联，复合 PK 仍为命名约束 `idempotency_pk`，FK 仍 ON DELETE CASCADE，完整基线的 6 个业务索引）。唯一差异：主键列由 bootstrap 显式 `notNull()`（Manifest 校验也强制 PK 列不可 nullable）——较历史 DDL 更严格，但符合「主键值不可为 NULL」的业务语义。
 - **校验双保险**：编译期在调用点拒绝非法 Manifest（`__schemaIssue` 字面量报错；含主键列不可 nullable、FK 源/目标列等长且非空；`@ts-expect-error` 负向用例见 `tests/storage/schema-types.test.ts`）；运行期 `defineSchema` 再做唯一性/顺序/枚举、主键列不可 nullable、FK 源/目标非空且等长、源/目标逻辑类型一致等校验并深冻结。本文其余内容（§3 表结构、§4 约束索引等）描述的就是该 Manifest 的实际定义（无手工副本）。
 - **PostgreSQL 方言**：PG bootstrap（`src/storage/postgres-bootstrap.ts`）从同一 Manifest 推导——逻辑类型映射为 uuid→`UUID`、text/json→`TEXT`、integer/bigint→`BIGINT`（json 保持 TEXT 非 JSONB），DDL 流程与 SQLite 共用 `src/storage/schema-builder.ts`；Repository 已方言中立化（`src/storage/kysely-*-repository.ts`，SQLite/PG 共用，约束错误 mapper 注入）；PG 需显式 `PI_STORAGE_DIALECT=postgres` + `PI_DATABASE_URL`（见 §9）。真实 PG 集成测试由 `PI_TEST_PG_URL` 门控（见 §9.6）。仍受 RC 限制（见 §7 非目标）。
 
@@ -108,7 +108,7 @@
 - **源码**：`idempotency` 表 4 列由 Manifest 声明；`bootstrap.ts` 以命名复合主键约束 `idempotency_pk`（`session_id, request_id`）建表。
 - **Repository**：`kysely-idempotency-repository.ts` 的 `get()` 解析 `result` JSON，`put()` 以 `onConflict(columns(["session_id","request_id"])).doUpdateSet({ result, created_at })` 覆盖，`prune(before)` 按 `created_at < before` 删除。
 
-### 3.4 file_operations（JSONL 文件副作用 outbox，v1）
+### 3.4 file_operations（JSONL 文件副作用 outbox）
 
 | 列名 | 类型 | 可空 | 语义 |
 | --- | --- | --- | --- |
@@ -208,9 +208,9 @@
 ### 非目标（当前不做）
 
 - **不建 `users` / `messages` 表**：用户身份由 `UserIdentity` 派生的 `owner_key` 字符串承载，无需用户表；完整消息正文在 `pi_session_file` 指向的 JSONL 中，不在数据库中镜像 `messages` 表（避免双写一致性与大文本存储问题）。
-- **服务启动不做自动迁移**：启动 migration 门禁当前默认 `off`（保持 RC 行为，schema 以 `IF NOT EXISTS` 面向空库/当前 schema）；`PI_MIGRATION_GATE=verify` 启用启动前**真只读** ledger/head 校验（空/legacy/落后库 fail-fast，绝不自动迁移/reset）。目标形态尚未实现：`PI_MIGRATION_GATE` 默认改为 `verify`，另增独立 `managed`/`rc` 数据模式；`managed` 强制使用 `verify`，所有模式均**不自动迁移**。旧库仍需显式离线 `scripts/migrate.ts` / cutover。服务 bootstrap 仍执行**严格 schema preflight（M1，非迁移）**：在任何建表/建索引 DDL 之前，库中已含任一 managed 表时要求完整物理契约一致，任何不一致立即失败且不执行 ALTER/补列/建表/建索引；全新/当前 v1 schema 不受影响。
+- **服务启动不做自动迁移**：数据模式 `PI_DATA_MODE`（默认 `managed`；`rc` = 显式 disposable）与启动门禁 `PI_MIGRATION_GATE`（默认 `verify`）已实现——服务启动仅接受 `verify`（显式 `off` 一律在任何资源创建前 fail-fast）；所有模式在启动路径都**绝不自动迁移/reset**。`verify` 启动前**真只读** ledger/head 校验（空/legacy/落后库 fail-fast，绝不自动迁移/reset）。非唯一 canonical baseline 或无 ledger 的旧库绝不自动采用；迁移引擎与服务 bootstrap 均 fail-fast。完全空 SQLite DB 或完全空 non-public/non-system PostgreSQL schema 必须先离线执行 `pnpm migrate -- --bootstrap-baseline --bootstrap-confirm CONFIRMED` 建立唯一 canonical baseline；该命令不可混用 backup/maintenance 参数且不会创建 pre-backup。服务 bootstrap 仍执行**严格 schema preflight（M1，非迁移）**：在任何建表/建索引 DDL 之前，库中已含任一 managed 表时要求完整物理契约一致，任何不一致立即失败且不执行 ALTER/补列/建表/建索引；全新/当前唯一 canonical baseline schema 不受影响。
 - **不做 SQLite→PostgreSQL 数据迁移**：当前无 SQLite→PG 数据迁移路径。
-- **WP1/WP4A 离线迁移基础**：`src/storage/migration-manifest.ts` 固化不可变 `schemaManifestV0` 并追加 v1 `schemaManifestV1`；`src/storage/migration-engine.ts` 使用自定义 `schema_migrations` ledger、稳定 checksum、SQLite `BEGIN IMMEDIATE` 与 PG advisory lock/transaction，v1 只新增 `file_operations`。`scripts/migrate.ts` 支持 `--dry-run`、`--apply`、`--verify`。该工具不执行删除、不处理文件副作用；相关离线工具（`pnpm file-ops` 安全只读 planner、`pnpm reconcile-jsonl` DB-only 分析）详见 [file-operations.md](file-operations.md) 与 [reconcile-jsonl.md](reconcile-jsonl.md)，不改变正常服务启动行为。
+- **WP1/WP4A 离线迁移基础（唯一 canonical baseline）**：`src/storage/migration-manifest.ts` 固化不可变唯一 canonical baseline（ledger version=0，manifest=完整 `schemaManifest`，含 `file_operations` 与 6 个业务索引）；`src/storage/migration-engine.ts` 使用自定义 `schema_migrations` ledger、稳定 checksum、SQLite `BEGIN IMMEDIATE` 与 PG advisory lock/transaction。`scripts/migrate.ts` 支持 `--bootstrap-baseline`、`--dry-run`、`--apply`、`--verify`：完全空 SQLite DB 或完全空 non-public/non-system PostgreSQL schema 必须使用 `--bootstrap-baseline --bootstrap-confirm CONFIRMED` 建立唯一 canonical baseline；该模式不 pre-backup 且拒绝 backup/maintenance 参数；`--apply` 只对已有唯一 canonical baseline 的数据库执行已验证 pre-backup→apply→verify；其他状态均 fail-fast。该工具不执行删除、不处理文件副作用；相关离线工具（`pnpm file-ops` 安全只读 planner、`pnpm reconcile-jsonl` DB-only 分析）详见 [file-operations.md](file-operations.md) 与 [reconcile-jsonl.md](reconcile-jsonl.md)，不改变正常服务启动行为。
 
 ### 未来扩展
 
@@ -248,7 +248,7 @@
 | `json` | `TEXT` | `TEXT`（**非 JSONB**，保持 JSON 文本往返语义） |
 
 - 表/列/主键/外键/索引声明仍全部来自 `schemaManifest`（唯一来源，见 §1）；`src/storage/schema-builder.ts` 是 Manifest→Kysely schema builder 的方言无关流程，SQLite（`bootstrap.ts`）与 PG（`postgres-bootstrap.ts`）只注入各自的物理类型映射。
-- 单列未命名主键（projects/sessions/file_operations）→ 列级 `PRIMARY KEY`（PG 默认约束名 `<table>_pkey`）；复合主键（idempotency）→ 命名约束 `idempotency_pk`；FK `sessions_project_id_fk` ON DELETE CASCADE；v0 的 4 个索引与 v1 outbox 的 2 个索引（含 `idx_sessions_owner_updated` 的 `updated_at DESC`）均与 SQLite 一致。
+- 单列未命名主键（projects/sessions/file_operations）→ 列级 `PRIMARY KEY`（PG 默认约束名 `<table>_pkey`）；复合主键（idempotency）→ 命名约束 `idempotency_pk`；FK `sessions_project_id_fk` ON DELETE CASCADE；完整基线的 6 个业务索引（含 `idx_sessions_owner_updated` 的 `updated_at DESC`）均与 SQLite 一致。
 - `request_id` / `result` / `capability_versions` / `file_operations.relative_path`：PG 侧均为 `TEXT`（json 逻辑类型不映射 JSONB）。
 
 ### 9.3 int8（BIGINT）读回为安全 JS number

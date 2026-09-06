@@ -26,7 +26,12 @@ import {
 import { StringDecoder } from "node:string_decoder";
 import { homedir } from "node:os";
 import path from "node:path";
-import { stableSerialize } from "../storage/migration-manifest.js";
+import { runSqliteMigrations } from "../storage/migration-engine.js";
+import {
+  migrationPrefixForLedger,
+  stableSerialize,
+  type MigrationLedgerSnapshot,
+} from "../storage/migration-manifest.js";
 
 const MAX_FILE_RETRIES = 3;
 const READ_CHUNK_SIZE = 64 * 1024;
@@ -44,11 +49,10 @@ export const AGE_PROCESS_TIMEOUT_MS = 60_000;
 
 type FileKind = "jsonl" | "config";
 /**
- * "pre-reset" is published only by the offline controlled-cutover tool (WP2A);
- * "pre-owner-transfer" only by the offline owner-transfer tool (WP5D-4). Both use
- * the full DB/WAL/SHM tree binding captured around the snapshot.
+ * "pre-owner-transfer" is published only by the offline owner-transfer tool
+ * (WP5D-4) and uses the full DB/WAL/SHM tree binding captured around the snapshot.
  */
-export type BackupKind = "sqlite-online" | "pre-migration" | "pre-reset" | "pre-owner-transfer";
+export type BackupKind = "sqlite-online" | "pre-migration" | "pre-owner-transfer";
 
 /** Per-call bound for one age child process. */
 export interface AgeEncryptFileOptions {
@@ -105,9 +109,8 @@ export interface BackupSourceRoots {
 /**
  * Stat fingerprint of the exact source SQLite database file at backup time
  * (dev/ino/nlink/mode/size/mtime + full-content SHA-256). It binds the
- * published package to that one file so a cutover can prove, immediately
- * before the destructive reset, that the database was not replaced, moved,
- * relinked, or modified after the backup.
+ * published package to that one file, binding the package to the backed-up
+ * database state without retaining any reset/cutover behavior.
  */
 export interface SqliteSourceBinding {
   readonly dialect: "sqlite";
@@ -125,7 +128,7 @@ export interface SqliteSourceBinding {
  * SHM sidecar): existence plus dev/ino/nlink/mode/size/mtime and, when the
  * file exists, its full-content SHA-256. `sha256` is null only for a
  * non-existent file; an existing file that cannot be fingerprinted stably
- * fails the pre-reset backup instead of being bound with a null hash.
+ * fails the bound backup instead of being recorded with a null hash.
  */
 export interface SqliteSourceFileBinding {
   readonly exists: boolean;
@@ -139,11 +142,10 @@ export interface SqliteSourceFileBinding {
 }
 
 /**
- * Pre-reset binding over the ENTIRE destructive SQLite file surface
- * (DB + WAL + SHM). Captured at snapshot-generation time (immediately around
- * the VACUUM INTO, never at the end of the backup), it lets a cutover prove
- * that none of the three files changed — including WAL-only commits that the
- * single-file binding cannot see — between the backup and the reset.
+ * Full DB/WAL/SHM binding for the owner-transfer recovery anchor. Captured at
+ * snapshot-generation time (immediately around the VACUUM INTO, never at the
+ * end of the backup), it detects WAL-only commits that a single-file binding
+ * cannot see before the anchor is published.
  */
 export interface SqliteSourceTreeBinding {
   readonly dialect: "sqlite";
@@ -179,8 +181,8 @@ export interface BackupManifest {
   /** Stat fingerprint binding the manifest to the exact backed-up DB file. */
   readonly sourceBinding: SqliteSourceBinding;
   /**
-   * Pre-reset only: full DB/WAL/SHM binding captured at snapshot-generation
-   * time. Older manifests (and non-pre-reset kinds) omit this field.
+   * Pre-owner-transfer only: full DB/WAL/SHM binding captured at
+   * snapshot-generation time. Other backup kinds omit this field.
    */
   readonly sourceTreeBinding?: SqliteSourceTreeBinding;
   readonly sourceRootsSha256: string;
@@ -253,7 +255,7 @@ export interface PostgresSnapshotIdentity {
 
 export interface PostgresBackupManifest {
   readonly format: "pi-agent-server.backup-manifest.v1";
-  readonly kind: "postgresql" | "pre-migration" | "pre-reset" | "pre-owner-transfer";
+  readonly kind: "postgresql" | "pre-migration" | "pre-owner-transfer";
   readonly dialect: "PostgreSQL";
   readonly createdAt: string;
   readonly sourceRoots: PostgresBackupSourceRoots;
@@ -292,20 +294,6 @@ export interface BackupOptions {
   /** The published manifest kind. Pre-migration is only selected by the offline migration CLI. */
   readonly backupKind?: BackupKind;
   readonly dryRun?: boolean;
-  /**
-   * Opt-in strict completeness gate (CLI: `--require-complete-session-references`).
-   * When true, ANY missing whitelisted session reference fails the backup
-   * fail-closed BEFORE any publish/COMPLETE (dry-run included), with a stable
-   * desensitized error (count only). The gate is bound to the FINAL snapshot,
-   * not to the pre-staging inspection: SQLite re-reads the reference set from
-   * the finished VACUUM INTO snapshot and re-validates it against the exact
-   * payload collection (closing the inspect→snapshot online-write window), and
-   * PostgreSQL reads references inside the same snapshot-exporting
-   * transaction the dump consumes. Default (absent/false) keeps the legacy
-   * compatible behavior: missing references are recorded in the encrypted
-   * manifest and the backup still publishes.
-   */
-  readonly requireCompleteSessionReferences?: boolean;
   readonly age?: AgeAdapter;
   /** Hard per-child age budget; defaults to AGE_PROCESS_TIMEOUT_MS (see its sizing note). */
   readonly ageProcessTimeoutMs?: number;
@@ -553,12 +541,6 @@ function fingerprint(file: string): Fingerprint {
   }
 }
 
-function parseJsonLine(line: string, sourcePath: string): void {
-  if (line.trim() === "") fail(`JSONL file contains a blank/partial line: ${path.basename(sourcePath)}`);
-  try { JSON.parse(line); }
-  catch { fail(`JSONL file is not stable JSONL: ${path.basename(sourcePath)}`); }
-}
-
 async function readStableSource(plan: PlannedSourceFile, tempRoot: string): Promise<PreparedSource> {
   let lastReason = "source changed";
   for (let attempt = 0; attempt < MAX_FILE_RETRIES; attempt++) {
@@ -572,9 +554,13 @@ async function readStableSource(plan: PlannedSourceFile, tempRoot: string): Prom
       if (!statIsRegularSingleLink(before)) throw new Error("source is not a single-link regular file");
       out = openSync(temp, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL, 0o600);
       const hash = createHash("sha256");
-      const decoder = new StringDecoder("utf8");
-      let pending = "";
+      // JSONL session histories are OPAQUE bytes at backup time: no JSON.parse
+      // and no line inspection here. Content validity is a restore-time concern
+      // (invalid-as-empty degrades the session history to a NULL reference; it
+      // never fails the backup). AgentDir config (models.json) is still
+      // validated as JSON so a broken config cannot silently enter the package.
       let configText = "";
+      const decoder = new StringDecoder("utf8");
       const buffer = Buffer.allocUnsafe(READ_CHUNK_SIZE);
       let total = 0;
       while (total < before.size) {
@@ -584,21 +570,10 @@ async function readStableSource(plan: PlannedSourceFile, tempRoot: string): Prom
         hash.update(chunk);
         writeAll(out, chunk);
         total += count;
-        const text = decoder.write(chunk);
-        if (plan.kind === "jsonl") {
-          pending += text;
-          const lines = pending.split(/\n/);
-          pending = lines.pop()!;
-          for (const line of lines) parseJsonLine(line.endsWith("\r") ? line.slice(0, -1) : line, plan.sourcePath);
-        } else configText += text;
+        if (plan.kind === "config") configText += decoder.write(chunk);
       }
-      const tail = decoder.end();
-      if (plan.kind === "jsonl") {
-        pending += tail;
-        if (pending.endsWith("\r")) pending = pending.slice(0, -1);
-        if (pending !== "") parseJsonLine(pending, plan.sourcePath);
-      } else {
-        configText += tail;
+      if (plan.kind === "config") {
+        configText += decoder.end();
         try { JSON.parse(configText); } catch { fail(`models.json is not valid JSON: ${path.basename(plan.sourcePath)}`); }
       }
       const after = fstatSync(fd);
@@ -699,57 +674,19 @@ function defaultSessionReferences(db: DatabaseSync): readonly SessionFileReferen
 }
 
 /**
- * Opt-in strict completeness gate, shared by the SQLite and PostgreSQL cores.
- * When enabled, any missing session reference fails the backup fail-closed
- * BEFORE any publish/COMPLETE (dry-run included). The error is stable and
- * desensitized: only the count is reported — never a session id, path, or
- * reference detail.
- *
- * The gate is bound to the FINAL snapshot, not to the pre-staging
- * inspection: `createSqliteBackup` re-reads the reference set from the
- * finished VACUUM INTO snapshot and re-validates it against the exact
- * payload collection, so a concurrent writer that slips a change into the
- * inspect→snapshot window still fails the backup closed; PostgreSQL reads
- * references inside the same snapshot-exporting transaction the dump
- * consumes (see `assertStrictSnapshotCompleteness`).
+ * Official completed-live references must stay inside the whitelisted roots and
+ * the payload collection. Missing references are recorded (missing-as-empty)
+ * and never fail the backup; they are published in the manifest so the restore
+ * can normalize the corresponding sessions.pi_session_file to NULL.
  */
-export function assertStrictCompleteness(requireComplete: boolean | undefined, missing: readonly MissingSessionReference[]): void {
-  if (requireComplete !== true || missing.length === 0) return;
-  fail(`strict completeness: ${missing.length} session reference(s) are missing; refusing to publish an incomplete backup`);
-}
-
 /**
- * Strict-mode re-verification bound to the FINAL SQLite snapshot. The
- * inspection-time reference check runs before any staging exists; a
- * concurrent writer can still add/change a session row, delete a referenced
- * JSONL file, or point at a file created after inspection between that
- * inspection and the VACUUM INTO. Strict therefore re-reads the reference
- * set from the finished snapshot and re-validates it against the exact
- * payload collection (`files`): any gap fails the backup closed BEFORE any
- * ciphertext publish/COMPLETE with the same stable desensitized count-only
- * error, and the cleanup path removes both staging surfaces. A fire-and-
- * forget reference that is not part of the collected payload (for example a
- * row added while the backup was running) fails identically instead of
- * silently widening or shrinking the payload.
+ * Bind a session-reference set to a payload plan without another directory walk.
+ * References are read from the final DB snapshot; a file newly referenced between
+ * the initial collection and that snapshot is added by its exact whitelisted
+ * path. This closes the inspect→VACUUM reference gap without introducing a
+ * whole-DATA_DIR scanner. Missing files remain explicit missing-as-empty rows.
  */
-function assertStrictSnapshotCompleteness(options: BackupOptions, snapshotPath: string, dataDir: string, files: readonly PlannedSourceFile[]): void {
-  if (options.requireCompleteSessionReferences !== true) return;
-  let snapshotDb: DatabaseSync | undefined;
-  try {
-    try { snapshotDb = new DatabaseSync(snapshotPath, { readOnly: true, timeout: 5000 }); }
-    catch { fail("SQLite snapshot could not be re-opened for the strict completeness re-check"); }
-    const query = options.querySessionReferences ?? defaultSessionReferences;
-    const snapshotMissing = validateReferences(query(snapshotDb), dataDir, files);
-    // Same stable desensitized error (count only) as the inspection-time gate.
-    assertStrictCompleteness(true, snapshotMissing);
-  } finally {
-    if (snapshotDb) {
-      try { snapshotDb.close(); } catch { /* a close failure must not mask the original error */ }
-    }
-  }
-}
-
-export function validateReferences(references: readonly SessionFileReference[], dataDir: string, files: readonly PlannedSourceFile[]): MissingSessionReference[] {
+export function bindReferencesToPayload(references: readonly SessionFileReference[], dataDir: string, files: readonly PlannedSourceFile[]): { files: PlannedSourceFile[]; missing: MissingSessionReference[] } {
   const roots = [path.join(dataDir, "sessions"), path.join(dataDir, "projects")];
   const byPath = new Map(files.map((file) => [canonicalForComparison(file.sourcePath), file]));
   const missing: MissingSessionReference[] = [];
@@ -763,26 +700,43 @@ export function validateReferences(references: readonly SessionFileReference[], 
     if (!roots.some((root) => isWithin(root, resolved))) fail("sessions.pi_session_file points outside the whitelisted data roots");
     if (!resolved.endsWith(".jsonl")) fail("sessions.pi_session_file is not a .jsonl file");
     const relativePath = path.relative(dataDir, resolved).split(path.sep).join("/");
+    if (!isExpectedSessionLayout(relativePath)) fail("sessions.pi_session_file has an unexpected session layout");
     if (!existsSync(resolved)) {
       missing.push({ sessionId: reference.sessionId, path: relativePath, status: "missing" });
       continue;
     }
     validateRegular(resolved, "referenced session file");
-    // Reachable both for genuinely excluded files (auth-file) and for files
-    // created after the whitelist collection that the payload will not
-    // contain; either way the reference is not part of the payload.
-    if (!byPath.has(resolved)) fail("sessions.pi_session_file points to a file that is not part of the whitelisted payload collection");
+    if (!byPath.has(resolved)) byPath.set(resolved, { sourcePath: resolved, relativePath, kind: "jsonl" });
   }
-  return missing;
+  return { files: [...byPath.values()].sort((a, b) => a.relativePath.localeCompare(b.relativePath)), missing };
+}
+
+export function validateReferences(references: readonly SessionFileReference[], dataDir: string, files: readonly PlannedSourceFile[]): MissingSessionReference[] {
+  return bindReferencesToPayload(references, dataDir, files).missing;
+}
+
+function assertCanonicalSingleBaselineLedger(ledger: BackupManifest["migrationLedger"], label: string): void {
+  if (!ledger.present) fail(`${label} has no authenticated migration ledger; refusing to create a backup`);
+  try {
+    const prefix = migrationPrefixForLedger(ledger as MigrationLedgerSnapshot);
+    if (prefix.length !== 1 || prefix[0]!.version !== 0) {
+      fail(`${label} is not the canonical single-baseline migration ledger; refusing to create a backup`);
+    }
+  } catch (error) {
+    if (error instanceof Error && error.message.startsWith("backup:")) throw error;
+    fail(`${label} is not the canonical single-baseline migration ledger; refusing to create a backup`);
+  }
 }
 
 function migrationLedgerSummary(db: DatabaseSync): BackupManifest["migrationLedger"] {
   const table = db.prepare("SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'").get();
-  if (!table) return { present: false, appliedCount: 0, appliedVersion: null, checksums: [], rows: [], pending: 0 };
+  if (!table) fail("source SQLite migration ledger is missing; refusing to create a backup");
   const rows = db.prepare("SELECT version, name, checksum, applied_at FROM schema_migrations ORDER BY version").all() as Array<{ version: unknown; name: unknown; checksum: unknown; applied_at: unknown }>;
   if (rows.some((row) => !Number.isSafeInteger(row.version) || Number(row.version) < 0 || typeof row.name !== "string" || typeof row.checksum !== "string" || row.checksum.length === 0 || !Number.isSafeInteger(row.applied_at) || Number(row.applied_at) < 0)) fail("migration ledger contains malformed rows");
   const normalized = rows.map((row) => ({ version: Number(row.version), name: row.name as string, checksum: row.checksum as string, applied_at: Number(row.applied_at) }));
-  return { present: true, appliedCount: normalized.length, appliedVersion: normalized.length === 0 ? null : normalized.at(-1)!.version, checksums: normalized.map((row) => row.checksum), rows: normalized, pending: 0 };
+  const ledger = { present: true, appliedCount: normalized.length, appliedVersion: normalized.length === 0 ? null : normalized.at(-1)!.version, checksums: normalized.map((row) => row.checksum), rows: normalized, pending: 0 };
+  assertCanonicalSingleBaselineLedger(ledger, "source SQLite migration ledger");
+  return ledger;
 }
 
 function sourceRootsSha256(sourceRoots: BackupSourceRoots): string {
@@ -824,7 +778,7 @@ function fileBinding(file: string, label: string): SqliteSourceFileBinding {
 }
 
 /**
- * Full DB/WAL/SHM fingerprint for the pre-reset binding. Existence is part of
+ * Full DB/WAL/SHM fingerprint for the owner-transfer recovery binding. Existence is part of
  * the binding; every existing file must hash stably (a concurrently growing
  * WAL fails the capture instead of being bound with an unstable hash).
  */
@@ -846,7 +800,7 @@ function assertFileBindingUnchanged(label: string, before: SqliteSourceFileBindi
 }
 
 /**
- * Post-snapshot stability gate (pre-reset only): the main DB must be strictly
+ * Post-snapshot stability gate (owner-transfer only): the main DB must be strictly
  * unchanged across the VACUUM INTO; a pre-existing WAL must remain
  * byte-identical (any concurrent commit fails); creation of an EMPTY (0-byte)
  * WAL by the snapshot's own read transaction is tolerated because it carries
@@ -859,12 +813,12 @@ function assertPreResetSnapshotStable(before: SqliteSourceTreeBinding, after: Sq
   if (before.wal.exists) {
     assertFileBindingUnchanged("WAL", before.wal, after.wal);
   } else if (after.wal.exists && after.wal.size !== 0) {
-    fail("the source SQLite WAL gained content during the snapshot; refusing to publish a pre-reset backup over a concurrently written database");
+    fail("the source SQLite WAL gained content during the snapshot; refusing to publish an owner-transfer recovery backup over a concurrently written database");
   }
   if (before.shm.exists) {
     for (const key of ["exists", "dev", "ino", "nlink", "mode"] as const) {
       if (String(before.shm[key]) !== String(after.shm[key])) {
-        fail(`the source SQLite SHM was replaced during the snapshot (${key} mismatch); refusing to publish a pre-reset backup`);
+        fail(`the source SQLite SHM was replaced during the snapshot (${key} mismatch); refusing to publish an owner-transfer recovery backup`);
       }
     }
   }
@@ -875,8 +829,8 @@ function assertPreResetSnapshotStable(before: SqliteSourceTreeBinding, after: Sq
  * state: any replacement (dev/ino), relink (nlink), permission change,
  * size/mtime change, content change, or appearance/disappearance of the main
  * DB or either sidecar fails — including WAL-only commits that the single-file
- * binding cannot see. Used by the controlled cutover immediately before the
- * destructive reset; a mismatch must mean zero deletion.
+ * binding cannot see. Used by owner transfer before ownership mutation; a
+ * mismatch must prevent the transfer.
  */
 export function assertSqliteSourceTreeUnchanged(binding: SqliteSourceTreeBinding, dbPath: string): SqliteSourceTreeBinding {
   const current = sqliteTreeBinding(dbPath);
@@ -889,8 +843,8 @@ export function assertSqliteSourceTreeUnchanged(binding: SqliteSourceTreeBinding
 /**
  * Re-validate a published SQLite binding against the current on-disk state:
  * any replacement (dev/ino), relink (nlink), permission change, size/mtime
- * change, or content change fails. Used by the controlled cutover immediately
- * before the destructive reset; a mismatch must mean zero deletion.
+ * change, or content change fails. Retained as a generic offline binding
+ * verifier; it performs no reset or deletion.
  */
 export function assertSqliteSourceBindingUnchanged(binding: SqliteSourceBinding, dbPath: string): SqliteSourceBinding {
   const current = sqliteSourceBinding(dbPath);
@@ -1277,11 +1231,42 @@ function openSource(dbPath: string): DatabaseSync {
   catch { fail("source SQLite database could not be opened read-only"); }
 }
 
+/**
+ * Read-only canonical-schema recoverability gate shared with restore's strict
+ * verify. The source must be a canonical single-baseline database whose
+ * complete current physical schema (tables / columns / PK / FK / indexes and
+ * the ledger table's own physical contract) matches the immutable manifest.
+ * A database that can be backed up but not restored fails here, before any
+ * staging, encryption, or publication. The migration verify is strictly
+ * read-only and never writes or checkpoints the source.
+ */
+async function assertSqliteSourceCanonical(db: DatabaseSync): Promise<void> {
+  await runSqliteMigrations(db, { mode: "verify" });
+}
+
 async function inspectSource(options: BackupOptions, db: DatabaseSync, dataDir: string, agentDir: string): Promise<{ files: PlannedSourceFile[]; excluded: { path: string; reason: "auth-file" }[]; missing: MissingSessionReference[]; ledger: BackupManifest["migrationLedger"] }> {
   const collected = collectWhitelistedFiles(dataDir, agentDir);
   const query = options.querySessionReferences ?? defaultSessionReferences;
-  const missing = validateReferences(query(db), dataDir, collected.files);
-  return { files: collected.files, excluded: collected.excluded, missing, ledger: migrationLedgerSummary(db) };
+  const bound = bindReferencesToPayload(query(db), dataDir, collected.files);
+  const ledger = migrationLedgerSummary(db);
+  assertCanonicalSingleBaselineLedger(ledger, "source SQLite migration ledger");
+  await assertSqliteSourceCanonical(db);
+  return { files: bound.files, excluded: collected.excluded, missing: bound.missing, ledger };
+}
+
+/** Read the final SQLite snapshot only; exact referenced files can be appended without a second directory scan. */
+async function inspectSqliteSnapshot(options: BackupOptions, snapshotPath: string, dataDir: string, initial: { readonly files: PlannedSourceFile[]; readonly excluded: { path: string; reason: "auth-file" }[] }): Promise<{ files: PlannedSourceFile[]; excluded: { path: string; reason: "auth-file" }[]; missing: MissingSessionReference[]; ledger: BackupManifest["migrationLedger"] }> {
+  const snapshot = openSource(snapshotPath);
+  try {
+    const query = options.querySessionReferences ?? defaultSessionReferences;
+    const bound = bindReferencesToPayload(query(snapshot), dataDir, initial.files);
+    const ledger = migrationLedgerSummary(snapshot);
+    assertCanonicalSingleBaselineLedger(ledger, "snapshot SQLite migration ledger");
+    // The published snapshot is the database restore reads; it must satisfy the
+    // same canonical physical-schema contract as the live source.
+    await assertSqliteSourceCanonical(snapshot);
+    return { files: bound.files, excluded: initial.excluded, missing: bound.missing, ledger };
+  } finally { snapshot.close(); }
 }
 
 /** Create an encrypted, atomic SQLite backup. Offline explicit tool only. */
@@ -1308,12 +1293,8 @@ export async function createSqliteBackup(options: BackupOptions): Promise<Backup
   };
   try {
     const inspection = await inspectSource(options, source, resolved.dataDir, resolved.agentDir);
-    // Opt-in strict completeness gate: any missing session reference fails
-    // BEFORE any staging/publish/COMPLETE work (dry-run included). For SQLite
-    // the gate is re-run against the final VACUUM INTO snapshot before the
-    // first ciphertext is published (assertStrictSnapshotCompleteness below),
-    // so the strict binding is the snapshot, not the inspection state.
-    assertStrictCompleteness(options.requireCompleteSessionReferences, inspection.missing);
+    // Missing session references are missing-as-empty: they are recorded in
+    // the encrypted manifest and the backup still publishes (never fail).
     if (dryRun) {
       // Dry-run reads plaintext only, so it stages in the private plaintext
       // root too; the backup root is never created or written by a dry-run.
@@ -1370,7 +1351,7 @@ export async function createSqliteBackup(options: BackupOptions): Promise<Backup
     // immediately before the snapshot is generated, re-checked right after the
     // VACUUM INTO completes, and then FIXED. The verified post-snapshot state
     // becomes the single immutable binding before any JSONL/age work runs.
-    const usesTreeBinding = backupKind === "pre-reset" || backupKind === "pre-owner-transfer";
+    const usesTreeBinding = backupKind === "pre-owner-transfer";
     const preSnapshot = usesTreeBinding ? sqliteTreeBinding(options.paths.dbPath) : null;
     plainStaging.revalidate();
     source.prepare("VACUUM INTO ?").run(plainSnapshot);
@@ -1381,16 +1362,11 @@ export async function createSqliteBackup(options: BackupOptions): Promise<Backup
       treeBinding = postSnapshot;
     }
     validateRegular(plainSnapshot, "SQLite snapshot");
-    // Strict completeness is bound to the FINAL snapshot, not to the
-    // inspection state: re-read the reference set from the finished VACUUM
-    // INTO snapshot and re-validate it against the exact payload collection.
-    // This closes the inspect→snapshot online-write window (a concurrent
-    // writer that adds/updates a session row, deletes a referenced JSONL
-    // file, or points at a file created after inspection would otherwise
-    // publish an incomplete strict package); the check runs BEFORE any
-    // ciphertext publish/COMPLETE, and failing cleanup removes both staging
-    // surfaces and leaves no publish residue.
-    assertStrictSnapshotCompleteness(options, plainSnapshot, resolved.dataDir, inspection.files);
+    // The DB snapshot, not the earlier live inspection, is authoritative for
+    // session metadata. Add only exact newly referenced paths; do not run a
+    // second directory scan. Every snapshot reference is therefore either a
+    // payload or an explicit missing-as-empty manifest entry.
+    const snapshotInspection = await inspectSqliteSnapshot(options, plainSnapshot, resolved.dataDir, inspection);
     const snapshot = hashFile(plainSnapshot);
     // Pre-reset closes its inspection connection before any payload work: the
     // binding is already fixed above, the source stays untouched from here on,
@@ -1401,7 +1377,7 @@ export async function createSqliteBackup(options: BackupOptions): Promise<Backup
     const ageBudget = { timeoutMs: options.ageProcessTimeoutMs };
     const files: BackupFileRecord[] = [await encryptFileTo(publishStaging, "payload/database.sqlite.age", plainSnapshot, snapshot, options.paths.ageRecipientFile, age, "sqlite-snapshot", ageBudget)];
     rmSync(plainSnapshot, { force: true });
-    for (const item of inspection.files) {
+    for (const item of snapshotInspection.files) {
       plainStaging.revalidate();
       files.push(await encryptStableSource(plainStaging.path, publishStaging, item, options.paths.ageRecipientFile, age, ageBudget));
     }
@@ -1409,10 +1385,9 @@ export async function createSqliteBackup(options: BackupOptions): Promise<Backup
     const finishedAt = now().toISOString();
     const roots = { dataDir: resolved.dataDir, agentDir: resolved.agentDir, dbPath: resolved.dbPath };
     const rootsHash = sourceRootsSha256(roots);
-    // Snapshot-generation-time binding. For pre-reset this is the immutable
-    // full DB/WAL/SHM tree fixed directly after the VACUUM INTO (the manifest's
-    // single-file binding is its DB entry); other kinds keep the DB-only stat
-    // binding without a no-write requirement.
+    // Snapshot-generation-time binding. For pre-owner-transfer this is the
+    // immutable full DB/WAL/SHM tree fixed directly after VACUUM INTO; other
+    // kinds keep the DB-only stat binding without a no-write requirement.
     const sourceBinding: SqliteSourceBinding = treeBinding
       ? { dialect: "sqlite", dev: treeBinding.db.dev, ino: treeBinding.db.ino, nlink: treeBinding.db.nlink, mode: treeBinding.db.mode, size: treeBinding.db.size, mtimeMs: treeBinding.db.mtimeMs, sha256: treeBinding.db.sha256! }
       : sqliteSourceBinding(options.paths.dbPath);
@@ -1423,10 +1398,10 @@ export async function createSqliteBackup(options: BackupOptions): Promise<Backup
       ...(treeBinding ? { sourceTreeBinding: treeBinding } : {}),
       sourceRootsSha256: rootsHash,
       sourceRootsHash: rootsHash,
-      timeWindow: { startedAt, finishedAt }, migrationLedger: inspection.ledger,
+      timeWindow: { startedAt, finishedAt }, migrationLedger: snapshotInspection.ledger,
       credentials: { included: false, policy: "whitelist-excludes-credentials" },
       encryption: { format: "age-v1", recipients: resolved.recipients }, files,
-      missingSessionReferences: inspection.missing, excludedFiles: inspection.excluded,
+      missingSessionReferences: snapshotInspection.missing, excludedFiles: snapshotInspection.excluded,
     };
     const manifestPath = path.join(plainStaging.path, ".manifest.json");
     plainStaging.revalidate();
@@ -1462,7 +1437,7 @@ export async function createSqliteBackup(options: BackupOptions): Promise<Backup
       sourceRootsSha256: rootsHash,
       sourceBindingSha256: sourceBindingSha256(manifest),
     };
-    return { dryRun: false, finalPath, files, missingSessionReferences: inspection.missing, manifest, publishedIdentity };
+    return { dryRun: false, finalPath, files, missingSessionReferences: snapshotInspection.missing, manifest, publishedIdentity };
   } catch (error) {
     backupError = error;
     if (finalPath) {
@@ -1729,7 +1704,7 @@ export function verifyPublishedBackup(result: {
   readonly manifest: AnyBackupManifest | null;
   readonly publishedIdentity?: PublishedBackupIdentity | null;
 }): PublishedBackupVerification {
-  if (result.dryRun || !result.finalPath || !result.manifest) fail("pre-reset/pre-migration backup is not a published package");
+  if (result.dryRun || !result.finalPath || !result.manifest) fail("pre-migration/pre-owner-transfer backup is not a published package");
   if (!result.publishedIdentity) fail("the backup result carries no creation-time published identity; refusing to verify a package that cannot be bound to its creation");
   const finalPath = result.finalPath;
   const manifestPath = path.join(finalPath, "manifest.json.age");
@@ -1747,7 +1722,7 @@ export function verifyPublishedBackup(result: {
     fail("published COMPLETE marker was replaced after creation; refusing to consume the package");
   }
   if (marker !== manifestInfo.sha256) fail("published COMPLETE marker does not match the manifest");
-  if (result.manifest.kind !== "pre-migration" && result.manifest.kind !== "pre-reset" && result.manifest.kind !== "pre-owner-transfer") fail("pre-reset/pre-owner-transfer/migration pre-backup has the wrong kind");
+  if (result.manifest.kind !== "pre-migration" && result.manifest.kind !== "pre-owner-transfer") fail("pre-owner-transfer/migration pre-backup has the wrong kind");
   if (result.manifest.format !== "pi-agent-server.backup-manifest.v1" || result.manifest.files.length === 0) fail("published backup manifest is incomplete");
   if (!result.manifest.sourceRoots || typeof result.manifest.sourceRoots !== "object") fail("published backup manifest has no authenticated source roots");
   const rootsDigest = recomputedRootsSha256(result.manifest.sourceRoots);

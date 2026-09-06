@@ -12,7 +12,8 @@
 //   主键列不可 nullable、onDelete 动作合法、default 与逻辑类型匹配等。
 // - 逻辑列类型（LogicalColumnType）为方言无关表示，SQLite/PG 各自的 DDL 映射在工作包 B/C
 //   各自的 bootstrap 中声明（PG 的 UUID/BIGINT 映射随工作包 C 落地）。
-// - schemaManifestV0 的历史默认值来自不可变的 DEFAULT_PROJECT_ID 常量，绝不读取可变服务配置。
+// - sessions.project_id 的历史默认值来自不可变的 DEFAULT_PROJECT_ID 常量，绝不读取可变服务配置。
+// - 本文件只导出**一个** 完整 schemaManifest（v0/v1 等历史快照已删除且不再重建：backup/restore 只接受携带 canonical 单基线 ledger 的包，旧包不可恢复）。
 
 import { DEFAULT_PROJECT_ID } from "../application/ports/project-store-port.js";
 
@@ -350,19 +351,23 @@ function deepFreeze<T>(value: T): T {
 // ---------------------------------------------------------------------------
 
 /**
- * 运行时 Schema Manifest（唯一来源）。
+ * 完整运行时 Schema Manifest（唯一来源；new-baseline 单一版本）。
  * 表顺序即 bootstrap 建表顺序（FK 目标必须先于引用表：projects → sessions → idempotency → file_operations）。
  *
- * 与「当前 DDL」的对应关系（工作包 B）：
- * - 单列主键（projects.id / sessions.id）无 constraintName → 列级 primaryKey() 内联声明，
+ * 与「当前 DDL」的对应关系（工作包 B/C）：
+ * - 单列主键（projects.id / sessions.id / file_operations.id）无 constraintName → 列级 primaryKey() 内联声明，
  *   且主键列由 bootstrap 防御性显式 notNull（Manifest 运行期校验也强制 PK 列不可 nullable）——
  *   比历史 DDL 更严格、但符合「主键值不可为 NULL」的业务语义；
  * - idempotency 复合主键 → 命名约束 idempotency_pk；
  * - sessions.project_id → projects.id ON DELETE CASCADE；
- * - v0 的 4 个业务索引含 idx_sessions_owner_updated 的 updated_at DESC 顺序语义；v1
- *   追加 file_operations 的幂等键与 claim 索引。
+ * - 6 个业务索引含 idx_sessions_owner_updated 的 updated_at DESC 顺序语义；file_operations 的幂等
+ *   key 唯一索引与 claim 索引；
+ * - file_operations 刻意不设 FK：projects/sessions 删除提交后，待处理 outbox 必须保留。
+ *
+ * 新基线迁移（migration-manifest.ts）以本 Manifest 为单一 head：迁移引擎/verify/bootstrap 都是
+ * 同一个完整 schema 的消费者，不存在 v0/v1 历史版本。
  */
-export const schemaManifestV0 = defineSchema([
+export const schemaManifest = defineSchema([
   {
     name: "projects",
     columns: [
@@ -385,7 +390,7 @@ export const schemaManifestV0 = defineSchema([
         name: "project_id",
         type: "uuid",
         nullable: false,
-        // Historical v0 is pinned to the immutable application constant; it never reads mutable service configuration.
+        // The single baseline is pinned to the immutable application constant; it never reads mutable service configuration.
         default: DEFAULT_PROJECT_ID,
       },
       { name: "title", type: "text", nullable: false },
@@ -431,46 +436,29 @@ export const schemaManifestV0 = defineSchema([
     foreignKeys: [],
     indexes: [{ name: "idx_idempotency_created_at", columns: [{ name: "created_at" }] }],
   },
+  {
+    name: "file_operations",
+    columns: [
+      { name: "id", type: "uuid", nullable: false },
+      { name: "operation_key", type: "text", nullable: false },
+      { name: "kind", type: "text", nullable: false },
+      { name: "relative_path", type: "text", nullable: false },
+      { name: "session_id", type: "uuid", nullable: true },
+      { name: "project_id", type: "uuid", nullable: true },
+      { name: "state", type: "text", nullable: false },
+      { name: "attempt_count", type: "integer", nullable: false, default: 0 },
+      { name: "available_at", type: "integer", nullable: false },
+      { name: "lease_until", type: "integer", nullable: true },
+      { name: "lease_token", type: "text", nullable: true },
+      { name: "last_error", type: "text", nullable: true },
+      { name: "created_at", type: "integer", nullable: false },
+      { name: "updated_at", type: "integer", nullable: false },
+    ],
+    primaryKey: { columns: ["id"] },
+    foreignKeys: [],
+    indexes: [
+      { name: "idx_file_operations_key", columns: [{ name: "operation_key" }], unique: true },
+      { name: "idx_file_operations_claim", columns: [{ name: "state" }, { name: "available_at" }] },
+    ],
+  },
 ]);
-
-/** 当前 schema head 的唯一出口。未来 schema 版本应新增 manifest + migration，并只把此出口前移；v0 快照不可改。 */
-// ---------------------------------------------------------------------------
-// v1：持久 file_operations outbox（WP4A）
-// ---------------------------------------------------------------------------
-
-/** v1 新增表的唯一手工声明。该表不引用 projects/sessions，删除业务行时 outbox 不会被级联丢弃。 */
-export const fileOperationsTableManifest = {
-  name: "file_operations",
-  columns: [
-    { name: "id", type: "uuid", nullable: false },
-    { name: "operation_key", type: "text", nullable: false },
-    { name: "kind", type: "text", nullable: false },
-    { name: "relative_path", type: "text", nullable: false },
-    { name: "session_id", type: "uuid", nullable: true },
-    { name: "project_id", type: "uuid", nullable: true },
-    { name: "state", type: "text", nullable: false },
-    { name: "attempt_count", type: "integer", nullable: false, default: 0 },
-    { name: "available_at", type: "integer", nullable: false },
-    { name: "lease_until", type: "integer", nullable: true },
-    { name: "lease_token", type: "text", nullable: true },
-    { name: "last_error", type: "text", nullable: true },
-    { name: "created_at", type: "integer", nullable: false },
-    { name: "updated_at", type: "integer", nullable: false },
-  ],
-  primaryKey: { columns: ["id"] },
-  // 刻意不设 FK：projects/sessions 删除提交后，待处理 outbox 必须保留。
-  foreignKeys: [],
-  indexes: [
-    { name: "idx_file_operations_key", columns: [{ name: "operation_key" }], unique: true },
-    { name: "idx_file_operations_claim", columns: [{ name: "state" }, { name: "available_at" }] },
-  ],
-} as const;
-
-/** 当前 v1 schema：v0 快照不可改，所有 schema 演进只追加 manifest + migration。 */
-export const schemaManifestV1 = defineSchema([
-  ...schemaManifestV0.tables,
-  fileOperationsTableManifest,
-]);
-
-/** 当前 schema head 的唯一出口。 */
-export const schemaManifest = schemaManifestV1;

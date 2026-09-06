@@ -2,9 +2,9 @@
 
 > **状态：离线 CLI `owner-transfer` 已实现。** 本工具从未对任何真实用户 SQLite/PG/JSONL 执行过转移；
 > 对真实目标执行需运维/用户明确授权。
-> **当前契约：备份恒为 strict（hard-code `requireCompleteSessionReferences: true`）**——任一缺失的 session
-> reference 都在发布备份前 fail-closed，绝不接受不完整备份作为转移锚点。「missing-as-empty」目标尚未实现，
-> 不得按已实现对待。
+> **当前契约：备份按 missing-as-empty（Phase 3 已确认语义）发布**——任一缺失的 session
+> reference 记录进加密 manifest 后仍允许发布；恢复该锚点时对应 `sessions.pi_session_file` 归一为 `NULL`。
+> 旧的 always-strict（`requireCompleteSessionReferences: true`）已退役。
 >
 > 关联文档：[ip-rbac-design.md](ip-rbac-design.md) §7、[identity-access-plan.md](identity-access-plan.md)、
 > [backup-restore.md](backup-restore.md)、[database-design.md](database-design.md)、[needs.md](../needs.md) §4.2/§7。
@@ -46,15 +46,16 @@ owner 只读、HTTP 接口、自动 restore、任何 schema 变更（无 migrati
    dry-run 是 apply 的命令行彩排，零写入，**不创建备份**（SQLite 用只读快照副本 + 字节指纹
    断言；PG 用独立 READ ONLY 只读事务）。
 3. **参数 failclosed**：未知/重复/变体参数一律拒绝且不回显值（命令行可能含 token/密钥）。
-4. **apply 顺序固定**：strict pre-owner-transfer 加密备份 → `verifyPublishedBackup`
+4. **apply 顺序固定**：missing-as-empty pre-owner-transfer 加密备份 → `verifyPublishedBackup`
    （COMPLETE/manifest/payload）→ target binding 复验 → 事务内 transfer/verify。任何失败
    = 零写入/回滚，**无自动 restore**；pre-transfer 备份保留作为人工恢复锚点。
 5. **SQLite**：显式 `AGENT_CWD`/`DATA_DIR`/`DB_PATH`（三者都必填绝对路径，绝不静默派生）；
-   **DB_PATH 解析后必须位于 DATA_DIR 内**（与受控 cutover 同一安全基线，canonical 双端比较）；
+   **DB_PATH 解析后必须位于 DATA_DIR 内**（与离线 backup/migrate 同一安全基线，canonical 双端比较）；
    事务用 `BEGIN IMMEDIATE`；事务内 pre/post 计数双向校验；dry-run 断言目标 DB/WAL/SHM
    字节零变。
 6. **PostgreSQL**：显式 `PI_STORAGE_DIALECT=postgres` + `PI_DATABASE_URL` + `--target-schema`；
-   **允许 public 业务 schema**，拒绝 `information_schema`/`pg_*`/`pi_restore_*`/`pi_cutover_*`；
+   **`public` 永远拒绝（用户明确无业务 public schema；backup/restore/owner-transfer 一律不接收 public 源）**，
+   同时拒绝 `information_schema`/`pg_*`/`pi_restore_*`/`pi_cutover_*`；
    effective schema（`current_schema()`）必须与 `--target-schema` **exact** 一致。
    **同一专用 leased client：先在**事务外**以参数化 `SELECT pg_advisory_lock($1)`
    （$1 = `POSTGRES_MIGRATION_LOCK_KEY`）取得 session-level advisory lock**（与迁移引擎
@@ -65,16 +66,15 @@ owner 只读、HTTP 接口、自动 restore、任何 schema 变更（无 migrati
    绝不把可能持锁的连接交回池；跳过 binding 复验直接 apply 一律拒绝（零 connect/零写入）；
    dry-run 走独立 READ ONLY 事务、可无 backup，零写入。
 7. **backup kind `pre-owner-transfer`**：
-   - SQLite：与 `pre-reset` 同级——快照生成时点绑定完整 DB/WAL/SHM 树指纹（`sourceTreeBinding`），
+   - SQLite：pre-owner-transfer 快照在生成时点绑定完整 DB/WAL/SHM 树指纹（`sourceTreeBinding`），
      VACUUM INTO 前后断言稳定，之后作为不可变基线只做比对；
    - PG：沿用既有 cluster/database/schema identity binding（`postgres` 元数据）；
-     `createPostgresBackup` 以 `backupKind: "pre-owner-transfer"` + `allowPublicSchema: true`
-     发布（public 允许，但系统/演练 schema 仍由本工具的 `validateOwnerTransferSchema` 拒绝；
-     **`allowPublicSchema=true` 仅对 `pre-owner-transfer` 该 kind 生效，任何其他 kind 直接拒绝**）；
-   - **owner-transfer 的备份恒为 strict**：CLI 在 SQLite/PG 两条路径都硬编码
-     `requireCompleteSessionReferences: true`——任一缺失的 session reference 都在
-     publish/COMPLETE 之前 fail-closed（desensitized 计数错误），绝不接受不完整备份作为
-     转移的恢复锚点。
+     `createPostgresBackup` 以 `backupKind: "pre-owner-transfer"` 发布（**public 源已整体移除，
+     `allowPublicSchema` 选项已删除**；系统/演练/public schema 一律被 `validateOwnerTransferSchema`
+     与 backup core 拒绝）；
+   - **owner-transfer 的备份按 missing-as-empty 发布**：缺失的 session reference 记录进加密 manifest
+     后仍允许发布，绝不因缺失引用中断转移；恢复该锚点时对应引用归一为 `NULL`（Phase 3 已确认语义，
+     原 hard-code 的 strict 门禁已退役）。
    restore（SQLite 与 PG）接受该 kind 并按其完整快照/转储正常演练——它只是一个带
    更强 binding 的完整备份，恢复语义不变。
 8. **报告只含 subject sha256 / counts / backup 元信息**：绝不输出原始 IP/owner/path/url；
@@ -108,7 +108,7 @@ pnpm owner-transfer -- --dry-run|--apply \
 | `--maintenance-window` | 必须逐字等于 `CONFIRMED` |
 | `--backup-root` / `--age-recipient-file` | 绝对路径 |
 | `DB_PATH`（SQLite） | 绝对路径且解析后必须位于 `DATA_DIR` 内 |
-| `--target-schema` | 仅 PG：允许 `public`/普通标识符；拒绝 `information_schema`/`pg_*`/`pi_restore_*`/`pi_cutover_*` |
+| `--target-schema` | 仅 PG：普通业务标识符；拒绝 `public`/`information_schema`/`pg_*`/`pi_restore_*`/`pi_cutover_*` |
 | 未知/重复/变体 | 一律拒绝，值不回显 |
 
 ## 4. apply 流程（固定顺序）
@@ -182,7 +182,7 @@ dry-run 走独立 one-shot 路径），全部 fail-closed、绝不覆盖 in-flig
 
 - 不接入 `startServer`、不启动服务、不安装 scheduler/timer。
 - 权限模型：任何写入前必须 `authorizeOwnerTransfer`（确认词 + 维护窗口）。
-- 路径安全与 backup/cutover 同一 no-symlink-ancestor + canonical 语义；SQLite 目标 DB 必须位于
+- 路径安全与 backup/migrate 同一 no-symlink-ancestor + canonical 语义；SQLite 目标 DB 必须位于
   解析后的 `DATA_DIR` 内；backup 校验 backup-root 与 source 面 overlap、凭证排除、recipient 文件安全。
 - **统一 CLI 错误边界**：CLI 只输出稳定错误码类别（`code=usage` 退出码 2 / `code=connection` /
   `code=internal` 退出码 1）+ 脱敏文本——绝不透传底层连接/query 原文，输出不得包含任何
@@ -197,6 +197,6 @@ dry-run 走独立 one-shot 路径），全部 fail-closed、绝不覆盖 in-flig
 - `pnpm build:owner-transfer`：compiled 与安装包 smoke；
 - `pnpm verify:release` 汇总发布门禁。具体用例以测试源码和 `package.json` 为准。
 
-## 9. 已决策但尚未实现的备份语义
+## 9. 备份语义（Phase 3 missing-as-empty 已落地）
 
-缺失 session reference 的目标语义是 missing-as-empty：pre-owner-transfer 备份仍可发布，未来恢复时对应 `pi_session_file` 归一为 `NULL`。当前 CLI 仍 hard-code `requireCompleteSessionReferences: true`，缺失引用会导致零发布、零 owner 变更。实现切换后必须同步更新本文件、测试和发布门禁。
+缺失 session reference 的目标语义是 missing-as-empty：pre-owner-transfer 备份仍可发布，缺失引用记入加密 manifest，恢复时对应 `pi_session_file` 归一为 `NULL`。该语义已实现（SQLite 与 PG 路径一致），原 `requireCompleteSessionReferences: true` 硬编码已移除。

@@ -8,7 +8,7 @@
 // - 旧变量 INTRANET_CIDRS / TOKENS / TRUST_PROXY 一律拒绝启动（值不回显）；
 // - 身份 = 直接 socket IP，不信任任何代理头；CIDR 外 / disabled → 403，/v1 tokenRequired → 401。
 
-import { startServer, rejectLegacyStartEnv, type StorageDialect } from "./server/start.js";
+import { startServer, rejectLegacyStartEnv, type DataMode, type StorageDialect } from "./server/start.js";
 import { parseIpAccessEnv } from "./core/ip-access-config.js";
 import { loadIpAccessPolicy } from "./core/ip-access-policy-file.js";
 
@@ -39,13 +39,14 @@ function parseDefaultModel(value: string | undefined): { provider: string; id: s
   return { provider, id };
 }
 
-// 严格生产 migration 门禁（WP2A）：默认 off 保持 RC 行为；PI_MIGRATION_GATE=verify 启用启动前
-// migration ledger/head 只读校验（不自动迁移/不自动 reset）；未知非空值 fail-fast。
-function resolveMigrationGate(value: string | undefined): "off" | "verify" {
-  const trimmed = value?.trim().toLowerCase();
-  if (!trimmed || trimmed === "off") return "off";
-  if (trimmed === "verify") return "verify";
-  throw new Error(`PI_MIGRATION_GATE 只支持 off / verify（当前值不回显），收到未知非空值时拒绝启动`);
+// 严格生产 migration 门禁：服务启动只接受 verify。`off` 已删除，任何显式值都会在
+// 资源创建前 fail-fast；所有数据库（包括 disposable test data）均须先经离线 migrate 建立
+// 并 verify 单一基线。未知非空值同样 fail-fast。
+function resolveMigrationGate(value: string | undefined): "verify" {
+  // 环境入口和 StartConfig 校验都只接受精确字面量；不得通过 trim/lowercase
+  // 把意外配置静默降级。仅未设置采用默认 verify；显式空值和 off 均拒绝。
+  if (value === undefined || value === "verify") return "verify";
+  throw new Error(`PI_MIGRATION_GATE 只支持 verify（服务启动必须依赖离线 migration；当前值不回显），收到未知非空值时拒绝启动`);
 }
 
 const app = await startServer({
@@ -79,6 +80,9 @@ const app = await startServer({
     | "max"
     | undefined,
   systemPrompt: process.env.PI_SYSTEM_PROMPT,
+  // PI_DATA_MODE 仅保留为部署分类；它不能放宽 migration gate。服务启动总是 verify，
+  // 并且绝不自行 bootstrap/migrate/reset。
+  dataMode: process.env.PI_DATA_MODE as DataMode | undefined,
   migrationGate: resolveMigrationGate(process.env.PI_MIGRATION_GATE),
 });
 

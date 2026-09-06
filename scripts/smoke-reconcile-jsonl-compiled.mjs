@@ -19,7 +19,7 @@ import { checkReconcileClosure } from "./reconcile-closure.mjs";
 checkDistHygiene("dist-reconcile");
 // 最小依赖闭包（strict hygiene）：dist-reconcile 只允许 scripts/ 与
 // src/{application,file-operations,storage}——不含 server/start runtime、
-// backup/cutover、outbox writer / WP4B planner 域等文件系统副作用模块。
+// backup、outbox writer / WP4B planner 域等文件系统副作用模块。
 checkReconcileClosure("dist-reconcile");
 
 const { runSqliteMigrations } = await import(pathToFileURL(path.resolve("dist-reconcile/src/storage/migration-engine.js")));

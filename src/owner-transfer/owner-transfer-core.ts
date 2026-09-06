@@ -180,9 +180,10 @@ export function subjectHashForIp(canonicalIp: string): string {
 }
 
 /**
- * 纯校验：PG 仅接受显式的业务 schema —— public 允许（业务 schema 可为 public），
- * information_schema / pg_* / pi_restore_* / pi_cutover_* 永远拒绝。与 cutover 的
- * 专用 pi_cutover_* allowlist 语义不同：owner transfer 在真实业务 schema 上运行。
+ * 纯校验：PG 仅接受显式的业务 schema —— public 永远拒绝（用户明确无业务 public
+ * schema，backup/restore/owner-transfer 一律不接收 public 源），
+ * information_schema / pg_* / pi_restore_* / pi_cutover_* 也永远拒绝（pi_cutover_* 是
+ * 已移除的受控 cutover 专用前缀，保留拒绝以隔离旧命名）。owner transfer 在真实业务 schema 上运行。
  */
 export function validateOwnerTransferSchema(schema: string): string {
   const trimmed = schema.trim();
@@ -191,9 +192,10 @@ export function validateOwnerTransferSchema(schema: string): string {
   }
   if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(trimmed)) throw new Error("owner-transfer: --target-schema must be a plain SQL identifier");
   if (trimmed.toLowerCase() === "information_schema") throw new Error("owner-transfer: information_schema is never allowed as the transfer schema");
+  if (trimmed.toLowerCase() === "public") throw new Error("owner-transfer: public is never allowed as the transfer schema (no business public schema)");
   if (trimmed.toLowerCase().startsWith("pg_")) throw new Error("owner-transfer: system pg_* schemas are never allowed as the transfer schema");
   if (trimmed.toLowerCase().startsWith("pi_restore_")) throw new Error("owner-transfer: pi_restore_* schemas belong to restore drills and are rejected");
-  if (trimmed.toLowerCase().startsWith("pi_cutover_")) throw new Error("owner-transfer: pi_cutover_* schemas belong to cutover drills and are rejected");
+  if (trimmed.toLowerCase().startsWith("pi_cutover_")) throw new Error("owner-transfer: pi_cutover_* schemas were the removed controlled-cutover prefix and are rejected");
   return trimmed;
 }
 
@@ -315,7 +317,7 @@ export function verifyOwnerTransferOutcome(params: {
 }
 
 // ---------------------------------------------------------------------------
-// 路径安全（与 cutover/backup 同一 no-symlink-ancestor + canonical 语义）
+// 路径安全（与 backup/migrate 同一 no-symlink-ancestor + canonical 语义）
 // ---------------------------------------------------------------------------
 
 function nonBlank(value: string | undefined): string | undefined {
@@ -384,7 +386,7 @@ export interface SqliteOwnerTransferTarget {
  * SQLite owner-transfer target 解析（纯安全检查，零写入）：
  * - AGENT_CWD / DATA_DIR / DB_PATH 三者都必须显式提供绝对路径（绝不静默继承 cwd/默认值）；
  * - 仅允许解析后的文件 DB：拒绝 :memory: 命名、symlink、hardlink、不存在的 DB；
- * - DB_PATH 解析后必须位于 DATA_DIR 内（与 cutover 安全基线一致）；
+ * - DB_PATH 解析后必须位于 DATA_DIR 内（与离线 backup/migrate 安全基线一致）；
  * - dataDir 不得与 cwd 任一方向重叠；backup root 不得与 dataDir/agentDir/dbPath 任一方向重叠；
  * - 凭证位置（解析后的 authPath）解析出来仅供 backup 白名单/排除共用（backup core 会复核）。
  */
@@ -413,7 +415,7 @@ export function resolveSqliteOwnerTransferTarget(environment: StorageEnvironment
   if (isWithin(cwd, dataDir) || isWithin(dataDir, cwd)) {
     throw new Error("owner-transfer: the data directory must not overlap the agent cwd in either direction; use a dedicated absolute DATA_DIR");
   }
-  // Same safety baseline as the controlled cutover resolver: the target database
+  // Same safety baseline as the offline backup/migrate resolvers: the target database
   // must live inside the resolved data directory (canonical on both sides).
   if (!isWithin(dataDir, dbPath)) {
     throw new Error("owner-transfer: the SQLite target database must live inside the resolved data directory");

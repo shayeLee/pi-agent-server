@@ -98,20 +98,35 @@ try {
   if (packages.length !== 1) throw new Error("installed backup bin did not publish a package");
   verifyRestore(restoreBin, path.join(backupRoot, packages[0]));
 
-  // Strict completeness mode through the installed npm bin: only strict +
-  // published success emits the machine report line (real age).
-  const strict = spawnSync(backupBin, ["create", "--backup-root", backupRoot, "--age-recipient-file", recipient, "--require-complete-session-references"], { cwd: process.cwd(), env: { ...process.env, AGENT_CWD: process.cwd(), DATA_DIR: dataDir, DB_PATH: dbPath, PI_AUTH_PATH: authPath }, encoding: "utf8" });
-  if (strict.status !== 0) throw new Error(`installed strict backup E2E failed: ${strict.stderr}`);
-  const strictLine = strict.stdout.split(/\r?\n/).find((line) => line.startsWith("backup-json-report: "));
-  if (!strictLine) throw new Error("installed strict backup did not emit the machine report line");
-  const strictReport = JSON.parse(strictLine.slice("backup-json-report: ".length));
-  if (strictReport.status !== "published" || strictReport.strict !== true || strictReport.dryRun !== false || strictReport.missingSessionReferences !== 0 || !strictReport.finalPath?.startsWith(backupRoot) || typeof strictReport.payloadCount !== "number") throw new Error("installed strict machine report is invalid");
-  if (readdirSync(backupRoot).filter((entry) => entry.startsWith("backup-")).length !== 2) throw new Error("installed strict backup did not publish a second package");
+  // Machine report contract (Phase 3 missing-as-empty) through the installed
+  // npm bin: every published backup emits exactly one machine report line; a
+  // missing session reference publishes and reports the count (never fails).
+  const publishArgs = ["create", "--backup-root", backupRoot, "--age-recipient-file", recipient];
+  const published2 = spawnSync(backupBin, publishArgs, { cwd: process.cwd(), env: { ...process.env, AGENT_CWD: process.cwd(), DATA_DIR: dataDir, DB_PATH: dbPath, PI_AUTH_PATH: authPath }, encoding: "utf8" });
+  if (published2.status !== 0) throw new Error(`installed backup E2E failed: ${published2.stderr}`);
+  const reportLine = published2.stdout.split(/\r?\n/).find((line) => line.startsWith("backup-json-report: "));
+  if (!reportLine) throw new Error("installed backup did not emit the machine report line");
+  const report = JSON.parse(reportLine.slice("backup-json-report: ".length));
+  if (report.status !== "published" || report.dryRun !== false || report.missingSessionReferences !== 0 || report.strict !== undefined || !report.finalPath?.startsWith(backupRoot) || typeof report.payloadCount !== "number") throw new Error("installed machine report is invalid");
+  if (readdirSync(backupRoot).filter((entry) => entry.startsWith("backup-")).length !== 2) throw new Error("installed backup did not publish a second package");
+
+  // Missing-as-empty：缺失引用照常发布，机器报告计数。
+  const missingDb = new DatabaseSync(dbPath);
+  missingDb.prepare("INSERT INTO sessions (id,owner_key,project_id,title,created_at,updated_at,pi_session_file,capability_versions) VALUES (?,?,?,?,?,?,?,?)").run("missing-session", "owner", "p", "missing", 1, 1, path.join(dataDir, "sessions", "gone", "history.jsonl"), JSON.stringify({ schema: 1 }));
+  missingDb.close();
+  const missingPublished = spawnSync(backupBin, publishArgs, { cwd: process.cwd(), env: { ...process.env, AGENT_CWD: process.cwd(), DATA_DIR: dataDir, DB_PATH: dbPath, PI_AUTH_PATH: authPath }, encoding: "utf8" });
+  if (missingPublished.status !== 0) throw new Error(`installed backup did not publish with a missing reference: ${missingPublished.stderr}`);
+  const missingLine = missingPublished.stdout.split(/\r?\n/).find((line) => line.startsWith("backup-json-report: "));
+  if (!missingLine) throw new Error("installed backup with a missing reference did not emit the machine report line");
+  const missingReport = JSON.parse(missingLine.slice("backup-json-report: ".length));
+  if (missingReport.status !== "published" || missingReport.dryRun !== false || missingReport.missingSessionReferences !== 1 || missingReport.strict !== undefined) throw new Error("installed machine report did not count the missing reference as missing-as-empty");
+  if ((missingPublished.stdout ?? "").includes("missing-session") || (missingPublished.stdout ?? "").includes(path.join("sessions", "gone"))) throw new Error("installed backup leaked a reference/path on the missing path");
+  if (readdirSync(backupRoot).filter((entry) => entry.startsWith("backup-")).length !== 3) throw new Error("installed backup with a missing reference did not publish a third package");
 
   // Keep the safety-failure smoke independent of the successful E2E path.
   const failed = spawnSync(restoreBin, ["restore", "--input-backup", dataDir, "--target-root", path.join(directory, "bad-target"), "--age-identity-file", identity], { cwd: process.cwd(), env: { ...process.env }, encoding: "utf8" });
   if (failed.status === 0 || failed.stdout.includes(dataDir) || failed.stderr.includes(dataDir) || existsSync(path.join(directory, "bad-target"))) throw new Error("installed restore safe-failure smoke failed");
-  console.log("installed npm backup/restore E2E, safe-failure smoke and strict completeness smoke: ok");
+  console.log("installed npm backup/restore E2E, safe-failure smoke and missing-as-empty machine smoke: ok");
 } finally {
   rmSync(process.env.PI_BACKUP_STAGING_ROOT, { recursive: true, force: true });
   rmSync(directory, { recursive: true, force: true });

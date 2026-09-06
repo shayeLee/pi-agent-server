@@ -38,7 +38,7 @@
 
 - 当前接入控制由 **IP-RBAC** 承担：所有路由以直接 TCP 对端 IP 过 CIDR/disabled gate；`/v1` 与 `/metrics` 上 `tokenRequired` 画像才要求 Bearer token（hash 绑定精确 IP）；`/health`、`/readyz` 永不需要 token。详见 [ip-rbac-design.md](ip-rbac-design.md)。
 - **旧 `TOKENS` / `INTRANET_CIDRS` / `TRUST_PROXY` 无兼容**：这些环境变量设置即拒绝启动，值不回显；身份一律取直接 TCP 对端 IP，绝不使用 `X-Forwarded-For`/`request.ip`。
-- **无 legacy 账号/token 迁移**：本 RC 从未存在正式公网 token 数据，因此**不实现**任何「旧 token/旧账号 → 新主体」迁移代码；早期开发库按 RC 语义删库重建或经受控离线 cutover reset，绝不在位转换。
+- **无 legacy 账号/token 迁移**：本 RC 从未存在正式公网 token 数据，因此**不实现**任何「旧 token/旧账号 → 新主体」迁移代码；早期开发库按 RC 语义删库重建（legacy 无 ledger 库自行 fail-fast，重置后经离线 `pnpm migrate -- --bootstrap-baseline --bootstrap-confirm CONFIRMED` 建立唯一 canonical baseline），绝不在位转换。
 - **公网暴露禁止**，直到未来 OIDC/IAM + workspace/sandbox 设计落地；IP-RBAC 不是 sandbox、不限制 cwd 或 Agent 工具绝对路径/OS 权限（workspace/sandbox 安全延期至公网暴露前）。
 
 ## 3. 术语与边界

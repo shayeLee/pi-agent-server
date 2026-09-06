@@ -5,7 +5,7 @@
 ## 适用范围
 
 - **仅用于真实 PG 集成测试**（所有 `tests/postgres/` 测试均由 `PI_TEST_PG_URL` 门控）。
-- 本任务的三个独立 PG 门控文件是：`tests/postgres/migration-engine.test.ts`（真实 v0 migration）、`tests/postgres/migration-prebackup.test.ts`（真实 prebackup→apply→verify）和 `tests/postgres/pg-backup.test.ts`（真实 pg_dump→age→pg_restore）。
+- 本任务的三个独立 PG 门控文件是：`tests/postgres/migration-engine.test.ts`（真实单基线 migration）、`tests/postgres/migration-prebackup.test.ts`（真实 prebackup→apply→verify）和 `tests/postgres/pg-backup.test.ts`（真实 pg_dump→age→pg_restore）。
 - 适用于本地临时测试库或专用测试库场景。
 - **严禁使用生产数据库连接串。** 容器数据随容器销毁，不可用于任何需要持久化的场景。
 
@@ -124,7 +124,7 @@ volta run pnpm test:migration-prebackup
 volta run pnpm test:pg-backup
 ```
 
-`test:migration-prebackup` 会先检查 age、`pg_dump`、`pg_restore` 与 server major，然后在专用数据库的随机 schema（仅 schema 隔离）的从未迁移状态执行真实 prebackup→v0 apply→verify；测试断言 prebackup manifest 的 ledger version 为 null/empty，之后数据库 ledger 为 v0/pending=0。该命令只创建并清理自己创建的随机 schema 和临时备份目录，不创建 source/target database；失败后请确认测试 PG 是专用可销毁实例，再检查残留 schema。需要完整当前发布门禁时运行 `volta run pnpm verify:release`。
+`test:migration-prebackup` 会先检查 age、`pg_dump`、`pg_restore` 与 server major，然后在专用数据库的随机 schema（仅 schema 隔离）的从未迁移状态执行真实 prebackup→单基线 apply→verify；测试断言 prebackup manifest 的 ledger version 为 null/empty，之后数据库 ledger 为单行 version 0/pending=0。该命令只创建并清理自己创建的随机 schema 和临时备份目录，不创建 source/target database；失败后请确认测试 PG 是专用可销毁实例，再检查残留 schema。需要完整当前发布门禁时运行 `volta run pnpm verify:release`。
 
 **隔离与清理说明（按测试类型分别适用）**：
 

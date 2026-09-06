@@ -79,6 +79,20 @@ describe("createSessionHistoryReader（WP5D-3 P1 只读导出解析）", () => {
     expect(fingerprint(file)).toBe(before);
   });
 
+  it("rejects a legacy v1/v2 history without SDK migration and leaves its bytes unchanged", async () => {
+    const dir = makeSessionDir();
+    for (const [name, version] of [["v1", undefined], ["v2", 2]] as const) {
+      const file = path.join(dir, `${name}.jsonl`);
+      const header = version === undefined
+        ? '{"type":"session","id":"legacy","timestamp":"2024-01-01T00:00:00.000Z","cwd":"/tmp/project"}'
+        : `{"type":"session","version":${version},"id":"legacy","timestamp":"2024-01-01T00:00:00.000Z","cwd":"/tmp/project"}`;
+      writeFileSync(file, `${header}\n{"type":"message","message":{"role":"user","content":"legacy"}}\n`);
+      const before = fingerprint(file);
+      await expect(createSessionHistoryReader().readSessionHistory(file)).rejects.toThrow("会话历史读取失败");
+      expect(fingerprint(file)).toBe(before);
+    }
+  });
+
   it("缺失文件：脱敏错误（不含文件路径/内容）", async () => {
     const dir = makeSessionDir();
     const reader = createSessionHistoryReader();
@@ -91,6 +105,29 @@ describe("createSessionHistoryReader（WP5D-3 P1 只读导出解析）", () => {
       expect(message).not.toContain(dir);
       expect(message).not.toContain("no-such.jsonl");
     }
+  });
+
+  it("rejects a v3 header carrying a malformed line without SDK migration and leaves its bytes unchanged", async () => {
+    const dir = makeSessionDir();
+    const file = path.join(dir, "v3-badline.jsonl");
+    writeFileSync(file, [
+      '{"type":"session","version":3,"id":"sess","timestamp":"2026-01-01T00:00:00.000Z","cwd":"/tmp/project"}',
+      "{\"broken\":",
+      '{"type":"message","id":"m1","parentId":null,"timestamp":"2026-01-01T00:00:01.000Z","message":{"role":"user","content":[{"type":"text","text":"hi"}]}}',
+      "",
+    ].join("\n"));
+    const before = fingerprint(file);
+    await expect(createSessionHistoryReader().readSessionHistory(file)).rejects.toThrow("会话历史读取失败");
+    expect(fingerprint(file)).toBe(before);
+  });
+
+  it("rejects a non-Pi file (no session header) without SDK migration and leaves its bytes unchanged", async () => {
+    const dir = makeSessionDir();
+    const file = path.join(dir, "non-pi.jsonl");
+    writeFileSync(file, '{"type":"message","id":"m1","parentId":null,"timestamp":"2026-01-01T00:00:01.000Z","message":{"role":"user","content":[{"type":"text","text":"hi"}]}}\n');
+    const before = fingerprint(file);
+    await expect(createSessionHistoryReader().readSessionHistory(file)).rejects.toThrow("会话历史读取失败");
+    expect(fingerprint(file)).toBe(before);
   });
 
   it("损坏文件（非空且零可解析条目）：脱敏错误，文件保持原位不变", async () => {

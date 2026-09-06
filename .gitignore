@@ -7,7 +7,6 @@ dist
 
 dist-migrate
 dist-backup
-dist-cutover
 dist-file-ops
 dist-reconcile
 dist-owner-transfer

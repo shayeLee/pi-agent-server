@@ -1,8 +1,9 @@
 // Offline Manifest-driven migration runner (WP1).
-// Normal service bootstrap keeps its RC behavior by default: startServer only imports this
-// module for the opt-in strict migration gate (StartConfig.migrationGate="verify", WP2A),
-// which is a read-only ledger/head verification — it never applies migrations or resets data
-// during startup. Offline CLIs (migrate/cutover) remain the only writers.
+// Service startup always requires an already migrated, verified database. It never
+// bootstraps a baseline; offline `migrate` is the only writer that establishes it.
+// The registry is a single immutable baseline (version 0 = the complete schemaManifest). Legacy
+// ledgers from the removed v0/v1 registry and managed tables without any ledger fail fast in
+// every mode and are never adopted by the runner or by server bootstrap.
 
 import { DatabaseSync } from "node:sqlite";
 import { Kysely, SqliteDialect, sql } from "kysely";
@@ -20,6 +21,7 @@ import type { SchemaManifest } from "./schema-manifest.js";
 import type { LogicalTypeMap } from "./schema-builder.js";
 import type { MigrationOperation } from "./migration-renderer.js";
 import { registerSqliteWriteLockKey, sqliteWriteLockKeyForFilename } from "./sqlite-write-lock.js";
+import { assertPostgresApplicationSchema } from "./postgres-schema-guard.js";
 
 export const MIGRATION_LEDGER_TABLE = "schema_migrations";
 /** One stable key for all instances migrating the same PostgreSQL schema. */
@@ -28,8 +30,20 @@ export const POSTGRES_MIGRATION_LOCK_KEY = 7_421_963_017;
 export type MigrationMode = "apply" | "dry-run" | "verify";
 export interface MigrationRunOptions {
   readonly mode?: MigrationMode;
-  readonly migrations?: readonly MigrationDefinition[];
+  /** Bootstrap-only: with apply and no existing ledger, refuse any existing user object
+   *  before creating the baseline. The check runs inside the same transactional connection
+   *  that holds the write lock, closing the check/lock/apply race. */
+  readonly assertEmptySchema?: boolean;
 }
+
+/** Test-isolation-only seam. Production runners never inspect this type/property. */
+export interface TestMigrationRunOptions extends MigrationRunOptions {
+  readonly migrations: readonly MigrationDefinition[];
+}
+
+type InternalMigrationRunOptions = MigrationRunOptions & {
+  readonly migrations: readonly MigrationDefinition[];
+};
 
 export interface MigrationPlanItem {
   readonly version: number;
@@ -56,8 +70,8 @@ async function executeMigration(migration: MigrationDefinition, dialect: Migrati
   }
 }
 
-function defs(options: MigrationRunOptions): readonly MigrationDefinition[] {
-  const migrations = options.migrations ?? migrationDefinitions;
+function defs(options: InternalMigrationRunOptions): readonly MigrationDefinition[] {
+  const migrations = options.migrations;
   validateMigrationDefinitions(migrations);
   return migrations;
 }
@@ -95,8 +109,14 @@ function validInteger(value: unknown): value is number {
   return typeof value === "number" && Number.isSafeInteger(value);
 }
 
+
 function validateLedgerRows(rows: LedgerRow[], migrations: readonly MigrationDefinition[]): number {
   if (rows.length === 0) throw ledgerError("ledger exists but is empty/incomplete; refusing empty bootstrap");
+  // The current registry is exactly one immutable baseline. Any additional
+  // applied row belongs to an unsupported database and is never adopted.
+  if (rows.length > migrations.length) {
+    throw ledgerError(`applied ledger has ${rows.length} row(s), but the single-baseline registry has ${migrations.length}; recreate the database`);
+  }
   for (let index = 0; index < rows.length; index++) {
     const row = rows[index]!;
     const expected = migrations[index];
@@ -109,9 +129,8 @@ function validateLedgerRows(rows: LedgerRow[], migrations: readonly MigrationDef
     if (typeof row.checksum !== "string" || !/^[0-9a-f]{64}$/.test(row.checksum)) {
       throw ledgerError(`version ${row.version} checksum mismatch: malformed (expected lowercase SHA-256 hex)`);
     }
-    const checksum = migrationChecksum(expected);
-    if (row.checksum !== checksum) {
-      throw ledgerError(`version ${row.version} checksum mismatch; a published migration was changed`);
+    if (row.checksum !== migrationChecksum(expected)) {
+      throw ledgerError(`version ${row.version} checksum mismatch; recreate the database from the single baseline`);
     }
     if (!validInteger(row.applied_at) || row.applied_at < 0) {
       throw ledgerError(`version ${row.version} applied_at is malformed (expected an integer)`);
@@ -135,6 +154,57 @@ function sqliteTableExists(db: DatabaseSync, name: string): boolean {
 function sqliteManagedTableExists(db: DatabaseSync, manifests: readonly SchemaManifest[]): boolean {
   const names = new Set(manifests.flatMap((manifest) => manifest.tables.map((table) => table.name)));
   return [...names].some((name) => sqliteTableExists(db, name));
+}
+
+export function assertSqliteMigrationLedgerContract(db: DatabaseSync): void {
+  const state = readSqliteLedger(db);
+  if (!state.ledgerExists) throw ledgerError("migration ledger does not exist");
+}
+
+/** Bootstrap-only strict precondition: the SQLite target contains no user object at all.
+ *  SQLite reserves the `sqlite_` prefix for internal objects (autoindexes, sqlite_sequence),
+ *  so any row not prefixed with `sqlite_` is a user object and the database is not empty. */
+function assertSqliteCompletelyEmpty(db: DatabaseSync): void {
+  const row = db.prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE name NOT LIKE 'sqlite\\_%' ESCAPE '\\'").get() as { count: number };
+  if (row.count !== 0) {
+    throw new Error("schema migration bootstrap: refusing to establish a baseline in a non-empty SQLite database (a user object already exists); start from an empty database");
+  }
+}
+
+/** Bootstrap-only strict precondition: the PostgreSQL target schema contains no user object
+ *  at all. Enumerates pg_catalog directly (not information_schema) so views, sequences,
+ *  functions, composite/enum/domain types, and every relation kind are all caught. */
+async function assertPostgresSchemaCompletelyEmpty(kysely: Kysely<DatabaseSchema>): Promise<void> {
+  const result = await sql<{ kind: string; name: string }>`
+    SELECT 'relation' AS kind, c.relname AS name
+    FROM pg_class c
+    JOIN pg_namespace n ON n.oid = c.relnamespace
+    WHERE n.nspname = current_schema()
+    UNION ALL
+    SELECT 'function', p.proname
+    FROM pg_proc p
+    JOIN pg_namespace n ON n.oid = p.pronamespace
+    WHERE n.nspname = current_schema()
+    UNION ALL
+    SELECT 'type', t.typname
+    FROM pg_type t
+    JOIN pg_namespace n ON n.oid = t.typnamespace
+    WHERE n.nspname = current_schema()
+    UNION ALL
+    SELECT 'operator', o.oprname
+    FROM pg_operator o
+    JOIN pg_namespace n ON n.oid = o.oprnamespace
+    WHERE n.nspname = current_schema()
+    UNION ALL
+    SELECT 'collation', c.collname
+    FROM pg_collation c
+    JOIN pg_namespace n ON n.oid = c.collnamespace
+    WHERE n.nspname = current_schema()
+    LIMIT 1
+  `.execute(kysely);
+  if (result.rows.length !== 0) {
+    throw new Error("schema migration bootstrap: refusing to establish a baseline in a non-empty PostgreSQL schema (a user object already exists); create an empty non-public schema first");
+  }
 }
 
 function readSqliteLedger(db: DatabaseSync): MigrationState {
@@ -217,7 +287,7 @@ async function inspectSqlite(
   const state = readSqliteLedger(db);
   if (!state.ledgerExists) {
     if (sqliteManagedTableExists(db, migrations.map((migration) => migration.manifest))) {
-      throw ledgerError("managed tables exist without schema_migrations; controlled reset/adopt is required, automatic handling is forbidden");
+      throw ledgerError("managed tables exist without the migration ledger; this is a legacy database and adoption is forbidden — start from an empty database and apply the single baseline");
     }
     if (mode === "verify") throw ledgerError("database has not been initialized by the migration runner");
     return { state, appliedVersion: null };
@@ -276,9 +346,9 @@ function appendCleanupFailure(original: unknown, cleanup: unknown): never {
 }
 
 /** SQLite runner: an exclusive BEGIN IMMEDIATE transaction surrounds DDL and ledger writes. */
-export async function runSqliteMigrations(
+async function runSqliteMigrationsInternal(
   db: DatabaseSync,
-  options: MigrationRunOptions = {},
+  options: InternalMigrationRunOptions,
 ): Promise<MigrationRunResult> {
   return withSqliteMigrationLock(db, async () => {
     const mode = options.mode ?? "apply";
@@ -299,6 +369,10 @@ export async function runSqliteMigrations(
       executorDb.exec("BEGIN IMMEDIATE");
       try {
         const physicalTypeMap = migrations.at(-1)!.physicalTypeMaps.SQLite;
+        // Bootstrap-only (assertEmptySchema): the target must be completely empty, regardless of
+        // any existing ledger. The check owns the same BEGIN IMMEDIATE transaction connection as
+        // the apply, so the empty check, the write lock, and the baseline creation cannot race.
+        if (options.assertEmptySchema) assertSqliteCompletelyEmpty(executorDb);
         const inspection = await inspectSqlite(executorDb, kysely, migrations, physicalTypeMap, mode);
         let appliedVersion = inspection.appliedVersion;
         if (!inspection.state.ledgerExists) {
@@ -379,9 +453,15 @@ type PgLedgerIndexRow = {
  * are checked instead, so renamed system objects remain valid while any extra
  * constraint or index remains fail-fast.
  */
+export async function assertPostgresMigrationLedgerContract(kysely: Kysely<DatabaseSchema>): Promise<void> {
+  const state = await pgLedgerState(kysely);
+  if (!state.ledgerExists) throw ledgerError("migration ledger does not exist");
+}
+
 async function pgLedgerState(kysely: Kysely<DatabaseSchema>): Promise<MigrationState> {
-  const table = await sql<{ relkind: string; is_partition: boolean; row_security: boolean; force_row_security: boolean; trigger_count: number }>`
+  const table = await sql<{ relkind: string; relpersistence: string; is_partition: boolean; row_security: boolean; force_row_security: boolean; trigger_count: number }>`
     SELECT c.relkind,
+           c.relpersistence,
            c.relispartition AS is_partition,
            c.relrowsecurity AS row_security,
            c.relforcerowsecurity AS force_row_security,
@@ -393,7 +473,7 @@ async function pgLedgerState(kysely: Kysely<DatabaseSchema>): Promise<MigrationS
     GROUP BY c.oid, c.relkind, c.relispartition, c.relrowsecurity, c.relforcerowsecurity
   `.execute(kysely);
   if (table.rows.length === 0) return { ledgerExists: false, rows: [] };
-  if (table.rows[0]!.relkind !== "r" || table.rows[0]!.is_partition || table.rows[0]!.row_security || table.rows[0]!.force_row_security || table.rows[0]!.trigger_count !== 0) {
+  if (table.rows[0]!.relkind !== "r" || table.rows[0]!.relpersistence !== "p" || table.rows[0]!.is_partition || table.rows[0]!.row_security || table.rows[0]!.force_row_security || table.rows[0]!.trigger_count !== 0) {
     throw ledgerError("ledger table has an unexpected relation/trigger/RLS object; refusing to alter or adopt it");
   }
 
@@ -523,7 +603,7 @@ async function inspectPostgres(
     `.execute(kysely);
     const managed = new Set(migrations.flatMap((migration) => migration.manifest.tables.map((table) => table.name)));
     if (tables.rows.some((table) => managed.has(table.table_name))) {
-      throw ledgerError("managed tables exist without schema_migrations; controlled reset/adopt is required, automatic handling is forbidden");
+      throw ledgerError("managed tables exist without the migration ledger; this is a legacy database and adoption is forbidden — start from an empty database and apply the single baseline");
     }
     if (mode === "verify") throw ledgerError("database has not been initialized by the migration runner");
     return { state, appliedVersion: null };
@@ -552,9 +632,9 @@ async function insertPostgresLedger(kysely: Kysely<DatabaseSchema>, migration: M
 }
 
 /** PostgreSQL runner: transaction-scoped advisory lock on the same dedicated transaction connection. */
-export async function runPostgresMigrations(
+async function runPostgresMigrationsInternal(
   kysely: Kysely<DatabaseSchema>,
-  options: MigrationRunOptions = {},
+  options: InternalMigrationRunOptions,
 ): Promise<MigrationRunResult> {
   const mode = options.mode ?? "apply";
   const migrations = defs(options);
@@ -563,7 +643,14 @@ export async function runPostgresMigrations(
     // takes the same xact lock, and fixes its snapshot before catalog reads.
     return kysely.transaction().execute(async (transaction) => {
       const tx = transaction as unknown as Kysely<DatabaseSchema>;
+      // PostgreSQL requires `SET TRANSACTION` to be issued before the first query
+      // (including the current_schema() guard): `SET TRANSACTION ISOLATION LEVEL
+      // ...` after any SELECT fails with "SET TRANSACTION ISOLATION LEVEL must be
+      // called before any query". The non-public/system-schema guard is still the
+      // first catalog/DDL-side check and still precedes the advisory lock, ledger
+      // access, and application catalog lookup.
       await sql`SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY`.execute(tx);
+      await assertPostgresApplicationSchema(tx);
       await sql`SELECT pg_advisory_xact_lock(${POSTGRES_MIGRATION_LOCK_KEY})`.execute(tx);
       const inspection = await inspectPostgres(tx, migrations, migrations.at(-1)!.physicalTypeMaps.PostgreSQL, mode);
       const pending = migrationPlan(migrations, inspection.appliedVersion).filter((item) => !item.applied);
@@ -574,7 +661,14 @@ export async function runPostgresMigrations(
 
   return kysely.transaction().execute(async (transaction) => {
     const tx = transaction as unknown as Kysely<DatabaseSchema>;
+    // PostgreSQL gates/DDL check current_schema() first and reject public and system schemas.
+    // This must precede any advisory lock, ledger access, catalog lookup, or application DDL.
+    await assertPostgresApplicationSchema(tx);
     await sql`SELECT pg_advisory_xact_lock(${POSTGRES_MIGRATION_LOCK_KEY})`.execute(tx);
+    // Bootstrap-only (assertEmptySchema): the target schema must be completely empty, regardless
+    // of any existing ledger. The check shares the transaction-scoped advisory-lock connection
+    // with the apply, so the empty check, the lock, and the baseline creation cannot race.
+    if (options.assertEmptySchema) await assertPostgresSchemaCompletelyEmpty(tx);
     const inspection = await inspectPostgres(tx, migrations, migrations.at(-1)!.physicalTypeMaps.PostgreSQL, mode);
     let appliedVersion = inspection.appliedVersion;
     if (!inspection.state.ledgerExists) {
@@ -597,4 +691,36 @@ export async function runPostgresMigrations(
     await assertPhysical(tx, "PostgreSQL", migrations.at(-1)!.physicalTypeMaps.PostgreSQL, migrations.at(-1)!.manifest, "physical schema is incompatible with the migration head");
     return { mode, status: "applied", appliedVersion, pending };
   });
+}
+
+/** Production/offline runner: the checked-in one-row baseline is immutable and cannot be injected. */
+export function runSqliteMigrations(
+  db: DatabaseSync,
+  options: MigrationRunOptions = {},
+): Promise<MigrationRunResult> {
+  return runSqliteMigrationsInternal(db, { ...options, migrations: migrationDefinitions });
+}
+
+/** Test-only isolated registry seam. Do not use from service or offline production code. */
+export function runSqliteMigrationsForTest(
+  db: DatabaseSync,
+  options: TestMigrationRunOptions,
+): Promise<MigrationRunResult> {
+  return runSqliteMigrationsInternal(db, options);
+}
+
+/** Production/offline runner: the checked-in one-row baseline is immutable and cannot be injected. */
+export function runPostgresMigrations(
+  kysely: Kysely<DatabaseSchema>,
+  options: MigrationRunOptions = {},
+): Promise<MigrationRunResult> {
+  return runPostgresMigrationsInternal(kysely, { ...options, migrations: migrationDefinitions });
+}
+
+/** Test-only isolated registry seam. Do not use from service or offline production code. */
+export function runPostgresMigrationsForTest(
+  kysely: Kysely<DatabaseSchema>,
+  options: TestMigrationRunOptions,
+): Promise<MigrationRunResult> {
+  return runPostgresMigrationsInternal(kysely, options);
 }

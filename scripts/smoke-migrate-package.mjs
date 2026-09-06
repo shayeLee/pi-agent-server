@@ -42,6 +42,8 @@ try {
   run("age-keygen", ["--output", identity], { stdio: "ignore" });
   const extracted = run("age-keygen", ["-y", identity]);
   writeFileSync(recipient, `${extracted.stdout.trim()}\n`, { mode: 0o600 });
+  // Keep backup credential exclusion hermetic: never inspect the operator's real ~/.pi auth file.
+  writeFileSync(path.join(directory, "auth.json"), "{}\n", { mode: 0o600 });
 
   const packed = npm(["pack", "--pack-destination", packageDir]);
   const tarball = packed.stdout.trim().split(/\r?\n/).at(-1);
@@ -50,9 +52,18 @@ try {
   const migrateBin = path.join(installDir, "node_modules", ".bin", "pi-agent-server-migrate");
   if (!existsSync(migrateBin) || packageJson.bin?.["pi-agent-server-migrate"] !== "./dist-migrate/scripts/migrate.js") throw new Error("installed migration bin is missing");
 
-  const env = { ...process.env, AGENT_CWD: process.cwd(), DATA_DIR: dataDir, DB_PATH: dbPath, PI_STORAGE_DIALECT: "sqlite" };
+  const env = { ...process.env, AGENT_CWD: process.cwd(), DATA_DIR: dataDir, DB_PATH: dbPath, PI_STORAGE_DIALECT: "sqlite", PI_AUTH_PATH: path.join(directory, "auth.json") };
   const failed = spawnSync(migrateBin, ["--apply"], { cwd: process.cwd(), env, encoding: "utf8" });
   if (failed.status === 0 || `${failed.stdout}${failed.stderr}`.includes("migration result")) throw new Error("installed migration failure smoke did not fail closed");
+  // Establish the disposable empty DB through the installed CLI bin (offline single canonical
+  // baseline writer), never by importing the migration runner: a pre-backup cannot authenticate
+  // a never-initialized DB without a ledger.
+  const bootstrap = run(migrateBin, ["--bootstrap-baseline", "--bootstrap-confirm", "CONFIRMED"], { cwd: process.cwd(), env });
+  const bootstrapReport = lastJsonLine(bootstrap.stdout, bootstrap.stderr);
+  if (bootstrapReport.status !== "success" || bootstrapReport.mode !== "bootstrap-baseline" || bootstrapReport.migration?.mode !== "apply" || bootstrapReport.migration?.status !== "applied" || bootstrapReport.migration?.pending !== 0 || bootstrapReport.migration?.appliedVersion !== 0 || bootstrapReport.verify?.mode !== "verify" || bootstrapReport.verify?.status !== "verified" || bootstrapReport.verify?.appliedVersion !== 0 || bootstrapReport.verify?.pending !== 0) {
+    throw new Error("installed bootstrap-baseline did not reach the canonical head");
+  }
+
   const result = run(migrateBin, ["--apply", "--backup-root", backupRoot, "--age-recipient-file", recipient, "--maintenance-window", "CONFIRMED"], { cwd: process.cwd(), env });
   if (!result.stdout.includes('migration result') && !result.stdout.includes('"status":"success"')) {
     throw new Error(`installed migration unexpected exit=${result.status} signal=${result.signal}: stdout=${result.stdout} stderr=${result.stderr}`);
@@ -63,8 +74,8 @@ try {
   const db = new DatabaseSync(dbPath, { readOnly: true });
   const ledger = db.prepare("SELECT version, name FROM schema_migrations ORDER BY version").all();
   db.close();
-  if (JSON.stringify(ledger) !== JSON.stringify([{ version: 0, name: "initial-schema" }, { version: 1, name: "file-operations-outbox" }])) throw new Error("installed migration ledger is incomplete");
-  console.log("installed npm migration real apply/prebackup/verify smoke: ok");
+  if (JSON.stringify(ledger) !== JSON.stringify([{ version: 0, name: "initial-schema" }])) throw new Error("installed migration ledger is incomplete");
+  console.log("installed npm migration canonical-baseline/prebackup/no-op-apply/verify smoke: ok");
 } finally {
   rmSync(process.env.PI_BACKUP_STAGING_ROOT, { recursive: true, force: true });
   rmSync(directory, { recursive: true, force: true });

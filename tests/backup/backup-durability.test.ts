@@ -1,4 +1,6 @@
+import { migrationChecksum, migrationDefinitions } from "../../src/storage/migration-manifest.js";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createCanonicalSqliteBaseline } from "./sqlite-fixture.js";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -8,7 +10,7 @@ import {
   type AgeAdapter,
 } from "../../src/backup/backup-core.js";
 import {
-  createPostgresBackup,
+  createPostgresBackupForTest,
   type PgBackupClient,
   type PgProcessRequest,
 } from "../../src/backup/postgres-backup-core.js";
@@ -125,8 +127,7 @@ function sqliteFixture(prefix: string): { fixture: ReturnType<typeof baseFixture
   const fixture = baseFixture(prefix);
   const dbPath = path.join(fixture.dataDir, "pi-agent-server.db");
   const db = new DatabaseSync(dbPath);
-  db.exec("CREATE TABLE sessions (id TEXT PRIMARY KEY, pi_session_file TEXT)");
-  db.exec("CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name TEXT, checksum TEXT, applied_at INTEGER)");
+  createCanonicalSqliteBaseline(db);
   db.close();
   return { fixture, dbPath };
 }
@@ -207,7 +208,7 @@ function pgSourceClient(fixture: ReturnType<typeof baseFixture>): PgBackupClient
         const table = values?.[1];
         return { rows: [{ present: table === "schema_migrations" || table === "sessions" }] as unknown as readonly T[] };
       }
-      if (text.includes("FROM \"app_schema\".\"schema_migrations\"")) return { rows: [{ version: 0, name: "initial-schema", checksum: "a".repeat(64), applied_at: 1 }] as unknown as readonly T[] };
+      if (text.includes("FROM \"app_schema\".\"schema_migrations\"")) return { rows: [{ version: 0, name: "initial-schema", checksum: migrationChecksum(migrationDefinitions[0]!), applied_at: 1 }] as unknown as readonly T[] };
       if (text.includes("FROM \"app_schema\".\"sessions\"")) return { rows: [{ id: "session-1", pi_session_file: session }] as unknown as readonly T[] };
       throw new Error(`unexpected fake source query: ${text}`);
     },
@@ -217,7 +218,7 @@ function pgSourceClient(fixture: ReturnType<typeof baseFixture>): PgBackupClient
 describe("PostgreSQL publish durability: every ciphertext directory fsynced before COMPLETE", () => {
   it("fsyncs payload leaf → payload root → publish root before the COMPLETE marker", async () => {
     const fixture = baseFixture("pi-durability-pg-");
-    const result = await createPostgresBackup({
+    const result = await createPostgresBackupForTest({
       storageDialect: "postgres",
       databaseUrl: "postgres://u:p@example.test/source_db",
       paths: { dataDir: fixture.dataDir, backupRoot: fixture.backupRoot, ageRecipientFile: fixture.recipient },
@@ -234,7 +235,7 @@ describe("PostgreSQL publish durability: every ciphertext directory fsynced befo
       },
       pgDumpBinary: controlledExecutable(fixture.root, "pg_dump"),
       pgRestoreBinary: controlledExecutable(fixture.root, "pg_restore"),
-    });
+}, async () => ({ version: 0, pending: 0 }));
     expect(result.finalPath).toBeTruthy();
     expect(existsSync(path.join(result.finalPath!, "payload", "sessions", "s1"))).toBe(true);
     assertTreeSyncedBeforeComplete();
@@ -243,7 +244,7 @@ describe("PostgreSQL publish durability: every ciphertext directory fsynced befo
   it("fails closed with no COMPLETE when the publish root fsync fails (fault injection)", async () => {
     const fixture = baseFixture("pi-durability-pg-fail-");
     tracked.failMatch = /\/\.pi-agent-backup-publish-[^/]+$/.source;
-    await expect(createPostgresBackup({
+    await expect(createPostgresBackupForTest({
       storageDialect: "postgres",
       databaseUrl: "postgres://u:p@example.test/source_db",
       paths: { dataDir: fixture.dataDir, backupRoot: fixture.backupRoot, ageRecipientFile: fixture.recipient },
@@ -260,7 +261,7 @@ describe("PostgreSQL publish durability: every ciphertext directory fsynced befo
       },
       pgDumpBinary: controlledExecutable(fixture.root, "pg_dump"),
       pgRestoreBinary: controlledExecutable(fixture.root, "pg_restore"),
-    })).rejects.toThrow(/EIO/);
+}, async () => ({ version: 0, pending: 0 }))).rejects.toThrow(/EIO/);
     noCompleteLeft(fixture.backupRoot);
   });
 });

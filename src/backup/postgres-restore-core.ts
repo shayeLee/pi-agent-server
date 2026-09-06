@@ -14,12 +14,10 @@ import {
 } from "node:fs";
 import path from "node:path";
 import { tmpdir } from "node:os";
-import type { Kysely } from "kysely";
-import type { DatabaseSchema } from "../storage/db-schema.js";
-import { createPostgresKysely, createPostgresPool, POSTGRES_LOGICAL_TYPE } from "../storage/postgres-bootstrap.js";
+import { createPostgresKysely, createPostgresPool } from "../storage/postgres-bootstrap.js";
+import { isPostgresSystemSchema } from "../storage/postgres-schema-guard.js";
 import { runPostgresMigrations } from "../storage/migration-engine.js";
-import { assertSchemaCompatible } from "../storage/schema-compatibility.js";
-import { migrationPrefixForLedger, schemaManifestV0, schemaManifestV1, type MigrationDefinition, type MigrationLedgerSnapshot } from "../storage/migration-manifest.js";
+import { migrationPrefixForLedger, type MigrationDefinition, type MigrationLedgerSnapshot } from "../storage/migration-manifest.js";
 import { stableSerialize } from "../storage/migration-manifest.js";
 import { validateRestoredFileOperations } from "./restore-validation.js";
 import {
@@ -33,13 +31,14 @@ import {
   safeDirectory,
   safeRegular,
   validatePackage,
-  validateWithSessionManager,
+  InvalidSessionHistoryError,
   restoreAgeAdapter,
   type RestoreAgeAdapter,
 } from "./restore-core.js";
 import {
   assertPostgresClientServerMajor,
   assertPostgresToolMajorMatch,
+  listPgRestoreArchive,
   parseClientMajor,
   parsePostgresConnectionUrl,
   parseServerVersionNumMajor,
@@ -111,9 +110,11 @@ export interface PostgresRestoreReport {
     readonly sessionEntries: number;
     readonly sessionHeaders: number;
     readonly missingSessionReferences: number;
+    /** Present-but-invalid session histories discarded (invalid-as-empty degradation). */
+    readonly invalidSessionHistories: number;
     readonly foreignKeyViolations: number;
   };
-  readonly migration: { readonly version: number | null; readonly pending: number; readonly legacy: boolean };
+  readonly migration: { readonly version: number | null; readonly pending: number };
   readonly target: {
     readonly databaseIdentity: string;
     readonly schemaIdentity: string;
@@ -201,6 +202,204 @@ function quoteIdentifier(value: string): string {
   return `"${value}"`;
 }
 
+/** TOC entry head: `id;` followed by two unsigned catalog OIDs. */
+const RESTORE_TOC_ID = /^[0-9]+;$/;
+const RESTORE_TOC_NUMBER = /^[0-9]+$/;
+
+/**
+ * pg_dump object-type descriptors (the `desc` TOC field). Every word is an
+ * uppercase keyword. The field may be a single word (`TABLE`) or a multi-word
+ * phrase whose length varies (`TABLE DATA`, `MATERIALIZED VIEW DATA`,
+ * `SEQUENCE SET`, `SEQUENCE OWNED BY`, `DEFAULT ACL`). The parser matches the
+ * LONGEST known phrase first so `TABLE DATA` is never mistaken for `TABLE`
+ * followed by a schema named `DATA`. A descriptor outside this vocabulary is
+ * rejected (never skipped), so an unknown/atypical object type fails closed
+ * instead of being silently dropped.
+ */
+const RESTORE_TOC_DESC_PHRASES: readonly string[] = [
+  "MATERIALIZED VIEW DATA",
+  "MATERIALIZED VIEW",
+  "TABLE DATA",
+  "VIEW DATA",
+  "SEQUENCE SET",
+  "SEQUENCE OWNED BY",
+  "OPERATOR CLASS",
+  "OPERATOR FAMILY",
+  "TEXT SEARCH CONFIGURATION",
+  "TEXT SEARCH DICTIONARY",
+  "TEXT SEARCH PARSER",
+  "TEXT SEARCH TEMPLATE",
+  "FOREIGN TABLE",
+  "FOREIGN DATA WRAPPER",
+  "USER MAPPING",
+  "LARGE OBJECT",
+  "BLOB METADATA",
+  "DEFAULT ACL",
+  "EVENT TRIGGER",
+  "TABLE ATTACH",
+  "ACCESS METHOD",
+  "DATABASE",
+  "SCHEMA",
+  "TABLE",
+  "VIEW",
+  "SEQUENCE",
+  "FUNCTION",
+  "PROCEDURE",
+  "AGGREGATE",
+  "OPERATOR",
+  "CAST",
+  "TYPE",
+  "DOMAIN",
+  "COLLATION",
+  "CONVERSION",
+  "EXTENSION",
+  "CONSTRAINT",
+  "FK CONSTRAINT",
+  "INDEX",
+  "DEFAULT",
+  "TRIGGER",
+  "RULE",
+  "POLICY",
+  "COMMENT",
+  "ACL",
+  "BLOB",
+  "PUBLICATION",
+  "SUBSCRIPTION",
+  "SERVER",
+  "LANGUAGE",
+  "TRANSFORM",
+  "EVENT",
+  "STATISTICS",
+  "FOREIGN",
+  "ACCESS",
+].sort((a, b) => b.split(" ").length - a.split(" ").length);
+
+interface RestoreTocEntry {
+  readonly desc: readonly string[];
+  readonly namespace: string;
+  readonly tag: string;
+}
+
+/** Length (in whitespace tokens) of the known descriptor phrase at the start of `tokens`. */
+function restoreTocDescLength(tokens: readonly string[]): number | null {
+  for (const phrase of RESTORE_TOC_DESC_PHRASES) {
+    const words = phrase.split(" ");
+    if (words.length > tokens.length) continue;
+    let matches = true;
+    for (let index = 0; index < words.length; index++) {
+      if (tokens[index] !== words[index]) {
+        matches = false;
+        break;
+      }
+    }
+    if (matches) return words.length;
+  }
+  return null;
+}
+
+/**
+ * Strictly parse one non-comment, non-empty `pg_restore --list` TOC entry line.
+ * The canonical form is `id; tableoid oid desc* namespace tag owner`. Unlike a
+ * `TABLE`/`SCHEMA` entry whose namespace is a single token, entries such as
+ * `COMMENT`, `ACL`, `DEFAULT`, and `CONSTRAINT` print a TAG that itself contains
+ * spaces (`COMMENT app TABLE users`, `DEFAULT app users id`), so the namespace
+ * cannot be anchored from the end of the line. Parsing instead anchors the
+ * known descriptor phrase from the START, takes the next token as the
+ * namespace, the final token as the owner (a present-but-empty owner is a single
+ * trailing space before the newline), and everything between as the tag. Any
+ * line that does not parse into exactly this shape is rejected (never skipped),
+ * so a malformed TOC cannot silently drop a schema and let a wrong archive pass
+ * the schema check.
+ */
+function parseRestoreTocLine(rawLine: string): RestoreTocEntry {
+  // Strip a CR left by CRLF input before inspecting the trailing whitespace; the
+  // empty-owner signal is a trailing space/tab, not the line terminator.
+  const body = rawLine.endsWith("\r") ? rawLine.slice(0, -1) : rawLine;
+  const line = body.trim();
+  // A present-but-empty owner keeps a single trailing space that a `.trim()
+  // split` would discard: it is the ONLY signal that the final whitespace token
+  // is the tag and no owner field is present.
+  const emptyOwner = /[ \t]$/.test(body);
+  const tokens = line.split(/\s+/);
+  if (
+    tokens.length < 6 ||
+    !RESTORE_TOC_ID.test(tokens[0]!) ||
+    !RESTORE_TOC_NUMBER.test(tokens[1]!) ||
+    !RESTORE_TOC_NUMBER.test(tokens[2]!)
+  ) {
+    fail("pg_restore --list output is not a valid PostgreSQL restore TOC");
+  }
+  const descLength = restoreTocDescLength(tokens.slice(3));
+  if (descLength === null) {
+    fail("pg_restore --list output is not a valid PostgreSQL restore TOC");
+  }
+  const desc = tokens.slice(3, 3 + descLength);
+  const rest = tokens.slice(3 + descLength);
+  const minRest = emptyOwner ? 2 : 3; // [namespace, tag] or [namespace, tag, owner]
+  if (rest.length < minRest) {
+    fail("pg_restore --list output is not a valid PostgreSQL restore TOC");
+  }
+  const namespace = rest[0]!;
+  const tagTokens = emptyOwner ? rest.slice(1) : rest.slice(1, -1);
+  if (namespace === "" || tagTokens.length === 0) {
+    fail("pg_restore --list output is not a valid PostgreSQL restore TOC");
+  }
+  return { desc, namespace, tag: tagTokens.join(" ") };
+}
+
+/**
+ * Parse the raw `pg_restore --list` output of a custom-format archive into the
+ * set of distinct schemas it contains. Comment lines (prefix `;`) and the
+ * header are ignored. Each non-comment TOC entry is printed as
+ * `id; tableoid oid desc* namespace tag owner`. The known descriptor is anchored
+ * from the START of the line, then the namespace is the next token, the tag is
+ * everything between the namespace and the owner (which may itself contain
+ * spaces, e.g. `COMMENT app TABLE users`), and the owner is the final token. A
+ * `SCHEMA` descriptor names its schema in the `tag` slot; every other
+ * schema-scoped object carries its schema in the `namespace` slot (dash for
+ * database-level entries). This is the archive's ACTUAL content, independent of
+ * any manifest claim.
+ *
+ * Fail-closed: any TOC line that is neither a comment nor empty but cannot be
+ * parsed into the canonical shape fails the whole listing, and a listing that
+ * yields no applicable schema (empty archive, or only comment/database-level
+ * header) is rejected rather than silently passing as an empty schema set.
+ */
+function pgRestoreListSchemas(output: Buffer | string): string[] {
+  const text = Buffer.isBuffer(output) ? output.toString("utf8") : output;
+  const schemas = new Set<string>();
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (line === "" || line.startsWith(";")) continue;
+    // parseRestoreTocLine rejects (never skips) any malformed entry line.
+    const entry = parseRestoreTocLine(rawLine);
+    const isSchema = entry.desc.length === 1 && entry.desc[0] === "SCHEMA";
+    if (isSchema) {
+      if (entry.tag && entry.tag !== "-") schemas.add(entry.tag);
+    } else if (entry.namespace && entry.namespace !== "-") {
+      schemas.add(entry.namespace);
+    }
+  }
+  if (schemas.size === 0) fail("pg_restore --list output contains no applicable archive schema");
+  return [...schemas];
+}
+
+/**
+ * Authenticate the archive's ACTUAL schema before pg_restore runs. The manifest
+ * only records the backup-time claim; a package whose payload archive contains
+ * a system schema (public, information_schema, pg_*), more than one safe schema,
+ * or a schema that does not match the authenticated source identity is rejected
+ * here, before any target object is created.
+ */
+function assertRestoreArchiveSourceSchema(schemas: readonly string[], manifestSchemaIdentity: string): void {
+  const systemSchemas = schemas.filter((schema) => isPostgresSystemSchema(schema));
+  if (systemSchemas.length !== 0) fail(`restore PostgreSQL archive contains a system schema: ${previewReferences(systemSchemas)}`);
+  if (schemas.length !== 1) fail(`restore PostgreSQL archive must contain exactly one safe non-public application schema; found ${schemas.length}`);
+  const authenticated = schemas[0]!;
+  quoteIdentifier(authenticated);
+  if (pgIdentity(authenticated, "schema") !== manifestSchemaIdentity) fail("restore PostgreSQL archive schema does not match the authenticated source schema identity");
+}
+
 function validateLedger(ledger: PostgresBackupManifest["migrationLedger"]): void {
   if (!Number.isSafeInteger(ledger.appliedCount) || ledger.appliedCount < 0 ||
       !(ledger.appliedVersion === null || Number.isSafeInteger(ledger.appliedVersion)) ||
@@ -218,7 +417,7 @@ function validateLedger(ledger: PostgresBackupManifest["migrationLedger"]): void
 function validatePostgresManifest(value: unknown): PostgresBackupManifest {
   if (!value || typeof value !== "object") fail("manifest is not an object");
   const manifest = value as Partial<PostgresBackupManifest> & { credentials?: { included?: unknown; policy?: unknown } };
-  if (manifest.format !== "pi-agent-server.backup-manifest.v1" || (manifest.kind !== "postgresql" && manifest.kind !== "pre-migration" && manifest.kind !== "pre-reset" && manifest.kind !== "pre-owner-transfer") || manifest.dialect !== "PostgreSQL") fail("unsupported backup format or dialect");
+  if (manifest.format !== "pi-agent-server.backup-manifest.v1" || (manifest.kind !== "postgresql" && manifest.kind !== "pre-migration" && manifest.kind !== "pre-owner-transfer") || manifest.dialect !== "PostgreSQL") fail("unsupported backup format or dialect");
   if (!manifest.credentials || manifest.credentials.included !== false || manifest.credentials.policy !== "whitelist-excludes-credentials") fail("manifest credential policy is invalid");
   const roots = manifest.sourceRoots;
   if (!roots || typeof roots.dataDir !== "string" || !path.isAbsolute(roots.dataDir) || typeof roots.agentDir !== "string" || !path.isAbsolute(roots.agentDir)) fail("manifest must include explicit authenticated source roots");
@@ -248,15 +447,16 @@ function validatePostgresManifest(value: unknown): PostgresBackupManifest {
   if (seen.size === 0 || !seen.has("payload/database.pg_dump.age") || [...seen].filter((path) => path.endsWith("database.pg_dump.age")).length !== 1) fail("manifest must contain one PostgreSQL dump payload");
   if (!Array.isArray(manifest.missingSessionReferences) || !Array.isArray(manifest.excludedFiles)) fail("manifest reference metadata is invalid");
   const missingKeys = new Set<string>();
-  const missingPaths = new Set<string>();
   for (const value of manifest.missingSessionReferences) {
     if (!value || typeof value !== "object") fail("manifest missing-reference metadata is invalid");
     const reference = value as Record<string, unknown>;
     if (typeof reference.sessionId !== "string" || !reference.sessionId || reference.status !== "missing" || typeof reference.path !== "string") fail("manifest missing-reference metadata is invalid");
     const relative = relativePayloadPath(reference.path);
     const key = `${reference.sessionId}\u0000${relative}`;
-    if (!isJsonlRelative(relative) || missingKeys.has(key) || missingPaths.has(relative) || seen.has(`payload/${relative}.age`)) fail("manifest missing-reference metadata conflicts with payloads");
-    missingKeys.add(key); missingPaths.add(relative);
+    // Several sessions may legitimately share a missing JSONL path; normalize
+    // each (sessionId, path) mapping independently during restore.
+    if (!isJsonlRelative(relative) || missingKeys.has(key) || seen.has(`payload/${relative}.age`)) fail("manifest missing-reference metadata conflicts with payloads");
+    missingKeys.add(key);
   }
   for (const value of manifest.excludedFiles) {
     if (!value || typeof value !== "object" || typeof value.path !== "string" || value.reason !== "auth-file" || path.isAbsolute(value.path) || value.path.includes("..")) fail("manifest excluded-file metadata is invalid");
@@ -338,14 +538,12 @@ function validateTargetPreflight(target: TargetIdentity, manifest: PostgresBacku
   if (pgIdentity(target.database, "database") === manifest.postgres.databaseIdentity) fail("PostgreSQL restore target matches the authenticated source database");
   if (!/^pi_restore_[A-Za-z0-9_]+$/.test(target.database)) fail("PostgreSQL restore target must be a pi_restore_* temporary database");
   if (pgIdentity(target.schema, "schema") === manifest.postgres.schemaIdentity) fail("PostgreSQL restore target schema matches the authenticated source schema");
-  // A default libpq connection starts in public so pg_restore can create the
-  // authenticated non-public source schema. An explicitly authenticated public
-  // schema is unsafe and is rejected before pg_restore.
+  // A default libpq connection starts in public so pg_restore can create a
+  // non-public source schema; public is never a restorable schema itself.
   if (target.schema === "public" && !hasDefaultPublicSearchPath(target.searchPath)) fail("authenticated PostgreSQL target schema public is not allowed");
 }
 
 async function locateAuthenticatedSchema(client: PgRestoreClient, schemaIdentity: string): Promise<string> {
-  if (schemaIdentity === pgIdentity("public", "schema")) fail("authenticated PostgreSQL source schema public is not allowed");
   try {
     const result = await client.query<{ schema_name: unknown }>(
       "SELECT nspname AS schema_name FROM pg_namespace WHERE nspname NOT LIKE 'pg_%' AND nspname NOT IN ('information_schema', 'public') ORDER BY nspname",
@@ -558,7 +756,6 @@ async function assertEmptyTarget(client: PgRestoreClient, serverMajor: number): 
  * and no other namespace may have appeared. Nothing is ever dropped automatically. */
 async function assertRestoredSchemaIsolation(client: PgRestoreClient, restoredSchema: string): Promise<void> {
   try {
-    if (restoredSchema === INHERENT_EMPTY_SCHEMA) fail("PostgreSQL restore target schema public is not allowed");
     const { namespaces, objects } = await inspectTargetCatalog(client);
     const unexpectedSchemas = namespaces.filter((name) => name !== INHERENT_EMPTY_SCHEMA && name !== restoredSchema);
     if (unexpectedSchemas.length !== 0) fail(`restored PostgreSQL target contains non-system schema(s) besides the authenticated source schema: ${previewReferences(unexpectedSchemas)}`);
@@ -572,18 +769,23 @@ async function assertRestoredSchemaIsolation(client: PgRestoreClient, restoredSc
 }
 
 type RestoreMigrationContext = {
-  readonly legacy: boolean;
   readonly migrations: readonly MigrationDefinition[];
-  readonly physicalManifest: typeof schemaManifestV0 | typeof schemaManifestV1 | null;
 };
 
-function selectRestoreMigrationContext(ledger: MigrationLedgerSnapshot, allowSyntheticChecksumForTest = false): RestoreMigrationContext {
-  if (!ledger.present) return { legacy: true, migrations: [], physicalManifest: null };
+/**
+ * Authenticate the package's migration ledger before any restored data is
+ * trusted. Restore accepts ONLY the canonical single baseline; a package
+ * without a ledger (legacy RC shape) or with any other ledger history fails
+ * here, before any payload is decrypted or staged.
+ */
+function selectRestoreMigrationContext(ledger: MigrationLedgerSnapshot): RestoreMigrationContext {
+  if (!ledger.present) {
+    fail("backup carries no authenticated migration ledger; only packages with the exact canonical single baseline are recoverable");
+  }
   try {
-    const migrations = migrationPrefixForLedger(ledger, { requireCanonicalChecksum: !allowSyntheticChecksumForTest });
-    const physicalManifest = migrations.at(-1)?.manifest;
-    if (!physicalManifest) fail("authenticated migration history is empty");
-    return { legacy: false, migrations, physicalManifest: physicalManifest as typeof schemaManifestV0 | typeof schemaManifestV1 };
+    const migrations = migrationPrefixForLedger(ledger);
+    if (migrations.length !== 1 || migrations[0]!.version !== 0) fail("restore accepts only the canonical single-baseline migration ledger");
+    return { migrations };
   } catch (error) {
     fail(error instanceof Error ? error.message.replace(/^schema migration ledger:\s*/, "") : "authenticated migration history is invalid");
   }
@@ -592,8 +794,9 @@ function selectRestoreMigrationContext(ledger: MigrationLedgerSnapshot, allowSyn
 async function queryLedger(client: PgRestoreClient, schema: string): Promise<PostgresBackupManifest["migrationLedger"]> {
   try {
     // Read the table directly so this remains compatible with the narrow
-    // client seam used by offline tests.  A real missing schema_migrations
-    // relation is the explicit legacy signal.
+    // client seam used by offline tests. The canonical single baseline always
+    // ships the schema_migrations relation; an absent relation fails the
+    // ledger comparison against the authenticated manifest below.
     const result = await client.query<{ version: unknown; name: unknown; checksum: unknown; applied_at: unknown }>(`SELECT version, name, checksum, applied_at FROM ${quoteIdentifier(schema)}."schema_migrations" ORDER BY version`);
     const rows = result.rows.map((row) => ({
       version: typeof row.version === "number" ? row.version : Number(row.version),
@@ -614,48 +817,6 @@ async function queryLedger(client: PgRestoreClient, schema: string): Promise<Pos
   }
 }
 
-async function detectLegacyPostgresManifest(
-  client: PgRestoreClient,
-  schema: string,
-  kysely: Kysely<DatabaseSchema> | undefined,
-): Promise<typeof schemaManifestV0 | typeof schemaManifestV1> {
-  const ledger = await queryLedger(client, schema);
-  if (ledger.present) fail("legacy restore requires an absent schema_migrations table");
-  if (!kysely) {
-    // Test clients may provide only a narrow query seam.  Infer only the
-    // immutable v0/v1 table set here; validateDatabase still checks the exact
-    // table list and all row contracts below.  Real restore also runs the
-    // schema-scoped physical preflight.
-    const tables = await client.query<{ table_name: unknown }>(
-      "SELECT table_name FROM information_schema.tables WHERE table_schema = $1 AND table_type = 'BASE TABLE' ORDER BY table_name",
-      [schema],
-    );
-    const names = tables.rows.map((row) => row.table_name);
-    const v1Names = ["file_operations", "idempotency", "projects", "sessions"];
-    const v0Names = ["idempotency", "projects", "sessions"];
-    if (stableSerialize(names) === stableSerialize(v1Names)) return schemaManifestV1;
-    if (stableSerialize(names) === stableSerialize(v0Names)) return schemaManifestV0;
-    fail("legacy restored PostgreSQL database does not match a known table schema");
-  }
-  for (const candidate of [schemaManifestV1, schemaManifestV0] as const) {
-    try {
-      const verdict = await assertSchemaCompatible(kysely, "PostgreSQL", POSTGRES_LOGICAL_TYPE, candidate);
-      if (verdict !== "complete") continue;
-      if (candidate === schemaManifestV0) {
-        const outbox = await client.query<{ present: number }>(
-          "SELECT 1 AS present FROM information_schema.tables WHERE table_schema = $1 AND table_name = 'file_operations' AND table_type = 'BASE TABLE'",
-          [schema],
-        );
-        if (outbox.rows.length !== 0) continue;
-      }
-      return candidate;
-    } catch {
-      // Try the other immutable legacy snapshot, then fail closed.
-    }
-  }
-  fail("legacy restored PostgreSQL database does not match a known physical schema");
-}
-
 async function validateDatabase(
   client: PgRestoreClient,
   schema: string,
@@ -663,9 +824,8 @@ async function validateDatabase(
   finalPath: string,
   verifyMigrations: PostgresRestoreOptions["verifyMigrations"],
   migrationContext: RestoreMigrationContext,
-  physicalKysely?: Kysely<DatabaseSchema>,
 ): Promise<{
-  migration: { version: number | null; pending: number; legacy: boolean };
+  migration: { version: number | null; pending: number };
   ledger: PostgresBackupManifest["migrationLedger"];
   schemaTableCount: number;
   projects: number;
@@ -676,18 +836,10 @@ async function validateDatabase(
   sessionRows: readonly { id: unknown; pi_session_file: unknown; capability_versions: unknown }[];
   sessionEntries: number;
 }> {
-  let physicalManifest = migrationContext.physicalManifest;
-  let migration: { version: number | null; pending: number; legacy: boolean };
-  if (migrationContext.legacy) {
-    physicalManifest = await detectLegacyPostgresManifest(client, schema, physicalKysely);
-    migration = { version: null, pending: 0, legacy: true };
-  } else {
-    const checked = verifyMigrations ? await verifyMigrations(client, schema) : fail("PostgreSQL restore requires a migration verification adapter");
-    const expectedVersion = migrationContext.migrations.at(-1)!.version;
-    if (checked.pending !== 0 || checked.version !== expectedVersion) fail("restored PostgreSQL database did not reach the authenticated migration head");
-    migration = { version: checked.version, pending: checked.pending, legacy: false };
-  }
-  if (!physicalManifest) fail("restored PostgreSQL database has no authenticated physical schema");
+  const checked = verifyMigrations ? await verifyMigrations(client, schema) : fail("PostgreSQL restore requires a migration verification adapter");
+  const expectedVersion = migrationContext.migrations.at(-1)!.version;
+  if (checked.pending !== 0 || checked.version !== expectedVersion) fail("restored PostgreSQL database did not reach the authenticated migration head");
+  const migration = { version: checked.version, pending: checked.pending };
   const ledger = await queryLedger(client, schema);
   if (stableSerialize(ledger.rows) !== stableSerialize(manifest.migrationLedger.rows) || ledger.appliedVersion !== manifest.migrationLedger.appliedVersion || ledger.appliedCount !== manifest.migrationLedger.appliedCount) fail("manifest migration ledger does not match the restored PostgreSQL database");
   const qschema = quoteIdentifier(schema);
@@ -698,13 +850,13 @@ async function validateDatabase(
     );
     const tableNames = schemaTables.rows.map((row) => row.table_name);
     const expectedTableNames = [
-      ...(migrationContext.legacy ? [] : ["schema_migrations"]),
-      ...physicalManifest.tables.map((table) => table.name),
+      "schema_migrations",
+      ...migrationContext.migrations.at(-1)!.manifest.tables.map((table) => table.name),
     ].sort();
     if (tableNames.some((name) => typeof name !== "string") || stableSerialize(tableNames) !== stableSerialize(expectedTableNames)) fail("restored PostgreSQL schema does not match the authenticated schema contract");
-    const fileOperations = physicalManifest.tables.some((table) => table.name === "file_operations")
-      ? (await client.query<Record<string, unknown>>(`SELECT id, operation_key, kind, relative_path, session_id, project_id, state, attempt_count, available_at, lease_until, lease_token, last_error, created_at, updated_at FROM ${qschema}."file_operations"`)).rows
-      : [];
+    // The canonical single baseline always ships file_operations; restore
+    // validates its rows but never executes any pending deletion task.
+    const fileOperations = (await client.query<Record<string, unknown>>(`SELECT id, operation_key, kind, relative_path, session_id, project_id, state, attempt_count, available_at, lease_until, lease_token, last_error, created_at, updated_at FROM ${qschema}."file_operations"`)).rows;
     validateRestoredFileOperations(fileOperations);
     const [projects, sessions, idempotency, fks] = await Promise.all([
       client.query<Record<string, unknown>>(`SELECT id, name, cwd, owner_key FROM ${qschema}."projects"`),
@@ -726,7 +878,7 @@ async function validateDatabase(
     }
     const foreignKeyCount = Number(fks.rows[0]?.total ?? 0);
     const foreignKeyViolations = Number(fks.rows[0]?.invalid ?? 0);
-    const expectedForeignKeys = physicalManifest.tables.reduce((total, table) => total + (table.foreignKeys?.length ?? 0), 0);
+    const expectedForeignKeys = migrationContext.migrations.at(-1)!.manifest.tables.reduce((total, table) => total + (table.foreignKeys?.length ?? 0), 0);
     if (!Number.isSafeInteger(foreignKeyCount) || foreignKeyCount < 0 || !Number.isSafeInteger(foreignKeyViolations) || foreignKeyViolations < 0) fail("restored PostgreSQL foreign-key catalog is malformed");
     if (foreignKeyCount !== expectedForeignKeys) fail("restored PostgreSQL schema foreign-key contract is invalid");
     if (foreignKeyViolations !== 0) fail("restored PostgreSQL schema contains unvalidated foreign keys");
@@ -741,7 +893,8 @@ function buildPostgresRestoreReport(
   records: ReadonlyMap<string, BackupFileRecord>,
   jsonlFiles: readonly BackupFileRecord[],
   sessionEntries: number,
-  checked: { readonly migration: { readonly version: number | null; readonly pending: number; readonly legacy: boolean }; readonly schemaTableCount: number; readonly projects: number; readonly sessions: number; readonly idempotencyRows: number; readonly fileOperations: number; readonly foreignKeyViolations: number },
+  invalidSessionHistories: number,
+  checked: { readonly migration: { readonly version: number | null; readonly pending: number }; readonly schemaTableCount: number; readonly projects: number; readonly sessions: number; readonly idempotencyRows: number; readonly fileOperations: number; readonly foreignKeyViolations: number },
   database: string,
   schema: string,
   missing: number,
@@ -759,8 +912,9 @@ function buildPostgresRestoreReport(
       idempotencyRows: checked.idempotencyRows,
       fileOperations: checked.fileOperations,
       sessionEntries,
-      sessionHeaders: jsonlFiles.length,
+      sessionHeaders: jsonlFiles.length - invalidSessionHistories,
       missingSessionReferences: missing,
+      invalidSessionHistories,
       foreignKeyViolations: checked.foreignKeyViolations,
     },
     migration: checked.migration,
@@ -777,7 +931,7 @@ function buildPostgresRestoreReport(
   };
 }
 
-async function remapDatabase(client: PgRestoreClient, schema: string, finalPath: string, manifest: PostgresBackupManifest, included: Set<string>, assembledRoot: string): Promise<number> {
+async function remapDatabase(client: PgRestoreClient, schema: string, finalPath: string, manifest: PostgresBackupManifest, included: Set<string>, assembledRoot: string, invalidHistories: ReadonlySet<string>): Promise<number> {
   const missingKeys = new Set(manifest.missingSessionReferences.map((reference) => `${reference.sessionId}\u0000${reference.path}`));
   const consumed = new Set<string>();
   const qschema = quoteIdentifier(schema);
@@ -792,9 +946,19 @@ async function remapDatabase(client: PgRestoreClient, schema: string, finalPath:
       const restoredFile = path.join(assembledRoot, relative);
       if (!within(assembledRoot, restoredFile) || !isJsonlRelative(relative)) fail("restored PostgreSQL session reference escapes target data directory");
       if (missingKeys.has(key)) {
+        // Missing-as-empty: the referenced history never existed at backup time.
         missing++;
         consumed.add(key);
-      } else if (!included.has(`payload/${relative}.age`) || !existsSync(restoredFile)) {
+        await client.query(`UPDATE ${qschema}."sessions" SET pi_session_file = NULL WHERE id = $1`, [row.id]);
+        continue;
+      }
+      if (invalidHistories.has(relative)) {
+        // Invalid-as-empty degradation: authentic bytes but not a valid Pi
+        // session; the history is discarded and the reference nulled.
+        await client.query(`UPDATE ${qschema}."sessions" SET pi_session_file = NULL WHERE id = $1`, [row.id]);
+        continue;
+      }
+      if (!included.has(`payload/${relative}.age`) || !existsSync(restoredFile)) {
         fail("restored PostgreSQL session reference has no matching JSONL payload");
       }
       await client.query(`UPDATE ${qschema}."sessions" SET pi_session_file = $1 WHERE id = $2`, [path.join(finalPath, relative), row.id]);
@@ -831,15 +995,14 @@ export async function restorePostgresBackup(options: PostgresRestoreOptions): Pr
     if (hashFile(packageLayout.manifestCiphertext).sha256 !== packageLayout.manifestCiphertextSha256) fail("manifest ciphertext does not match COMPLETE");
     await decryptWithAdapter(age, packageLayout.manifestCiphertext, manifestPlain, resolved.identity);
     const manifest = validatePostgresManifest(JSON.parse(readFileSync(manifestPlain, "utf8")));
-    // Select the authenticated historical prefix before payload staging.  The
-    // restore path only verifies it; an older package is migrated later by the
-    // explicit offline migration command.
-    const migrationContext = selectRestoreMigrationContext(
-      manifest.migrationLedger as MigrationLedgerSnapshot,
-      options.verifyMigrations !== undefined,
-    );
+    // Authenticate the canonical single-baseline migration ledger before any
+    // payload is staged or decrypted.  Legacy packages (no ledger or any
+    // non-canonical ledger) fail here.  Restore never applies a migration.
+    const migrationContext = selectRestoreMigrationContext(manifest.migrationLedger as MigrationLedgerSnapshot);
     const pgDumpMajor = parseClientMajor(manifest.postgres.pgDumpVersion);
     rmSync(manifestPlain, { force: true });
+    // There is no business `public` schema: a PostgreSQL source schema of
+    // `public` is rejected for every backup kind, before any payload staging.
     if (manifest.postgres.schemaIdentity === pgIdentity("public", "schema")) fail("authenticated PostgreSQL source schema public is not allowed");
     const sourceRoots = [manifest.sourceRoots.dataDir, manifest.sourceRoots.agentDir].map((root, index) => canonicalPath(root, `manifest source root ${index}`));
     if (sourceRoots.some((source) => within(source, resolved.target) || within(resolved.target, source))) fail("target root overlaps an authenticated source root");
@@ -856,7 +1019,7 @@ export async function restorePostgresBackup(options: PostgresRestoreOptions): Pr
     if (options.dryRun === true) return {
       dryRun: true,
       finalPath: null,
-      report: { status: "success", dialect: "PostgreSQL", format: "pi-agent-server.backup-manifest.v1", counts: { payloads: manifest.files.length, jsonlFiles: manifest.files.filter((file) => file.kind === "jsonl").length, projects: 0, sessions: 0, idempotencyRows: 0, fileOperations: 0, sessionEntries: 0, sessionHeaders: 0, missingSessionReferences: manifest.missingSessionReferences.length, foreignKeyViolations: 0 }, migration: { version: manifest.migrationLedger.appliedVersion, pending: 0, legacy: migrationContext.legacy }, target: { databaseIdentity: pgIdentity(target.database, "database"), schemaIdentity: pgIdentity(target.schema, "schema"), schemaSummary: { identity: pgIdentity(target.schema, "schema"), tableCount: 0, migrationVersion: manifest.migrationLedger.appliedVersion, foreignKeyViolations: 0 } } },
+      report: { status: "success", dialect: "PostgreSQL", format: "pi-agent-server.backup-manifest.v1", counts: { payloads: manifest.files.length, jsonlFiles: manifest.files.filter((file) => file.kind === "jsonl").length, projects: 0, sessions: 0, idempotencyRows: 0, fileOperations: 0, sessionEntries: 0, sessionHeaders: 0, missingSessionReferences: manifest.missingSessionReferences.length, invalidSessionHistories: 0, foreignKeyViolations: 0 }, migration: { version: manifest.migrationLedger.appliedVersion, pending: 0 }, target: { databaseIdentity: pgIdentity(target.database, "database"), schemaIdentity: pgIdentity(target.schema, "schema"), schemaSummary: { identity: pgIdentity(target.schema, "schema"), tableCount: 0, migrationVersion: manifest.migrationLedger.appliedVersion, foreignKeyViolations: 0 } } },
     };
 
     const pgProcess = options.pgProcess ?? pgProcessAdapter;
@@ -900,14 +1063,27 @@ export async function restorePostgresBackup(options: PostgresRestoreOptions): Pr
     const dump = path.join(decryptedRoot, "database.pg_dump");
     if (!existsSync(dump)) fail("backup has no PostgreSQL dump");
     const jsonlFiles = manifest.files.filter((file) => file.kind === "jsonl");
-    const validationRoot = path.join(staging, ".session-validation");
-    mkdirSync(validationRoot, { recursive: true, mode: 0o700 });
+    // Invalid-as-empty detection: a JSONL history whose bytes passed the
+    // package hash but is not a structurally valid Pi session is degraded —
+    // the history is discarded (assembled copy removed), the DB reference is
+    // normalized to NULL, and the restore continues with every other session.
+    // The detection is a local structural parse of the assembled payload only:
+    // no SDK SessionManager.open, no whole-data-dir scanner.
+    const invalidHistories = new Set<string>();
     let sessionEntries = 0;
     for (const record of jsonlFiles) {
-      const file = path.join(assembledRoot, record.path.slice("payload/".length, -4));
-      sessionEntries += parseJsonl(file);
-      const checked = validateWithSessionManager(file, validationRoot);
-      if (!checked.header) fail("PostgreSQL backup JSONL has no Pi session header");
+      const relative = record.path.slice("payload/".length, -4);
+      const file = path.join(assembledRoot, relative);
+      try {
+        sessionEntries += parseJsonl(file);
+      } catch (error) {
+        // Only confirmed semantic JSONL invalidity may degrade. I/O, assembly,
+        // age/hash/manifest and every other operational failure remains
+        // fail-closed for the whole restore.
+        if (!(error instanceof InvalidSessionHistoryError)) throw error;
+        invalidHistories.add(relative);
+        rmSync(file, { force: true });
+      }
     }
 
     const username = targetParsed.username ?? target.user;
@@ -918,6 +1094,15 @@ export async function restorePostgresBackup(options: PostgresRestoreOptions): Pr
     const pgRestoreMajor = parseClientMajor(pgRestoreVersion);
     assertPostgresClientServerMajor("pg_restore", pgRestoreMajor, target.serverMajor);
     assertPostgresToolMajorMatch(pgDumpMajor, pgRestoreMajor);
+    // P1: authenticate the archive's ACTUAL schema before pg_restore runs. The
+    // manifest's schemaIdentity records only the backup-time claim; a package
+    // whose payload archive contains a system/no-safe schema, more than one
+    // schema, or a schema that does not match the authenticated identity must
+    // be rejected before any target object is created. `pg_restore --list` only
+    // reads the archive and never connects to (or mutates) the target database.
+    const archiveList = await withPgEnv(targetParsed, target.database, username, async (env) =>
+      listPgRestoreArchive(pgProcess, pgRestoreBinary, dump, env, [...diagnosticSecrets, dump]));
+    assertRestoreArchiveSourceSchema(pgRestoreListSchemas(archiveList), manifest.postgres.schemaIdentity);
     await withPgEnv(targetParsed, target.database, username, async (env) => {
       await runPgProcess(pgProcess, "pg_restore", pgRestoreBinary, [
         "--exit-on-error", "--single-transaction", "--no-owner", "--no-privileges", `--dbname=${target.database}`,
@@ -937,14 +1122,21 @@ export async function restorePostgresBackup(options: PostgresRestoreOptions): Pr
       const kysely = createPostgresKysely(schemaPool);
       try {
         const checked = await validateDatabase(targetClient, restoredSchema, manifest, finalPath, options.verifyMigrations ?? (async () => {
-          if (migrationContext.legacy) return { version: null, pending: 0 };
-          const result = await runPostgresMigrations(kysely, { mode: "verify", migrations: migrationContext.migrations });
+          const result = await runPostgresMigrations(kysely, { mode: "verify" });
           return { version: result.appliedVersion, pending: result.pending.length };
-        }), migrationContext, kysely);
+        }), migrationContext);
         const included = new Set(records.keys());
-        const missing = await remapDatabase(targetClient, restoredSchema, finalPath, manifest, included, assembledRoot);
-        const report = buildPostgresRestoreReport(records, jsonlFiles, sessionEntries, checked, target.database, restoredSchema, missing);
-        rmSync(validationRoot, { recursive: true, force: true });
+        // Pool.query() may select a different connection per statement. Lease one
+        // target connection so BEGIN/UPDATE/COMMIT (and rollback on any error)
+        // form one atomic DB-reference remap transaction.
+        const remapClient = await targetPool.connect();
+        let missing: number;
+        try {
+          missing = await remapDatabase(remapClient, restoredSchema, finalPath, manifest, included, assembledRoot, invalidHistories);
+        } finally {
+          remapClient.release();
+        }
+        const report = buildPostgresRestoreReport(records, jsonlFiles, sessionEntries, invalidHistories.size, checked, target.database, restoredSchema, missing);
         if (existsSync(resolved.target)) safeDirectory(resolved.target, "target root");
         else { mkdirSync(resolved.target, { recursive: true, mode: 0o700 }); chmodSync(resolved.target, 0o700); targetCreated = true; }
         if (existsSync(finalPath)) fail("restore target already exists");
@@ -953,11 +1145,10 @@ export async function restorePostgresBackup(options: PostgresRestoreOptions): Pr
         return { dryRun: false, finalPath, report };
       } finally { await kysely.destroy(); schemaPoolClosed = true; }
     }
-    if (!options.verifyMigrations && !migrationContext.legacy) fail("PostgreSQL restore requires a migration verification adapter");
+    if (!options.verifyMigrations) fail("PostgreSQL restore requires a migration verification adapter");
     const checked = await validateDatabase(targetClient, restoredSchema, manifest, finalPath, options.verifyMigrations, migrationContext);
-    const missing = await remapDatabase(targetClient, restoredSchema, finalPath, manifest, new Set(records.keys()), assembledRoot);
-    const report = buildPostgresRestoreReport(records, jsonlFiles, sessionEntries, checked, target.database, restoredSchema, missing);
-    rmSync(validationRoot, { recursive: true, force: true });
+    const missing = await remapDatabase(targetClient, restoredSchema, finalPath, manifest, new Set(records.keys()), assembledRoot, invalidHistories);
+    const report = buildPostgresRestoreReport(records, jsonlFiles, sessionEntries, invalidHistories.size, checked, target.database, restoredSchema, missing);
     if (existsSync(resolved.target)) safeDirectory(resolved.target, "target root");
     else { mkdirSync(resolved.target, { recursive: true, mode: 0o700 }); chmodSync(resolved.target, 0o700); targetCreated = true; }
     if (existsSync(finalPath)) fail("restore target already exists");

@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { DatabaseSync } from "node:sqlite";
-import { migrationChecksum, migrationDefinitions } from "../../src/storage/migration-manifest.js";
+import {
+  migrationChecksum,
+  migrationDefinitions,
+} from "../../src/storage/migration-manifest.js";
 import { runSqliteMigrations } from "../../src/storage/migration-engine.js";
 
 const checksum = migrationChecksum(migrationDefinitions[0]!);
@@ -15,14 +18,14 @@ function snapshot(db: DatabaseSync): unknown[] {
   return db.prepare("SELECT type, name, sql FROM sqlite_master ORDER BY type, name").all();
 }
 
-function withLedger(setup: (db: DatabaseSync) => void, check: (db: DatabaseSync) => void): Promise<void> {
+function withLedger(setup: (db: DatabaseSync) => void, check: (db: DatabaseSync) => void, pattern: RegExp = /schema migration ledger|checksum|physical schema/): Promise<void> {
   const db = new DatabaseSync(":memory:");
   setup(db);
   const before = snapshot(db);
   return runSqliteMigrations(db).then(
     () => { throw new Error("expected strict ledger rejection"); },
     (error: unknown) => {
-      expect(String(error)).toMatch(/schema migration ledger|checksum|physical schema/);
+      expect(String(error)).toMatch(pattern);
       expect(snapshot(db)).toEqual(before);
       check(db);
       db.close();
@@ -30,7 +33,7 @@ function withLedger(setup: (db: DatabaseSync) => void, check: (db: DatabaseSync)
   );
 }
 
-describe("SQLite schema_migrations strict contract", () => {
+describe("SQLite schema_migrations strict contract (single baseline)", () => {
   it("rejects empty, partial and extra-column ledgers without DDL or deletion", async () => {
     await withLedger((db) => db.exec(ledgerDdl), (db) => {
       expect(db.prepare("SELECT COUNT(*) AS n FROM schema_migrations").get()).toEqual({ n: 0 });
@@ -74,5 +77,18 @@ describe("SQLite schema_migrations strict contract", () => {
       (db: DatabaseSync) => db.exec("CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY NOT NULL, name TEXT NOT NULL, checksum TEXT NOT NULL, applied_at INTEGER NOT NULL, generated TEXT GENERATED ALWAYS AS (name) STORED)"),
     ];
     for (const setup of setups) await withLedger(setup, () => {});
+  });
+
+  it("rejects an unsupported multi-row ledger and a non-canonical baseline checksum", async () => {
+    await withLedger((db) => {
+      db.exec(ledgerDdl);
+      db.prepare("INSERT INTO schema_migrations VALUES (0, 'initial-schema', ?, 1)").run("a".repeat(64));
+      db.prepare("INSERT INTO schema_migrations VALUES (1, 'old-extra', ?, 1)").run("b".repeat(64));
+    }, () => {}, /single-baseline registry has 1; recreate the database/);
+
+    await withLedger((db) => {
+      db.exec(ledgerDdl);
+      db.prepare("INSERT INTO schema_migrations VALUES (0, 'initial-schema', ?, 1)").run("a".repeat(64));
+    }, () => {}, /checksum mismatch; recreate the database/);
   });
 });

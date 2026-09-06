@@ -8,7 +8,7 @@ import { KyselyProjectRepository } from "../../src/storage/kysely-project-reposi
 import { KyselySessionRepository } from "../../src/storage/kysely-session-repository.js";
 import { pgConstraintErrorMapper } from "../../src/storage/pg-constraint-errors.js";
 import { migrationDefinitions } from "../../src/storage/migration-manifest.js";
-import { runPostgresMigrations } from "../../src/storage/migration-engine.js";
+import { runPostgresMigrations, runPostgresMigrationsForTest } from "../../src/storage/migration-engine.js";
 import { DEFAULT_PROJECT_ID } from "../../src/application/ports/project-store-port.js";
 import { sessionDeleteOperationKey } from "../../src/storage/file-operation-policy.js";
 import type { DatabaseSchema } from "../../src/storage/db-schema.js";
@@ -74,10 +74,10 @@ function scopedUrl(schema: string): string {
     const isolated = createPostgresKysely(isolatedPool);
     try {
       await isolatedAdmin.query(`CREATE SCHEMA ${isolatedSchema}`);
-      await runPostgresMigrations(isolated, { migrations: [migrationDefinitions[0]!] });
+      await runPostgresMigrationsForTest(isolated, { migrations: [migrationDefinitions[0]!] });
       await isolatedPool.query(`INSERT INTO projects (id, name, cwd, owner_key, created_at) VALUES ('00000000-0000-4000-8000-000000000001', 'kept', '/p', 'o', 1)`);
       await runPostgresMigrations(isolated);
-      expect((await isolatedPool.query("SELECT count(*)::int AS n FROM schema_migrations")).rows[0]?.n).toBe(2);
+      expect((await isolatedPool.query("SELECT count(*)::int AS n FROM schema_migrations")).rows[0]?.n).toBe(1);
       expect((await isolatedPool.query("SELECT count(*)::int AS n FROM file_operations")).rows[0]?.n).toBe(0);
       expect((await isolatedPool.query("SELECT name FROM projects WHERE id = '00000000-0000-4000-8000-000000000001'")).rows[0]?.name).toBe("kept");
     } finally {

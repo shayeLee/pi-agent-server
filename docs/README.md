@@ -14,7 +14,7 @@
 ### 架构与存储
 
 - [architecture.md](architecture.md) —— 架构与核心数据流（单实例并发模型、SQLite 锁语义、目录/端口边界）。
-- [database-design.md](database-design.md) —— 数据库设计、Schema Manifest 单一来源、双库方言与迁移约束。
+- [database-design.md](database-design.md) —— 数据库设计、Schema Manifest 单一来源、双库方言与迁移约束（new-baseline 单基线；受控 cutover 已移除）。
 - [pi-sdk-api.md](pi-sdk-api.md) —— Pi SDK 使用索引（HTTP 接口形态以 `src/server/app.ts` 为准）。
 - [postgres-podman-test.md](postgres-podman-test.md) —— 本地 PostgreSQL（Podman）测试流程。
 
@@ -24,7 +24,6 @@
 - [decisions/0001-phase-3-data-retention-baseline.md](decisions/0001-phase-3-data-retention-baseline.md) —— ADR 0001：数据保留决策记录（只记决策）。
 - [backup-restore.md](backup-restore.md) —— SQLite/PostgreSQL 备份、恢复与演练契约（RPO/RTO/保留期/drill）。
 - [operations.md](operations.md) —— 离线 migration/pre-backup 运维流程与门禁（WP5A readiness/metrics）。
-- [cutover-runbook.md](cutover-runbook.md) —— 仅用于 legacy disposable RC 的受控 cutover；当前无目标。
 - [backup-freshness-exporter.md](backup-freshness-exporter.md) —— WP5C 方案 B backup freshness 部署契约（Prometheus 指标 + inventory + Alertmanager）。
 - [backup-freshness-drill-sop.md](backup-freshness-drill-sop.md) —— WP5C 方案 B 实际部署演练 SOP。
 

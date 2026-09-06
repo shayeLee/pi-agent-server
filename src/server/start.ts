@@ -15,12 +15,13 @@ import {
   buildSessionContext,
   createAgentSession,
   DefaultResourceLoader,
-  migrateSessionEntries,
   ModelRuntime,
   parseSessionEntries,
   SessionManager,
   SettingsManager,
+  type NewSessionOptions,
   type SessionEntry,
+  type SessionHeader,
 } from "@earendil-works/pi-coding-agent";
 import type { FastifyInstance } from "fastify";
 import { buildApp } from "./app.js";
@@ -34,13 +35,13 @@ import {
 import { requireIpAccessRuntimeConfig } from "./network-admission.js";
 import type { IpAccessResolveInput } from "../core/ip-access-policy.js";
 import { createIdempotentStorageCloser } from "./storage-close.js";
-import { createOperationStatus, validateMigrationGate } from "./ops-status.js";
+import { createOperationStatus, validateMigrationGate, validateDataMode, enforceDataModeGate, type DataMode } from "./ops-status.js";
 import { SessionDeletedError } from "../runtime/session-runtime.js";
-import { runPostgresMigrations, runSqliteMigrations } from "../storage/migration-engine.js";
-import { initializeDatabase } from "../storage/bootstrap.js";
+import { runSqliteMigrations } from "../storage/migration-engine.js";
+import { initializeDatabaseVerifyOnly } from "../storage/bootstrap.js";
 import { sqliteConstraintErrorMapper } from "../storage/sqlite-constraint-errors.js";
 import { pgConstraintErrorMapper } from "../storage/pg-constraint-errors.js";
-import { createPostgresKysely, createPostgresPool, initializePostgresDatabase } from "../storage/postgres-bootstrap.js";
+import { createPostgresPool, initializePostgresDatabaseVerifyOnly } from "../storage/postgres-bootstrap.js";
 import {
   resolveAgentDir,
   resolveStorageConfig as resolveSharedStorageConfig,
@@ -51,6 +52,7 @@ import type { DatabaseSchema } from "../storage/db-schema.js";
 
 export { resolveStoragePaths } from "../storage/storage-config.js";
 export type { ResolvedStorage } from "../storage/storage-config.js";
+export type { DataMode } from "./ops-status.js";
 import type { Kysely } from "kysely";
 import { KyselySessionRepository } from "../storage/kysely-session-repository.js";
 import { KyselyProjectRepository } from "../storage/kysely-project-repository.js";
@@ -121,13 +123,15 @@ export type StartConfig = {
    */
   onStorageReady?: (kysely: Kysely<DatabaseSchema>) => Promise<void> | void;
   /**
-   * 严格生产 migration 门禁（WP2A，默认 "off" 保持 RC 行为不变）：
-   * - "off"（默认）：不自动 apply migration、不自动 reset，维持 RC bootstrap 行为；
-   * - "verify"：存储打开后、schema bootstrap 之前只读校验 migration ledger/head——空库/无 ledger 的
-   *   legacy RC 库/落后库一律 fail-fast（明确提示运行离线 cutover 或 migrate），绝不自动迁移；
-   * - 两种模式都不会在启动路径执行任何迁移或删除。
-   * 运行时校验（failclosed）：入口只接受精确 "off" / "verify"（undefined/null 归一化为 "off"），
-   * 任何其他值（JS/typed bypass，含大小写/空白变体）在任何资源创建之前拒绝启动。
+   * 数据模式仅用于部署分类；不会放宽启动迁移边界。无论 managed 或 rc，服务都必须在
+   * 启动前由离线 migration 建立并 verify 单一基线。
+   */
+  dataMode?: "managed" | "rc";
+  /**
+   * 严格启动 migration 门禁（唯一允许值为 "verify"，默认）：在任何 bootstrap/DDL 前只读
+   * 校验 migration ledger/head；空库、legacy 库与落后库均 fail-fast。服务启动绝不 apply
+   * migration、reset 或 bootstrap baseline；只能先运行离线 `pnpm migrate -- --apply`。
+   * `off`/rc+off 已删除，任何显式值均在资源创建前拒绝。
    */
   migrationGate?: "off" | "verify";
 };
@@ -155,12 +159,12 @@ export function rejectLegacyStartEnv(env: Readonly<Record<string, string | undef
   }
 }
 
-/** 严格生产 migration 门禁失败时的统一 fail-fast 语义：绝不自动迁移，明确指引离线 cutover/migrate。 */
+/** 严格生产 migration 门禁失败时的统一 fail-fast 语义：绝不自动迁移，明确指引离线 migrate。 */
 function startupMigrationGateError(error: unknown): Error {
   const detail = error instanceof Error ? error.message : String(error);
   return new Error(
     `startup migration gate: storage is not at the migration head; refusing to start. ` +
-    `Run the offline controlled cutover (pnpm cutover) or migration (pnpm migrate -- --apply) first. Detail: ${detail}`,
+    `Run the offline migration (pnpm migrate -- --apply) first. Detail: ${detail}`,
   );
 }
 
@@ -247,9 +251,159 @@ function sameSessionFileFingerprint(a: GateFileFingerprint, b: GateFileFingerpri
 }
 
 /**
+ * 严格校验会话文件内存内容必须是「当前 Pi JSONL v3」。
+ * - 空白/空内容：这里放行，只读导出 reader 把它当新会话（空消息列表）；
+ * - 每个非空行必须是合法 JSON 对象（坏行立即拒绝，绝不静默跳过——SDK 的 parseSessionEntries
+ *   会跳过坏行，服务不做该宽容处理）；
+ * - 首条必须是 Pi session 头且 version === 3（缺失头/非 session 首行/v1/v2 一律拒绝）。
+ * 旧版/非 Pi 历史一律 fail-closed，绝不迁移或改写。
+ */
+function assertCurrentSessionHistory(content: string): void {
+  if (content.trim().length === 0) return; // reader：空文件 = 新会话，空导出
+  let headerChecked = false;
+  let entryCount = 0;
+  const ids = new Set<string>();
+  const parents = new Map<string, string | null>();
+  const records: Array<{ type?: unknown; version?: unknown; id?: unknown; parentId?: unknown }> = [];
+  for (const line of content.split("\n")) {
+    const trimmed = line.trim();
+    if (trimmed.length === 0) continue;
+    let entry: { type?: unknown; version?: unknown; id?: unknown; parentId?: unknown };
+    try {
+      entry = JSON.parse(trimmed) as { type?: unknown; version?: unknown; id?: unknown };
+    } catch {
+      throw new Error("session history contains a malformed line");
+    }
+    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+      throw new Error("session history contains a malformed entry");
+    }
+    entryCount++;
+    records.push(entry);
+    if (typeof entry.id !== "string" || entry.id.length === 0 || ids.has(entry.id)) {
+      throw new Error("session history is not Pi JSONL v3");
+    }
+    ids.add(entry.id);
+    if (!headerChecked) {
+      headerChecked = true;
+      if (entry.type !== "session" || entry.version !== 3) {
+        throw new Error("session history is not Pi JSONL v3");
+      }
+    } else {
+      if (!(entry.parentId === null || typeof entry.parentId === "string")) {
+        throw new Error("session history is not Pi JSONL v3");
+      }
+      if (entry.parentId === entry.id) throw new Error("session history is not Pi JSONL v3");
+      parents.set(entry.id, entry.parentId);
+    }
+  }
+  if (!headerChecked || entryCount === 0 || records.filter((record) => record.type === "session").length !== 1) {
+    throw new Error("session history is not Pi JSONL v3");
+  }
+  for (const parent of parents.values()) {
+    if (parent !== null && !ids.has(parent)) throw new Error("session history is not Pi JSONL v3");
+  }
+  for (const id of parents.keys()) {
+    const seen = new Set<string>();
+    let current: string | null | undefined = id;
+    while (current !== null && current !== undefined) {
+      if (seen.has(current)) throw new Error("session history is not Pi JSONL v3");
+      seen.add(current);
+      current = parents.get(current);
+    }
+  }
+}
+
+/**
+ * WP5D-3 P1 runtime open boundary（内容校验，不含任何文件读取；调用方须先读入内容）：
+ * - 空白/空内容 → 拒绝（运行期打开空文件会让 SDK 隐式写入 session header）；
+ * - 坏行/非对象/非 session 首行/非 v3 → 拒绝（不含任何迁移/宽容）；
+ * - 末行必须以换行结尾：SDK 写出的 v3 文件恒以换行结尾；缺末行换行的文件不是 SDK 写出的
+ *   规范副本，SDK 在 open 时会补写换行（对原文件写入），且运行时后续 append 会把新条目拼到
+ *   末行造成损坏。服务严格拒绝非规范 v3 副本（fail-closed，绝不改写）。
+ * 旧版/非 Pi/非规范历史一律 fail-closed，绝不迁移或改写。
+ */
+function assertOpenableCurrentSessionFile(content: string): void {
+  if (content.trim().length === 0) {
+    throw new Error("session history is empty");
+  }
+  assertCurrentSessionHistory(content);
+  if (!content.endsWith("\n")) {
+    throw new Error("session history is not Pi JSONL v3");
+  }
+}
+
+/**
+ * 用已严格校验的 v3 条目构造一个指向原路径（file）的持久化 SessionManager。
+ * 目的：绝不把可替换的原路径交给会隐式迁移/写入的 SDK 路径 SessionManager.open(file)
+ * （empty→header、v1/v2→v3、末行补换行都会改写原文件，正是 TOCTOU 的写点）。
+ * 这里复用 SDK 内部构造路径（与 SessionManager.open 相同），但预置的是内存中的 v3 条目，
+ * 因此 SDK 只读内存、不读原文件、不做任何迁移/重写（CURRENT_SESSION_VERSION=3，migrate 恒 false）。
+ * 合法 v3 运行行为（getSessionFile() === file、后续可正常 append 持久化）保持不变。
+ */
+function buildPersistedSessionManager(file: string, entries: SessionEntry[]): SessionManager {
+  const header = entries[0] as SessionHeader | undefined;
+  const cwd = typeof header?.cwd === "string" ? header.cwd : process.cwd();
+  const sessionDir = path.dirname(file);
+  // SessionManager 构造函数是 private；此处按 SDK internal 构造签名镜像（open 用同样的
+  // 6 参构造 + preloadedFileEntries），不调用任何会读/写原路径的公共 API。
+  const SessionManagerCtor = SessionManager as unknown as new (
+    cwd: string,
+    sessionDir: string,
+    sessionFile: string | undefined,
+    persist: boolean,
+    newSessionOptions: NewSessionOptions | undefined,
+    preloadedFileEntries?: SessionEntry[],
+  ) => SessionManager;
+  return new SessionManagerCtor(cwd, sessionDir, file, true, undefined, entries);
+}
+
+/**
+ * WP5D-3 P1 runtime open（TOCTOU 修复）：只读一次原文件内容并严格校验为当前 Pi JSONL v3，
+ * 之后绝不把可替换的原路径交给会自动迁移/写入的 SDK 路径 SessionManager.open——而是用已在
+ * 内存中严格校验的 v3 条目构造指向原路径的持久化 manager（SDK 只读内存，不读/不写原文件）。
+ * 因此「校验到打开之间文件被替换为 v1/v2/empty」时，替换进来的文件绝不被 SDK 改写。
+ * 打开前后对原文件做 stat+sha256 指纹比对：任何变化（被替换/清空/降级/换成另一份文件）一律
+ * fail-closed——此时 SDK 未写它，但我们拒绝继续，绝不静默接受被替换的内容。
+ *
+ * @param options.onContentValidated 测试注入点（生产不传，无操作）：在校验通过后、构造 manager 前被调用，
+ *   用于模拟「校验读取到 SDK 构造之间文件被替换」的竞态，验证替换文件字节不变。
+ */
+export function openRuntimeSessionFile(
+  file: string,
+  options?: { onContentValidated?: (content: string) => void },
+): SessionManager {
+  const before = sessionFileFingerprint(file);
+  // 严格 pre-open 校验（一次性读取 + 内容校验）：空文件/坏行/旧版本/非 Pi/非规范 v3 在此
+  // fail-closed——绝不进入任何会读+可能写原文件的 SDK 路径，也绝不触发 SDK 的隐式迁移/重写。
+  let content: string;
+  try {
+    content = readFileSync(file, "utf8");
+  } catch {
+    throw new Error("session history is unavailable");
+  }
+  assertOpenableCurrentSessionFile(content);
+  const entries = parseSessionEntries(content) as SessionEntry[];
+  if (entries.length === 0) {
+    // 防御性（assertOpenableCurrentSessionFile 已拒绝空文件）：非空但零可解析条目 = 损坏/非会话文件。
+    throw new Error("session history is not Pi JSONL v3");
+  }
+  // 测试注入点：在校验通过后、构造 manager 前调用（生产不传，无操作）。
+  options?.onContentValidated?.(content);
+  // 用已校验的 v3 条目构造指向原路径的持久化 manager；SDK 只读内存条目（不读/不写原文件），
+  // 绝不调用 SessionManager.open(file)——它会读原文件并可能隐式迁移/重写（TOCTOU 的根源）。
+  const manager = buildPersistedSessionManager(file, entries);
+  const after = sessionFileFingerprint(file);
+  if (!sameSessionFileFingerprint(before, after)) {
+    // 校验到构造之间文件被改写（空→header、v1/v2→v3、末行补换行，或换成另一份文件）：
+    // SDK 未写它，但我们拒绝继续（fail-closed），绝不静默接受被替换的内容。
+    throw new Error("会话文件在打开期间被修改（拒绝 SDK 隐式迁移/重写）");
+  }
+  return manager;
+}
+
+/**
  * WP5D-3 P1 只读会话历史解析口（生产实现）：
- * - 用 SDK 公开只读 API 纯内存解析（parseSessionEntries + migrateSessionEntries 内存迁移 +
- *   buildSessionContext），绝不 createAgentSession/createAdapter、绝不写 DB、绝不写 piSessionFile；
+ * - 用 SDK 公开只读 API 纯内存解析（parseSessionEntries + buildSessionContext），绝不 createAgentSession/createAdapter、绝不写 DB、绝不写 piSessionFile；
  * - 投影复用 PiAgentAdapter 同一 projectExportMessages——持久化会话导出与活会话导出逐字节一致；
  * - 零写验证：读取前后对会话文件做 stat+sha256 指纹比对，任何变化视为只读边界被破坏而失败；
  * - 错误脱敏：任何失败只抛固定文案（不含文件路径/内容/解析细节），HTTP 层同样以固定体呈现。
@@ -261,14 +415,15 @@ export function createSessionHistoryReader(): SessionHistoryReader {
       let messages: unknown;
       try {
         const content = readFileSync(piSessionFile, "utf8");
-        // parseSessionEntries：逐行解析 JSONL（空/畸形行跳过，与 SDK loadEntriesFromFile 同语义）；
-        // migrateSessionEntries：仅原地内存迁移旧版本条目，绝不触发 SDK 的文件重写路径。
+        // parseSessionEntries is used only to inspect already-current bytes.
+        // It deliberately does not call migrateSessionEntries: v1/v2 are
+        // rejected rather than migrated or rewritten by the runtime.
         const parsed = parseSessionEntries(content);
+        assertCurrentSessionHistory(content);
         // 非空但零可解析条目：文件损坏/非会话文件，failclosed 脱敏错误（空文件 = 新会话，返回空导出）。
         if (content.length > 0 && parsed.length === 0) {
           throw new Error("cannot parse session file");
         }
-        migrateSessionEntries(parsed);
         // buildSessionContext：与 SDK AgentSession.messages 同一构造（compaction/分支摘要感知），
         // leafId 缺省 = 末条记录（append-only 树语义，与 SDK _buildIndex 一致）。
         const context = buildSessionContext(parsed as unknown as SessionEntry[]);
@@ -374,10 +529,12 @@ export async function startServer(config: StartConfig) {
   // WP5D-2：网络准入配置在任何资源创建/网络访问之前严格校验（failfast）。
   // 缺失/非法/伪造即拒绝；旧字段检查已在上方按 property presence 完成，错误消息不回显值。
   const ipAccess = requireIpAccessRuntimeConfig(config.ipAccess);
-  // WP5A：migrationGate 运行时校验（failclosed）在任何资源创建/网络访问之前执行——
-  // 只接受精确 "off" / "verify"（undefined/null 归一化为 "off"）；JS/typed bypass 传其他值
+  // 只接受精确 "verify"（undefined/null 归一化为 "verify"）；任何 off/未知值
   // （含大小写/空白变体）一律拒绝启动，且不回显原始值。
   const migrationGate = validateMigrationGate(config.migrationGate);
+  // 数据模式不改变 verify-only 语义；检查仍在任何资源创建/网络访问之前执行。
+  const dataMode = validateDataMode(config.dataMode);
+  enforceDataModeGate(dataMode, migrationGate);
   const { cwd, dataDir, agentDir, authPath, dbPath, modelsPath } = resolveServerPaths(config);
   // 存储方言 + 连接配置先于任何资源创建/网络访问解析（fail-fast：PG URL 缺失/未知方言在此抛错）。
   const storage = resolveStorageConfig(config, dbPath);
@@ -399,6 +556,7 @@ export async function startServer(config: StartConfig) {
   // WP5A 运行状态（生产组合唯一注入点；buildApp 缺省对象恒未就绪，仅测试/非生产组合使用）：
   // - ready：listen 成功后才置真（失败路径进程不监听，ready 恒 false）；
   // - migrationGateVerified：仅当启用 gate（"verify"）且启动门禁实际校验通过后置真。
+  // 运行状态：服务入口只会注入 verify，只有实际只读校验通过才置 verified。
   const ops = createOperationStatus({
     migrationGate,
     storageDialect: storage.dialect,
@@ -524,6 +682,14 @@ export async function startServer(config: StartConfig) {
   // 幂等 storage close：成功路径（app.close 上的 onClose）与失败路径（schema 初始化后 / listen 抛错）
   // 共用同一 closer，保证 Kysely/底层存储在整个生命周期内恰好销毁/关闭一次，不重复、不遗漏。
   // PG 场景 destroy 会调用 pool.end()（Kysely PostgresDriver.destroy → pool.end）。
+  if (migrationGate === "off") {
+    throw new Error('migrationGate "off" 已删除：服务启动必须先由离线 migration 建立并 verify 基线（当前值不回显）');
+  }
+
+  // The config validator currently permits only verify; this branch remains an
+  // explicit runtime assertion so future type changes cannot re-enable bootstrap.
+  if (migrationGate !== "verify") throw new Error("startup migration gate must be verify");
+
   let kysely: Kysely<DatabaseSchema> | null = null;
   const closeStorage = createIdempotentStorageCloser(async () => {
     if (kysely) await kysely.destroy();
@@ -531,37 +697,29 @@ export async function startServer(config: StartConfig) {
 
   let app: FastifyInstance;
   try {
-    // 按存储方言构造 DatabaseSync+SQLite 或 Pool+PG bootstrap，再注入同一中立 Repository
-    // （含持久 file_operations outbox）；方言约束错误 mapper 随方言注入，Repository 本身
-    // 不识别任何底层错误码。file_operations 的 path 只存 DATA_DIR 下的相对白名单路径。
+    // 只在已由离线 migration 建立、并已通过启动只读门禁的 schema 上构造 Repository。
+    // 初始化不会创建业务表或 baseline ledger。
     if (storage.dialect === "postgres") {
-      // 严格 migration 门禁（默认 off，不改变 RC 行为）：bootstrap 之前只读校验 ledger/head，
-      // 空/legacy/落后库 fail-fast，绝不自动迁移；校验自身不写任何数据。
-      // 门禁必须使用完全独立的 gate Pool/Kysely 并在校验后销毁：成功后另建全新的 actual
-      // Pool 供 bootstrap/app 使用；失败路径同样销毁 gate 资源后再抛错。
-      if (migrationGate === "verify") {
-        const gatePool = createPostgresPool(storage.databaseUrl, { connectionTimeoutMillis: 5_000 });
-        const gate = createPostgresKysely(gatePool);
-        try {
-          await runPostgresMigrations(gate, { mode: "verify" });
-        } catch (error) {
-          await gate.destroy().catch(() => undefined);
-          await gatePool.end().catch(() => undefined);
-          throw startupMigrationGateError(error);
-        }
-        await gate.destroy().catch(() => undefined);
-        await gatePool.end().catch(() => undefined);
-        // WP5A：门禁实际校验通过后才置 verified（/readyz schema=migration-head、/metrics gate verified=1）。
-        ops.migrationGateVerified = true;
+      // verify-only：单一 Pool/Kysely（无独立 gate pool），在同一个连接上做严格
+      // non-public schema + migration head 校验，绝不 bootstrap 或写入 ledger。
+      // 同一 Kysely 亦用作 Repository；门禁通过后才置 verified。
+      // Startup verification must fail promptly when the configured PostgreSQL endpoint is unavailable;
+      // the same pool is retained for repositories after the read-only check completes.
+      const pool = createPostgresPool(storage.databaseUrl, {
+          connectionTimeoutMillis: 5_000,
+          statementTimeoutMs: 10_000,
+          queryTimeoutMs: 10_000,
+        });
+      try {
+        kysely = await initializePostgresDatabaseVerifyOnly(pool);
+      } catch (error) {
+        throw startupMigrationGateError(error);
       }
-      // 初始化 Kysely + 空数据库 schema bootstrap（建表/索引/外键都由 postgres-bootstrap 消费同一 Manifest）；
-      // 失败路径内部先 destroy（同时释放 Pool）再抛原始错误。
-      const pool = createPostgresPool(storage.databaseUrl);
-      kysely = await initializePostgresDatabase(pool);
+      // WP5A：门禁实际校验通过后才置 verified（/readyz schema=migration-head、/metrics gate verified=1）。
+      ops.migrationGateVerified = true;
     } else {
-      // 严格 migration 门禁（默认 off）：真只读校验 migration ledger/head；空库/无 ledger 的
-      // legacy RC 库 fail-fast（提示运行离线 cutover/migrate），绝不自动迁移；
-      // DB 文件不存在时绝不创建。门禁通过后才打开实际读写连接。
+      // verify-only：gate 在打开实际读写连接之前做副本上的只读 ledger/head 校验；
+      // 空库、legacy 与落后库都不会被服务启动初始化。
       if (migrationGate === "verify") {
         await runSqliteMigrationGateReadonly(storage.dbPath);
         // WP5A：门禁实际校验通过后才置 verified。
@@ -571,9 +729,15 @@ export async function startServer(config: StartConfig) {
         timeout: 5000,
         enableForeignKeyConstraints: true,
       });
-      // 初始化 Kysely + 空数据库 schema bootstrap（WAL、建表/索引/外键都在 bootstrap.ts 内；
-      // 不写默认项目，也不做任何旧库兼容/版本化迁移——RC 阶段旧数据直接删除）。
-      kysely = await initializeDatabase(db);
+      // 已通过只读 gate；verify-only 初始化对实际读写连接再严格校验 head（杜绝 TOCTOU），
+      // 只建 Kysely，绝不 bootstrap（不建表、索引或 baseline ledger）。
+      try {
+        kysely = await initializeDatabaseVerifyOnly(db);
+      } catch (error) {
+        throw startupMigrationGateError(error);
+      }
+      // WP5A：门禁实际校验通过后才置 verified（与 SQLite gate 一致，重复设置无副作用）。
+      ops.migrationGateVerified = true;
     }
     const constraintMapper =
       storage.dialect === "postgres" ? pgConstraintErrorMapper : sqliteConstraintErrorMapper;
@@ -644,7 +808,7 @@ export async function startServer(config: StartConfig) {
       // file when the agent session starts, after this reservation commits.
       let reservedSessionFile: string | undefined;
       const sessionManager = record.piSessionFile
-        ? SessionManager.open(record.piSessionFile)
+        ? openRuntimeSessionFile(record.piSessionFile)
         : SessionManager.create(projectCwd, sessionDir);
       if (!record.piSessionFile) {
         reservedSessionFile = sessionManager.getSessionFile();

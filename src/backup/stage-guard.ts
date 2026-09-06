@@ -68,7 +68,7 @@ export const BACKUP_STAGE_BUDGET_MS = {
 export const APPLY_STAGE_BUDGET_MS = {
   backup: 90_000,
   backupVerify: 10_000,
-  /** Controlled cutover only: local file deletion or one-schema DDL; milliseconds in practice. */
+  /** Optional destructive-operation budget reserved for future explicitly authorized tools. */
   reset: 30_000,
   migrationApply: 20_000,
   migrationVerify: 20_000,

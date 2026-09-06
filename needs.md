@@ -216,7 +216,7 @@ Pi SDK 不设会话数量或文件体积上限，会话 JSONL 随对话单调增
 - 不活跃会话：超过 N 天无活动 → 归档到冷存储 → 冷存储再保留 M 天 → 删除（归档 ≠ 立即删除）。
 - Job 元数据：完成态 Job 保留 N 天可查后归档或清理；运行中/待重试的 Job 不清理。
 - 备份：JSONL 与服务库须一起做定期完整备份；当前采用 age 加密的本机绝对目录，明确不覆盖主机/磁盘与备份同时丢失。异地/独立介质和增量备份不在当前范围。age identity 由运维托管，备份须受访问控制并定期做功能性恢复演练。
-- 会话历史降级策略：DB 引用的 JSONL 缺失视为无历史，不阻止备份发布；backup 只把实际存在的 JSONL 当作 opaque bytes，不校验内容合法性；restore 在包级加密/hash 校验通过后发现无效 JSONL 时，将该会话恢复为空历史。包、密文、manifest 或 hash 损坏仍必须整体失败。该目标语义尚待代码实现，当前差距见 Phase 3 状态台账。
+- 会话历史降级策略：DB 引用的 JSONL 缺失视为无历史，不阻止备份发布（缺失引用记入加密 manifest）；backup 只把实际存在的 JSONL 当作 opaque bytes，不校验内容合法性；restore 在包级加密/hash 校验通过后发现无效 JSONL 时，将该会话恢复为空历史（`pi_session_file` 归一为 `NULL` 并报告计数）。包、密文、manifest 或 hash 损坏仍必须整体失败。该语义已实现（详见 [备份与恢复](docs/backup-restore.md)）。
 - 运维目标：RPO 24 小时；本机完整备份固定不超过 12 小时一次；备份保留 30 天并人工清理。RTO 目标 4 小时，但 signoff 延期到投入使用且有代表性数据规模后。
 
 N、M 天数由部署配置决定。
@@ -259,7 +259,7 @@ N、M 天数由部署配置决定。
 - 日志字段、脱敏与分级遵循 §5 日志设计。
 - 有副作用的流程应使用独立 Worker 或权限受限的 Pi 自定义工具；写仓库、创建 PR、构建和部署等权限必须按能力最小化授予并审计。
 - 审计：有副作用的工具调用与 Job 须记录持久化审计——`UserIdentity`、会话/Job、工具/能力、授权范围、目标、结果、时间与关联 ID；不记录密钥与正文；审计记录单独定义保留期与访问权限，写入失败须告警。
-- 启动 schema 门禁目标：`PI_MIGRATION_GATE` 默认 `verify`；增加独立 managed/RC 数据模式，managed 强制 `verify`，只有显式 disposable RC 才允许 `off`。任何模式都不自动 migration/reset；schema 变更由离线 CLI 在维护窗口执行。该目标尚待代码实现。
+- 启动 schema 门禁：`PI_DATA_MODE` 默认 `managed`，`PI_MIGRATION_GATE` 默认 `verify`；managed 强制 `verify`，只有显式 disposable `rc` 才允许 `off`。`managed + off` 在资源创建前 fail-fast；任何模式都不自动 migration/reset，schema 变更由离线 CLI 在维护窗口执行。
 - 优雅关闭：停止接收新请求 → 等在途任务完成或超时（超时后 abort、SSE 发送 `aborted` 并标记终态）→ 通知 SSE 客户端重连 → 退出；排队中的 Job 已持久化，重启后恢复。
 
 ## 8. 计划与状态

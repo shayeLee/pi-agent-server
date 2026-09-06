@@ -5,8 +5,9 @@ import { join } from "node:path";
 import { applyWithPreMigrationBackup, parseMigrateArgs, type PreMigrationApplyOperations } from "../../scripts/migrate.js";
 import { MIGRATION_PREBACKUP_URL_ENV, resolveMigrationPrebackupUrl } from "../../scripts/test-migration-prebackup.js";
 import { StageTimeoutError, withStageTimeout } from "../../src/backup/stage-guard.js";
-import { createPostgresBackup, type PgBackupClient, type PgProcessAdapter } from "../../src/backup/postgres-backup-core.js";
+import { createPostgresBackupForTest, type PgBackupClient, type PgProcessAdapter } from "../../src/backup/postgres-backup-core.js";
 import type { MigrationRunResult } from "../../src/storage/migration-engine.js";
+import { migrationChecksum, migrationDefinitions } from "../../src/storage/migration-manifest.js";
 import type { PublishedBackupVerification } from "../../src/backup/backup-core.js";
 
 const verified: PublishedBackupVerification = {
@@ -51,7 +52,8 @@ function pgSourceClient(): PgBackupClient {
       if (text.includes("pg_control_system")) return { rows: [{ system_identifier: "7234567890123456789" } as unknown as T] };
       if (text.includes("inet_server_addr")) return { rows: [{ database_oid: "16384", schema_oid: "16401", server_address: "192.0.2.10", server_port: "5432", cluster_name: "" } as unknown as T] };
       if (text === "SHOW server_version_num") return { rows: [{ server_version_num: "160004" } as unknown as T] };
-      if (text.includes("information_schema.tables")) return { rows: [{ present: false } as unknown as T] };
+      if (text.includes("information_schema.tables")) return { rows: [{ present: true } as unknown as T] };
+      if (text.includes('FROM "app_schema"."schema_migrations"')) return { rows: [{ version: 0, name: "initial-schema", checksum: migrationChecksum(migrationDefinitions[0]!), applied_at: 1 } as unknown as T] };
       return { rows: [] as T[] };
     },
   };
@@ -159,7 +161,7 @@ describe("WP3C migration pre-backup stage safety", () => {
       },
       abort() { aborts.push("abort"); },
     };
-    const err = await createPostgresBackup({
+    const err = await createPostgresBackupForTest({
       storageDialect: "postgres",
       databaseUrl: url,
       paths: { dataDir: f.dataDir, backupRoot: f.backupRoot, ageRecipientFile: f.recipient },
@@ -168,7 +170,7 @@ describe("WP3C migration pre-backup stage safety", () => {
       pgProcess: adapter,
       stageTimeoutMs: { pgDump: 120 },
       onStage: (stage, state) => stages.push(`${stage}:${state}`),
-    }).catch((e) => e);
+}, async () => ({ version: 0, pending: 0 })).catch((e) => e);
     expect(err).toBeInstanceOf(StageTimeoutError);
     expect((err as StageTimeoutError).stage).toBe("pg-dump");
     expect(aborts.length).toBeGreaterThan(0);

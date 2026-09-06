@@ -1,10 +1,10 @@
 // WP2A 真实 PostgreSQL 启动 migration 门禁（migrationGate="verify"）：
-// - 空 schema：fail-fast 明确提示离线 cutover/migrate，且门禁绝不写入（schema 内零表）、
-//   门禁 Pool/Kysely 在失败路径销毁（不留残余连接）；
-// - 已 apply 到 head 的 schema：门禁通过后用全新的 actual Pool 完成 bootstrap 并正常服务
-//   /health；关闭后无残余连接。
+// - 空 schema：fail-fast 明确提示离线 migrate，且门禁绝不写入（schema 内零表）、
+//   verify-only 初始化失败路径销毁 Pool（不留残余连接）；
+// - 已 apply 到 head 的 schema：门禁通过后同一 actual Pool 上的 verify-only 初始化返回
+//   Kysely 并正常服务 /health；关闭后无残余连接。服务启动绝不 bootstrap。
 // 仅在 PI_TEST_PG_URL 可用且由强制 runner 运行时执行；普通 `pnpm test` 安全 skip。
-// fixture 只创建/销毁自己的随机 pi_cutover_* schema；绝不 DROP DATABASE、绝不触碰 public。
+// fixture 只创建/销毁自己的随机 pi_gate_* schema；绝不 DROP DATABASE、绝不触碰 public。
 import { Pool } from "pg";
 import { randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
@@ -55,7 +55,17 @@ async function leakedConnections(): Promise<number> {
   return result.rows[0]?.count ?? 0;
 }
 
-describeGate("startServer 严格 migration 门禁（真实 PostgreSQL：独立 gate Pool → 销毁 → fresh actual Pool）", () => {
+describeGate("startServer 严格 migration 门禁（真实 PostgreSQL：单一 Pool verify-only → 供 HTTP 服务）", () => {
+  it("gate=verify rejects public before ledger/DDL work", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-start-gate-pg-public-"));
+    cleanups.push(dir);
+    admin = admin ?? new Pool({ connectionString: baseUrl! });
+    await expect(startServer(baseConfig(baseUrl!, dir))).rejects
+      .toThrow(/startup migration gate.*effective current_schema is not an allowed non-public application schema/s);
+    const tables = await admin.query("SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' AND table_name IN ('schema_migrations', 'projects', 'sessions', 'idempotency', 'file_operations')");
+    expect(tables.rows).toEqual([]);
+  }, 120_000);
+
   afterAll(async () => {
     for (const schema of cleanupSchemas) await admin?.query(`DROP SCHEMA IF EXISTS ${ident(schema)} CASCADE`).catch(() => undefined);
     await admin?.end().catch(() => undefined);
@@ -63,16 +73,19 @@ describeGate("startServer 严格 migration 门禁（真实 PostgreSQL：独立 g
 
   afterEach(() => { for (const directory of cleanups.splice(0)) rmSync(directory, { recursive: true, force: true }); });
 
-  it("gate=verify fails fast on an empty schema with the offline cutover/migrate instruction, writes nothing, and destroys the gate pool", async () => {
-    const schema = `pi_cutover_${randomUUID().replaceAll("-", "").slice(0, 24)}`;
+  it("gate=verify fails fast on an empty schema with the offline migrate instruction, writes nothing, and destroys the pool", async () => {
+    const schema = `pi_gate_${randomUUID().replaceAll("-", "").slice(0, 24)}`;
     cleanupSchemas.push(schema);
-    admin = new Pool({ connectionString: baseUrl! });
+    // Keep the one shared admin pool: reassigning would leak the pool opened by
+    // the earlier public-rejection case (and its idle connection), breaking the
+    // leaked-connection assertion below.
+    admin = admin ?? new Pool({ connectionString: baseUrl! });
     await admin.query(`CREATE SCHEMA ${ident(schema)}`);
     const dir = mkdtempSync(join(tmpdir(), "pi-start-gate-pg-"));
     cleanups.push(dir);
 
     await expect(startServer(baseConfig(scopedUrl(baseUrl!, schema), dir)))
-      .rejects.toThrow(/startup migration gate.*cutover.*migrate/s);
+      .rejects.toThrow(/startup migration gate.*migrate/s);
 
     // 门禁绝不写入：空 schema 在失败的门禁后仍然没有任何表（bootstrap 未发生）。
     const tables = await admin.query(
@@ -82,15 +95,15 @@ describeGate("startServer 严格 migration 门禁（真实 PostgreSQL：独立 g
     expect(await leakedConnections()).toBe(0);
   }, 120_000);
 
-  it("gate=verify passes on a migrated schema and serves HTTP via a fresh actual pool, with no leaked connections after close", async () => {
-    const schema = `pi_cutover_${randomUUID().replaceAll("-", "").slice(0, 24)}`;
+  it("gate=verify passes on a migrated schema and serves HTTP via the actual pool, with no leaked connections after close", async () => {
+    const schema = `pi_gate_${randomUUID().replaceAll("-", "").slice(0, 24)}`;
     cleanupSchemas.push(schema);
     admin = admin ?? new Pool({ connectionString: baseUrl! });
     await admin.query(`CREATE SCHEMA ${ident(schema)}`);
     const dir = mkdtempSync(join(tmpdir(), "pi-start-gate-pg-ok-"));
     cleanups.push(dir);
 
-    // 先用一次性连接把 schema 迁移到 head（模拟离线 cutover/migrate 完成后的目标状态）。
+    // 先用一次性连接把 schema 迁移到 head（模拟离线 migrate 完成后的目标状态）。
     const seedPool = createPostgresPool(scopedUrl(baseUrl!, schema), { connectionTimeoutMillis: 5_000 });
     const seedKysely = createPostgresKysely(seedPool);
     try {

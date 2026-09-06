@@ -15,7 +15,7 @@ describe("Phase 3 migration to Phase 2 bootstrap bridge (SQLite)", () => {
         const projects = new KyselyProjectRepository(kysely, sqliteConstraintErrorMapper);
         await projects.create({ id: "bridge-project", name: "kept", cwd: "/kept", ownerKey: "owner", createdAt: 1 });
         expect((await projects.get("bridge-project"))?.name).toBe("kept");
-        expect(db.prepare("SELECT count(*) AS n FROM schema_migrations").get()).toEqual({ n: 2 });
+        expect(db.prepare("SELECT count(*) AS n FROM schema_migrations").get()).toEqual({ n: 1 });
       } finally {
         await kysely.destroy();
       }

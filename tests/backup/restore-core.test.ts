@@ -8,7 +8,7 @@ import path from "node:path";
 import { Readable } from "node:stream";
 import { afterEach, describe, expect, it } from "vitest";
 import { createSqliteBackup } from "../../src/backup/backup-core.js";
-import { decryptAgeBinary, restoreSqliteBackup } from "../../src/backup/restore-core.js";
+import { decryptAgeBinary, InvalidSessionHistoryError, parseJsonl, restoreSqliteBackup } from "../../src/backup/restore-core.js";
 import { runSqliteMigrations } from "../../src/storage/migration-engine.js";
 import { migrationDefinitions } from "../../src/storage/migration-manifest.js";
 
@@ -18,7 +18,7 @@ const canRunAge = process.env.PI_RUN_REAL_AGE_RESTORE === "1" &&
 const cleanups: string[] = [];
 afterEach(() => { for (const directory of cleanups.splice(0)) rmSync(directory, { recursive: true, force: true }); });
 
-async function fixture(realAge = true, options: { customAgentDir?: boolean; externalDb?: boolean; databaseVariant?: "v1" | "v0" | "legacy-v0" | "legacy-v1" } = {}): Promise<{ root: string; dataDir: string; agentDir: string; dbPath: string; backupRoot: string; recipient: string; identity: string }> {
+async function fixture(realAge = true, options: { customAgentDir?: boolean; externalDb?: boolean } = {}): Promise<{ root: string; dataDir: string; agentDir: string; dbPath: string; backupRoot: string; recipient: string; identity: string }> {
   const root = mkdtempSync(path.join(tmpdir(), "pi-restore-test-"));
   cleanups.push(root);
   const dataDir = path.join(root, "source-data");
@@ -32,18 +32,8 @@ async function fixture(realAge = true, options: { customAgentDir?: boolean; exte
   if (options.externalDb) mkdirSync(path.dirname(dbPath), { recursive: true, mode: 0o700 });
   if (options.customAgentDir) writeFileSync(path.join(agentDir, "models.json"), '{"models":["custom"]}\n', { mode: 0o600 });
   const db = new DatabaseSync(dbPath);
-  const databaseVariant = options.databaseVariant ?? "v1";
-  if (databaseVariant === "legacy-v0" || databaseVariant === "legacy-v1") {
-    const operations = migrationDefinitions
-      .slice(0, databaseVariant === "legacy-v0" ? 1 : 2)
-      .flatMap((migration) => migration.operations.SQLite);
-    for (const operation of operations) db.exec(operation.sql);
-  } else {
-    await runSqliteMigrations(db, {
-      mode: "apply",
-      migrations: databaseVariant === "v0" ? [migrationDefinitions[0]!] : migrationDefinitions,
-    });
-  }
+  // Current single-baseline world: the canonical v0 baseline builds the full schema.
+  await runSqliteMigrations(db, { mode: "apply" });
   db.prepare("INSERT INTO projects (id,name,cwd,owner_key,created_at) VALUES (?,?,?,?,?)").run("p", "project", "/source/project", "owner", 1);
   const sessionFile = path.join(dataDir, "sessions", "s1", "history.jsonl");
   db.prepare("INSERT INTO sessions (id,owner_key,project_id,title,created_at,updated_at,pi_session_file,capability_versions) VALUES (?,?,?,?,?,?,?,?)").run("db-session", "owner", "p", "session", 1, 1, sessionFile, JSON.stringify({ schema: 1 }));
@@ -268,6 +258,11 @@ describe("decryptAgeBinary child lifecycle", () => {
 });
 
 describe("SQLite restore drill", () => {
+  it("keeps staged JSONL read failures distinct from semantic invalidity", () => {
+    const missing = path.join(tmpdir(), `pi-restore-missing-${Date.now()}.jsonl`);
+    expect(() => parseJsonl(missing)).toThrow(/staged file could not be read/);
+    try { parseJsonl(missing); } catch (error) { expect(error).not.toBeInstanceOf(InvalidSessionHistoryError); }
+  });
   it("runs the complete core path with an injectable crypto adapter and preserves payload hashes", async () => {
     const f = await fixture(false);
     const sourceFile = path.join(f.dataDir, "sessions", "s1", "history.jsonl");
@@ -279,28 +274,22 @@ describe("SQLite restore drill", () => {
     expect(existsSync(path.join(result.finalPath!, ".manifest.json"))).toBe(false);
   });
 
-  it.each([
-    ["authenticated v0", "v0", 0, false, false],
-    ["legacy v0", "legacy-v0", null, true, false],
-    ["legacy v1", "legacy-v1", null, true, true],
-  ] as const)("restores %s without auto-migrating and reports its physical outbox contract", async (_label, databaseVariant, version, legacy, hasOutbox) => {
-    const f = await fixture(false, { databaseVariant });
+  it("restores the canonical single baseline without auto-migrating and reports the physical outbox contract", async () => {
+    const f = await fixture(false);
     const backup = await createSqliteBackup({ paths: { dataDir: f.dataDir, dbPath: f.dbPath, backupRoot: f.backupRoot, ageRecipientFile: f.recipient }, age: fakeAge() });
-    const result = await restoreSqliteBackup({ paths: { inputBackup: backup.finalPath!, targetRoot: path.join(f.root, `restore-${databaseVariant}`), ageIdentityFile: f.identity }, age: fakeAge() });
-    expect(result.report.migration).toEqual({ version, pending: 0, legacy });
+    const result = await restoreSqliteBackup({ paths: { inputBackup: backup.finalPath!, targetRoot: path.join(f.root, "restore-baseline"), ageIdentityFile: f.identity }, age: fakeAge() });
+    expect(result.report.migration).toEqual({ version: 0, pending: 0 });
     expect(result.report.counts.fileOperations).toBe(0);
     const restoredPath = path.join(result.finalPath!, "pi-agent-server.db");
     const restoredDb = new DatabaseSync(restoredPath);
     try {
       const tables = (restoredDb.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all() as Array<{ name: string }>).map((row) => row.name);
-      expect(tables.includes("file_operations")).toBe(hasOutbox);
-      expect(tables.includes("schema_migrations")).toBe(!legacy);
-      if (databaseVariant === "v0") {
-        // Migration is an independent, explicit operation after restore; the
-        // restore itself must leave v0 physically untouched and without an outbox.
-        await runSqliteMigrations(restoredDb, { mode: "apply" });
-        expect(restoredDb.prepare("SELECT count(*) AS n FROM file_operations").get()).toEqual({ n: 0 });
-      }
+      expect(tables.includes("file_operations")).toBe(true);
+      expect(tables.includes("schema_migrations")).toBe(true);
+      // Migration is an independent, explicit operation after restore; with the
+      // single baseline this is a no-op that must keep the outbox table empty.
+      await runSqliteMigrations(restoredDb, { mode: "apply" });
+      expect(restoredDb.prepare("SELECT count(*) AS n FROM file_operations").get()).toEqual({ n: 0 });
     } finally {
       restoredDb.close();
     }
@@ -407,20 +396,25 @@ describe("SQLite restore drill", () => {
     expectNoTargetStaging(target);
   });
 
-  it("reports and remaps an exact missing session reference, then rejects a mismatched mapping", async () => {
+  it("reports an exact missing session reference, normalizes its reference to NULL, then rejects a mismatched mapping", async () => {
     const f = await fixture(false);
     const missing = path.join(f.dataDir, "sessions", "gone", "history.jsonl");
     const db = new DatabaseSync(f.dbPath);
     db.prepare("INSERT INTO sessions (id,owner_key,project_id,title,created_at,updated_at,pi_session_file,capability_versions) VALUES (?,?,?,?,?,?,?,?)").run("missing-session", "owner", "p", "missing", 1, 1, missing, null);
+    // pi_session_file is not unique: two metadata sessions may share the same
+    // missing history, and both (sessionId,path) records must be restorable.
+    db.prepare("INSERT INTO sessions (id,owner_key,project_id,title,created_at,updated_at,pi_session_file,capability_versions) VALUES (?,?,?,?,?,?,?,?)").run("missing-shared", "owner", "p", "missing shared", 1, 1, missing, null);
     db.close();
     const backup = await createSqliteBackup({ paths: { dataDir: f.dataDir, dbPath: f.dbPath, backupRoot: f.backupRoot, ageRecipientFile: f.recipient }, age: fakeAge() });
     const target = path.join(f.root, "missing-target");
     const restored = await restoreSqliteBackup({ paths: { inputBackup: backup.finalPath!, targetRoot: target, ageIdentityFile: f.identity }, age: fakeAge() });
-    expect(restored.report.counts.missingSessionReferences).toBe(1);
+    expect(restored.report.counts.missingSessionReferences).toBe(2);
+    expect(restored.report.counts.invalidSessionHistories).toBe(0);
     const finalDb = new DatabaseSync(path.join(restored.finalPath!, "pi-agent-server.db"), { readOnly: true });
-    const row = finalDb.prepare("SELECT pi_session_file FROM sessions WHERE id = 'missing-session'").get() as { pi_session_file: string };
+    const rows = finalDb.prepare("SELECT id, pi_session_file FROM sessions WHERE id IN ('missing-session', 'missing-shared') ORDER BY id").all() as Array<{ id: string; pi_session_file: string | null }>;
     finalDb.close();
-    expect(row.pi_session_file).toBe(path.join(restored.finalPath!, "sessions/gone/history.jsonl"));
+    // missing-as-empty：共享缺失路径的两个引用均独立归一为 NULL。
+    expect(rows).toEqual([{ id: "missing-session", pi_session_file: null }, { id: "missing-shared", pi_session_file: null }]);
 
     rewriteManifest(backup.finalPath!, (manifest) => { manifest.missingSessionReferences[0].sessionId = "wrong-session"; });
     const mismatchTarget = path.join(f.root, "missing-mismatch-target");
@@ -432,12 +426,76 @@ describe("SQLite restore drill", () => {
     ["missing parent", '[{"type":"session","id":"h"},{"type":"message","id":"a","parentId":"missing"}]'],
     ["cycle", '[{"type":"session","id":"h"},{"type":"message","id":"a","parentId":"b"},{"type":"message","id":"b","parentId":"a"}]'],
     ["duplicate header", '[{"type":"session","id":"h"},{"type":"session","id":"h2"}]'],
-  ])("rejects JSONL %s without a final or staging directory", async (_label, text) => {
+  ])("degrades JSONL %s (invalid-as-empty): restores the session without history, nulls the reference and reports the count", async (_label, text) => {
     const f = await fixture(false);
     const backup = await createSqliteBackup({ paths: { dataDir: f.dataDir, dbPath: f.dbPath, backupRoot: f.backupRoot, ageRecipientFile: f.recipient }, age: fakeAge() });
     rewritePayload(backup.finalPath!, "payload/sessions/s1/history.jsonl.age", () => Buffer.from(`${text}\n`, "utf8"));
-    const target = path.join(f.root, `jsonl-${_label.replaceAll(" ", "-")}`);
-    await expect(restoreSqliteBackup({ paths: { inputBackup: backup.finalPath!, targetRoot: target, ageIdentityFile: f.identity }, age: fakeAge() })).rejects.toThrow(/JSONL/);
+    const target = path.join(f.root, `jsonl-${(_label as string).replaceAll(" ", "-")}`);
+    const restored = await restoreSqliteBackup({ paths: { inputBackup: backup.finalPath!, targetRoot: target, ageIdentityFile: f.identity }, age: fakeAge() });
+    expect(restored.finalPath).toBeTruthy();
+    expect(restored.report.status).toBe("success");
+    expect(restored.report.counts.invalidSessionHistories).toBe(1);
+    expect(restored.report.counts.sessionHeaders).toBe(0);
+    expect(restored.report.counts.missingSessionReferences).toBe(0);
+    // 无效历史被丢弃：restored 输出里没有该 JSONL，DB 引用归一为 NULL。
+    expect(existsSync(path.join(restored.finalPath!, "sessions/s1/history.jsonl"))).toBe(false);
+    const finalDb = new DatabaseSync(path.join(restored.finalPath!, "pi-agent-server.db"), { readOnly: true });
+    const row = finalDb.prepare("SELECT pi_session_file FROM sessions WHERE id = 'db-session'").get() as { pi_session_file: string | null };
+    finalDb.close();
+    expect(row.pi_session_file).toBeNull();
+  });
+
+  it("rejects a package without the canonical single-baseline migration ledger before payload staging", async () => {
+    const f = await fixture(false);
+    const backup = await createSqliteBackup({ paths: { dataDir: f.dataDir, dbPath: f.dbPath, backupRoot: f.backupRoot, ageRecipientFile: f.recipient }, age: fakeAge() });
+    // Legacy RC packages carry no ledger at all; they are not recoverable.
+    rewriteManifest(backup.finalPath!, (manifest) => {
+      manifest.migrationLedger = { present: false, appliedCount: 0, appliedVersion: null, checksums: [], rows: [], pending: 0 };
+    });
+    const target = path.join(f.root, "no-ledger-target");
+    await expect(restoreSqliteBackup({ paths: { inputBackup: backup.finalPath!, targetRoot: target, ageIdentityFile: f.identity }, age: fakeAge() })).rejects.toThrow(/no authenticated migration ledger/);
     expectNoTargetStaging(target);
+  });
+
+  it("degrades an older Pi v1 history (invalid-as-empty): the header has no SDK v3 version and the history is discarded", async () => {
+    const f = await fixture(false);
+    const backup = await createSqliteBackup({ paths: { dataDir: f.dataDir, dbPath: f.dbPath, backupRoot: f.backupRoot, ageRecipientFile: f.recipient }, age: fakeAge() });
+    const v1 = '{"type":"session","id":"legacy-header","timestamp":"2024-01-01T00:00:00.000Z","cwd":"/source/project"}\n{"type":"message","message":{"role":"user","content":"legacy"}}\n';
+    rewritePayload(backup.finalPath!, "payload/sessions/s1/history.jsonl.age", () => Buffer.from(v1, "utf8"));
+    const restored = await restoreSqliteBackup({ paths: { inputBackup: backup.finalPath!, targetRoot: path.join(f.root, "restore-v1-rejected"), ageIdentityFile: f.identity }, age: fakeAge() });
+    expect(restored.report.counts.invalidSessionHistories).toBe(1);
+    expect(restored.report.counts.sessionHeaders).toBe(0);
+    expect(existsSync(path.join(restored.finalPath!, "sessions/s1/history.jsonl"))).toBe(false);
+    const finalDb = new DatabaseSync(path.join(restored.finalPath!, "pi-agent-server.db"), { readOnly: true });
+    const row = finalDb.prepare("SELECT pi_session_file FROM sessions WHERE id = 'db-session'").get() as { pi_session_file: string | null };
+    finalDb.close();
+    expect(row.pi_session_file).toBeNull();
+  });
+
+  it("restores companion sessions when one history is invalid: the package succeeds and only the invalid history is discarded", async () => {
+    const f = await fixture(false);
+    // 第二个完整会话：文件 + 行均有效，必须照常恢复。
+    const companionFile = path.join(f.dataDir, "sessions", "s2", "companion.jsonl");
+    mkdirSync(path.dirname(companionFile), { recursive: true, mode: 0o700 });
+    writeFileSync(companionFile, '{"type":"session","version":3,"id":"companion-header","timestamp":"2024-01-01T00:00:00.000Z","cwd":"/source/project"}\n', { mode: 0o600 });
+    const db = new DatabaseSync(f.dbPath);
+    db.prepare("INSERT INTO sessions (id,owner_key,project_id,title,created_at,updated_at,pi_session_file,capability_versions) VALUES (?,?,?,?,?,?,?,?)").run("companion", "owner", "p", "companion", 1, 1, companionFile, null);
+    db.close();
+    const backup = await createSqliteBackup({ paths: { dataDir: f.dataDir, dbPath: f.dbPath, backupRoot: f.backupRoot, ageRecipientFile: f.recipient }, age: fakeAge() });
+    // 把 db-session 的历史改成无效内容（包级 hash 同步更新，保持字节完整性）。
+    rewritePayload(backup.finalPath!, "payload/sessions/s1/history.jsonl.age", () => Buffer.from('{"type":"session","id":"h"},{"not":"jsonl"}\n', "utf8"));
+    const restored = await restoreSqliteBackup({ paths: { inputBackup: backup.finalPath!, targetRoot: path.join(f.root, "restore-companion"), ageIdentityFile: f.identity }, age: fakeAge() });
+    expect(restored.report.status).toBe("success");
+    expect(restored.report.counts.invalidSessionHistories).toBe(1);
+    expect(restored.report.counts.sessionHeaders).toBe(1);
+    expect(restored.report.counts.jsonlFiles).toBe(2);
+    const finalDb = new DatabaseSync(path.join(restored.finalPath!, "pi-agent-server.db"), { readOnly: true });
+    const rows = finalDb.prepare("SELECT id, pi_session_file FROM sessions ORDER BY id").all() as Array<{ id: string; pi_session_file: string | null }>;
+    finalDb.close();
+    const byId = new Map(rows.map((row) => [row.id, row.pi_session_file]));
+    expect(byId.get("db-session")).toBeNull();
+    expect(byId.get("companion")?.endsWith("sessions/s2/companion.jsonl")).toBe(true);
+    expect(readFileSync(path.join(restored.finalPath!, "sessions/s2/companion.jsonl")).toString()).toContain("companion-header");
+    expect(existsSync(path.join(restored.finalPath!, "sessions/s1/history.jsonl"))).toBe(false);
   });
 });

@@ -46,6 +46,8 @@ try {
   if (!existsSync(path.join(packageRoot, "dist-owner-transfer", "scripts", "owner-transfer.js"))) throw new Error("installed package lacks dist-owner-transfer");
 
   const { initializeDatabase } = await import(pathToFileURL(path.join(packageRoot, "dist-owner-transfer/src/storage/bootstrap.js")));
+  const { createPostgresKysely: createPostgresKyselyInstalled, createPostgresPool: createPostgresPoolInstalled } = await import(pathToFileURL(path.join(packageRoot, "dist-owner-transfer/src/storage/postgres-bootstrap.js")));
+  const { runPostgresMigrations: runPostgresMigrationsInstalled } = await import(pathToFileURL(path.join(packageRoot, "dist-owner-transfer/src/storage/migration-engine.js")));
   const root = path.join(directory, "fixture");
   const cwd = path.join(root, "app-cwd");
   const dataDir = path.join(root, "data");
@@ -130,10 +132,9 @@ try {
   if (existsSync(path.join(failFixture, "backups"))) throw new Error("installed owner-transfer published a backup without a valid confirmation");
   if (failed.stderr.includes(failDataDir)) throw new Error("installed owner-transfer safe-failure smoke leaked paths");
 
-  // Missing session-reference JSONL: the installed CLI hard-codes the strict
-  // completeness gate on its pre-owner-transfer backup, so a missing referenced
-  // file fails BEFORE any publish/COMPLETE and the transfer performs zero owner
-  // changes.
+  // Missing session-reference JSONL (missing-as-empty, Phase 3): the installed
+  // CLI publishes the pre-owner-transfer backup (reference recorded in the
+  // manifest) and the transfer performs the owner changes.
   const missFixture = path.join(root, "miss-fixture");
   const missCwd = path.join(missFixture, "app-cwd");
   const missDataDir = path.join(missFixture, "data");
@@ -151,22 +152,30 @@ try {
   missDb.prepare("INSERT INTO projects (id, name, cwd, owner_key, created_at) VALUES (?,?,?,?,?)").run("p1", "custom", "/cwd", SOURCE_OWNER, 1);
   missDb.prepare("INSERT INTO sessions (id, owner_key, project_id, title, created_at, updated_at, pi_session_file, capability_versions) VALUES (?,?,?,?,?,?,?,?)").run("s1", SOURCE_OWNER, DEFAULT_PROJECT_ID, "t", 1, 1, path.join(missDataDir, "sessions", "ghost", "ghost.jsonl"), "{}");
   missDb.close();
-  const missBefore = readFileSync(missDbPath).toString();
-  // The installed bin uses the shared backup root; snapshot its published package
-  // count before the failing run so we can prove nothing new was published.
+  // The installed bin uses the shared backup root; snapshot its published
+  // package count before the run so we can prove exactly one more was added.
   const sharedPackagesBefore = readdirSync(backupRoot).filter((entry) => entry.startsWith("backup-"));
   const missingRef = spawnSync(ownerTransferBin, binArgs("--apply"), {
     env: { ...process.env, AGENT_CWD: missCwd, DATA_DIR: missDataDir, DB_PATH: missDbPath, PI_AGENT_DIR: missAgentDir, PI_AUTH_PATH: path.join(missDataDir, "auth.json") }, encoding: "utf8",
   });
-  if (missingRef.status === 0) throw new Error("installed owner-transfer published a backup despite a missing session reference (strict completeness not enforced)");
-  if (readFileSync(missDbPath).toString() !== missBefore) throw new Error("installed owner-transfer wrote data despite a missing session reference");
-  if (!/strict completeness: 1 session reference/.test(missingRef.stderr)) throw new Error(`installed owner-transfer did not report the strict completeness failure: ${missingRef.stderr}`);
+  if (missingRef.status !== 0) throw new Error(`installed owner-transfer failed with a missing session reference (missing-as-empty): ${missingRef.stderr}`);
   if ((missingRef.stderr ?? "").includes(missDataDir)) throw new Error("installed owner-transfer safe-failure smoke leaked paths");
-  const sharedPackagesAfter = readdirSync(backupRoot).filter((entry) => entry.startsWith("backup-"));
-  if (sharedPackagesAfter.length !== sharedPackagesBefore.length) {
-    throw new Error("installed owner-transfer published a COMPLETE package despite the missing reference");
+  const missOwners = (() => {
+    const check = new DatabaseSync(missDbPath, { readOnly: true, enableForeignKeyConstraints: true });
+    try {
+      const projects = Object.fromEntries((check.prepare("SELECT id, owner_key FROM projects").all()).map((row) => [String(row.id), String(row.owner_key)]));
+      const sessions = Object.fromEntries((check.prepare("SELECT id, owner_key FROM sessions").all()).map((row) => [String(row.id), String(row.owner_key)]));
+      return { projects, sessions };
+    } finally { check.close(); }
+  })();
+  if (missOwners.projects[DEFAULT_PROJECT_ID] !== "" || missOwners.projects.p1 !== TARGET_OWNER || missOwners.sessions.s1 !== TARGET_OWNER) {
+    throw new Error("installed owner-transfer did not transfer exact owner rows with a missing reference");
   }
-  console.log("installed npm owner-transfer E2E and safe-failure smoke: ok");
+  const sharedPackagesAfter = readdirSync(backupRoot).filter((entry) => entry.startsWith("backup-"));
+  if (sharedPackagesAfter.length !== sharedPackagesBefore.length + 1 || !existsSync(path.join(backupRoot, sharedPackagesAfter.at(-1), "COMPLETE"))) {
+    throw new Error("installed owner-transfer did not publish a new COMPLETE package despite the missing reference");
+  }
+  console.log("installed npm owner-transfer E2E, safe-failure smoke and missing-as-empty smoke: ok");
 
   // Real PostgreSQL E2E via the installed bin (random isolated schema; skipped without PI_TEST_PG_URL/binaries).
   const pgUrl = process.env.PI_TEST_PG_URL?.trim() ?? "";
@@ -189,8 +198,20 @@ try {
     };
     try {
       await admin.query(`CREATE SCHEMA ${ident(schema)}`);
-      await admin.query(`CREATE TABLE ${ident(schema)}.projects (id UUID PRIMARY KEY, name TEXT NOT NULL, cwd TEXT NOT NULL, owner_key TEXT NOT NULL, created_at BIGINT NOT NULL)`);
-      await admin.query(`CREATE TABLE ${ident(schema)}.sessions (id UUID PRIMARY KEY, owner_key TEXT NOT NULL, project_id UUID NOT NULL, title TEXT NOT NULL, created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL, pi_session_file TEXT, capability_versions TEXT)`);
+      // Build the canonical schema (all managed tables + schema_migrations ledger)
+      // in the scoped non-public schema with the installed package's migration
+      // engine. The prior manual DDL was a legacy shape lacking schema_migrations,
+      // which the pre-owner-transfer backup ledger requires; the production
+      // backup ledger rule is unchanged.
+      {
+        const seedPool = createPostgresPoolInstalled(scopedUrl(schema));
+        const seedDb = createPostgresKyselyInstalled(seedPool);
+        try {
+          await runPostgresMigrationsInstalled(seedDb, { mode: "apply" });
+        } finally {
+          await seedDb.destroy();
+        }
+      }
       await admin.query(`INSERT INTO ${ident(schema)}.projects (id, name, cwd, owner_key, created_at) VALUES ($1, $2, $3, $4, $5)`, [DEFAULT_PROJECT_ID, "默认项目", "/cwd", "", 0]);
       await admin.query(`INSERT INTO ${ident(schema)}.projects (id, name, cwd, owner_key, created_at) VALUES ($1, $2, $3, $4, $5)`, [PG_CUSTOM_PROJECT_ID, "custom", "/cwd", SOURCE_OWNER, 1]);
       await admin.query(`INSERT INTO ${ident(schema)}.sessions (id, owner_key, project_id, title, created_at, updated_at, pi_session_file, capability_versions) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`, [PG_SESSION_ONE_ID, SOURCE_OWNER, DEFAULT_PROJECT_ID, "t", 1, 1, null, "{}"]);

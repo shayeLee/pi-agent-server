@@ -16,6 +16,8 @@ checkDistHygiene("dist-owner-transfer");
 const ownerTransferBin = path.resolve("dist-owner-transfer/scripts/owner-transfer.js");
 if (!existsSync(ownerTransferBin)) throw new Error("compiled owner-transfer CLI is missing (build:owner-transfer must run first)");
 const { initializeDatabase } = await import(pathToFileURL(path.resolve("dist-owner-transfer/src/storage/bootstrap.js")));
+const { createPostgresKysely, createPostgresPool } = await import(pathToFileURL(path.resolve("dist-owner-transfer/src/storage/postgres-bootstrap.js")));
+const { runPostgresMigrations } = await import(pathToFileURL(path.resolve("dist-owner-transfer/src/storage/migration-engine.js")));
 
 const DEFAULT_PROJECT_ID = "6f1a2b3c-4d5e-4f6a-8b9c-0d1e2f3a4b5c";
 const SOURCE = "10.1.2.3";
@@ -157,27 +159,33 @@ try {
   if (occPackages.length === 0 || !occPackages.every((entry) => entry.startsWith("backup-"))) throw new Error("compiled owner-transfer failed to retain the pre-transfer recovery backup");
   results.push("occupied-rollback");
 
-  // 5. Missing session-reference JSONL: the CLI hard-codes the strict completeness
-  // gate (requireCompleteSessionReferences: true) on its pre-owner-transfer backup,
-  // so a missing referenced file fails BEFORE any publish/COMPLETE and the transfer
-  // performs zero owner changes.
+  // 5. Missing session-reference JSONL (missing-as-empty, Phase 3): the
+  // pre-owner-transfer backup still publishes (the reference is recorded in
+  // the encrypted manifest) and the transfer performs the owner changes.
   const missFixture = await createFixture("missing-jsonl");
   {
     const missDb = new DatabaseSync(missFixture.dbPath);
     missDb.prepare("UPDATE sessions SET pi_session_file = ? WHERE id = ?").run(path.join(missFixture.dataDir, "sessions", "ghost", "ghost.jsonl"), "s1");
     missDb.close();
   }
-  const missBefore = readFileSync(missFixture.dbPath).toString();
   const missing = spawnSync(process.execPath, [ownerTransferBin, ...args(missFixture, recipient)], { env: env(missFixture), encoding: "utf8" });
-  if (missing.status === 0) throw new Error("compiled owner-transfer published a backup despite a missing session reference (strict completeness not enforced)");
-  if (readFileSync(missFixture.dbPath).toString() !== missBefore) throw new Error("compiled owner-transfer wrote data despite a missing session reference");
-  if (!/strict completeness: 1 session reference/.test(missing.stderr)) throw new Error(`compiled owner-transfer did not report the strict completeness failure: ${missing.stderr}`);
-  if ((missing.stderr ?? "").includes(missFixture.dataDir) || (missing.stderr ?? "").includes(path.join(missFixture.dataDir, "sessions", "ghost"))) {
-    throw new Error("compiled owner-transfer leaked the data directory on the strict failure path");
+  if (missing.status !== 0) throw new Error(`compiled owner-transfer failed with a missing session reference (missing-as-empty): ${missing.stderr}`);
+  const missReport = JSON.parse(missing.stdout.trim().split(/\r?\n/).at(-1));
+  if (missReport.status !== "success" || missReport.dialect !== "SQLite" || missReport.backup.kind !== "pre-owner-transfer" ||
+    missReport.transfer.projectsTransferred !== 1 || missReport.transfer.sessionsTransferred !== 2) {
+    throw new Error("compiled owner-transfer missing-as-empty success report is incomplete");
   }
-  if (existsSync(missFixture.backupRoot)) {
-    const missEntries = readdirSync(missFixture.backupRoot);
-    if (missEntries.some((entry) => entry.startsWith("backup-"))) throw new Error("compiled owner-transfer published a COMPLETE package despite the missing reference");
+  if ((missing.stderr ?? "").includes(missFixture.dataDir) || (missing.stderr ?? "").includes(path.join(missFixture.dataDir, "sessions", "ghost"))) {
+    throw new Error("compiled owner-transfer missing-as-empty path leaked the data directory");
+  }
+  const missOwners = readOwners(missFixture.dbPath);
+  if (missOwners.projects[DEFAULT_PROJECT_ID] !== "" || missOwners.projects.p1 !== TARGET_OWNER ||
+    missOwners.sessions.s1 !== TARGET_OWNER || missOwners.sessions.s2 !== TARGET_OWNER) {
+    throw new Error("compiled owner-transfer did not transfer exact owner rows with a missing reference");
+  }
+  const missPackages = readdirSync(missFixture.backupRoot).filter((entry) => entry.startsWith("backup-"));
+  if (missPackages.length !== 1 || !existsSync(path.join(missFixture.backupRoot, missPackages[0], "COMPLETE"))) {
+    throw new Error("compiled owner-transfer did not publish a COMPLETE package despite the missing reference");
   }
   results.push("missing-jsonl");
 
@@ -204,8 +212,20 @@ try {
     try {
       await admin.query(`CREATE SCHEMA ${ident(schema)}`);
       await admin.query(`CREATE SCHEMA ${ident(bystander)}`);
-      await admin.query(`CREATE TABLE ${ident(schema)}.projects (id UUID PRIMARY KEY, name TEXT NOT NULL, cwd TEXT NOT NULL, owner_key TEXT NOT NULL, created_at BIGINT NOT NULL)`);
-      await admin.query(`CREATE TABLE ${ident(schema)}.sessions (id UUID PRIMARY KEY, owner_key TEXT NOT NULL, project_id UUID NOT NULL, title TEXT NOT NULL, created_at BIGINT NOT NULL, updated_at BIGINT NOT NULL, pi_session_file TEXT, capability_versions TEXT)`);
+      // Build the canonical schema (all managed tables + schema_migrations ledger)
+      // in the scoped non-public schema with the compiled migration engine. The
+      // prior manual DDL was a legacy shape lacking schema_migrations, which the
+      // pre-owner-transfer backup ledger requires; the production backup ledger
+      // rule is unchanged.
+      {
+        const seedPool = createPostgresPool(scopedUrl(schema));
+        const seedDb = createPostgresKysely(seedPool);
+        try {
+          await runPostgresMigrations(seedDb, { mode: "apply" });
+        } finally {
+          await seedDb.destroy();
+        }
+      }
       await admin.query(`INSERT INTO ${ident(schema)}.projects (id, name, cwd, owner_key, created_at) VALUES ($1, $2, $3, $4, $5)`, [DEFAULT_PROJECT_ID, "默认项目", "/cwd", "", 0]);
       await admin.query(`INSERT INTO ${ident(schema)}.projects (id, name, cwd, owner_key, created_at) VALUES ($1, $2, $3, $4, $5)`, [PG_CUSTOM_PROJECT_ID, "custom", "/cwd", SOURCE_OWNER, 1]);
       await admin.query(`INSERT INTO ${ident(schema)}.sessions (id, owner_key, project_id, title, created_at, updated_at, pi_session_file, capability_versions) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`, [PG_SESSION_ONE_ID, SOURCE_OWNER, DEFAULT_PROJECT_ID, "t", 1, 1, null, "{}"]);

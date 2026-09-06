@@ -10,29 +10,28 @@
 - 仓库不安装 scheduler、retention worker，也不自动回滚 migration。
 - 每个 logical DB/schema + `DATA_DIR` 只允许一个服务实例；migration 和 restore 前必须停服务并确认无 writer。
 
-## 2. 当前行为与已决策目标
+## 2. 已落地语义（missing-as-empty / opaque JSONL / invalid-as-empty）
 
-以下目标**尚未实现**，操作员必须以“当前行为”理解现有 CLI。
+| 场景 | 行为 |
+| --- | --- |
+| DB 源 ledger 缺失、旧多行、字段/顺序错误或 checksum 不匹配 | backup（包括 `--dry-run`）在任何 age 加密、`COMPLETE`、发布或成功报告之前 fail-closed；不能推进 freshness |
+| DB 引用的 JSONL 缺失 | 一律按 `missing-as-empty` 记录进加密 manifest 并允许发布；`--require-complete-session-references` 已退役，owner-transfer pre-backup 同样不再 fail |
+| backup 读取已有 JSONL | 仅作 opaque bytes 稳定复制，不检查内容合法性（不逐行 `JSON.parse`） |
+| restore 遇到 manifest 中的 missing | 对应 `sessions.pi_session_file` 写为 `NULL` |
+| restore 遇到内容无效 JSONL | 丢弃该历史、对应引用写为 `NULL`，报告 `invalidSessionHistories` 数量（degradation）；其他会话照常恢复 |
+| 包/密文/hash 损坏 | 仍整体失败；不得降级为空历史 |
 
-| 场景 | 当前代码 | 已决策目标 |
-| --- | --- | --- |
-| DB 引用的 JSONL 缺失 | 普通备份记录到 manifest 后发布；`--require-complete-session-references` 与 owner-transfer strict 路径会失败 | 一律按 `missing-as-empty` 记录并允许发布 |
-| backup 读取已有 JSONL | 稳定复制时逐行 `JSON.parse`，非法内容导致失败 | 仅作 opaque bytes 稳定复制，不检查内容合法性 |
-| restore 遇到 manifest 中的 missing | 保留一个指向不存在目标的路径 | 对应 `sessions.pi_session_file` 写为 `NULL` |
-| restore 遇到内容无效 JSONL | 整体恢复失败 | 丢弃该历史、对应引用写为 `NULL`，报告 `invalidSessionHistories` 数量 |
-| 包/密文/hash 损坏 | 整体失败 | 仍整体失败；不得降级为空历史 |
-
-目标落地时将退役或重定义 `--require-complete-session-references`，并同步更新机器报告与 WP5C 契约。在此之前，不得按目标语义部署自动备份。
+机器报告（`backup-json-report`）只在通过唯一 canonical baseline 源 ledger 检查且成功发布的非 dry-run backup 上恰好一行；失败或 dry-run 均无成功报告，因此不能推进 freshness。`missingSessionReferences` 可以大于零，缺失历史不阻止发布。无效检测是 restore 对已装配 payload 的本地结构解析（仅 restore 做，backup 从不做；不使用 SDK `SessionManager.open`）。
 
 ## 3. 备份包契约
 
-- **SQLite**：以 `VACUUM INTO` 生成数据库一致性快照，再稳定复制白名单内 JSONL 和服务 `agentDir/models.json`。
-- **PostgreSQL**：在一个专用只读 `REPEATABLE READ` 连接上完成身份校验与 `pg_export_snapshot()`，`pg_dump --format=custom --no-owner --no-privileges --schema=<schema> --snapshot=<id>` 消费同一快照。
+- **源 DB 接受面与发布前置条件**：SQLite 与 PostgreSQL 在产生 snapshot/dump 后（SQLite 以 `VACUUM INTO` snapshot 为最终权威）都必须有**恰为唯一 canonical baseline**的 `schema_migrations` ledger：单行 version 0 / `initial-schema` / golden checksum。缺 ledger、旧多行、错误字段/顺序或 checksum 一律 fail-closed；检查失败时不得调用 age、写 `COMPLETE`、发布包或发出 freshness 成功报告，`--dry-run` 同样失败。
 - manifest 与每个 payload 均由 age 加密；记录 plaintext/ciphertext hash 与 size。
 - `COMPLETE` 最后写入并绑定 encrypted manifest hash；只有同文件系统原子 rename 完成后的目录才算发布。
 - plaintext staging 必须是私有 0700 目录，不能位于 backup root 或其父目录；失败路径清理 staging。backup root 内 staging 只含密文。
 - restore 验证 `COMPLETE`、manifest、payload hash、migration ledger、schema 以及 package allowlist。任何密文、hash、manifest 或解密错误都 fail-closed。
-- v1 包恢复时校验 `file_operations` 行，但绝不执行其中的删除任务。
+- **restore 只接受恰为唯一 canonical baseline 的 ledger**：manifest 的 `migrationLedger` 必须是 present + 单行（version 0 / `initial-schema` / golden checksum）。非唯一 canonical baseline 或无 ledger 的包在 payload 解密/staging 之前 fail-fast，**不可恢复**；JSONL 历史只接受当前 Pi SDK v3 结构（header `version:3`，entry id/parentId 树），更旧版本按 invalid-as-empty 丢弃。
+- 唯一 canonical baseline 包恢复时校验 `file_operations` 行，但绝不执行其中的删除任务。
 
 ## 4. 人工备份
 
@@ -58,14 +57,28 @@ PI_DATABASE_URL=postgresql://...
 - `AGENT_CWD`、`DATA_DIR`、`DB_PATH`、backup root、recipient file 均使用绝对路径；
 - recipient file 只包含公钥 recipient，0600 或更严格，非 symlink regular file；
 - `age`/`age-keygen` 版本固定；PostgreSQL server、`pg_dump`、`pg_restore` major 完全一致；
-- `--dry-run` 不发布任何包；
-- 当前 `--require-complete-session-references` 的行为见 §2，它不是目标自动化契约。
+- `--dry-run` 不发布任何包，且仍执行唯一 canonical baseline source-ledger 检查；缺 ledger、旧多行或 checksum 不匹配必须非零失败，不得报告可成功。
+- 运行时只接受当前 Pi JSONL v3：持久会话在 `SessionManager.open` 前先验证 header `version:3`，v1/v2 或畸形历史 fail-fast 且不改写文件；只读 export 同样拒绝旧版本，绝不调用 SDK `migrateSessionEntries`。
 
 `pnpm backup` 只用于人工开发/演练。自动备份由部署方审核的 helper/timer 调用固定编译产物。
 
-## 5. Migration 前置备份
+## 5. Migration 建立与前置备份
 
-正式 migration 顺序固定：
+Migration CLI 有两条互斥路径：
+
+### 5.1 完全空目标建立唯一 canonical baseline
+
+完全空 SQLite DB 或完全空 non-public/non-system PostgreSQL schema，必须离线执行唯一 canonical baseline bootstrap：
+
+```bash
+pnpm migrate -- --bootstrap-baseline --bootstrap-confirm CONFIRMED
+```
+
+`--bootstrap-baseline` 不可混用 `--backup-root`、`--age-recipient-file`、`--maintenance-window` 等 backup/maintenance 参数，也不会创建 pre-backup。它只建立唯一 canonical baseline；完成后先执行 `--verify`，服务启动仍只接受 verify。
+
+### 5.2 已有唯一 canonical baseline 的 apply
+
+`--apply` 只对已经有唯一 canonical baseline 的数据库执行。正式顺序固定为已验证的 **pre-backup → apply → verify**：
 
 1. 在窗口前用最近可用备份完成隔离恢复演练；
 2. 停服务并独立确认无 writer；
@@ -95,13 +108,13 @@ pnpm restore -- restore \
 
 - 先在明确隔离的新目标上执行，禁止覆盖源数据库、正式 schema 或正式 `DATA_DIR`。
 - SQLite restore 写入新的绝对 target root；PostgreSQL restore 需要明确的 disposable empty database/schema，拒绝 `public` 和系统 schema。
-- restore 不自动迁移；恢复旧版本包后，需对隔离目标另行执行 migration apply/verify。
+- restore 不自动迁移；恢复的包必须携带恰为唯一 canonical baseline（version 0 / `initial-schema` / golden checksum）的 migration ledger，否则在 payload 解密/staging 之前 fail-fast。完全空目标可以作为隔离 restore 的写入目标，但 `--bootstrap-baseline` 只建立唯一 canonical baseline、不会创建 pre-backup，也不会生成可恢复的 backup package。
 - age identity 由运维在执行时提供。一次成功解密和恢复演练是“私钥可用”的必要证据。
-- 目标 missing/invalid-as-empty 语义落地前，当前恢复行为仍以 §2 为准。
+- 目标 missing/invalid-as-empty 语义见 §2，恢复行为以该表为准。
 
 ## 7. 失败处理
 
-- 备份、age、manifest、hash、target、schema 或版本校验失败：不执行后续 migration，不更新 freshness。
+- 备份、源 ledger、age、manifest、hash、target、schema 或版本校验失败：不执行后续 migration，不更新 freshness。
 - migration 失败：保留已发布 pre-migration 包，不自动 down 或恢复。
 - restore 失败：不发布部分 target；保存脱敏错误和证据，由运维处理。
 - 日志和证据不得包含数据库 URL、密码、token、age identity、原始 argv、会话路径或正文。

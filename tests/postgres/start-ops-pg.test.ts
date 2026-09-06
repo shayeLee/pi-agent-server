@@ -53,18 +53,18 @@ describeGate("startServer WP5A 接线（真实 PostgreSQL）", () => {
   afterEach(() => { for (const directory of cleanups.splice(0)) rmSync(directory, { recursive: true, force: true }); });
 
   it("gate=verify 空 schema：拒绝启动（ready false 语义：无任何端点声称 ready）", async () => {
-    const schema = `pi_cutover_${randomUUID().replaceAll("-", "").slice(0, 24)}`;
+    const schema = `pi_opsgate_${randomUUID().replaceAll("-", "").slice(0, 24)}`;
     cleanupSchemas.push(schema);
     admin = new Pool({ connectionString: baseUrl! });
     await admin.query(`CREATE SCHEMA ${ident(schema)}`);
     const dir = mkdtempSync(join(tmpdir(), "pi-start-ops-pg-bad-"));
     cleanups.push(dir);
     await expect(startServer(baseConfig(scopedUrl(baseUrl!, schema), dir)))
-      .rejects.toThrow(/startup migration gate.*cutover.*migrate/s);
+      .rejects.toThrow(/startup migration gate.*migrate/s);
   }, 120_000);
 
   it("gate=verify 已迁移 schema：readyz=migration-head，metrics dialect=postgres、gate 1/1", async () => {
-    const schema = `pi_cutover_${randomUUID().replaceAll("-", "").slice(0, 24)}`;
+    const schema = `pi_opsgate_${randomUUID().replaceAll("-", "").slice(0, 24)}`;
     cleanupSchemas.push(schema);
     admin = admin ?? new Pool({ connectionString: baseUrl! });
     await admin.query(`CREATE SCHEMA ${ident(schema)}`);

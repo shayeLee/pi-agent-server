@@ -22,6 +22,7 @@
     "src/storage/pg-int8.ts",
     "src/storage/postgres-bootstrap.ts",
     "src/storage/postgres-connection.ts",
+    "src/storage/postgres-schema-guard.ts",
     "src/storage/schema-builder.ts",
     "src/storage/schema-compatibility.ts",
     "src/storage/schema-manifest.ts",

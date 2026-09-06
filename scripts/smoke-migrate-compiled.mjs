@@ -15,7 +15,7 @@ if (packageJson.bin?.["pi-agent-server-migrate"] !== "./dist-migrate/scripts/mig
 
 function run(args, options = {}) {
   const result = spawnSync(process.execPath, args, { ...options, encoding: "utf8" });
-  if (result.status !== 0) throw new Error(`migration smoke failed: ${args.join(" ")}`);
+  if (result.status !== 0) throw new Error(`migration smoke failed: ${args.join(" ")}\nstdout:\n${result.stdout ?? ""}\nstderr:\n${result.stderr ?? ""}`);
   return result;
 }
 
@@ -52,7 +52,10 @@ const backupRoot = path.join(directory, "backups");
 mkdirSync(dataDir, { recursive: true, mode: 0o700 });
 writeFileSync(dbPath, "", { mode: 0o600 });
 const { recipient, identity } = createAgeFiles(directory);
-const env = { ...process.env, AGENT_CWD: process.cwd(), DATA_DIR: dataDir, DB_PATH: dbPath, PI_STORAGE_DIALECT: "sqlite" };
+// Keep backup credential exclusion hermetic: never inspect the operator's real ~/.pi auth file.
+const authPath = path.join(directory, "auth.json");
+writeFileSync(authPath, "{}\n", { mode: 0o600 });
+const env = { ...process.env, AGENT_CWD: process.cwd(), DATA_DIR: dataDir, DB_PATH: dbPath, PI_STORAGE_DIALECT: "sqlite", PI_AUTH_PATH: authPath };
 
 try {
   // Keep a failure smoke: apply without the explicit prebackup gates must not
@@ -60,6 +63,17 @@ try {
   const missingGates = spawnSync(process.execPath, ["dist-migrate/scripts/migrate.js", "--apply"], { cwd: process.cwd(), env, encoding: "utf8" });
   if (missingGates.status === 0 || `${missingGates.stdout}${missingGates.stderr}`.includes("migration result")) throw new Error("compiled migration apply did not fail closed without pre-backup gates");
 
+  // First establishment of the immutable baseline must go through the compiled CLI bin
+  // (offline single canonical baseline writer), never by importing the migration runner: an
+  // empty DB has no canonical ledger to authenticate a pre-migration backup.
+  const bootstrap = run(["dist-migrate/scripts/migrate.js", "--bootstrap-baseline", "--bootstrap-confirm", "CONFIRMED"], { cwd: process.cwd(), env });
+  const bootstrapReport = lastJsonLine(bootstrap.stdout);
+  if (bootstrapReport.status !== "success" || bootstrapReport.mode !== "bootstrap-baseline" || bootstrapReport.migration?.mode !== "apply" || bootstrapReport.migration?.status !== "applied" || bootstrapReport.migration?.pending !== 0 || bootstrapReport.migration?.appliedVersion !== 0 || bootstrapReport.verify?.mode !== "verify" || bootstrapReport.verify?.status !== "verified" || bootstrapReport.verify?.appliedVersion !== 0 || bootstrapReport.verify?.pending !== 0) {
+    throw new Error("compiled bootstrap-baseline did not reach the canonical head");
+  }
+
+  // Once a canonical ledger exists, apply verifies an authenticated pre-backup before its
+  // no-op-at-head apply/verify sequence.
   const result = run(["dist-migrate/scripts/migrate.js", "--apply", "--backup-root", backupRoot, "--age-recipient-file", recipient, "--maintenance-window", "CONFIRMED"], { cwd: process.cwd(), env });
   const report = lastJsonLine(result.stdout);
   if (report.status !== "success" || report.mode !== "apply" || report.migration?.mode !== "apply" || report.migration?.status !== "applied" || report.migration?.pending !== 0 || report.verify?.mode !== "verify" || report.verify?.status !== "verified" || report.verify?.pending !== 0 || report.migration.appliedVersion !== report.verify.appliedVersion) throw new Error("compiled migration machine result is incomplete");
@@ -68,12 +82,12 @@ try {
   const packagePath = path.join(backupRoot, packages[0]);
   const manifest = runExternal("age", ["--decrypt", "--identity", identity, path.join(packagePath, "manifest.json.age")]);
   const metadata = JSON.parse(manifest.stdout);
-  if (metadata.kind !== "pre-migration" || metadata.migrationLedger.present !== false || metadata.migrationLedger.appliedVersion !== null || metadata.migrationLedger.pending !== 0) throw new Error("compiled prebackup was not captured before migration");
+  if (metadata.kind !== "pre-migration" || metadata.migrationLedger.present !== true || metadata.migrationLedger.appliedVersion !== 0 || metadata.migrationLedger.pending !== 0) throw new Error("compiled prebackup did not bind the canonical baseline ledger");
   const db = new DatabaseSync(dbPath, { readOnly: true });
   const ledger = db.prepare("SELECT version, name FROM schema_migrations ORDER BY version").all();
   db.close();
-  if (JSON.stringify(ledger) !== JSON.stringify([{ version: 0, name: "initial-schema" }, { version: 1, name: "file-operations-outbox" }])) throw new Error("compiled migration ledger is incomplete");
-  console.log("compiled migration CLI real apply/prebackup/verify smoke: ok");
+  if (JSON.stringify(ledger) !== JSON.stringify([{ version: 0, name: "initial-schema" }])) throw new Error("compiled migration ledger is incomplete");
+  console.log("compiled migration CLI canonical-baseline/prebackup/no-op-apply/verify smoke: ok");
 } finally {
   rmSync(process.env.PI_BACKUP_STAGING_ROOT, { recursive: true, force: true });
   rmSync(directory, { recursive: true, force: true });

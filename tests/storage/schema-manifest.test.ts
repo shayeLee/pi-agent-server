@@ -327,7 +327,7 @@ describe("Schema Manifest 契约：Manifest → SQLite bootstrap DDL 等价（�
     await kysely.destroy();
   });
 
-  it("复合主键：idempotency(session_id, request_id)；无 kysely_migration；文件库 WAL、:memory: 保持 memory", async () => {
+  it("复合主键：idempotency(session_id, request_id)；bootstrap 写入单一基线 ledger；无 kysely_migration；文件库 WAL、:memory: 保持 memory", async () => {
     // 复合主键由 PRAGMA 观察（pk 序号 1、2）
     const { db, kysely } = await initMemoryDb();
     const idem = tableInfo(db, "idempotency");
@@ -339,7 +339,11 @@ describe("Schema Manifest 契约：Manifest → SQLite bootstrap DDL 等价（�
       (db.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all() as { name: string }[]).map(
         (r) => r.name,
       ),
-    ).toEqual(["file_operations", "idempotency", "projects", "sessions"]);
+    ).toEqual(["file_operations", "idempotency", "projects", "schema_migrations", "sessions"]);
+    // new-baseline：bootstrap 在全新库建 schema 的同时写入**单一**基线 ledger 行（version=0）。
+    expect(db.prepare("SELECT version, name FROM schema_migrations ORDER BY version").all()).toEqual([
+      { version: 0, name: "initial-schema" },
+    ]);
     // 无版本化迁移痕迹（本方案没有 Migrator，不应创建迁移簿记表）
     expect(
       db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'kysely_%'").all() as unknown[],

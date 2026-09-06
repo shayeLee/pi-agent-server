@@ -9,9 +9,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import type { Kysely } from "kysely";
-import { initializeDatabase } from "../../src/storage/bootstrap.js";
+import { initializeDatabase, initializeDatabaseVerifyOnly } from "../../src/storage/bootstrap.js";
+import { runSqliteMigrations } from "../../src/storage/migration-engine.js";
 import type { DatabaseSchema } from "../../src/storage/db-schema.js";
 import type { SchemaManifest } from "../../src/storage/schema-manifest.js";
+import { migrationChecksum, migrationDefinitions } from "../../src/storage/migration-manifest.js";
 import { KyselySessionRepository } from "../../src/storage/kysely-session-repository.js";
 import { sqliteConstraintErrorMapper } from "../../src/storage/sqlite-constraint-errors.js";
 import { KyselyProjectRepository } from "../../src/storage/kysely-project-repository.js";
@@ -168,7 +170,74 @@ describe("空数据库 bootstrap（Kysely schema builder + bootstrap.ts）", () 
   });
 });
 
-describe("旧 schema 严格兼容性 preflight（M1 升级：列名齐全但类型/FK/索引错误也要 fail-fast，无任何 DDL）", () => {
+describe("initializeDatabaseVerifyOnly（服务启动专用：严格只读 verify，绝不 bootstrap）", () => {
+  it("空库 fail-fast：不建任何表/索引/baseline ledger，失败路径关闭底层 DatabaseSync", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-bootstrap-verify-only-"));
+    const file = join(dir, "empty.db");
+    try {
+      const db = new DatabaseSync(file);
+      const err = await initializeDatabaseVerifyOnly(db).then(() => null, (e: unknown) => e);
+      expect(err).toBeInstanceOf(Error);
+      expect((err as Error).message).toMatch(/database has not been initialized/);
+      // 失败路径 destroy 了 Kysely → adapter 按真实所有权关闭了同一 DatabaseSync
+      expect(() => db.prepare("SELECT 1")).toThrow(/not open/i);
+
+      // 复查文件：verify-only 绝不 bootstrap（无 projects/sessions/idempotency/schema_migrations 表）
+      const reader = new DatabaseSync(file);
+      try {
+        const names = (reader.prepare("SELECT name FROM sqlite_master WHERE type = 'table'").all() as { name: string }[]).map((r) => r.name);
+        expect(names).not.toContain("projects");
+        expect(names).not.toContain("sessions");
+        expect(names).not.toContain("idempotency");
+        expect(names).not.toContain("schema_migrations");
+      } finally {
+        reader.close();
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("已迁移到 head 的库：verify-only 通过，返回可用 Kysely，且启用 WAL", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-bootstrap-verify-ok-"));
+    const file = join(dir, "migrated.db");
+    try {
+      const seed = new DatabaseSync(file);
+      try {
+        await runSqliteMigrations(seed, { mode: "apply" });
+      } finally {
+        seed.close();
+      }
+
+      const db = new DatabaseSync(file);
+      const kysely = await initializeDatabaseVerifyOnly(db);
+      // WAL 已启用（文件库）
+      expect((db.prepare("PRAGMA journal_mode").get() as { journal_mode?: string }).journal_mode).toBe("wal");
+      // 返回的 Kysely 可直接查询（schema 就绪）
+      expect(await kysely.selectFrom("projects").select("id").execute()).toEqual([]);
+      await kysely.destroy();
+      expect(() => db.prepare("SELECT 1")).toThrow(/not open/i);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("旧 schema 严格兼容性 preflight（M1：列名齐全但类型/FK/索引错误也要 fail-fast，无任何 DDL）", () => {
+  // 新基线门禁：无 ledger 的 managed 表一律以专有 legacy 消息 fail-fast（先于 preflight）。
+  // 本组用例给 fixture 挂上 canonical 基线 ledger，专门验证「ledger 正常但物理契约漂移」
+  // 时 strict preflight 仍逐列/逐索引 fail-fast，且不执行任何 ALTER/补列/建索引。
+  function attachCanonicalLedger(db: DatabaseSync): void {
+    db.exec(`CREATE TABLE schema_migrations (
+      version INTEGER PRIMARY KEY NOT NULL,
+      name TEXT UNIQUE NOT NULL,
+      checksum TEXT NOT NULL,
+      applied_at INTEGER NOT NULL
+    )`);
+    db.prepare("INSERT INTO schema_migrations (version, name, checksum, applied_at) VALUES (0, ?, ?, 1)")
+      .run(migrationDefinitions[0]!.name, migrationChecksum(migrationDefinitions[0]!));
+  }
+
   // 构造「表已存在但形态旧」的 SQLite 库：sessions 缺 Manifest 第 12 列 capability_versions。
   // 严格 preflight 在**任何建表/建索引 DDL 之前**执行，未通过时连 CREATE INDEX IF NOT EXISTS 都不允许发生。
   function oldSchemaSql(): string {
@@ -203,9 +272,18 @@ describe("旧 schema 严格兼容性 preflight（M1 升级：列名齐全但类�
     `;
   }
 
-  it("旧 schema（缺 capability_versions 列）初始化 fail-fast，且失败路径关闭了 Kysely/底层 DatabaseSync", async () => {
+  it("legacy 无 ledger 的 managed 表：在 preflight 之前就以专有 legacy 消息 fail-fast（bootstrap 绝不采用），失败路径照常关闭存储", async () => {
     const db = new DatabaseSync(":memory:");
     db.exec(oldSchemaSql());
+    const err = await initializeDatabase(db).then(() => null, (e: unknown) => e);
+    const message = err instanceof Error ? err.message : String(err);
+    expect(message).toMatch(/schema migration ledger: managed tables exist without the migration ledger; this is a legacy database and bootstrap adoption is forbidden/);
+  });
+
+  it("旧 schema（缺 capability_versions 列，带 canonical ledger）初始化 fail-fast，且失败路径关闭了 Kysely/底层 DatabaseSync", async () => {
+    const db = new DatabaseSync(":memory:");
+    db.exec(oldSchemaSql());
+    attachCanonicalLedger(db);
 
     const err = await initializeDatabase(db).then(() => null, (e: unknown) => e);
     const message = err instanceof Error ? err.message : String(err);
@@ -220,9 +298,10 @@ describe("旧 schema 严格兼容性 preflight（M1 升级：列名齐全但类�
     const dir = mkdtempSync(join(tmpdir(), "pi-bootstrap-old-schema-"));
     const file = join(dir, "old.db");
     try {
-      // 独立连接写入旧 schema 后关闭
+      // 独立连接写入旧 schema + canonical ledger 后关闭
       const writer = new DatabaseSync(file);
       writer.exec(oldSchemaSql());
+      attachCanonicalLedger(writer);
       writer.close();
 
       await expect(initializeDatabase(new DatabaseSync(file))).rejects.toThrow(/不兼容/);
@@ -308,6 +387,7 @@ describe("旧 schema 严格兼容性 preflight（M1 升级：列名齐全但类�
   async function failedMessage(sqlText: string): Promise<string> {
     const db = new DatabaseSync(":memory:");
     db.exec(sqlText);
+    attachCanonicalLedger(db);
     const err = await initializeDatabase(db).then(() => null, (e: unknown) => e);
     expect(err).toBeInstanceOf(Error);
     return err instanceof Error ? err.message : String(err);
@@ -337,9 +417,10 @@ describe("旧 schema 严格兼容性 preflight（M1 升级：列名齐全但类�
     const dir = mkdtempSync(join(tmpdir(), "pi-bootstrap-no-ddl-"));
     const file = join(dir, "bad.db");
     try {
-      // 独立连接写入坏 schema 后关闭（initializeDatabase 失败路径会关闭它自己打开的 DatabaseSync）
+      // 独立连接写入坏 schema + canonical ledger 后关闭（initializeDatabase 失败路径会关闭它自己打开的 DatabaseSync）
       const writer = new DatabaseSync(file);
       writer.exec(nearCurrentSchemaSql({ createdAtIndexType: "TEXT", indexErrors: true }));
+      attachCanonicalLedger(writer);
       writer.close();
 
       const snapshot = (db: DatabaseSync): unknown => ({

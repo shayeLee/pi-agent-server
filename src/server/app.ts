@@ -362,7 +362,7 @@ export function buildApp(deps: ServerDeps): FastifyInstance {
       // failclosed：状态读取异常时绝不误报 ready，且只返回最小兜底体（无内部细节）。
       return reply.code(503).type("application/json; charset=utf-8").send({
         ready: false,
-        migrationGate: "off",
+        migrationGate: "verify",
         schema: "unknown",
       });
     }

@@ -25,6 +25,9 @@ import type { LogicalTypeMap } from "./schema-builder.js";
 
 export type SchemaDialect = "SQLite" | "PostgreSQL";
 
+/** The single-baseline migration ledger table; the only extra relation allowed alongside the manifest tables. */
+const MIGRATION_LEDGER_TABLE_NAME = "schema_migrations";
+
 /** preflight 结论：空库/无 managed 表（调用方应 bootstrap）或已完整一致（调用方应跳过 DDL）。 */
 export type SchemaCompatVerdict = "empty" | "complete";
 
@@ -70,6 +73,8 @@ interface Catalog {
   foreignKeys(table: string): Promise<CatalogForeignKey[]>;
   /** 仅「显式」索引（排除 SQLite sqlite_autoindex_* / PG indisprimary 自动索引）。 */
   indexes(table: string): Promise<CatalogIndex[]>;
+  /** 非关系对象（视图 / 触发器 / 序列等），manifest 从不声明任何此类对象。 */
+  extraObjects(): Promise<string[]>;
 }
 
 /** 标识符白名单：本模块只拼接 Manifest 中的常量表/索引名，运行时校验防注入。 */
@@ -152,6 +157,13 @@ class SqliteCatalog implements Catalog {
       out.push({ name: row.name, unique: row.unique === 1, columns });
     }
     return out;
+  }
+
+  async extraObjects(): Promise<string[]> {
+    const rows = await this.rows<{ type: string; name: string }>(
+      `SELECT type, name FROM sqlite_master WHERE type IN ('view', 'trigger')`,
+    );
+    return rows.map((r) => `${r.type}:${r.name}`);
   }
 }
 
@@ -340,6 +352,29 @@ class PostgresCatalog implements Catalog {
       return { name: r.indexname, unique: r.indisunique, columns };
     });
   }
+
+  async extraObjects(): Promise<string[]> {
+    // relkind: S=sequence, v=view, m=materialized view, f=foreign table,
+    // p=partitioned table. Ordinary tables (r) and their indexes are covered
+    // by the managed-table / extra-table and per-table index checks.
+    const relations = await sql<{ relkind: string; relname: string }>`
+      SELECT c.relkind, c.relname
+      FROM pg_class c
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname = current_schema() AND c.relkind IN ('S', 'v', 'm', 'f', 'p')
+    `.execute(this.kysely);
+    const triggers = await sql<{ tgname: string }>`
+      SELECT DISTINCT t.tgname
+      FROM pg_trigger t
+      JOIN pg_class c ON c.oid = t.tgrelid
+      JOIN pg_namespace n ON n.oid = c.relnamespace
+      WHERE n.nspname = current_schema() AND NOT t.tgisinternal
+    `.execute(this.kysely);
+    return [
+      ...relations.rows.map((r) => `${r.relkind}:${r.relname}`),
+      ...triggers.rows.map((r) => `trigger:${r.tgname}`),
+    ];
+  }
 }
 
 /** 从 pg_get_indexdef 提取 btree 索引列（含 DESC 判定），如 (owner_key, updated_at DESC)。 */
@@ -517,6 +552,22 @@ export async function assertSchemaCompatible(
   }
 
   const problems: string[] = [];
+  // Additional objects are never tolerated. A managed database that also
+  // contains a table outside the manifest (and outside the single-baseline
+  // ledger) is NOT the canonical single-baseline physical schema: it must not
+  // be verified complete, adopted by bootstrap, or accepted as a backup source.
+  // The ledger table is the only allowed extra relation.
+  const managedNames = new Set(managedTables.map((table) => table.name));
+  for (const table of existingTables) {
+    if (!managedNames.has(table) && table !== MIGRATION_LEDGER_TABLE_NAME) {
+      problems.push(`数据库存在 Manifest 之外的额外表 '${table}'（仅允许 canonical 表与 schema_migrations ledger）`);
+    }
+  }
+  // Non-relation objects (views / triggers / sequences / matviews ...) are never
+  // part of the manifest and must fail the gate if present.
+  for (const object of await catalog.extraObjects()) {
+    problems.push(`数据库存在 Manifest 之外的对象 '${object}'`);
+  }
   for (const table of managedTables) {
     if (!existingTables.has(table.name)) {
       // 部分 managed 表存在：其余禁止「只建缺失表/只补索引」（必须整体一致或整体重建）。

@@ -9,7 +9,7 @@ import { createPostgresKysely, createPostgresPool } from "../../src/storage/post
 import { createPostgresBackup, verifyPublishedBackup } from "../../src/backup/backup-core.js";
 import { runPostgresMigrations } from "../../src/storage/migration-engine.js";
 import { migrationDefinitions } from "../../src/storage/migration-manifest.js";
-import { applyWithPreMigrationBackup } from "../../scripts/migrate.js";
+import { applyWithPreMigrationBackup, bootstrapPostgresCanonicalBaseline } from "../../scripts/migrate.js";
 import { assertRequiredPgTestEnvironment } from "../../scripts/pg-test-gate.js";
 import { checkPgBackupBinaries } from "../../scripts/test-pg-backup.js";
 
@@ -42,7 +42,7 @@ describeGate("WP3C real PostgreSQL pre-migration backup gate", () => {
     for (const directory of cleanup.splice(0)) rmSync(directory, { recursive: true, force: true });
   });
 
-  it("publishes COMPLETE pre-migration backup before apply and verify in a random schema", async () => {
+  it("establishes the canonical baseline, then publishes COMPLETE pre-migration backup over a no-op apply+verify", async () => {
     schema = `pi_w3c_${randomUUID().replaceAll("-", "").slice(0, 20)}`;
     admin = new Pool({ connectionString: baseUrl! });
     await admin.query(`CREATE SCHEMA ${ident(schema)}`);
@@ -66,8 +66,27 @@ describeGate("WP3C real PostgreSQL pre-migration backup gate", () => {
     chmodSync(recipient, 0o600);
 
     try {
-      // The schema is intentionally untouched here: the prebackup must see
-      // the never-migrated state, not a test setup no-op.
+      // First establish the canonical single-baseline migration through the offline
+      // CLI/source bootstrap writer (non-public empty schema, no pre-backup). A prebackup
+      // can never run against an untouched schema: production refuses to back up a source
+      // without an authenticated migration ledger.
+      const bootstrap = await bootstrapPostgresCanonicalBaseline(kysely);
+      expect(bootstrap.schema).toBe(schema);
+      expect(bootstrap.migration.status).toBe("applied");
+      expect(bootstrap.migration.appliedVersion).toBe(migrationDefinitions.at(-1)!.version);
+      expect(bootstrap.migration.pending).toHaveLength(0);
+      expect(bootstrap.verification.status).toBe("verified");
+      expect(bootstrap.verification.appliedVersion).toBe(migrationDefinitions.at(-1)!.version);
+      expect(bootstrap.verification.pending).toHaveLength(0);
+
+      // The bootstrap writer is strictly a first-time-on-empty writer: re-running it against
+      // the now-initialized schema must refuse rather than adopt a non-empty target.
+      await expect(bootstrapPostgresCanonicalBaseline(kysely)).rejects.toThrow(/non-empty PostgreSQL schema|refusing/);
+
+      // The pre-backup now captures the already-canonical schema; the apply
+      // below is a no-op at head, so we can verify the prebackup ordering, the
+      // published COMPLETE package, and the manifest canonical ledger against
+      // a real (non-empty) baseline.
       const order: string[] = [];
       const result = await applyWithPreMigrationBackup({
         createBackup: async () => {
@@ -92,6 +111,13 @@ describeGate("WP3C real PostgreSQL pre-migration backup gate", () => {
         },
       });
       expect(order).toEqual(["backup", "backup-verify", "migration-apply", "migration-verify"]);
+      // The pre-backup is of an already-migrated canonical schema, so the
+      // migration apply is a no-op at head and the post-migration verify
+      // confirms the same head.
+      expect(result.migration.mode).toBe("apply");
+      expect(result.migration.status).toBe("applied");
+      expect(result.migration.appliedVersion).toBe(migrationDefinitions.at(-1)!.version);
+      expect(result.migration.pending).toHaveLength(0);
       expect(result.backup.kind).toBe("pre-migration");
       expect(result.verification.status).toBe("verified");
       expect(result.backup.checksum).toMatch(/^[0-9a-f]{64}$/);
@@ -101,8 +127,10 @@ describeGate("WP3C real PostgreSQL pre-migration backup gate", () => {
       expect(manifest.status).toBe(0);
       const metadata = JSON.parse(manifest.stdout);
       expect(metadata.kind).toBe("pre-migration");
-      expect(metadata.migrationLedger.present).toBe(false);
-      expect(metadata.migrationLedger.appliedVersion).toBeNull();
+      // The backup is taken from the canonical baseline, so its authenticated
+      // ledger is present and exactly the single-baseline row (v0).
+      expect(metadata.migrationLedger.present).toBe(true);
+      expect(metadata.migrationLedger.appliedVersion).toBe(0);
       expect(metadata.migrationLedger.pending).toBe(0);
       const ledger = await pool.query(`SELECT version, name FROM ${ident(schema)}.schema_migrations ORDER BY version`);
       expect(ledger.rows).toEqual(migrationDefinitions.map(({ version, name }) => ({ version, name })));

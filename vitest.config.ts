@@ -6,14 +6,14 @@ import { defineConfig } from "vitest/config";
 // Hermetic plaintext-staging root for the whole test run. Tests that exercise
 // the DEFAULT staging path (no explicit stagingRoot) would otherwise touch the
 // real per-user config root; pointing PI_BACKUP_STAGING_ROOT (the same
-// variable the backup/migrate/cutover CLIs honor) at a private directory under
+// variable the backup/migrate CLIs honor) at a private directory under
 // node_modules keeps every test run hermetic and off the shared OS temp tree.
 // The directory chain is current-user owned and created 0700 on first use.
 const projectRoot = path.dirname(fileURLToPath(import.meta.url));
 process.env.PI_BACKUP_STAGING_ROOT = path.join(projectRoot, "node_modules", ".pi-test-staging");
 mkdirSync(process.env.PI_BACKUP_STAGING_ROOT, { recursive: true, mode: 0o700 });
 
-// Hermetic credential location for the whole test run: backup/migrate/cutover
+// Hermetic credential location for the whole test run: backup/migrate
 // cores resolve the REAL per-user auth file (~/.pi/agent/auth.json) when no
 // explicit path is supplied, which is host-dependent (on some hosts that file
 // is absent or protected; a host credential must never decide test outcomes).

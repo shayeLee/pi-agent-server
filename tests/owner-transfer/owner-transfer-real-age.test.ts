@@ -88,7 +88,7 @@ describeGate("WP5D-4 real-age SQLite owner-transfer gate", () => {
     const previousStaging = process.env.PI_BACKUP_STAGING_ROOT;
     try {
       const report = await runOwnerTransfer(authorizeOwnerTransfer(cli), {
-        createBackup: () => createSqliteBackup({ paths: { ...paths, authPath: target.authPath }, backupKind: "pre-owner-transfer", requireCompleteSessionReferences: true }),
+        createBackup: () => createSqliteBackup({ paths: { ...paths, authPath: target.authPath }, backupKind: "pre-owner-transfer" }),
         verifyBackup: verifyPublishedBackup,
         revalidateBeforeTransfer: (verification) => revalidateSqliteOwnerTransferTarget(environment, cli, target, verification),
         transfer: () => {
@@ -151,7 +151,7 @@ describeGate("WP5D-4 real-age SQLite owner-transfer gate", () => {
     }
   }, 120_000);
 
-  it("fails closed with zero owner changes and no COMPLETE package when a referenced session JSONL is missing (strict pre-owner-transfer backup)", async () => {
+  it("publishes the pre-owner-transfer backup and transfers owners despite a missing referenced JSONL (missing-as-empty)", async () => {
     const root = mkdtempSync(path.join(tmpdir(), "pi-owner-transfer-real-age-missing-"));
     cleanups.push(root);
     const cwd = path.join(root, "app-cwd");
@@ -172,8 +172,7 @@ describeGate("WP5D-4 real-age SQLite owner-transfer gate", () => {
     insertProject.run("p1", "custom", "/cwd", SOURCE_OWNER, 1);
     const insertSession = db.prepare("INSERT INTO sessions (id, owner_key, project_id, title, created_at, updated_at, pi_session_file, capability_versions) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
     insertSession.run("s1", SOURCE_OWNER, DEFAULT_PROJECT_ID, "default-session", 1, 1, sessionFile, "{}");
-    // s2 references a JSONL file that does not exist -> strict completeness must
-    // fail the backup BEFORE any publish/COMPLETE, so the transfer never runs.
+    // s2 引用一个不存在的 JSONL：missing-as-empty 下备份照常发布、转移照常执行。
     const ghostFile = path.join(dataDir, "sessions", "ghost", "ghost.jsonl");
     insertSession.run("s2", SOURCE_OWNER, DEFAULT_PROJECT_ID, "ghost-session", 1, 1, ghostFile, "{}");
     db.close();
@@ -195,8 +194,8 @@ describeGate("WP5D-4 real-age SQLite owner-transfer gate", () => {
     const paths = resolveBackupCliPaths(environment, cli.backupRoot!, cli.ageRecipientFile!, environment.AGENT_CWD!);
     const previousStaging = process.env.PI_BACKUP_STAGING_ROOT;
     try {
-      await expect(runOwnerTransfer(authorizeOwnerTransfer(cli), {
-        createBackup: () => createSqliteBackup({ paths: { ...paths, authPath: target.authPath }, backupKind: "pre-owner-transfer", requireCompleteSessionReferences: true }),
+      const report = await runOwnerTransfer(authorizeOwnerTransfer(cli), {
+        createBackup: () => createSqliteBackup({ paths: { ...paths, authPath: target.authPath }, backupKind: "pre-owner-transfer" }),
         verifyBackup: verifyPublishedBackup,
         revalidateBeforeTransfer: (verification) => revalidateSqliteOwnerTransferTarget(environment, cli, target, verification),
         transfer: () => {
@@ -204,9 +203,11 @@ describeGate("WP5D-4 real-age SQLite owner-transfer gate", () => {
           try { return runSqliteOwnerTransfer(tx, SOURCE_OWNER, TARGET_OWNER); }
           finally { try { tx.close(); } catch { /* preserve result */ } }
         },
-      }, { dialect: "SQLite", sourceSubjectHash: subjectHashForIp(SOURCE), targetSubjectHash: subjectHashForIp(TARGET) })).rejects.toThrow(/strict completeness: 1 session reference/);
+      }, { dialect: "SQLite", sourceSubjectHash: subjectHashForIp(SOURCE), targetSubjectHash: subjectHashForIp(TARGET) });
+      expect(report.status).toBe("success");
+      expect(report.backup.kind).toBe("pre-owner-transfer");
 
-      // Zero owner changes.
+      // 缺失引用不阻止转移：owner 行照常转移（含 ghost session s2）。
       const check = new DatabaseSync(dbPath, { readOnly: true, enableForeignKeyConstraints: true });
       const projectOwners = Object.fromEntries(
         (check.prepare("SELECT id, owner_key FROM projects").all() as Array<{ id: string; owner_key: string }>).map((row) => [row.id, row.owner_key]),
@@ -216,13 +217,19 @@ describeGate("WP5D-4 real-age SQLite owner-transfer gate", () => {
       );
       check.close();
       expect(projectOwners[DEFAULT_PROJECT_ID]).toBe("");
-      expect(projectOwners.p1).toBe(SOURCE_OWNER);
-      expect(sessionOwners.s1).toBe(SOURCE_OWNER);
-      expect(sessionOwners.s2).toBe(SOURCE_OWNER);
+      expect(projectOwners.p1).toBe(TARGET_OWNER);
+      expect(sessionOwners.s1).toBe(TARGET_OWNER);
+      expect(sessionOwners.s2).toBe(TARGET_OWNER);
 
-      // No COMPLETE marker and no published package: the strict gate fails the
-      // backup before the backup root is even materialized.
-      expect(existsSync(backupRoot)).toBe(false);
+      // 已发布带 COMPLETE 的 pre-owner-transfer 包，且 manifest 记录了缺失引用。
+      const packages = readdirSync(backupRoot).filter((entry) => entry.startsWith("backup-"));
+      expect(packages).toHaveLength(1);
+      const packagePath = path.join(backupRoot, packages[0]!);
+      expect(existsSync(path.join(packagePath, "COMPLETE"))).toBe(true);
+      const decrypted = spawnSync("age", ["--decrypt", "--identity", identity, path.join(packagePath, "manifest.json.age")], { encoding: "utf8" });
+      expect(decrypted.status).toBe(0);
+      const manifest = JSON.parse(decrypted.stdout);
+      expect(manifest.missingSessionReferences).toEqual([{ sessionId: "s2", path: "sessions/ghost/ghost.jsonl", status: "missing" }]);
     } finally {
       if (previousStaging === undefined) delete process.env.PI_BACKUP_STAGING_ROOT;
       else process.env.PI_BACKUP_STAGING_ROOT = previousStaging;

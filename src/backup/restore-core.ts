@@ -1,6 +1,5 @@
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { DatabaseSync } from "node:sqlite";
 import {
   chmodSync,
   closeSync,
@@ -23,14 +22,10 @@ import {
 } from "node:fs";
 import path from "node:path";
 import { tmpdir } from "node:os";
-import { SessionManager } from "@earendil-works/pi-coding-agent";
-import { Kysely, SqliteDialect } from "kysely";
+import { DatabaseSync } from "node:sqlite";
 import { runSqliteMigrations } from "../storage/migration-engine.js";
-import { assertSchemaCompatible } from "../storage/schema-compatibility.js";
-import { NodeSqliteAdapter } from "../storage/node-sqlite-adapter.js";
-import { schemaManifestV0, schemaManifestV1, SQLITE_PHYSICAL_TYPES, migrationPrefixForLedger, type MigrationDefinition, type MigrationLedgerSnapshot } from "../storage/migration-manifest.js";
+import { migrationPrefixForLedger, type MigrationDefinition, type MigrationLedgerSnapshot } from "../storage/migration-manifest.js";
 import { stableSerialize } from "../storage/migration-manifest.js";
-import type { DatabaseSchema } from "../storage/db-schema.js";
 import { validateRestoredFileOperations } from "./restore-validation.js";
 import type { BackupFileRecord, BackupManifest, BackupSourceRoots } from "./backup-core.js";
 
@@ -90,13 +85,14 @@ export interface RestoreDrillReport {
     readonly sessionEntries: number;
     readonly sessionHeaders: number;
     readonly missingSessionReferences: number;
+    /** Present-but-invalid session histories discarded (invalid-as-empty degradation). */
+    readonly invalidSessionHistories: number;
     readonly foreignKeyViolations: number;
   };
   readonly migration: {
     readonly version: number | null;
     readonly pending: number;
     /** True when the package explicitly carries no migration ledger. */
-    readonly legacy: boolean;
   };
 }
 
@@ -328,7 +324,7 @@ function validateManifest(value: unknown): BackupManifest {
   };
   if (manifest.format !== "pi-agent-server.backup-manifest.v1") fail("unsupported backup format");
   if (manifest.dialect === "PostgreSQL" || manifest.kind === "postgresql-online") fail("PostgreSQL backup requires an explicit temporary target PG connection");
-  if ((manifest.kind !== "sqlite-online" && manifest.kind !== "pre-migration" && manifest.kind !== "pre-reset" && manifest.kind !== "pre-owner-transfer") || manifest.dialect !== "SQLite") fail("unsupported backup format or dialect");
+  if ((manifest.kind !== "sqlite-online" && manifest.kind !== "pre-migration" && manifest.kind !== "pre-owner-transfer") || manifest.dialect !== "SQLite") fail("unsupported backup format or dialect");
   if (!manifest.credentials || manifest.credentials.included !== false || manifest.credentials.policy !== "whitelist-excludes-credentials") fail("manifest credential policy is invalid");
   const sourceRoots = manifest.sourceRoots as { dataDir?: unknown; agentDir?: unknown; dbPath?: unknown } | undefined;
   if (!sourceRoots || typeof sourceRoots.dataDir !== "string" || !path.isAbsolute(sourceRoots.dataDir) ||
@@ -380,15 +376,17 @@ function validateManifest(value: unknown): BackupManifest {
   const missing = manifest.missingSessionReferences;
   if (!Array.isArray(missing)) fail("manifest missing-reference metadata is invalid");
   const missingKeys = new Set<string>();
-  const missingPaths = new Set<string>();
   for (const value of missing) {
     if (!value || typeof value !== "object") fail("manifest missing-reference metadata is invalid");
     const reference = value as Record<string, unknown>;
     if (typeof reference.sessionId !== "string" || reference.sessionId.length === 0 || reference.status !== "missing" || typeof reference.path !== "string") fail("manifest missing-reference metadata is invalid");
     const relative = relativePayloadPath(reference.path);
     const key = `${reference.sessionId}\u0000${relative}`;
-    if (!isJsonlRelative(relative) || missingKeys.has(key) || missingPaths.has(relative) || seen.has(`payload/${relative}.age`)) fail("manifest missing-reference metadata conflicts with payloads");
-    missingKeys.add(key); missingPaths.add(relative);
+    // Several sessions may legitimately share a missing JSONL path; the DB has
+    // no uniqueness constraint on pi_session_file, and restore normalizes each
+    // (sessionId, path) mapping independently.
+    if (!isJsonlRelative(relative) || missingKeys.has(key) || seen.has(`payload/${relative}.age`)) fail("manifest missing-reference metadata conflicts with payloads");
+    missingKeys.add(key);
   }
   const excluded = manifest.excludedFiles;
   if (!Array.isArray(excluded)) fail("manifest excluded-file metadata is invalid");
@@ -448,38 +446,69 @@ export function validatePackage(input: string): { manifestCiphertext: string; ma
   return { manifestCiphertext: path.join(input, "manifest.json.age"), manifestCiphertextSha256: completeText };
 }
 
+/** Only this error class is eligible for invalid-as-empty degradation. */
+export class InvalidSessionHistoryError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "InvalidSessionHistoryError";
+  }
+}
+
+function invalidSessionHistory(message: string): never {
+  throw new InvalidSessionHistoryError(message);
+}
+
+/**
+ * Structural validity verdict for one restored JSONL session history. Reading
+ * failures remain operational failures; only InvalidSessionHistoryError means
+ * authentic session bytes are semantically unusable and may degrade to empty.
+ *
+ * Restore accepts only the currently supported Pi session format (SDK v3):
+ * the header must carry `version: 3` and every entry must satisfy the v3
+ * id/parentId tree contract. v1/v2 headers (absent/older version fields) and
+ * any other unsupported version are invalid-as-empty; restore never opens or
+ * rewrites the SDK file and never migrates an older history in place. Backup
+ * never calls this parser.
+ */
 export function parseJsonl(file: string): number {
   let bytes: Buffer;
   try { bytes = readFileSync(file); } catch { fail("staged file could not be read"); }
   const text = bytes.toString("utf8");
-  if (text.length === 0 || text.includes("\uFFFD")) fail("JSONL is not valid UTF-8");
+  if (text.length === 0 || text.includes("\uFFFD")) invalidSessionHistory("JSONL is not valid UTF-8");
+  const lines = text.split("\n");
   const records: Array<Record<string, unknown>> = [];
-  for (const [index, raw] of text.split("\n").entries()) {
+  for (const [index, raw] of lines.entries()) {
     const line = raw.endsWith("\r") ? raw.slice(0, -1) : raw;
-    if (index === text.split("\n").length - 1 && line === "") continue;
-    if (line.trim() === "") fail("JSONL contains a blank line");
+    if (index === lines.length - 1 && line === "") continue;
+    if (line.trim() === "") invalidSessionHistory("JSONL contains a blank line");
     let parsed: unknown;
-    try { parsed = JSON.parse(line); } catch { fail("JSONL contains invalid JSON"); }
-    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) fail("JSONL record is not an object");
+    try { parsed = JSON.parse(line); } catch { invalidSessionHistory("JSONL contains invalid JSON"); }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) invalidSessionHistory("JSONL record is not an object");
     records.push(parsed as Record<string, unknown>);
   }
-  if (records.length === 0 || records[0]!.type !== "session") fail("JSONL must begin with one session header");
-  if (records.filter((record) => record.type === "session").length !== 1) fail("JSONL must contain exactly one session header");
+  const header = records[0];
+  if (!header || header.type !== "session" || typeof header.id !== "string" || header.id.length === 0) invalidSessionHistory("JSONL must begin with one session header");
+  if (records.filter((record) => record.type === "session").length !== 1) invalidSessionHistory("JSONL must contain exactly one session header");
+  const version = header.version;
+  // Only the current SDK session format (version 3) is supported. Older v1/v2
+  // histories are authentic Pi bytes but not the supported structure; restore
+  // degrades them to empty instead of relying on a later SDK migration.
+  if (typeof version !== "number" || !Number.isInteger(version) || version !== 3) invalidSessionHistory("JSONL session version is not the supported Pi SDK v3 format");
   const ids = new Set<string>();
   const parents = new Map<string, string | null>();
   for (const [index, record] of records.entries()) {
-    if (typeof record.id !== "string" || record.id.length === 0 || ids.has(record.id)) fail("JSONL record ids must be unique");
+    if (typeof record.id !== "string" || record.id.length === 0 || ids.has(record.id)) invalidSessionHistory("JSONL record ids must be unique");
     ids.add(record.id);
     if (index === 0) continue;
-    if (!(record.parentId === null || typeof record.parentId === "string")) fail("JSONL parentId is malformed");
-    if (record.parentId === record.id) fail("JSONL record cannot be its own parent");
+    if (!(record.parentId === null || typeof record.parentId === "string")) invalidSessionHistory("JSONL parentId is malformed");
+    if (record.parentId === record.id) invalidSessionHistory("JSONL record cannot be its own parent");
     parents.set(record.id, record.parentId as string | null);
   }
-  for (const parent of parents.values()) if (parent !== null && !ids.has(parent)) fail("JSONL parentId does not exist");
+  for (const parent of parents.values()) if (parent !== null && !ids.has(parent)) invalidSessionHistory("JSONL parentId does not exist");
   for (const id of parents.keys()) {
     const seen = new Set<string>(); let current: string | null | undefined = id;
     while (current !== null && current !== undefined) {
-      if (seen.has(current)) fail("JSONL parent graph contains a cycle");
+      if (seen.has(current)) invalidSessionHistory("JSONL parent graph contains a cycle");
       seen.add(current); current = parents.get(current);
     }
   }
@@ -497,60 +526,39 @@ export function deriveRelativeSessionPath(source: string): string {
 }
 
 type RestoreMigrationContext = {
-  readonly legacy: boolean;
   readonly migrations: readonly MigrationDefinition[];
-  readonly physicalManifest: typeof schemaManifestV0 | typeof schemaManifestV1 | null;
 };
 
-/** Select the authenticated history before any restored data is trusted. */
+/**
+ * Authenticate the package's migration ledger before any restored data is
+ * trusted. Restore accepts ONLY the canonical single baseline: a package
+ * without a ledger (legacy RC shape) or with any other ledger history is
+ * rejected here, before any payload is decrypted or staged.
+ */
 function selectRestoreMigrationContext(ledger: MigrationLedgerSnapshot): RestoreMigrationContext {
   if (!ledger.present) {
-    // A missing ledger is not silently treated as current.  It is an explicit
-    // legacy branch and is physically checked against a known released schema
-    // below; it is never migrated by restore.
-    return { legacy: true, migrations: [], physicalManifest: null };
+    fail("backup carries no authenticated migration ledger; only packages with the exact canonical single baseline are recoverable");
   }
   try {
     const migrations = migrationPrefixForLedger(ledger);
-    const physicalManifest = migrations.at(-1)?.manifest;
-    if (!physicalManifest) fail("authenticated migration history is empty");
-    return { legacy: false, migrations, physicalManifest: physicalManifest as typeof schemaManifestV0 | typeof schemaManifestV1 };
+    if (migrations.length !== 1 || migrations[0]!.version !== 0) fail("restore accepts only the canonical single-baseline migration ledger");
+    return { migrations };
   } catch (error) {
     fail(error instanceof Error ? error.message.replace(/^schema migration ledger:\s*/, "") : "authenticated migration history is invalid");
   }
 }
 
 /**
- * Legacy RC databases had no ledger.  They are accepted only when their
- * complete physical schema is exactly one of the immutable v0/v1 manifests;
- * the result remains explicitly legacy and no migration is applied.
+ * Normalize every restored session reference to the final target location.
+ * Missing references (manifest missing-as-empty) and present-but-invalid
+ * histories are written as NULL per the confirmed semantics: the session
+ * keeps all metadata but has no history. Package-level byte integrity (age /
+ * manifest / hash / size) is enforced BEFORE this function, so a NULL here
+ * always means "no history", never "corrupt package". The invalid set is the
+ * structural verdict from the restore's own payload inspection (see
+ * parseJsonl), computed without opening the SDK.
  */
-async function detectLegacySqliteManifest(dbPath: string): Promise<typeof schemaManifestV0 | typeof schemaManifestV1> {
-  const db = new DatabaseSync(dbPath, { readOnly: true, timeout: 5000, enableForeignKeyConstraints: true });
-  const kysely = new Kysely<DatabaseSchema>({ dialect: new SqliteDialect({ database: new NodeSqliteAdapter(db, false) }) });
-  try {
-    if (db.prepare("SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'schema_migrations'").get()) {
-      fail("legacy restore requires an absent schema_migrations table");
-    }
-    for (const manifest of [schemaManifestV1, schemaManifestV0] as const) {
-      try {
-        const verdict = await assertSchemaCompatible(kysely, "SQLite", SQLITE_PHYSICAL_TYPES, manifest);
-        if (verdict !== "complete") continue;
-        if (manifest === schemaManifestV0 && db.prepare("SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'file_operations'").get()) continue;
-        return manifest;
-      } catch {
-        // Try the other immutable legacy snapshot; malformed/partial schemas
-        // fail closed after both candidates are exhausted.
-      }
-    }
-    fail("legacy restored database does not match a known physical schema");
-  } finally {
-    await kysely.destroy();
-    db.close();
-  }
-}
-
-function remapDatabase(dbPath: string, finalPath: string, manifest: BackupManifest, included: Set<string>): { missing: number } {
+function remapDatabase(dbPath: string, finalPath: string, manifest: BackupManifest, included: Set<string>, invalidHistories: ReadonlySet<string>): { missing: number } {
   const db = new DatabaseSync(dbPath, { timeout: 5000, enableForeignKeyConstraints: true });
   try {
     const table = db.prepare("SELECT 1 AS present FROM sqlite_master WHERE type='table' AND name='sessions'").get();
@@ -569,9 +577,21 @@ function remapDatabase(dbPath: string, finalPath: string, manifest: BackupManife
         if (!within(finalPath, restored) || !isJsonlRelative(relative)) fail("restored session reference escapes target data directory");
         const missingKey = `${row.id}\u0000${relative}`;
         if (missingKeys.has(missingKey)) {
+          // Missing-as-empty: the referenced history never existed at backup
+          // time, so the restored session has no history.
           missing++;
           consumedMissing.add(missingKey);
-        } else if (!included.has(payloadRelative) || !existsSync(path.join(path.dirname(dbPath), relative))) {
+          db.prepare("UPDATE sessions SET pi_session_file = NULL WHERE id = ?").run(row.id);
+          continue;
+        }
+        if (invalidHistories.has(relative)) {
+          // Invalid-as-empty degradation: the payload bytes are authentic
+          // (package integrity already passed) but the history is not a valid
+          // Pi session, so the history is discarded and the reference nulled.
+          db.prepare("UPDATE sessions SET pi_session_file = NULL WHERE id = ?").run(row.id);
+          continue;
+        }
+        if (!included.has(payloadRelative) || !existsSync(path.join(path.dirname(dbPath), relative))) {
           fail("restored session reference has no matching manifest payload");
         }
         db.prepare("UPDATE sessions SET pi_session_file = ? WHERE id = ?").run(restored, row.id);
@@ -590,7 +610,6 @@ async function validateDatabase(
 ): Promise<{
   version: number | null;
   pending: number;
-  legacy: boolean;
   ledgerCount: number;
   ledgerChecksums: string[];
   ledgerRows: Array<{ version: number; name: string; checksum: string; applied_at: number }>;
@@ -605,39 +624,25 @@ async function validateDatabase(
     const integrity = db.prepare("PRAGMA integrity_check").get() as { integrity_check?: unknown } | undefined;
     if (integrity?.integrity_check !== "ok") fail("restored database integrity check failed");
 
-    let physicalManifest = migrationContext.physicalManifest;
-    let migration: { appliedVersion: number | null; pending: readonly unknown[] };
-    if (migrationContext.legacy) {
-      physicalManifest = await detectLegacySqliteManifest(dbPath);
-      migration = { appliedVersion: null, pending: [] };
-    } else {
-      // Verify exactly the authenticated historical prefix.  In particular,
-      // a v0 package must not be rejected merely because this code knows v1;
-      // restore remains read-only and never applies the missing suffix.
-      const checked = await runSqliteMigrations(db, { mode: "verify", migrations: migrationContext.migrations });
-      migration = { appliedVersion: checked.appliedVersion, pending: checked.pending };
-      if (migration.pending.length !== 0 || migration.appliedVersion !== migrationContext.migrations.at(-1)!.version) {
-        fail("restored database did not reach the authenticated migration head");
-      }
-    }
-    if (!physicalManifest) fail("restored database has no authenticated physical schema");
-    if (physicalManifest === schemaManifestV0 && db.prepare("SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'file_operations'").get()) {
-      fail("restored database contains file_operations but the authenticated migration history is v0");
+    // Verify exactly the authenticated canonical single baseline. Restore
+    // remains read-only and never applies migrations.
+    const checked = await runSqliteMigrations(db, { mode: "verify" });
+    const migration = { appliedVersion: checked.appliedVersion, pending: checked.pending };
+    if (migration.pending.length !== 0 || migration.appliedVersion !== migrationContext.migrations.at(-1)!.version) {
+      fail("restored database did not reach the authenticated migration head");
     }
 
     const foreignKeys = db.prepare("PRAGMA foreign_key_check").all();
     if (foreignKeys.length !== 0) fail("restored database has foreign-key violations");
-    const ledgerRows = migrationContext.legacy
-      ? []
-      : db.prepare("SELECT version, name, checksum, applied_at FROM schema_migrations ORDER BY version").all() as Array<{ version: unknown; name: unknown; checksum: unknown; applied_at: unknown }>;
+    const ledgerRows = db.prepare("SELECT version, name, checksum, applied_at FROM schema_migrations ORDER BY version").all() as Array<{ version: unknown; name: unknown; checksum: unknown; applied_at: unknown }>;
     if (ledgerRows.some((row) => !Number.isSafeInteger(row.version) || typeof row.name !== "string" || typeof row.checksum !== "string" || !Number.isSafeInteger(row.applied_at))) fail("restored migration ledger is malformed");
     const normalizedLedger = ledgerRows.map((row) => ({ version: Number(row.version), name: row.name as string, checksum: row.checksum as string, applied_at: Number(row.applied_at) }));
     const projects = db.prepare("SELECT id, name, cwd, owner_key FROM projects").all() as Array<Record<string, unknown>>;
     const sessions = db.prepare("SELECT id, owner_key, project_id, title, pi_session_file, capability_versions FROM sessions").all() as Array<Record<string, unknown>>;
     const idempotency = db.prepare("SELECT session_id, request_id, result FROM idempotency").all() as Array<Record<string, unknown>>;
-    const fileOperations = physicalManifest.tables.some((table) => table.name === "file_operations")
-      ? db.prepare("SELECT id, operation_key, kind, relative_path, session_id, project_id, state, attempt_count, available_at, lease_until, lease_token, last_error, created_at, updated_at FROM file_operations").all() as Array<Record<string, unknown>>
-      : [];
+    // The canonical single baseline always ships file_operations; restore
+    // validates its rows but never executes any pending deletion task.
+    const fileOperations = db.prepare("SELECT id, operation_key, kind, relative_path, session_id, project_id, state, attempt_count, available_at, lease_until, lease_token, last_error, created_at, updated_at FROM file_operations").all() as Array<Record<string, unknown>>;
     validateRestoredFileOperations(fileOperations);
     for (const row of projects) if (![row.id, row.name, row.cwd, row.owner_key].every((value) => typeof value === "string")) fail("restored project data is malformed");
     for (const row of sessions) {
@@ -652,7 +657,6 @@ async function validateDatabase(
     return {
       version: migration.appliedVersion,
       pending: migration.pending.length,
-      legacy: migrationContext.legacy,
       ledgerCount: normalizedLedger.length,
       ledgerChecksums: normalizedLedger.map((row) => row.checksum),
       ledgerRows: normalizedLedger,
@@ -663,26 +667,6 @@ async function validateDatabase(
       foreignKeyViolations: foreignKeys.length,
     };
   } finally { db.close(); }
-}
-
-export function validateWithSessionManager(file: string, disposableRoot: string): { entries: number; header: boolean } {
-  const copy = path.join(disposableRoot, `${randomUUID()}.jsonl`);
-  copyFileSync(file, copy);
-  chmodSync(copy, 0o600);
-  try {
-    // The SDK is pointed exclusively at the disposable copy/root; it never
-    // receives the publish path and cannot mutate restored output.
-    const manager = SessionManager.open(copy, disposableRoot, disposableRoot);
-    const header = manager.getHeader();
-    const entries = manager.getEntries();
-    if (!header || header.type !== "session" || typeof header.id !== "string" || !Array.isArray(manager.getTree())) fail("JSONL is not a structurally valid Pi session");
-    const ids = new Set<string>();
-    for (const entry of entries) {
-      if (typeof entry.id !== "string" || ids.has(entry.id) || (entry.parentId !== null && typeof entry.parentId !== "string")) fail("Pi session entry structure is invalid");
-      ids.add(entry.id);
-    }
-    return { entries: entries.length, header: true };
-  } finally { rmSync(copy, { force: true }); }
 }
 
 /** Offline SQLite restore drill. It never opens the service, starts Fastify, or calls a model. */
@@ -707,8 +691,9 @@ export async function restoreSqliteBackup(options: RestoreOptions): Promise<Rest
     if (hashFile(packageLayout.manifestCiphertext).sha256 !== packageLayout.manifestCiphertextSha256) fail("manifest ciphertext does not match COMPLETE");
     await decryptWithAdapter(age, packageLayout.manifestCiphertext, manifestPlain, resolved.identity);
     const manifest = validateManifest(JSON.parse(readFileSync(manifestPlain, "utf8")));
-    // Authenticate and select the immutable historical migration prefix before
-    // any payload is staged.  Restore never applies the selected suffix.
+    // Authenticate the canonical single-baseline migration ledger before any
+    // payload is staged or decrypted.  Legacy packages (no ledger or any
+    // non-canonical ledger) fail here.  Restore never applies a migration.
     const migrationContext = selectRestoreMigrationContext(manifest.migrationLedger as MigrationLedgerSnapshot);
     rmSync(manifestPlain, { force: true });
 
@@ -773,32 +758,45 @@ export async function restoreSqliteBackup(options: RestoreOptions): Promise<Rest
       }
     }
     const jsonlFiles = [...records.values()].filter((record) => record.kind === "jsonl");
+    // Invalid-as-empty detection: a JSONL history whose bytes passed the
+    // package hash but is not a structurally valid Pi session is degraded —
+    // the history is discarded (assembled copy removed), the DB reference is
+    // normalized to NULL, and the restore continues with every other session.
+    // The detection is a local structural parse of the assembled payload
+    // only: no SDK SessionManager.open, no whole-data-dir scanner.
+    const invalidHistories = new Set<string>();
     let sessionEntries = 0;
-    const validationCopyRoot = path.join(staging, ".session-validation");
-    mkdirSync(validationCopyRoot, { recursive: true, mode: 0o700 });
     for (const record of jsonlFiles) {
       const relative = record.path.slice("payload/".length, -4);
       const file = path.join(dataRoot, relative);
-      sessionEntries += parseJsonl(file);
-      const checked = validateWithSessionManager(file, validationCopyRoot);
-      if (!checked.header) fail("Pi session header is missing");
+      try {
+        sessionEntries += parseJsonl(file);
+      } catch (error) {
+        // Only confirmed semantic JSONL invalidity may degrade. I/O, assembly,
+        // age/hash/manifest and every other operational failure remains
+        // fail-closed for the whole restore.
+        if (!(error instanceof InvalidSessionHistoryError)) throw error;
+        invalidHistories.add(relative);
+        rmSync(file, { force: true });
+      }
     }
 
     const included = new Set(records.keys());
-    const remap = remapDatabase(database, finalPath, manifest, included);
+    const remap = remapDatabase(database, finalPath, manifest, included, invalidHistories);
     const dbCheck = await validateDatabase(database, finalPath, migrationContext);
     if (manifest.migrationLedger.appliedCount !== dbCheck.ledgerCount || manifest.migrationLedger.appliedVersion !== dbCheck.version ||
       manifest.migrationLedger.checksums.length !== dbCheck.ledgerChecksums.length || manifest.migrationLedger.checksums.some((checksum, index) => checksum !== dbCheck.ledgerChecksums[index]) ||
       stableSerialize(manifest.migrationLedger.rows) !== stableSerialize(dbCheck.ledgerRows)) fail("manifest migration ledger does not match the restored database");
-    rmSync(validationCopyRoot, { recursive: true, force: true });
     const report: RestoreDrillReport = {
       status: "success", dialect: "SQLite", format: "pi-agent-server.backup-manifest.v1",
       counts: {
         payloads: records.size, jsonlFiles: jsonlFiles.length, projects: dbCheck.projects, sessions: dbCheck.sessions,
-        idempotencyRows: dbCheck.idempotencyRows, fileOperations: dbCheck.fileOperations, sessionEntries, sessionHeaders: jsonlFiles.length,
-        missingSessionReferences: remap.missing, foreignKeyViolations: dbCheck.foreignKeyViolations,
+        idempotencyRows: dbCheck.idempotencyRows, fileOperations: dbCheck.fileOperations, sessionEntries,
+        sessionHeaders: jsonlFiles.length - invalidHistories.size,
+        missingSessionReferences: remap.missing, invalidSessionHistories: invalidHistories.size,
+        foreignKeyViolations: dbCheck.foreignKeyViolations,
       },
-      migration: { version: dbCheck.version, pending: dbCheck.pending, legacy: dbCheck.legacy },
+      migration: { version: dbCheck.version, pending: dbCheck.pending },
     };
     if (options.dryRun === true) return { dryRun: true, finalPath: null, report };
 

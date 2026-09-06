@@ -17,12 +17,19 @@ import { join } from "node:path";
 import { createServer as createNetServer } from "node:net";
 import type { AddressInfo } from "node:net";
 import { startServer, type StartConfig } from "../../src/server/start.js";
+import { runSqliteMigrations } from "../../src/storage/migration-engine.js";
+import { DatabaseSync } from "node:sqlite";
 import { makeTestIpAccess } from "../helpers/ip-access.js";
 import type { Kysely } from "kysely";
 import type { DatabaseSchema } from "../../src/storage/db-schema.js";
 
 function makeTempDir(): string {
   return mkdtempSync(join(tmpdir(), "pi-start-server-"));
+}
+
+async function createBaseline(dbPath: string): Promise<void> {
+  const db = new DatabaseSync(dbPath);
+  try { await runSqliteMigrations(db); } finally { db.close(); }
 }
 
 function baseConfig(overrides: Partial<StartConfig> = {}): StartConfig {
@@ -171,16 +178,72 @@ describe("startServer 启动/失败清理（H2：fail-fast 顺序 + 幂等 stora
         rmSync(dir, { recursive: true, force: true });
       }
     }
-    // 精确 "off" / undefined 仍正常启动（默认 off）；"verify" 走门禁语义（空库 → gate 错误，非校验错误）。
+    // `off` 已删除；undefined 归一化为 `verify`（默认门禁）。
     const okDir = makeTempDir();
     try {
-      const app = await startServer(baseConfig({ dataDir: okDir, dbPath: join(okDir, "ok.db") }));
-      await app.close();
-      const app2 = await startServer(baseConfig({ dataDir: okDir, dbPath: join(okDir, "ok.db"), migrationGate: "off" }));
-      await app2.close();
+      await expect(
+        startServer(baseConfig({ dataDir: okDir, dbPath: join(okDir, "empty.db") })),
+      ).rejects.toThrow(/startup migration gate/); // 默认 verify：空库 → 门禁错误，非校验错误
+      await expect(
+        startServer(baseConfig({ dataDir: okDir, dbPath: join(okDir, "managed-off.db"), migrationGate: "off" })),
+      ).rejects.toThrow(/^dataMode=managed 必须搭配 migrationGate "verify"/);
+      await expect(
+        startServer(baseConfig({ dataDir: okDir, dbPath: join(okDir, "rc-off.db"), dataMode: "rc", migrationGate: "off" })),
+      ).rejects.toThrow(/migrationGate "off" 已删除/);
       await expect(
         startServer(baseConfig({ dataDir: okDir, dbPath: join(okDir, "verify.db"), migrationGate: "verify" })),
       ).rejects.toThrow(/startup migration gate/);
+    } finally {
+      rmSync(okDir, { recursive: true, force: true });
+    }
+  });
+
+  it("dataMode 运行时校验 + managed/off 强制搭配（failclosed）：任何非 managed/rc 值或 managed+off 在任何资源创建前拒绝启动", async () => {
+    // 大小写/空白/其他字面量/非字符串一律拒绝；校验必须先于一切资源创建（目录零副作用）。
+    for (const bad of ["managed ", "MANAGED", "rc ", "prod", "disposable", "on", true, 1, []]) {
+      const dir = makeTempDir();
+      try {
+        try {
+          await startServer(baseConfig({ dataDir: dir, dataMode: bad as never }));
+          throw new Error(`应拒绝 dataMode=${JSON.stringify(bad)} 但启动了`);
+        } catch (error) {
+          if (error instanceof Error && error.message.startsWith("应拒绝")) throw error;
+          expect(error).toBeInstanceOf(Error);
+          // 固定消息、绝不回显原始值（校验实现不插值任何 config 内容）。
+          expect((error as Error).message).toMatch(/^dataMode 只支持 "managed" \/ "rc"/);
+        }
+        // 校验先于一切资源创建/网络访问：dataDir 内不得出现任何 DB/配置副作用文件。
+        expect(readdirSync(dir)).toEqual([]);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    }
+    // managed+off（JS/typed bypass 的合法字面量组合但语义非法）：同样在任何资源创建前拒绝。
+    const managedOffDir = makeTempDir();
+    try {
+      await expect(
+        startServer(baseConfig({ dataDir: managedOffDir, dataMode: "managed", migrationGate: "off" })),
+      ).rejects.toThrow(/^dataMode=managed 必须搭配 migrationGate "verify"/);
+      expect(readdirSync(managedOffDir)).toEqual([]);
+    } finally {
+      rmSync(managedOffDir, { recursive: true, force: true });
+    }
+    // 兼容组合：managed+verify（默认）与 rc+off / rc+verify 均可通过入口校验。
+    const okDir = makeTempDir();
+    try {
+      for (const [name, mode, gate] of [
+        ["managed+verify", "managed", "verify"],
+        ["rc+verify", "rc", "verify"],
+      ] as const) {
+        const config = baseConfig({
+          dataDir: okDir,
+          dataMode: mode,
+          migrationGate: gate,
+          dbPath: join(okDir, `${name}.db`),
+        });
+        // 空库：门禁失败（说明入口校验已放行 verify，错误来自门禁而非 dataMode 校验）。
+        await expect(startServer(config)).rejects.toThrow(/startup migration gate/);
+      }
     } finally {
       rmSync(okDir, { recursive: true, force: true });
     }
@@ -199,6 +262,7 @@ describe("startServer 启动/失败清理（H2：fail-fast 顺序 + 幂等 stora
     const midInitError = new Error("模拟中段初始化失败（schema 就绪后）");
     const dir = makeTempDir();
     try {
+      await createBaseline(join(dir, "app.db"));
       await expect(
         startServer(
           baseConfig({
@@ -230,6 +294,7 @@ describe("startServer 启动/失败清理（H2：fail-fast 顺序 + 幂等 stora
     let destroySpy: ReturnType<typeof vi.spyOn> | null = null;
     const dir = makeTempDir();
     try {
+      await createBaseline(join(dir, "app.db"));
       await expect(
         startServer(
           baseConfig({
@@ -258,6 +323,7 @@ describe("startServer 启动/失败清理（H2：fail-fast 顺序 + 幂等 stora
   it("成功启动后 app.close：onClose 触发幂等 storage cleanup（kysely.destroy 恰一次）", async () => {
     let destroySpy: ReturnType<typeof vi.spyOn> | null = null;
     const dir = makeTempDir();
+    await createBaseline(join(dir, "app.db"));
     const app = await startServer(
       baseConfig({
         dataDir: dir,

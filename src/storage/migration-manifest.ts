@@ -1,6 +1,16 @@
-// Immutable, descriptor-driven migration registry. Published migrations contain
-// data, not executable up callbacks. The exact canonical operations are rendered
-// once from the immutable v0 manifest and are the only operations the runner executes.
+// Immutable, descriptor-driven migration registry (new baseline). The registry
+// is now a SINGLE immutable migration at version 0 that builds the complete
+// current schema from the full schemaManifest (projects / sessions /
+// idempotency / file_operations). Published migrations contain data, not
+// executable up callbacks: the exact canonical operations are rendered once
+// from the immutable manifest and are the only operations the runner executes.
+//
+// The v0/v1 historical registry was removed with the legacy RC world (the
+// controlled cutover tool is gone). Legacy ledgers and legacy databases
+// without a ledger fail fast in the runner, in bootstrap, and in backup
+// restore, and are never adopted automatically. Backup restore accepts only
+// packages whose manifest carries exactly this canonical single baseline;
+// packages from the removed v0/v1 world are not recoverable.
 
 import { createHash } from "node:crypto";
 import type { Kysely } from "kysely";
@@ -8,9 +18,6 @@ import { renderMigrationOperations, type MigrationOperation } from "./migration-
 import {
   LOGICAL_COLUMN_TYPE_KEYS,
   schemaManifest,
-  schemaManifestV0,
-  schemaManifestV1,
-  fileOperationsTableManifest,
   type LogicalColumnType,
   type SchemaManifest,
 } from "./schema-manifest.js";
@@ -18,9 +25,9 @@ import type { DatabaseSchema } from "./db-schema.js";
 import type { LogicalTypeMap } from "./schema-builder.js";
 
 export type MigrationDialect = "SQLite" | "PostgreSQL";
-export const MIGRATION_DESCRIPTOR_FORMAT = "pi-agent-server.manifest-migration.v3" as const;
-export const MIGRATION_DDL_FORMAT_VERSION = 2 as const;
-export const MIGRATION_OPERATION_FORMAT_VERSION = 2 as const;
+export const MIGRATION_DESCRIPTOR_FORMAT = "pi-agent-server.manifest-baseline.v1" as const;
+export const MIGRATION_DDL_FORMAT_VERSION = 3 as const;
+export const MIGRATION_OPERATION_FORMAT_VERSION = 3 as const;
 
 // Kept as a public type for callers that need to type-check a transaction, but
 // migration definitions deliberately do not contain a callback using it.
@@ -35,7 +42,7 @@ export type DataTransformDescriptor = Readonly<Record<string, unknown>>;
 export interface MigrationDefinition {
   readonly version: number;
   readonly name: string;
-  /** The historical logical snapshot; never replace this with the mutable head. */
+  /** The complete schema snapshot; never replace this with a mutable head. */
   readonly manifest: SchemaManifest;
   readonly physicalTypeMaps: Readonly<Record<MigrationDialect, LogicalTypeMap>>;
   readonly operations: Readonly<Record<MigrationDialect, readonly MigrationOperation[]>>;
@@ -55,9 +62,10 @@ export interface MigrationLedgerSnapshot {
 /**
  * Select the immutable migration prefix represented by an authenticated
  * ledger.  A restore must verify the historical prefix, not the mutable
- * current head: a v0 package is a valid restore input and can be migrated
- * offline afterwards.  This function performs no DDL and never applies a
- * migration.
+ * current head.  With the single-baseline registry this is exactly the v0
+ * baseline; a missing ledger and legacy multi-row ledgers from the removed
+ * v0/v1 registry are rejected.  This function performs no DDL and never
+ * applies a migration.
  */
 export interface MigrationPrefixOptions {
   /** Only test/fixture verifiers may bypass the registry checksum; real runners remain strict. */
@@ -80,7 +88,7 @@ export function migrationPrefixForLedger(ledger: MigrationLedgerSnapshot, option
   }
   const prefix = migrationDefinitions.slice(0, checkedVersion + 1);
   if (prefix.length !== ledger.appliedCount) {
-    throw new Error(`schema migration ledger: backup references unknown migration version ${checkedVersion}`);
+    throw new Error(`schema migration ledger: backup references an unknown migration version ${checkedVersion}`);
   }
   for (const [index, migration] of prefix.entries()) {
     const row = ledger.rows[index];
@@ -122,13 +130,14 @@ export const SQLITE_PHYSICAL_TYPES: LogicalTypeMap = Object.freeze({
 export const POSTGRES_PHYSICAL_TYPES: LogicalTypeMap = Object.freeze({
   uuid: "uuid", text: "text", integer: "bigint", bigint: "bigint", json: "text",
 });
-const V0_PHYSICAL_TYPE_MAPS = Object.freeze({
+const BASELINE_PHYSICAL_TYPE_MAPS = Object.freeze({
   SQLite: SQLITE_PHYSICAL_TYPES,
   PostgreSQL: POSTGRES_PHYSICAL_TYPES,
 });
 
-/** Fixed golden snapshots. Changing renderer semantics must fail this module/tests. */
-export const MIGRATION_V0_GOLDEN_DDL_SNAPSHOT = Object.freeze({
+/** Fixed golden snapshots for the single immutable baseline. Changing renderer
+ * semantics must fail this module/tests. */
+export const MIGRATION_BASELINE_GOLDEN_DDL_SNAPSHOT = Object.freeze({
   SQLite: Object.freeze([
     'CREATE TABLE "projects" ("id" TEXT NOT NULL PRIMARY KEY, "name" TEXT NOT NULL, "cwd" TEXT NOT NULL, "owner_key" TEXT NOT NULL, "created_at" INTEGER NOT NULL)',
     'CREATE INDEX "idx_projects_owner" ON "projects" ("owner_key")',
@@ -137,6 +146,9 @@ export const MIGRATION_V0_GOLDEN_DDL_SNAPSHOT = Object.freeze({
     'CREATE INDEX "idx_sessions_owner_project" ON "sessions" ("owner_key", "project_id")',
     'CREATE TABLE "idempotency" ("session_id" TEXT NOT NULL, "request_id" TEXT NOT NULL, "result" TEXT NOT NULL, "created_at" INTEGER NOT NULL, CONSTRAINT "idempotency_pk" PRIMARY KEY ("session_id", "request_id"))',
     'CREATE INDEX "idx_idempotency_created_at" ON "idempotency" ("created_at")',
+    'CREATE TABLE "file_operations" ("id" TEXT NOT NULL PRIMARY KEY, "operation_key" TEXT NOT NULL, "kind" TEXT NOT NULL, "relative_path" TEXT NOT NULL, "session_id" TEXT, "project_id" TEXT, "state" TEXT NOT NULL, "attempt_count" INTEGER NOT NULL DEFAULT 0, "available_at" INTEGER NOT NULL, "lease_until" INTEGER, "lease_token" TEXT, "last_error" TEXT, "created_at" INTEGER NOT NULL, "updated_at" INTEGER NOT NULL)',
+    'CREATE UNIQUE INDEX "idx_file_operations_key" ON "file_operations" ("operation_key")',
+    'CREATE INDEX "idx_file_operations_claim" ON "file_operations" ("state", "available_at")',
   ]),
   PostgreSQL: Object.freeze([
     'CREATE TABLE "projects" ("id" UUID NOT NULL PRIMARY KEY, "name" TEXT NOT NULL, "cwd" TEXT NOT NULL, "owner_key" TEXT NOT NULL, "created_at" BIGINT NOT NULL)',
@@ -146,82 +158,47 @@ export const MIGRATION_V0_GOLDEN_DDL_SNAPSHOT = Object.freeze({
     'CREATE INDEX "idx_sessions_owner_project" ON "sessions" ("owner_key", "project_id")',
     'CREATE TABLE "idempotency" ("session_id" UUID NOT NULL, "request_id" TEXT NOT NULL, "result" TEXT NOT NULL, "created_at" BIGINT NOT NULL, CONSTRAINT "idempotency_pk" PRIMARY KEY ("session_id", "request_id"))',
     'CREATE INDEX "idx_idempotency_created_at" ON "idempotency" ("created_at")',
+    'CREATE TABLE "file_operations" ("id" UUID NOT NULL PRIMARY KEY, "operation_key" TEXT NOT NULL, "kind" TEXT NOT NULL, "relative_path" TEXT NOT NULL, "session_id" UUID, "project_id" UUID, "state" TEXT NOT NULL, "attempt_count" BIGINT NOT NULL DEFAULT 0, "available_at" BIGINT NOT NULL, "lease_until" BIGINT, "lease_token" TEXT, "last_error" TEXT, "created_at" BIGINT NOT NULL, "updated_at" BIGINT NOT NULL)',
+    'CREATE UNIQUE INDEX "idx_file_operations_key" ON "file_operations" ("operation_key")',
+    'CREATE INDEX "idx_file_operations_claim" ON "file_operations" ("state", "available_at")',
   ]),
 });
-export const MIGRATION_V0_GOLDEN_CHECKSUM = "fe380a8518eee6f243a34203c0579e2276f283097fe13eaacf640690108088f3";
+export const MIGRATION_BASELINE_GOLDEN_CHECKSUM = "85eb743ebcbe0e04f740ce58e8920218daadab091b6600d1f9f6cbb6b512c05c";
 
 export const initialSchemaMigration: MigrationDefinition = deepFreeze({
   version: 0,
   name: "initial-schema",
-  manifest: schemaManifestV0,
-  physicalTypeMaps: V0_PHYSICAL_TYPE_MAPS,
+  manifest: schemaManifest,
+  physicalTypeMaps: BASELINE_PHYSICAL_TYPE_MAPS,
   operations: {
-    SQLite: renderMigrationOperations(schemaManifestV0, "SQLite", SQLITE_PHYSICAL_TYPES),
-    PostgreSQL: renderMigrationOperations(schemaManifestV0, "PostgreSQL", POSTGRES_PHYSICAL_TYPES),
+    SQLite: renderMigrationOperations(schemaManifest, "SQLite", SQLITE_PHYSICAL_TYPES),
+    PostgreSQL: renderMigrationOperations(schemaManifest, "PostgreSQL", POSTGRES_PHYSICAL_TYPES),
   },
   dataTransform: { kind: "none", format: "pi-agent-server.data-transform.v1" },
 });
-
-// v1 是纯 DDL 增量：file_operations 的完整定义仍来自当前 Manifest，
-// 迁移 descriptor 只渲染新增表，绝不重复维护列/索引事实。
-const fileOperationsMigrationManifest: SchemaManifest = {
-  tables: [fileOperationsTableManifest],
-};
-
-export const fileOperationsMigration: MigrationDefinition = deepFreeze({
-  version: 1,
-  name: "file-operations-outbox",
-  manifest: schemaManifestV1,
-  physicalTypeMaps: V0_PHYSICAL_TYPE_MAPS,
-  operations: {
-    SQLite: renderMigrationOperations(fileOperationsMigrationManifest, "SQLite", SQLITE_PHYSICAL_TYPES),
-    PostgreSQL: renderMigrationOperations(fileOperationsMigrationManifest, "PostgreSQL", POSTGRES_PHYSICAL_TYPES),
-  },
-  dataTransform: { kind: "none", format: "pi-agent-server.data-transform.v1" },
-});
-
-/** v1 descriptor checksum: changing v1 requires appending a new migration, never editing this one. */
-export const MIGRATION_V1_GOLDEN_CHECKSUM = "31a09c8ece44e6a6a230140835a7b57bbcbd84e45b516fe97d54599192215902";
 
 export const migrationDefinitions: readonly MigrationDefinition[] = deepFreeze([
   initialSchemaMigration,
-  fileOperationsMigration,
 ]);
 export const migrationHeadManifest: SchemaManifest = schemaManifest;
 
-function validateCanonicalV0(migration: MigrationDefinition): void {
+function validateCanonicalBaseline(migration: MigrationDefinition): void {
   const operationsMatch = stableSerialize(migration.operations) === stableSerialize(initialSchemaMigration.operations);
   const descriptorMatch = stableSerialize(migration.dataTransform) === stableSerialize(initialSchemaMigration.dataTransform);
-  const goldenMatch = (Object.keys(MIGRATION_V0_GOLDEN_DDL_SNAPSHOT) as MigrationDialect[]).every((dialect) =>
-    stableSerialize(migration.operations[dialect].map((operation) => operation.sql)) === stableSerialize(MIGRATION_V0_GOLDEN_DDL_SNAPSHOT[dialect]),
+  const goldenMatch = (Object.keys(MIGRATION_BASELINE_GOLDEN_DDL_SNAPSHOT) as MigrationDialect[]).every((dialect) =>
+    stableSerialize(migration.operations[dialect].map((operation) => operation.sql)) === stableSerialize(MIGRATION_BASELINE_GOLDEN_DDL_SNAPSHOT[dialect]),
   );
   if (
     migration.version !== 0 ||
     migration.name !== initialSchemaMigration.name ||
-    migration.manifest !== schemaManifestV0 ||
+    migration.manifest !== schemaManifest ||
     migration.physicalTypeMaps !== initialSchemaMigration.physicalTypeMaps ||
     !operationsMatch ||
     !descriptorMatch ||
     !goldenMatch ||
-    migrationChecksum(migration) !== MIGRATION_V0_GOLDEN_CHECKSUM
+    migrationChecksum(migration) !== MIGRATION_BASELINE_GOLDEN_CHECKSUM
   ) {
-    throw new Error("migration manifest: registry version 0 does not exactly match the released canonical descriptor, operations, checksum, and golden DDL");
-  }
-}
-
-function validateCanonicalV1(migration: MigrationDefinition): void {
-  const operationsMatch = stableSerialize(migration.operations) === stableSerialize(fileOperationsMigration.operations);
-  const descriptorMatch = stableSerialize(migration.dataTransform) === stableSerialize(fileOperationsMigration.dataTransform);
-  if (
-    migration.version !== 1 ||
-    migration.name !== fileOperationsMigration.name ||
-    migration.manifest !== schemaManifestV1 ||
-    migration.physicalTypeMaps !== fileOperationsMigration.physicalTypeMaps ||
-    !operationsMatch ||
-    !descriptorMatch ||
-    migrationChecksum(migration) !== MIGRATION_V1_GOLDEN_CHECKSUM
-  ) {
-    throw new Error("migration manifest: registry version 1 does not exactly match the released file_operations descriptor and checksum");
+    throw new Error("migration manifest: registry version 0 does not exactly match the released canonical baseline descriptor, operations, checksum, and golden DDL");
   }
 }
 
@@ -244,23 +221,19 @@ export function validateMigrationDefinitions(migrations: readonly MigrationDefin
     }
     if (!migration.dataTransform || typeof migration.dataTransform.kind !== "string") throw new Error(`migration manifest: version ${migration.version} has no explicit data-transform descriptor`);
   }
-  validateCanonicalV0(migrations[0]!);
-  if (migrations.length > 1) validateCanonicalV1(migrations[1]!);
+  validateCanonicalBaseline(migrations[0]!);
   if (migrations === migrationDefinitions && migrations.at(-1)!.manifest !== migrationHeadManifest) throw new Error("migration manifest: registry head does not match schemaManifest");
 }
 
 validateMigrationDefinitions();
 for (const dialect of ["SQLite", "PostgreSQL"] as const) {
   const actual = initialSchemaMigration.operations[dialect].map((operation) => operation.sql);
-  if (stableSerialize(actual) !== stableSerialize(MIGRATION_V0_GOLDEN_DDL_SNAPSHOT[dialect])) {
-    throw new Error(`migration manifest: released v0 ${dialect} DDL snapshot changed; append a migration instead`);
+  if (stableSerialize(actual) !== stableSerialize(MIGRATION_BASELINE_GOLDEN_DDL_SNAPSHOT[dialect])) {
+    throw new Error(`migration manifest: released baseline ${dialect} DDL snapshot changed; append a migration instead`);
   }
 }
-if (migrationChecksum(initialSchemaMigration) !== MIGRATION_V0_GOLDEN_CHECKSUM) {
-  throw new Error("migration manifest: released v0 descriptor checksum changed; update only by appending a new migration");
-}
-if (migrationChecksum(fileOperationsMigration) !== MIGRATION_V1_GOLDEN_CHECKSUM) {
-  throw new Error("migration manifest: released v1 descriptor checksum changed; append a new migration instead");
+if (migrationChecksum(initialSchemaMigration) !== MIGRATION_BASELINE_GOLDEN_CHECKSUM) {
+  throw new Error("migration manifest: released baseline descriptor checksum changed; update only by appending a new migration");
 }
 
 function deepFreeze<T>(value: T): T {
@@ -271,5 +244,5 @@ function deepFreeze<T>(value: T): T {
   return value;
 }
 
-export { schemaManifestV0, schemaManifestV1, schemaManifest, fileOperationsTableManifest, renderMigrationOperations };
+export { schemaManifest, renderMigrationOperations };
 export type { MigrationOperation } from "./migration-renderer.js";

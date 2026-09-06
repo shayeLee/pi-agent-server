@@ -17,7 +17,7 @@ export interface StorageEnvironment {
   readonly PI_AUTH_PATH?: string;
   readonly PI_STORAGE_DIALECT?: string;
   readonly PI_DATABASE_URL?: string;
-  /** Explicit absolute plaintext-staging root for backup/migration/cutover CLIs (optional). */
+  /** Explicit absolute plaintext-staging root for backup/migration CLIs (optional). */
   readonly PI_BACKUP_STAGING_ROOT?: string;
 }
 

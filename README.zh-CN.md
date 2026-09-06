@@ -14,8 +14,8 @@
 - **仅逻辑删除：** 删除项目或会话会移除数据库可见资源，并把 JSONL 清理意图写入 `file_operations`。当前没有 outbox worker，也不会物理 unlink JSONL。
 - **本机加密备份：** 离线 SQLite/PostgreSQL backup/restore 使用 age 加密并写入本机 `BACKUP_ROOT`，不覆盖主机/磁盘与备份同时丢失。age identity 私钥由运维托管，仅在恢复时提供。
 - **恢复策略：** RPO 目标 24 小时；备份保留 30 天并人工清理。RTO 目标 4 小时，但 signoff 延期到项目投入使用且具备代表性数据规模后。
-- **备份语义待调整：** 当前 strict backup 遇到缺失 session 文件引用会失败，backup 还会解析 JSONL 行。已确认目标为 missing-as-empty、opaque JSONL backup、invalid-as-empty restore；该目标尚未实现，见 [Phase 3 状态台账](docs/phase-3-data-retention-plan.md)。
-- **Migration 行为待调整：** 当前 `PI_MIGRATION_GATE` 默认 `off`，`verify` 为 opt-in 且永不迁移。已确认目标是默认 `verify` 并增加显式 managed/RC 数据模式，仍然不自动 migration/reset；该目标尚未实现。
+- **备份/运行时兼容性（Phase 3）：** SQLite/PostgreSQL backup（包括 `--dry-run`）在加密、发布、成功报告或推进 freshness 前，必须通过恰为 canonical 单基线的源 ledger 检查；缺失、legacy 多行或 checksum 不匹配的 ledger 一律 fail-closed。DB 引用缺失的 JSONL 在该 DB 门禁通过后仍按 missing-as-empty 处理并可发布；backup 对 JSONL 仍只作 opaque bytes 处理。restore 将存在但无效的历史降级为空（引用置 `NULL` 并报告计数），但包级 age/hash/manifest 完整性损坏仍整体失败。运行时与 restore 只接受当前 Pi JSONL v3；v1/v2 绝不经 SDK 迁移（不使用 `migrateSessionEntries`），运行时 fail-fast、restore invalid-as-empty。**旧备份不可恢复**。
+- **Migration 启动门禁：** `PI_MIGRATION_GATE` 固定为只读 `verify`；`off`（包括 `PI_DATA_MODE=rc`）会在创建资源前拒绝。服务绝不自行 bootstrap baseline：必须先运行离线 migration，并且仅在 canonical 单基线验证通过后启动。`PI_DATA_MODE` 仅为部署分类，不能放宽该要求。
 
 ## 特性
 
@@ -76,7 +76,7 @@ export PI_DEFAULT_THINKING_LEVEL=medium
 export PI_MIGRATION_GATE=verify
 ```
 
-`verify` 只检查不可变 migration ledger 和 schema head；绝不应用 migration 或 reset 数据。见[备份与恢复](docs/backup-restore.md)。
+`verify` 只检查不可变 migration ledger 和 schema head；绝不应用 migration、reset 数据或 bootstrap baseline。PostgreSQL 必须使用非 `public`、非系统 schema 的 effective `current_schema()`。见[备份与恢复](docs/backup-restore.md)。
 
 可选独立 Web UI 通过 `pnpm web` 启动。
 
@@ -140,8 +140,9 @@ export PI_ALLOWED_CLIENT_CIDRS=127.0.0.0/8,10.0.0.0/8
 | `PI_DEFAULT_THINKING_LEVEL` | Pi 默认值 | `off` 至 `max` |
 | `TOOLS` | `read,ls,find,grep` | 副作用工具需显式配置并满足 WP5B 部署门禁 |
 | `CORS_ORIGINS` | 空 | 逗号分隔的浏览器 origin |
-| `PI_MIGRATION_GATE` | `off` | 当前接受 `off` 或只读 `verify`；目标默认 `verify`，尚未实现 |
-| `PI_BACKUP_STAGING_ROOT` | 每用户私有应用目录 | 离线 backup/migration/cutover 明文 staging |
+| `PI_DATA_MODE` | `managed` | 仅为部署分类；不能放宽必须先离线 migration 并 verify 基线的要求 |
+| `PI_MIGRATION_GATE` | `verify` | 固定只读启动校验；`off` 被拒绝，启动绝不 bootstrap/migrate |
+| `PI_BACKUP_STAGING_ROOT` | 每用户私有应用目录 | 离线 backup/migration 明文 staging |
 
 `PI_DEFAULT_WORKSPACE_ROOT`、`defaultWorkspaceRoot` 和 `workspaceRoots` 已移除；通过 runtime config 显式提供且值为 `undefined` 时也会拒绝。
 
@@ -149,8 +150,8 @@ export PI_ALLOWED_CLIENT_CIDRS=127.0.0.0/8,10.0.0.0/8
 
 - 元数据存于 SQLite 或 PostgreSQL；完整对话历史存于 Pi 管理的 JSONL。
 - DELETE 把持久清理意图写入 `file_operations`，但仓库只提供只读 planner；物理执行不在当前范围。
-- backup、restore、migration、cutover、reconcile 和 owner-transfer 均为离线命令，不启动服务，也不安装 timer/worker。
-- PostgreSQL server、`pg_dump`、`pg_restore` major 必须匹配。
+- backup、restore、migration、reconcile 和 owner-transfer 均为离线命令，不启动服务，也不安装 timer/worker。
+- PostgreSQL server、`pg_dump`、`pg_restore` major 必须匹配，并且有效业务 schema 必须非 `public`、非系统 schema。
 - 只有相应环境门控的真实 PostgreSQL/age 检查实际运行时才能形成验收证据；skip 不算验收。
 
 见[运维索引](docs/operations.md)、[备份与恢复](docs/backup-restore.md)和[数据库设计](docs/database-design.md)。

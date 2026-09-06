@@ -7,9 +7,12 @@ import type { FastifyInstance } from "fastify";
 import { buildApp } from "../../src/server/app.js";
 import {
   createOperationStatus,
+  enforceDataModeGate,
   isEffectiveReady,
   readyzBody,
   renderMetrics,
+  validateDataMode,
+  validateMigrationGate,
   type OperationStatus,
 } from "../../src/server/ops-status.js";
 import { makeInitializedMemoryDb } from "../helpers/sqlite.js";
@@ -262,7 +265,7 @@ describe("WP5A /readyz（进程 readiness + migration gate 背书语义）", () 
       const res = await app.inject({ method: "GET", url: "/readyz" });
       expect(res.statusCode).toBe(503);
       expect(res.headers["cache-control"]).toBe("no-store");
-      expect(res.json()).toEqual({ ready: false, migrationGate: "off", schema: "unknown" });
+      expect(res.json()).toEqual({ ready: false, migrationGate: "verify", schema: "unknown" });
       expect(res.body).not.toMatch(/unknown-gate-bypass|Error|stack/i);
       // metrics：ready=0、gate enabled/verified=0（failclosed）。
       const metrics = await app.inject({ method: "GET", url: "/metrics" });
@@ -289,7 +292,7 @@ describe("WP5A /readyz（进程 readiness + migration gate 背书语义）", () 
       const res = await app.inject({ method: "GET", url: "/readyz" });
       expect(res.statusCode).toBe(503);
       expect(res.headers["cache-control"]).toBe("no-store");
-      expect(res.json()).toEqual({ ready: false, migrationGate: "off", schema: "unknown" });
+      expect(res.json()).toEqual({ ready: false, migrationGate: "verify", schema: "unknown" });
       expect(res.body).not.toMatch(/boom-secret-internal|Error|stack/i);
     } finally {
       await app.close();
@@ -515,14 +518,43 @@ describe("WP5A 纯渲染函数（确定性快照）", () => {
     expect(isEffectiveReady({ ready: true, migrationGate: "off" as const, migrationGateVerified: false, storageDialect: "unknown" })).toBe(false);
   });
 
-  it("createOperationStatus 默认值：未 ready、gate off、未验证、dialect unknown（非生产组合仅限显式注入）", () => {
+  it("createOperationStatus 默认值：未 ready、gate verify（Phase 3 默认）、未验证、dialect unknown（非生产组合仅限显式注入）", () => {
     const ops = createOperationStatus();
     expect(ops.ready).toBe(false);
     expect(ops.readyAt).toBeNull();
-    expect(ops.migrationGate).toBe("off");
+    expect(ops.migrationGate).toBe("verify");
     expect(ops.migrationGateVerified).toBe(false);
     expect(ops.storageDialect).toBe("unknown");
     expect(ops.processStartedAt).toBeLessThanOrEqual(Date.now());
     expect(ops.processStartedAt).toBeGreaterThan(0);
+  });
+});
+
+describe("Phase 3 启动门禁纯校验（validateMigrationGate / validateDataMode / enforceDataModeGate）", () => {
+  it("validateMigrationGate：undefined/null → verify（默认）；只接受精确 off/verify，其余 failclosed", () => {
+    expect(validateMigrationGate(undefined)).toBe("verify");
+    expect(validateMigrationGate(null)).toBe("verify");
+    expect(validateMigrationGate("verify")).toBe("verify");
+    expect(validateMigrationGate("off")).toBe("off");
+    for (const bad of ["verify ", "VERIFY", "enabled", "true", "", 1, {}, []]) {
+      expect(() => validateMigrationGate(bad)).toThrow(/^migrationGate 只支持 "off" \/ "verify"/);
+    }
+  });
+
+  it("validateDataMode：undefined/null → managed（默认）；只接受精确 managed/rc，其余 failclosed", () => {
+    expect(validateDataMode(undefined)).toBe("managed");
+    expect(validateDataMode(null)).toBe("managed");
+    expect(validateDataMode("managed")).toBe("managed");
+    expect(validateDataMode("rc")).toBe("rc");
+    for (const bad of ["managed ", "MANAGED", "rc ", "prod", "disposable", "", 1, {}, []]) {
+      expect(() => validateDataMode(bad)).toThrow(/^dataMode 只支持 "managed" \/ "rc"/);
+    }
+  });
+
+  it("enforceDataModeGate：任何 off 都拒绝；managed/rc + verify 放行（服务绝不自动迁移）", () => {
+    expect(() => enforceDataModeGate("managed", "off")).toThrow(/migrationGate "off" 已删除/);
+    expect(() => enforceDataModeGate("managed", "verify")).not.toThrow();
+    expect(() => enforceDataModeGate("rc", "off")).toThrow(/migrationGate "off" 已删除/);
+    expect(() => enforceDataModeGate("rc", "verify")).not.toThrow();
   });
 });

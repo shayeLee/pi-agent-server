@@ -8,6 +8,7 @@ import path from "node:path";
 import { Readable, Writable } from "node:stream";
 import { afterEach, describe, expect, it } from "vitest";
 import { ageAdapter, createSqliteBackup, spawnAgeFile, type AgeAdapter } from "../../src/backup/backup-core.js";
+import { createCanonicalSqliteBaseline } from "./sqlite-fixture.js";
 
 // ---------------------------------------------------------------------------
 // Deterministic fake child: replays stream/child event orderings that are only
@@ -276,8 +277,7 @@ describe("backup staging leak regression", () => {
     writeFileSync(path.join(dataDir, "sessions", "s1", "history.jsonl"), '{"ok":true}\n', { mode: 0o600 });
     const dbPath = path.join(dataDir, "pi-agent-server.db");
     const db = new DatabaseSync(dbPath);
-    db.exec("CREATE TABLE sessions (id TEXT PRIMARY KEY, pi_session_file TEXT)");
-    db.exec("CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY, name TEXT, checksum TEXT, applied_at INTEGER)");
+    createCanonicalSqliteBaseline(db);
     db.close();
     const recipient = path.join(root, "recipient.txt");
     writeFileSync(recipient, "age1testrecipient\n", { mode: 0o600 });

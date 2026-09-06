@@ -171,7 +171,7 @@ tokenRequired，不换角色）；未登记 IP 默认 `user`。
   的任意 cwd 创建项目接口，见 needs.md §7）；workspace/sandbox 安全设计（收窄工具/会话可见根、防路径
   逃逸）随未来 OIDC/IAM 工作包一起做。
 - **owner transfer 仅 DB 层面，且只存在 IP→IP 形态**：`owner-transfer` 离线 CLI（WP5D-4，见 [owner-transfer.md](owner-transfer.md)）在数据库层变更 owner 映射（把一个 IP 身份资源归属转到另一个 IP 身份，仅更新 projects.owner_key / sessions.owner_key）；**不迁移**政策文件的 IP 条目与 token 绑定、不迁移角色——接收方继承自己的 IP 画像，与资源原 owner 的画像无关。
-- **无 legacy 账号/token 迁移（RC 决策）**：新 RC **不存在** legacy 账号/token 的 owner 迁移——正式旧公网 token 数据从未存在，因此不实现任何「旧 token/旧账号 → 新主体」迁移代码，也不存在 owner transfer 的账号维度。早期开发数据按 RC 语义**删库重建 / 经受控离线 cutover（`pnpm cutover`）reset**，绝不在位转换（详见 [database-design.md](database-design.md) §7 与 [identity-access-plan.md](identity-access-plan.md) WP5D 注记）。
+- **无 legacy 账号/token 迁移（RC 决策）**：新 RC **不存在** legacy 账号/token 的 owner 迁移——正式旧公网 token 数据从未存在，因此不实现任何「旧 token/旧账号 → 新主体」迁移代码，也不存在 owner transfer 的账号维度。早期开发数据按 RC 语义**删库重建**（legacy 无 ledger 库被 bootstrap/迁移引擎拒绝后手动重置，或直接删库后用 `pnpm migrate -- --bootstrap-baseline --bootstrap-confirm CONFIRMED` 重建唯一 canonical baseline），绝不在位转换（详见 [database-design.md](database-design.md) §7 与 [identity-access-plan.md](identity-access-plan.md) WP5D 注记）。
 - **不做**：token 签发/轮换/撤销接口（无签发端点）、OIDC/账号体系（见 identity-access-plan 工作包 1–2）、基于 header 的客户端 IP 推导、审计落库（WP5D-2 接线时按 needs.md §7 要求补齐鉴权审计埋点）。
 - **只支持单实例**：每个 logical DB/schema + `DATA_DIR` 同时只允许一个 pi-agent-server；多实例共享同一存储不受支持。未来如启动多实例改造，策略分发一致性、共享 JSONL、分布式协调与 WP5B 必须一起重新设计。
 
