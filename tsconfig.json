@@ -11,5 +11,5 @@
     "noEmit": true,
     "types": ["vitest", "node"]
   },
-  "include": ["src", "tests", "scripts/migrate.ts", "scripts/test-pg-backup.ts", "scripts/file-ops.ts", "scripts/test-file-ops-pg.ts", "scripts/reconcile-jsonl.ts", "scripts/test-reconcile-jsonl-pg.ts"]
+  "include": ["src", "tests", "scripts/migrate.ts", "scripts/test-pg-backup.ts", "scripts/file-ops.ts", "scripts/test-file-ops-pg.ts", "scripts/reconcile-jsonl.ts", "scripts/test-reconcile-jsonl-pg.ts", "scripts/drill.ts"]
 }

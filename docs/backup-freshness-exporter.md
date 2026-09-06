@@ -1,6 +1,6 @@
-# WP5C：单实例本机备份新鲜度契约
+# 单实例本机备份新鲜度契约
 
-> **状态**：部署契约已形成，但实际演练 deferred、未验收。missing-as-empty 机器报告语义已随 backup/restore 目标语义落地（见 [backup-restore.md](backup-restore.md#2-已落地语义)）。工作包状态见 [Phase 3 状态台账](phase-3-data-retention-plan.md)，演练步骤见 [backup-freshness-drill-sop.md](backup-freshness-drill-sop.md)。
+> **状态**：部署契约已形成。missing-as-empty 机器报告语义已随 backup/restore 目标语义落地（见 [backup-restore.md](backup-restore.md#2-已落地语义)）。演练 runner 已实现真实一键执行（含临时本地监控栈、告警恢复与完整故障矩阵，见[演练 SOP](backup-freshness-drill-sop.md)）。验收状态见 [Phase 3 状态台账](phase-3-data-retention-plan.md)。
 
 ## 1. 范围
 
@@ -122,4 +122,4 @@ groups:
 - missing、stale、future、exporter-down、textfile scrape error 告警触发并在恢复后自动清除；
 - evidence 只包含枚举、计数、版本、digest、时间戳和 opaque reference，不包含 secret、URL、绝对路径、session id 或正文。
 
-演练未实际完成并签署前，WP5C 保持未验收。
+演练未实际完成并签署前，备份新鲜度部署保持未验收。

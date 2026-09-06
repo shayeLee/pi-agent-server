@@ -24,8 +24,8 @@
 - [decisions/0001-phase-3-data-retention-baseline.md](decisions/0001-phase-3-data-retention-baseline.md) —— ADR 0001：数据保留决策记录（只记决策）。
 - [backup-restore.md](backup-restore.md) —— SQLite/PostgreSQL 备份、恢复与演练契约（RPO/RTO/保留期/drill）。
 - [operations.md](operations.md) —— 离线 migration/pre-backup 运维流程与门禁（WP5A readiness/metrics）。
-- [backup-freshness-exporter.md](backup-freshness-exporter.md) —— WP5C 方案 B backup freshness 部署契约（Prometheus 指标 + inventory + Alertmanager）。
-- [backup-freshness-drill-sop.md](backup-freshness-drill-sop.md) —— WP5C 方案 B 实际部署演练 SOP。
+- [backup-freshness-exporter.md](backup-freshness-exporter.md) —— 单实例本机备份新鲜度部署契约（Prometheus 指标 + inventory + Alertmanager）。
+- [backup-freshness-drill-sop.md](backup-freshness-drill-sop.md) —— 备份新鲜度演练 SOP（一键演习 runner + 安全边界 + 故障矩阵）。
 
 ### 数据生命周期与归属
 

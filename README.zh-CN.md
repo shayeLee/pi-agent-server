@@ -13,6 +13,7 @@
 - **不是 sandbox：** IP-RBAC 不限制项目 `cwd`、工具绝对路径或 OS 权限。默认工具白名单只读。正式启用 `bash`/`edit`/`write`、多实例或公网前必须完成 WP5B durable idempotency/shutdown 加固；当前没有 runtime guard 强制该治理策略。
 - **仅逻辑删除：** 删除项目或会话会移除数据库可见资源，并把 JSONL 清理意图写入 `file_operations`。当前没有 outbox worker，也不会物理 unlink JSONL。
 - **本机加密备份：** 离线 SQLite/PostgreSQL backup/restore 使用 age 加密并写入本机 `BACKUP_ROOT`，不覆盖主机/磁盘与备份同时丢失。age identity 私钥由运维托管，仅在恢复时提供。
+- **隔离的备份新鲜度演练 runner：** `pi-agent-server-drill`（`preflight` / `cleanup` / `run`）是真正的一键演习执行器。它要求绝对 `PI_DRILL_ROOT`（精确 0700、当前用户属主、非 symlink、无 special bits），固定保留 `$PI_DRILL_ROOT/secrets/`（仅演习专用的 age identity/recipient，精确 0600、非链接文件、无 hardlink/special bits），任何与正式 data/backup/staging/auth 路径的重叠一律拒绝（正式路径按服务默认解析，正式 backup root/recipient/identity 用显式 `PI_FORMAL_BACKUP_ROOT`/`PI_FORMAL_BACKUP_RECIPIENT`/`PI_FORMAL_BACKUP_IDENTITY` 比较），只操作以 `pi-agent-server-disaster-recovery-drill-` 前缀命名的 Podman 资源，绝不触碰正式 data/backup/staging/auth/PG/receiver。`run` 在隔离根内执行演习：合成 SQLite + PostgreSQL fixture（各含一个有效 JSONL 与一个缺失引用）、建立唯一 canonical baseline、运行真实编译产物 backup/restore/migrate CLI，并校验 restore（canonical ledger、有效历史、missing→NULL）。它会启动临时的本地 node_exporter/Prometheus/Alertmanager/测试 webhook，执行完整的 fail-closed 与告警触发/恢复矩阵，输出真实 `PASS`/`FAIL`/`DEFERRED`（仅在缺少 podman/age/pg 工具时 `DEFERRED`），且绝不通过环境变量自证 `PASS`。本次运行专属的 Podman 资源会在结束后经验证删除；脱敏证据保留到显式执行 `cleanup`。见[演练 SOP](docs/backup-freshness-drill-sop.md)。
 - **恢复策略：** RPO 目标 24 小时；备份保留 30 天并人工清理。RTO 目标 4 小时，但 signoff 延期到项目投入使用且具备代表性数据规模后。
 - **备份/运行时兼容性（Phase 3）：** SQLite/PostgreSQL backup（包括 `--dry-run`）在加密、发布、成功报告或推进 freshness 前，必须通过恰为 canonical 单基线的源 ledger 检查；缺失、legacy 多行或 checksum 不匹配的 ledger 一律 fail-closed。DB 引用缺失的 JSONL 在该 DB 门禁通过后仍按 missing-as-empty 处理并可发布；backup 对 JSONL 仍只作 opaque bytes 处理。restore 将存在但无效的历史降级为空（引用置 `NULL` 并报告计数），但包级 age/hash/manifest 完整性损坏仍整体失败。运行时与 restore 只接受当前 Pi JSONL v3；v1/v2 绝不经 SDK 迁移（不使用 `migrateSessionEntries`），运行时 fail-fast、restore invalid-as-empty。**旧备份不可恢复**。
 - **Migration 启动门禁：** `PI_MIGRATION_GATE` 固定为只读 `verify`；`off`（包括 `PI_DATA_MODE=rc`）会在创建资源前拒绝。服务绝不自行 bootstrap baseline：必须先运行离线 migration，并且仅在 canonical 单基线验证通过后启动。`PI_DATA_MODE` 仅为部署分类，不能放宽该要求。
@@ -150,7 +151,7 @@ export PI_ALLOWED_CLIENT_CIDRS=127.0.0.0/8,10.0.0.0/8
 
 - 元数据存于 SQLite 或 PostgreSQL；完整对话历史存于 Pi 管理的 JSONL。
 - DELETE 把持久清理意图写入 `file_operations`，但仓库只提供只读 planner；物理执行不在当前范围。
-- backup、restore、migration、reconcile 和 owner-transfer 均为离线命令，不启动服务，也不安装 timer/worker。
+- backup、restore、migration、reconcile 和 owner-transfer 均为离线命令，不启动服务，也不安装 timer/worker。`pi-agent-server-drill` 同样如此：做门禁（preflight）、执行隔离一键演习（run）与清理隔离运行产物（cleanup）。它绝不自动启动服务、安装 timer，也不触碰正式资源。
 - PostgreSQL server、`pg_dump`、`pg_restore` major 必须匹配，并且有效业务 schema 必须非 `public`、非系统 schema。
 - 只有相应环境门控的真实 PostgreSQL/age 检查实际运行时才能形成验收证据；skip 不算验收。
 

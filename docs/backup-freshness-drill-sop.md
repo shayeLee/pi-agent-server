@@ -1,8 +1,12 @@
-# WP5C 单实例备份新鲜度演练 SOP
+# 单实例备份新鲜度演练 SOP
 
-> **状态**：实际演练 deferred、未授权、未执行。未来执行前必须由用户明确授权隔离环境、窗口和负责人。本文不授权启动服务、安装 timer、接触正式数据或使用正式 Alertmanager receiver。
+> **状态**：演练 runner 已实现真实的一键执行（`pi-agent-server-drill run`）：容器内 cron、
+> SQLite/PostgreSQL 合成数据、真实编译 backup/restore/migrate、隔离恢复校验、临时本地
+> node_exporter/Prometheus/Alertmanager/测试 webhook，以及完整故障注入与恢复矩阵。判定只来自
+> 本次运行采集的证据，绝不通过环境变量自证 `PASS`。
 
-权威契约见 [backup-freshness-exporter.md](backup-freshness-exporter.md)，备份恢复流程见 [backup-restore.md](backup-restore.md)，工作包状态见 [Phase 3 状态台账](phase-3-data-retention-plan.md)。
+权威契约见 [backup-freshness-exporter.md](backup-freshness-exporter.md)，备份恢复流程见
+[backup-restore.md](backup-restore.md)。
 
 ## 1. 目的与范围
 
@@ -13,35 +17,109 @@ scheduler → fixed backup CLI → published report → textfile
 → node_exporter → Prometheus → Alertmanager notification/recovery
 ```
 
-只使用合成 SQLite/PostgreSQL fixture、测试 age recipient/identity、隔离 backup root、textfile 目录和 receiver。不得使用正式数据库、JSONL、密钥、服务、备份目录或监控接收方。
+只使用合成 SQLite/PostgreSQL fixture、测试 age recipient/identity、隔离 backup root、textfile
+目录与 receiver。不得使用正式数据库、JSONL、密钥、服务、备份目录或监控接收方。
 
-missing-as-empty 机器报告语义已随 backup/restore 目标语义落地（见 [backup-restore.md](backup-restore.md#2-已落地语义)）；实际演练仍为 NO-GO（未授权、未执行）。
+missing-as-empty 机器报告语义已随 backup/restore 目标语义落地（见
+[backup-restore.md](backup-restore.md#2-已落地语义)）。
 
-## 2. Preflight
+## 2. Preflight 与安全边界
 
-开始前必须全部满足：
+`pi-agent-server-drill` 只操作 `PI_DRILL_ROOT` 内路径，以及名称以
+`pi-agent-server-disaster-recovery-drill-` 前缀命名的 Podman container/network/volume/自建
+image；绝不触碰正式 data/backup/staging/auth/PG/receiver。任一正式路径与演练根重叠即
+fail-closed。
 
-1. 用户对本次具体环境、窗口、operator 和允许的故障注入重新授权；
-2. 证明所有路径、数据库/schema、recipient/identity、Prometheus 和 receiver 均为隔离测试资源；
-3. 固定编译产物、Node、age、PG 工具路径和版本已记录，PG 三个 major 一致；
-4. backup 账号权限最小化，不能读取 `PI_AUTH_PATH`；secret 仅经受限环境注入；
-5. textfile 原子替换、同 target 单飞、时钟同步与 expected inventory 已配置；
-6. helper 校验的是目标 published machine report，不再要求 `strict=true` 或 `missingSessionReferences=0`；
-7. 已制定只删除本次隔离资源的 cleanup 清单。
+前置（`preflight`，全部通过才 PASS，否则 FAIL）：
 
-任一条件不满足即保持 DEFERRED/NO-GO。
+1. 显式设置绝对 `PI_DRILL_ROOT`（任意绝对路径；需精确 0700、当前用户/root 属主、非 symlink、
+   无 special bits；mac 示例可
+   `~/Library/Application Support/pi-agent-server-disaster-recovery-drill`，但非固定默认值，
+   **且该路径不能位于 sticky/shared 目录（如 `/tmp`）下**，否则备份 plaintext staging 守卫会
+   fail-closed）；
+2. 固定保留 `$PI_DRILL_ROOT/secrets/` 中的演习专用 age identity/recipient（精确 0600、非
+   symlink/hardlink/special bits），runner 从该固定位置读取，无需每次重新提供；
+3. 正式路径按服务默认解析 `AGENT_CWD`/`DATA_DIR`/`DB`/`PI_AGENT_DIR`/`PI_AUTH_PATH` 并检查根
+   重叠；正式 backup root/recipient/identity 用显式
+   `PI_FORMAL_BACKUP_ROOT`/`PI_FORMAL_BACKUP_RECIPIENT`/`PI_FORMAL_BACKUP_IDENTITY` 比较，
+   缺失时不宣称已隔离，也绝不因缺失/不可访问而报错泄密；正式 `PI_DATABASE_URL` 对演练
+   postgres target 做目标一致性判断；
+4. 数据库/schema、recipient/identity、Prometheus、receiver 均为隔离测试资源，由 runner 自动
+   证明，不依赖操作员人工判断；
+5. `cleanup` 必须先通过完整 preflight（root + 固定 secrets + 正式路径重叠 + 资源隔离）且两个
+   secrets 均有效存在，任一失败即拒绝删除；只清空 `fixtures`、`backups`、`restore`、`staging`、
+   `textfile`、`textfile-pg`、`logs`、`faultbin`、`scheduler`、`monitor`、`evidence` 与 `runs/*`，固定保留
+   `secrets/`，绝不删除根或 `secrets`。
 
-## 3. 成功路径
+### 最小操作命令
 
-1. 用合成数据分别准备 SQLite 和 PostgreSQL target；至少包含一个有 JSONL 的 session 和一个缺失引用 session。
-2. 由实际 scheduler/timer 触发，而不是手动模拟调度；记录上次/下次 trigger、实际 backup start 和不超过 12 小时的 cadence 配置。
-3. helper 调用固定 compiled backup CLI；exit 0 且唯一 machine report 为 published、非 dry-run。
-4. 缺失引用计数允许大于零；确认最终包与 `COMPLETE` 存在，freshness 更新为本次 backup start。
-5. node_exporter scrape 成功，Prometheus 中 expected target、up、freshness 和 textfile scrape 状态标签一致。
-6. 在隔离目标执行恢复：缺失历史对应 `pi_session_file=NULL`；有效 session 可读取。使用运维提供的测试 identity，证明 age 解密路径可用。
-7. 确认 Alertmanager 没有遗留告警，再进入失败注入。
+```bash
+export PI_DRILL_ROOT="$HOME/Library/Application Support/pi-agent-server-disaster-recovery-drill"
 
-## 4. 失败注入矩阵
+# 只检查目录、固定演习 key 与正式路径隔离性；不执行备份。
+pnpm drill -- preflight
+
+# 执行完整一键演习；自动运行 cron、备份/恢复、监控与故障矩阵。
+pnpm drill -- run
+
+# 演习结束后清空已知运行产物，保留演练根与 secrets/。
+pnpm drill -- cleanup
+```
+
+`run` 产出真实 `PASS`(0)/`FAIL`(2)/`DEFERRED`(3)；`DEFERRED` 仅在 podman/age/pg 工具等明确
+先决条件缺失时出现（并把对应 observation 记为 DEFERRED），其余任何未通过步骤均为 `FAIL`。
+`run` 从不通过环境变量自证 `PASS`（没有 `PI_DRILL_VERIFIED` 之类的 bypass）。
+
+### 正式运维执行步骤
+
+正式运维只需要在**演习主机**执行下面命令；不要把正式数据库 URL、正式数据复制到演习根，也不要把正式私钥复制到 `secrets/`。`PI_FORMAL_*` 只提供正式路径给 preflight 做“不能重叠”的自动检查，值是路径，不是密钥内容：
+
+```bash
+export PI_DRILL_ROOT="/absolute/path/to/pi-agent-server-disaster-recovery-drill"
+
+# 正式 SQLite 环境路径；按实际部署填写
+export AGENT_CWD="/absolute/path/to/formal/data"
+export DATA_DIR="/absolute/path/to/formal/data"
+export DB_PATH="/absolute/path/to/formal/data/pi-agent-server.db"
+export PI_AGENT_DIR="/absolute/path/to/formal/data/.pi-agent"
+export PI_AUTH_PATH="/absolute/path/to/formal/auth.json"
+export PI_BACKUP_STAGING_ROOT="/absolute/path/to/formal/backup-staging"
+
+# 正式备份路径；只用于隔离检查，不会被 runner 写入
+export PI_FORMAL_BACKUP_ROOT="/absolute/path/to/formal/backups"
+export PI_FORMAL_BACKUP_RECIPIENT="/absolute/path/to/formal/age-recipient.txt"
+export PI_FORMAL_BACKUP_IDENTITY="/absolute/path/to/formal/age-identity.txt"
+
+pi-agent-server-drill preflight
+pi-agent-server-drill run
+```
+
+如果从仓库源码执行，把最后两行替换为：
+
+```bash
+volta run pnpm drill -- preflight
+volta run pnpm drill -- run
+```
+
+`preflight` 失败就停止；`run` 返回 `0` 才是通过，返回 `2` 是失败，返回 `3` 是工具等先决条件不足。成功或失败后都不需要人工删除 Podman 资源：runner 会清理本次运行的 container/network/volume/自建 scheduler image；如需清空演习文件，执行 `cleanup`，它会保留演习根和 `$PI_DRILL_ROOT/secrets/`。
+
+## 3. 成功路径（已实现）
+
+1. `provision`：校验 podman/age/pg 工具链；创建本次运行唯一的隔离 network、scheduler、
+   PostgreSQL 与监控资源；资源名均以前缀 `pi-agent-server-disaster-recovery-drill-` 开头；
+2. `fixture-sqlite` / `fixture-postgres`：合成数据，各含一个有效 JSONL 的 session 与一个缺失
+   引用 session；SQLite 建空库并 bootstrap 唯一 canonical baseline；PostgreSQL 使用 disposable
+   PG16（非 `public`、非系统 schema）并 bootstrap 唯一 canonical baseline；
+3. `backup-*-success`：请求由容器内真实 cron 领取并调用固定编译产物
+   `pi-agent-server-backup`；验证 cron trigger/time 与唯一 published machine report；统一安全 helper
+   校验 finalPath/COMPLETE/属主/权限并通过 O_EXCL 单飞锁、fsync、原子 rename、no-regress/clock
+   门禁更新 textfile；
+4. `restore-*-success`：调用真实编译产物 `pi-agent-server-restore` 到隔离目标；校验 canonical
+   单基线 ledger、有效 JSONL 历史、missing→NULL、非 invalid 历史；
+5. `monitor-normal`：启动临时隔离 node_exporter + Prometheus + Alertmanager + 测试 webhook，
+   验证 freshness、expected inventory、target up 与无遗留告警。
+
+## 4. 失败注入矩阵（已实现）
 
 | 注入 | 必须结果 |
 | --- | --- |
@@ -58,7 +136,10 @@ missing-as-empty 机器报告语义已随 backup/restore 目标语义落地（�
 | 停止 node_exporter | exporter-down critical 告警触发 |
 | 制造 textfile scrape error | scrape-error critical 告警触发 |
 
-每项故障恢复后，下一次成功 run 必须更新指标并让对应告警自动清除；恢复通知是验收证据的一部分。
+这些故障场景（`fault:guard:*` / `fault:recovery:*`）由执行器在隔离资源内真实注入并验证：
+备份/PG 工具实际失败；独立 helper 子进程解析报告；两个进程争抢单飞锁；rename 前后真实
+`SIGKILL` 并回收 dead-PID lock；Prometheus 当前状态与本轮 webhook generation 同时证明告警触发
+和恢复。任何 guard 或 recovery 未通过均输出 `FAIL`。
 
 ## 5. Stop 条件
 
@@ -74,12 +155,16 @@ missing-as-empty 机器报告语义已随 backup/restore 目标语义落地（�
 
 ## 6. 证据与结论
 
-证据包只保留：授权引用、隔离 target opaque ID、版本 major、构建 digest、时间戳、计数、布尔结果、PromQL/告警截图引用和 cleanup 结果。删除 secret、recipient/identity 内容、URL、host/database、绝对路径、原始 argv/stderr、session id 和正文。
+`run` 默认保留证据到 `$PI_DRILL_ROOT/runs/<run-id>/summary.json`（脱敏），供查看；本次运行
+专属的 container/network/volume/自建 scheduler image 无论成功失败都会在退出前验证删除。显式
+`pnpm drill -- cleanup` 清空已知文件运行产物，但保留 root 与 `secrets/`。
+
+证据包只保留：授权引用、隔离 target opaque ID、版本 major、构建 digest、时间戳、计数、布尔
+结果、PromQL/告警截图引用和 cleanup 结果。删除 secret、recipient/identity 内容、URL、
+host/database、绝对路径、原始 argv/stderr、session id 和正文。
 
 结论只能是：
 
-- **PASS，待用户验收**：成功路径、全部失败注入、告警恢复和 cleanup 均通过；
+- **PASS**：成功路径 + 全部失败注入 + 告警恢复 + cleanup 均通过；
 - **FAIL**：任一强制项失败；
-- **DEFERRED**：未获授权或未执行（当前状态）。
-
-只有用户明确接受证据后，才能在状态台账中把 WP5C 标为已验收。
+- **DEFERRED**：缺 podman/age/pg 工具等明确先决条件（不因环境变量自证通过）。

@@ -1,0 +1,16 @@
+FROM docker.io/library/node:24.19-bookworm
+# Install a PostgreSQL 16 client matching the drill's disposable PG16 server.
+RUN apt-get update \
+  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+       curl gnupg ca-certificates \
+  && curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | gpg --dearmor -o /usr/share/keyrings/postgresql.gpg \
+  && echo "deb [signed-by=/usr/share/keyrings/postgresql.gpg] https://apt.postgresql.org/pub/repos/apt bookworm-pgdg main" > /etc/apt/sources.list.d/pgdg.list \
+  && apt-get update \
+  && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+       age postgresql-client-16 cron \
+  && rm -rf /var/lib/apt/lists/*
+COPY scheduler-entry.sh /usr/local/bin/scheduler-entry.sh
+COPY scheduler-node.mjs /usr/local/bin/scheduler-node.mjs
+RUN chmod +x /usr/local/bin/scheduler-entry.sh && chmod +x /usr/local/bin/scheduler-node.mjs
+# The scheduler runs crond (per-minute schedule) + a node watcher for on-demand triggers.
+CMD ["/usr/local/bin/scheduler-entry.sh"]

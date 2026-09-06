@@ -19,7 +19,8 @@
     "pi-agent-server-restore": "./dist-backup/scripts/restore.js",
     "pi-agent-server-file-ops": "./dist-file-ops/scripts/file-ops.js",
     "pi-agent-server-reconcile-jsonl": "./dist-reconcile/scripts/reconcile-jsonl.js",
-    "pi-agent-server-owner-transfer": "./dist-owner-transfer/scripts/owner-transfer.js"
+    "pi-agent-server-owner-transfer": "./dist-owner-transfer/scripts/owner-transfer.js",
+    "pi-agent-server-drill": "./dist-drill/scripts/drill.js"
   },
   "exports": {
     "./server": "./dist/server/start.js",
@@ -31,13 +32,15 @@
     "dist-backup",
     "dist-file-ops",
     "dist-reconcile",
-    "dist-owner-transfer"
+    "dist-owner-transfer",
+    "dist-drill",
+    "docker/scheduler"
   ],
   "engines": {
     "node": ">=22.19.0"
   },
   "scripts": {
-    "build": "node scripts/dist-hygiene.mjs clean dist && tsc -p tsconfig.build.json && node scripts/dist-hygiene.mjs check dist",
+    "build": "node scripts/dist-hygiene.mjs clean dist && tsc -p tsconfig.build.json && node scripts/dist-hygiene.mjs check dist && npm run build:drill",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -56,6 +59,7 @@
     "build:file-ops": "node scripts/dist-hygiene.mjs clean dist-file-ops && tsc -p tsconfig.file-ops.json && node scripts/smoke-file-ops-compiled.mjs && node scripts/smoke-file-ops-package.mjs",
     "build:reconcile-jsonl": "node scripts/dist-hygiene.mjs clean dist-reconcile && tsc -p tsconfig.reconcile-jsonl.json && node scripts/smoke-reconcile-jsonl-compiled.mjs && node scripts/smoke-reconcile-jsonl-package.mjs",
     "build:owner-transfer": "node scripts/dist-hygiene.mjs clean dist-owner-transfer && tsc -p tsconfig.owner-transfer.json && node scripts/smoke-owner-transfer-compiled.mjs && node scripts/smoke-owner-transfer-package.mjs",
+    "build:drill": "node scripts/dist-hygiene.mjs clean dist-drill && tsc -p tsconfig.drill.json && node scripts/smoke-drill-compiled.mjs && node scripts/smoke-drill-package.mjs",
     "test:age": "node scripts/test-age-real.mjs",
     "test:restore-real": "pnpm test:age && cross-env PI_RUN_REAL_AGE_RESTORE=1 vitest run tests/backup/restore-core.test.ts",
     "test:owner-transfer": "pnpm test:age && cross-env PI_RUN_REAL_AGE_OWNER_TRANSFER=1 vitest run tests/owner-transfer/owner-transfer-real-age.test.ts",
@@ -65,7 +69,9 @@
     "restore:compiled": "node dist-backup/scripts/restore.js",
     "owner-transfer": "tsx scripts/owner-transfer.ts",
     "owner-transfer:compiled": "node dist-owner-transfer/scripts/owner-transfer.js",
-    "verify": "npm run typecheck && npm run test && npm run build:backup && npm run build:file-ops && npm run build:reconcile-jsonl && npm run build:owner-transfer",
+    "drill": "tsx scripts/drill.ts",
+    "drill:compiled": "node dist-drill/scripts/drill.js",
+    "verify": "npm run typecheck && npm run test && npm run build:backup && npm run build:file-ops && npm run build:reconcile-jsonl && npm run build:owner-transfer && npm run build:drill",
     "verify:release": "npm run typecheck && npm run test && npm run test:postgres && npm run test:pg-backup && npm run test:migration-prebackup && npm run test:file-ops-pg && npm run test:reconcile-jsonl-pg && npm run test:restore-real && npm run test:owner-transfer && npm run test:owner-transfer-pg && npm run build && npm run build:migrate && npm run build:backup && npm run build:file-ops && npm run build:reconcile-jsonl && npm run build:owner-transfer",
     "dev": "tsx src/main.ts",
     "dev:real": "cross-env DATA_DIR=/tmp/pi-agent-server PI_ALLOWED_CLIENT_CIDRS=127.0.0.0/8,10.0.0.0/8 PI_DEFAULT_MODEL=openai-codex/gpt-5.6-luna PI_DEFAULT_THINKING_LEVEL=medium tsx src/main.ts",

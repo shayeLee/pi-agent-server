@@ -24,8 +24,9 @@
 | DB 引用只读分析 | `pnpm reconcile-jsonl -- run` | [reconcile-jsonl.md](reconcile-jsonl.md) |
 | `/health`、`/readyz`、`/metrics` | 运行中服务 | [ip-rbac-design.md](ip-rbac-design.md) |
 | 备份 freshness 部署/演练 | 部署方审核的 helper/timer | [backup-freshness-exporter.md](backup-freshness-exporter.md) / [SOP](backup-freshness-drill-sop.md) |
+| 备份 freshness 演练门禁/清理/run 资格 | `pnpm drill -- preflight` / `pnpm drill -- cleanup` / `pnpm drill -- run`（`pi-agent-server-drill`） | [SOP](backup-freshness-drill-sop.md) |
 
-`pnpm` 命令只用于人工开发和演练。自动备份必须调用固定编译产物，不能以 `pnpm backup` 作为调度入口。
+`pnpm` 命令只用于人工开发和演练。自动备份必须调用固定编译产物，不能以 `pnpm backup` 作为调度入口。`pi-agent-server-drill` 是隔离的一键演习执行器：`preflight` 只做安全门禁；`run` 自动执行合成 SQLite/PostgreSQL fixture、容器内真实 cron、编译产物 backup/restore/migrate、隔离恢复校验、临时 node_exporter/Prometheus/Alertmanager/测试 webhook 及完整故障矩阵，输出真实 `PASS`/`FAIL`/`DEFERRED`（仅在缺少 podman/age/pg 工具时 `DEFERRED`），绝不通过环境变量自证 `PASS`。本次运行专属 Podman 资源在结束后验证删除，脱敏 summary 保留。`cleanup` 先执行完整 preflight 且要求两个固定 secrets 均有效，只清空已知运行目录并固定保留 `$PI_DRILL_ROOT/secrets/`。
 
 ## 通用安全规则
 
