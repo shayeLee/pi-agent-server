@@ -20,7 +20,7 @@
 
 - **RC 阶段**：服务级正式 migration / 备份 / 回滚**未接入服务启动**；`pnpm migrate`/backup/restore/file-ops/reconcile-jsonl 均为离线开发期工具。
 - 当前开发用 SQLite 目标无旧 RC 数据，已通过离线 bootstrap-baseline（无 pre-backup）+ verify 建立唯一 canonical baseline；**破坏性 reset/cutover 从未对真实用户数据执行**。受控 cutover 工具已移除：无 ledger 或非唯一 canonical baseline 的库由 bootstrap/迁移引擎 fail-fast 拒绝，不再存在自动/受控 reset 工具。
-- 不执行真实用户数据备份/恢复演练，不部署任何备份任务；启动 migration 门禁（§4）与 backup/restore 目标语义（§5、§3）已落地。
+- 本阶段不对真实用户数据做破坏性恢复；已在隔离 disposable 环境完成 backup/restore 演练与完整备份新鲜度故障矩阵（48/48 PASS）。仓库不替正式部署安装 timer；正式备份任务仍由部署方按契约安装。启动 migration 门禁（§4）与 backup/restore 目标语义（§5、§3）已落地。
 - 当前接入控制由 IP-RBAC（WP5D）承担（见 [ip-rbac-design.md](ip-rbac-design.md)），不在本计划范围；旧 `TOKENS`/`INTRANET_CIDRS`/`TRUST_PROXY` 无兼容（见 [identity-access-plan.md](identity-access-plan.md) §2）。
 
 ## 2. 已确认决策（汇总）
@@ -35,7 +35,7 @@
 | 6 | RPO / RTO | **RPO 24h**（固定 ≤ 12h 备份粒度）；**RTO 目标 4h**，signoff 延期到投入使用且有代表规模 | ADR §3a |
 | 7 | 删除语义 | **保留 delete outbox，但无物理删除（无 unlink）**；物理清理 executor/处置不实现 | ADR §3f |
 | 8 | WP5B | 仅作为正式启用副作用工具/多实例/公网前的**条件门禁**；不阻塞 Phase 3 | ADR §5 |
-| 9 | WP5C | 方案 B 部署契约已形成、可评审，实际演练 deferred、**未验收** | ADR §3d |
+| 9 | WP5C | 方案 B 部署契约与隔离实际演练均已完成；完整演练 48/48 PASS，待本台账关闭确认 | ADR §3d |
 | 10 | 备份保留期 | **30 天**；自动删除未实现、未排期（未来单独工作包） | ADR §3b |
 | 11 | Migration 前置 | 每次 migration 前**严格停服务** + 强制 pre-migration backup；无全局写冻结，停服务不可被软门禁替代 | ADR §3 |
 
@@ -63,7 +63,7 @@
 - **恢复演练**：每季度 + 每次重大 migration 前，在隔离/临时实例执行（SQLite drill 与 PG drill 均已完成实现）。备份「有效」的唯一证明是恢复演练通过；演练同样覆盖「迁移出错后的回滚」。
 - **RPO / RTO（已确认）**：RPO 24h（固定 ≤ 12h 完整在线备份粒度，由部署方经过审核的 helper/timer 驱动固定构建产物 backup CLI，仓库不安装任何 timer/unit/plist；`pnpm backup` 仅人工 dev）。RTO 目标 4h，signoff 延期到投入使用且有代表规模（ADR §3a）。
 - **保留期（已确认）**：30 天；过期备份由运维人工清理，自动 retention 属未来单独工作包（不属于 WP5B 也不属于 WP5C）。
-- **监控（已确认）**：备份新鲜度由 WP5C 方案 B 部署契约定义（Prometheus per-target 指标 + 独立持久 inventory + 外部 Alertmanager），契约见 [backup-freshness-exporter.md](backup-freshness-exporter.md)、实际部署演练 SOP 见 [backup-freshness-drill-sop.md](backup-freshness-drill-sop.md)；实际部署演练 deferred、**未验收**。
+- **监控（已确认）**：备份新鲜度由方案 B 部署契约定义（Prometheus per-target 指标 + 独立持久 inventory + 外部 Alertmanager），契约见 [backup-freshness-exporter.md](backup-freshness-exporter.md)、实际演练 SOP 见 [backup-freshness-drill-sop.md](backup-freshness-drill-sop.md)；隔离实际部署演练已完成并通过 48/48 检查。
 - **凭证不入备份**：凭证来自环境变量 / KMS / `PI_AUTH_PATH` 独立凭证文件，不落库明文，备份集天然不含明文凭证。
 
 ## 6. 工作包状态台账（唯一状态台账）
@@ -75,7 +75,7 @@
 | WP2 | ✅ 已移除 | 受控 cutover（WP2A）已删除：无 ledger 或非唯一 canonical baseline 的库在 verify/apply/启动时均 fail-fast；完全空目标只能离线执行 `pnpm migrate -- --bootstrap-baseline --bootstrap-confirm CONFIRMED` 建立唯一 canonical baseline。历史决定见 [decisions/0001](decisions/0001-phase-3-data-retention-baseline.md) | — |
 | WP3 | ✅ 已完成 | WP3A SQLite 在线备份核心、WP3B1 SQLite restore drill、WP3B2 PG backup/restore、WP3C migration prebackup/runbook 基础均已实现并通过各自真实 gate；均离线、未接入服务启动 | [backup-restore.md](backup-restore.md) |
 | WP4 | ✅ 当前范围完成 | WP4A delete outbox + 删除事务、WP4B 只读 planner、WP4C DB-only 引用分析已完成。物理删除、filesystem scanner、retry/quarantine 已从当前范围排除 | [file-operations.md](file-operations.md)、[reconcile-jsonl.md](reconcile-jsonl.md) |
-| WP5 | 🟡 进行中 | WP5A readiness/metrics 已完成；WP5C 部署契约已形成但实际演练 deferred、未验收 | [operations.md](operations.md)、[backup-freshness-exporter.md](backup-freshness-exporter.md)、[backup-freshness-drill-sop.md](backup-freshness-drill-sop.md) |
+| WP5 | ✅ 当前范围完成 | WP5A readiness/metrics 与 WP5C 备份新鲜度部署演练均已完成；WP5B 仍为启用写入工具、多实例或公网时的条件门禁 | [operations.md](operations.md)、[backup-freshness-exporter.md](backup-freshness-exporter.md)、[backup-freshness-drill-sop.md](backup-freshness-drill-sop.md) |
 | 条件门禁 | ⏸ 按触发器启动 | WP5B 尚未实现，不阻塞当前 Phase 3；仅在正式启用副作用工具、多实例或公网前成为强制门禁 | 本文 §2、[identity-access-plan.md](identity-access-plan.md) |
 | Phase 3.1 / IAM | ⬜ 未来 | 当前内网方案不实施；公网启用前另行启动 | [identity-access-plan.md](identity-access-plan.md) |
 
@@ -84,17 +84,17 @@
 ```text
 WP0 → WP1 迁移引擎 → WP3A 备份核心 → WP3B1 SQLite drill → WP3B 后续恢复/门禁 → WP2 最终 reset 切换（== 数据保留起点）
   └→ WP4A outbox 基础 → WP4B 只读 planner → WP4C DB-only reconcile analyzer（均无物理执行/处置）
-  └→ WP5 运维门禁（WP5A ✅；WP5B 条件门禁；WP5C 契约未验收）→ WP6 IAM 进入条件
+  └→ WP5 运维门禁（WP5A ✅；WP5B 条件门禁；WP5C ✅）→ WP6 IAM 进入条件
 ```
 
 - WP2 必须在 WP3 备份恢复就绪后执行；WP4B/WP4C 无执行路径（物理执行/处置留给未来受审计的 native helper，尚未启动）。
 ### 当前 Phase 3 完成条件
 
-1. 落地并验收 §3 的 migration 默认值/数据模式目标；
-2. 落地并验收 §3 的 missing-as-empty、backup opaque JSONL、restore invalid-as-empty 语义；
-3. 完成并验收 WP5C 单实例本机备份部署演练。
+1. ✅ 落地并验收 §3 的 migration 默认值/数据模式目标；
+2. ✅ 落地并验收 §3 的 missing-as-empty、backup opaque JSONL、restore invalid-as-empty 语义；
+3. ✅ 完成并验收 WP5C 单实例本机备份部署演练（隔离 live drill 48/48 PASS）。
 
-WP5B、物理 JSONL 删除、filesystem scanner、异地备份、自动 retention、RTO signoff、IAM/WP6 和多实例**均不属于当前完成条件**。在前三项完成前，Phase 3 仍在进行且服务不作生产就绪声明。
+以上三项已完成，Phase 3 按当前定义范围可关闭。WP5B、物理 JSONL 删除、filesystem scanner、异地备份、自动 retention、RTO signoff、IAM/WP6 和多实例**均不属于当前完成条件**；它们仍按触发条件或未来阶段管理。Phase 3 关闭不等于服务已获得公网、写入工具或代表性真实规模的 RTO signoff。
 
 ## 7. 待决策项清单（TBD）
 
@@ -118,7 +118,7 @@ WP5B、物理 JSONL 删除、filesystem scanner、异地备份、自动 retentio
 - 备份 / 恢复 / 演练契约：[backup-restore.md](backup-restore.md)
 - 离线 migration/pre-backup 运维与 readiness 门禁：[operations.md](operations.md)
 - WP2A 受控 cutover 已移除（见上表 WP2 行）；完全空目标建立 ledger 的唯一路径是离线 `pnpm migrate -- --bootstrap-baseline --bootstrap-confirm CONFIRMED`，已有唯一 canonical baseline 的数据库才使用 `--apply`。
-- WP5C 方案 B 部署契约 / 实际部署演练 SOP：[backup-freshness-exporter.md](backup-freshness-exporter.md)、[backup-freshness-drill-sop.md](backup-freshness-drill-sop.md)
+- 备份新鲜度方案 B 部署契约 / 实际部署演练 SOP：[backup-freshness-exporter.md](backup-freshness-exporter.md)、[backup-freshness-drill-sop.md](backup-freshness-drill-sop.md)
 - WP4B 只读 planner / WP4C DB-only reconcile analyzer：[file-operations.md](file-operations.md)、[reconcile-jsonl.md](reconcile-jsonl.md)
 - WP5D owner transfer：[owner-transfer.md](owner-transfer.md)
 - IAM 未来公网方案：[identity-access-plan.md](identity-access-plan.md)
