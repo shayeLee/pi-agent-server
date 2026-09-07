@@ -82,8 +82,8 @@
     "release:rc": "npm run verify:release && npm publish --tag rc"
   },
   "dependencies": {
-    "@earendil-works/pi-ai": "^0.84.4",
-    "@earendil-works/pi-coding-agent": "^0.84.4",
+    "@earendil-works/pi-ai": "^0.85.1",
+    "@earendil-works/pi-coding-agent": "^0.85.1",
     "@fastify/cors": "^11.3.0",
     "fastify": "^5.12.0",
     "kysely": "0.29.5",
