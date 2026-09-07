@@ -50,7 +50,7 @@ describe("drill freshness writer", () => {
   });
 
   it("serializes only the scheduler allowlist", () => {
-    const entries = Object.fromEntries(sanitizeContainerEnv({ DATA_DIR: "/drill/data", PI_DATABASE_URL: "drill-url", AWS_SECRET_ACCESS_KEY: "secret", PI_MODEL_API_KEY: "secret", TOKENS: "secret" }));
+    const entries = Object.fromEntries(sanitizeContainerEnv({ DATA_DIR: "/drill/data", PI_DATABASE_URL: "drill-url", AWS_SECRET_ACCESS_KEY: "secret", PI_MODEL_API_KEY: "secret" }));
     expect(entries).toEqual({ DATA_DIR: "/drill/data", PI_DATABASE_URL: "drill-url" });
   });
 });

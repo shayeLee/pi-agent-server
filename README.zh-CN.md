@@ -8,24 +8,21 @@
 
 ## 当前边界
 
-- **只支持单实例：** 每个 logical SQLite 数据库或 PostgreSQL schema 及其关联 `DATA_DIR` 只允许一个 pi-agent-server 进程。共享存储副本和实例重叠的滚动升级不受支持。
-- **仅限内网：** 调用方身份来自 canonical 直接 TCP 对端 IP。所有路由都必须经过 `PI_ALLOWED_CLIENT_CIDRS`；绝不信任转发 IP header。未来 OIDC/IAM 与 workspace/sandbox 完成前禁止公网暴露。
-- **不是 sandbox：** IP-RBAC 不限制项目 `cwd`、工具绝对路径或 OS 权限。默认工具白名单只读。正式启用 `bash`/`edit`/`write`、多实例或公网前必须完成 WP5B durable idempotency/shutdown 加固；当前没有 runtime guard 强制该治理策略。
-- **仅逻辑删除：** 删除项目或会话会移除数据库可见资源，并把 JSONL 清理意图写入 `file_operations`。当前没有 outbox worker，也不会物理 unlink JSONL。
-- **本机加密备份：** 离线 SQLite/PostgreSQL backup/restore 使用 age 加密并写入本机 `BACKUP_ROOT`，不覆盖主机/磁盘与备份同时丢失。age identity 私钥由运维托管，仅在恢复时提供。
-- **隔离的备份新鲜度演练 runner：** `pi-agent-server-drill`（`preflight` / `cleanup` / `run`）是真正的一键演习执行器。它要求绝对 `PI_DRILL_ROOT`（精确 0700、当前用户属主、非 symlink、无 special bits），固定保留 `$PI_DRILL_ROOT/secrets/`（仅演习专用的 age identity/recipient，精确 0600、非链接文件、无 hardlink/special bits），任何与正式 data/backup/staging/auth 路径的重叠一律拒绝（正式路径按服务默认解析，正式 backup root/recipient/identity 用显式 `PI_FORMAL_BACKUP_ROOT`/`PI_FORMAL_BACKUP_RECIPIENT`/`PI_FORMAL_BACKUP_IDENTITY` 比较），只操作以 `pi-agent-server-disaster-recovery-drill-` 前缀命名的 Podman 资源，绝不触碰正式 data/backup/staging/auth/PG/receiver。`run` 在隔离根内执行演习：合成 SQLite + PostgreSQL fixture（各含一个有效 JSONL 与一个缺失引用）、建立唯一 canonical baseline、运行真实编译产物 backup/restore/migrate CLI，并校验 restore（canonical ledger、有效历史、missing→NULL）。它会启动临时的本地 node_exporter/Prometheus/Alertmanager/测试 webhook，执行完整的 fail-closed 与告警触发/恢复矩阵，输出真实 `PASS`/`FAIL`/`DEFERRED`（仅在缺少 podman/age/pg 工具时 `DEFERRED`），且绝不通过环境变量自证 `PASS`。本次运行专属的 Podman 资源会在结束后经验证删除；脱敏证据保留到显式执行 `cleanup`。见[演练 SOP](docs/backup-freshness-drill-sop.md)。
-- **恢复策略：** RPO 目标 24 小时；备份保留 30 天并人工清理。RTO 目标 4 小时，但 signoff 延期到项目投入使用且具备代表性数据规模后。
-- **备份/运行时兼容性（Phase 3）：** SQLite/PostgreSQL backup（包括 `--dry-run`）在加密、发布、成功报告或推进 freshness 前，必须通过恰为 canonical 单基线的源 ledger 检查；缺失、legacy 多行或 checksum 不匹配的 ledger 一律 fail-closed。DB 引用缺失的 JSONL 在该 DB 门禁通过后仍按 missing-as-empty 处理并可发布；backup 对 JSONL 仍只作 opaque bytes 处理。restore 将存在但无效的历史降级为空（引用置 `NULL` 并报告计数），但包级 age/hash/manifest 完整性损坏仍整体失败。运行时与 restore 只接受当前 Pi JSONL v3；v1/v2 绝不经 SDK 迁移（不使用 `migrateSessionEntries`），运行时 fail-fast、restore invalid-as-empty。**旧备份不可恢复**。
-- **Migration 启动门禁：** `PI_MIGRATION_GATE` 固定为只读 `verify`；`off`（包括 `PI_DATA_MODE=rc`）会在创建资源前拒绝。服务绝不自行 bootstrap baseline：必须先运行离线 migration，并且仅在 canonical 单基线验证通过后启动。`PI_DATA_MODE` 仅为部署分类，不能放宽该要求。
+- **当前面向内网：** 公网部署能力将在后续版本完善。
+- **当前为单实例运行：** 后续计划支持多实例部署。
+- **默认 Pi 工具：** `read`、`ls`、`find`、`grep`。通过环境变量 `TOOLS` 配置完整工具列表。
+- **Pi Session JSONL 暂不自动清理：** 删除项目或会话后，对应的 JSONL 文件仍会保留。
+- **支持本机加密备份：** 备份与恢复工具已经提供，异地容灾仍在规划中。详见[备份与恢复](docs/backup-restore.md)。
+- **首次部署需要初始化数据库：** 先按[运维文档](docs/operations.md)初始化数据库，再启动服务；如果新版本发布说明要求更新数据库结构，也要先按运维文档升级数据库，再启动新版本服务。
 
 ## 特性
 
 - HTTP/JSON API 与 Server-Sent Events。
 - 任务运行期间支持 `steer`、`follow-up` 和 `abort`。
-- 按 IP 隔离项目和会话归属。
+- 按局域网 IP 隔离项目和会话归属。
 - 默认 SQLite；显式选择 PostgreSQL。
-- Pi JSONL 对话历史，以及数据库元数据与请求幂等终态记录。
-- 中央 default-deny 路由 RBAC，角色包括 `viewer`、`user`、`operator`、`admin`。
+- 会话以 Pi JSONL 文件保存，项目、会话与任务状态等信息存入数据库；同一请求重复提交会返回已记录的结果，不重复执行。
+- 基于角色的路由访问控制，默认拒绝：`viewer`、`user`、`operator`、`admin`；允许网段内未单独登记的 IP 默认视为 `user`。
 - 可通过安全策略文件配置绑定精确 IP 的 Bearer token。
 
 ## 快速开始
@@ -53,16 +50,30 @@ pnpm web:mock
 
 打开 <http://127.0.0.1:5173>。Mock 服务使用内存数据库和假 Agent，不需要模型凭证。
 
-### 真实服务
+### 从源码启动真实服务（开发模式）
 
-`PI_ALLOWED_CLIENT_CIDRS` 必填，并按所有路由的直接 socket 对端 IP 匹配，探针也不例外。
+```bash
+pnpm dev:real
+```
+
+`dev:real` 预设了 `DATA_DIR=/tmp/pi-agent-server`、`PI_ALLOWED_CLIENT_CIDRS=127.0.0.0/8,10.0.0.0/8` 以及默认模型与思考级别（见 `package.json`）。`PI_ALLOWED_CLIENT_CIDRS` 必填，并按所有路由的直接 socket 对端 IP 匹配，探针也不例外。
+
+`dev:real` 的数据库在 `/tmp/pi-agent-server`，服务启动只验证、不自动初始化。首次运行前（或清空 `/tmp` 后）初始化一次：
+
+```bash
+pnpm dev:real:init
+```
+
+该命令等价于离线 bootstrap 并回读验证；重复运行会因库非空而拒绝，之后直接运行 `pnpm dev:real` 即可。
+
+默认凭证来源是 `~/.pi/agent/auth.json`。部署时应通过 `PI_AUTH_PATH` 指向服务专用凭证文件；也可以用 `PI_MODEL_PROVIDER` 和 `PI_MODEL_API_KEY` 注入默认 provider 的运行时 API key。
+
+需要自定义配置时，手动设置环境变量再运行 `pnpm dev`：
 
 ```bash
 export PI_ALLOWED_CLIENT_CIDRS=127.0.0.0/8,10.0.0.0/8
 pnpm dev
 ```
-
-默认凭证来源是 `~/.pi/agent/auth.json`。部署时应通过 `PI_AUTH_PATH` 指向服务专用凭证文件；也可以用 `PI_MODEL_PROVIDER` 和 `PI_MODEL_API_KEY` 注入默认 provider 的运行时 API key。
 
 可选模型默认值：
 
@@ -83,7 +94,7 @@ export PI_MIGRATION_GATE=verify
 
 ## API 概览
 
-所有路由都先经过直接对端 IP 准入。`/health`、`/readyz` 对任意 admitted role 免 token；`/metrics` 仅限 `admin`/`operator`，且画像 `tokenRequired=true` 时仍需绑定 IP 的 token。
+所有路由都先检查来源 IP。`/health`、`/readyz` 不需要 token；`/metrics` 用于运维监控，只有 `admin` 和 `operator` 可以访问。如果策略文件要求某个 IP 出示 token，访问 `/metrics` 时也需要带上为该 IP 配置的 token。
 
 | 方法 | 路由 | 用途 |
 | --- | --- | --- |
@@ -119,9 +130,8 @@ export PI_ALLOWED_CLIENT_CIDRS=127.0.0.0/8,10.0.0.0/8
 - `disabled`；
 - `tokenRequired` 与全局唯一的 `sha256:<64位小写hex>` token hash。
 
-允许 CIDR 内未登记的 IP 使用 `role=user` 且关闭 token。Token 不能绕过 CIDR 准入、改变角色或跨 IP 使用。跨 owner 资源统一隐藏为 `404`；`admin` 也没有跨 owner 权限。
+允许 CIDR 内未登记的 IP 使用 `role=user` 且关闭 token。Token 不能绕过 CIDR 准入、改变角色或跨 IP 使用。
 
-旧 `INTRANET_CIDRS`、`TOKENS`、`TRUST_PROXY` 以及已移除的 workspace 配置会导致启动失败。见 [IP-RBAC 设计](docs/ip-rbac-design.md)。
 
 ## 配置
 
@@ -133,19 +143,15 @@ export PI_ALLOWED_CLIENT_CIDRS=127.0.0.0/8,10.0.0.0/8
 | `DB_PATH` | `<DATA_DIR>/pi-agent-server.db` | SQLite 文件 |
 | `PI_STORAGE_DIALECT` | `sqlite` | `sqlite` 或显式 `postgres` |
 | `PI_DATABASE_URL` | 未设置 | PostgreSQL 必填 |
-| `PI_ALLOWED_CLIENT_CIDRS` | **无默认；必填** | canonical 直接对端 CIDR |
-| `PI_IP_ACCESS_POLICY_FILE` | 未设置 | 可选绝对路径 JSON v1 策略 |
+| `PI_ALLOWED_CLIENT_CIDRS` | **无默认；必填** | 允许访问服务的来源 IP 网段，例如 `127.0.0.0/8` |
+| `PI_IP_ACCESS_POLICY_FILE` | 未设置 | 可选策略文件的绝对路径，用于为指定 IP 设置角色、禁用状态和 token 要求 |
 | `PI_AUTH_PATH` | `~/.pi/agent/auth.json` | 非开发环境应使用服务专用文件 |
 | `PI_MODEL_PROVIDER` / `PI_MODEL_API_KEY` | 未设置 | 默认 provider 运行时凭证注入 |
 | `PI_DEFAULT_MODEL` | 未设置 | `provider/modelId` |
 | `PI_DEFAULT_THINKING_LEVEL` | Pi 默认值 | `off` 至 `max` |
-| `TOOLS` | `read,ls,find,grep` | 副作用工具需显式配置并满足 WP5B 部署门禁 |
-| `CORS_ORIGINS` | 空 | 逗号分隔的浏览器 origin |
-| `PI_DATA_MODE` | `managed` | 仅为部署分类；不能放宽必须先离线 migration 并 verify 基线的要求 |
-| `PI_MIGRATION_GATE` | `verify` | 固定只读启动校验；`off` 被拒绝，启动绝不 bootstrap/migrate |
-| `PI_BACKUP_STAGING_ROOT` | 每用户私有应用目录 | 离线 backup/migration 明文 staging |
-
-`PI_DEFAULT_WORKSPACE_ROOT`、`defaultWorkspaceRoot` 和 `workspaceRoots` 已移除；通过 runtime config 显式提供且值为 `undefined` 时也会拒绝。
+| `TOOLS` | `read,ls,find,grep` | 逗号分隔的完整工具列表；设置后替换默认列表，例如 `read,ls,find,grep,bash,edit,write` |
+| `CORS_ORIGINS` | 空 | 允许在浏览器中调用本服务的网页地址；多个地址用逗号分隔，例如 `http://127.0.0.1:5173` |
+| `PI_BACKUP_STAGING_ROOT` | 每用户私有应用目录 | 备份或数据库升级时使用的临时工作目录；通常无需设置 |
 
 ## 持久化与运维
 
@@ -179,7 +185,8 @@ pnpm e2e
 - [架构](docs/architecture.md)
 - [数据库设计](docs/database-design.md)
 - [IP-RBAC 设计](docs/ip-rbac-design.md)
-- [Phase 3 状态台账](docs/phase-3-data-retention-plan.md)
+- [ADR 索引与维护约定](docs/decisions/README.md)
+- [ADR 0002：canonical baseline 与 migration 启动门禁](docs/decisions/0002-canonical-baseline-and-migration-gate.md)
 - [备份与恢复](docs/backup-restore.md)
 - [运维索引](docs/operations.md)
 - [未来公网 IAM 规划](docs/identity-access-plan.md)

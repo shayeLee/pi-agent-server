@@ -74,7 +74,6 @@ function redactMessage(error: unknown): string {
     process.env.PI_DATABASE_URL,
     process.env.PI_AUTH_PATH,
     process.env.PI_MODEL_API_KEY,
-    process.env.TOKENS,
     process.env.PGPASSWORD,
     process.env.PGUSER,
     process.env.PGPASSFILE,

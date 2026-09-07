@@ -1,6 +1,6 @@
 # 单实例本机备份新鲜度契约
 
-> **状态**：部署契约已形成。missing-as-empty 机器报告语义已随 backup/restore 目标语义落地（见 [backup-restore.md](backup-restore.md#2-已落地语义)）。演练 runner 已实现真实一键执行（含临时本地监控栈、告警恢复与完整故障矩阵，见[演练 SOP](backup-freshness-drill-sop.md)）。验收状态见 [Phase 3 状态台账](phase-3-data-retention-plan.md)。
+> 本文是单实例本机备份新鲜度的部署契约。missing-as-empty 机器报告语义见 [backup-restore.md](backup-restore.md#2-已落地语义)；演练 runner 的执行方式与安全边界见[演练 SOP](backup-freshness-drill-sop.md)。是否满足部署要求，以本契约和实际演练证据为准。
 
 ## 1. 范围
 

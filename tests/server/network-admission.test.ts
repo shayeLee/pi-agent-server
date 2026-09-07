@@ -534,17 +534,17 @@ describe("buildApp 准入配置 failfast（必要边界，零副作用）", () =
     } as never;
   }
 
-  it("ipAccess 缺失/伪造/旧字段 → 同步抛错，不创建任何 Fastify 实例/路由（零副作用、无需 close）", () => {
+  it("ipAccess 缺失/伪造/未知字段 → 同步抛错，不创建任何 Fastify 实例/路由（零副作用、无需 close）", () => {
     const good = makeTestIpAccess();
     for (const [name, value] of [
       ["ipAccess 缺失", undefined],
-      ["legacy intranetCidrs", { ...good, intranetCidrs: ["SECRET-INTRA"] }],
-      ["legacy tokens", { ...good, tokens: { "SECRET-TOKEN": "acct" } }],
-      ["legacy trustProxy", { ...good, trustProxy: "SECRET-PROXY" }],
+      ["unknown intranetCidrs", { ...good, intranetCidrs: ["SECRET-INTRA"] }],
+      ["unknown tokens", { ...good, tokens: { "SECRET-TOKEN": "acct" } }],
+      ["unknown trustProxy", { ...good, trustProxy: "SECRET-PROXY" }],
       ["ipAccess 非对象", "bypass"],
       ["ipAccess 空对象", {}],
     ] as const) {
-      expect(() => buildApp(stubDeps(value))).toThrow(/ipAccess|allowedClientCidrs|已废弃/);
+      expect(() => buildApp(stubDeps(value))).toThrow(/ipAccess|allowedClientCidrs/);
     }
   });
 

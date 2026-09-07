@@ -94,8 +94,7 @@ Issue codes（固定、有限）：
 
 ## 5. 相关文档
 
-- [数据保留计划](phase-3-data-retention-plan.md)（WP4C 状态与工作包）
-- [file-operations.md](file-operations.md)（WP4B 安全只读 planner；physical executor 仍未实施）
+- [file-operations.md](file-operations.md)（安全只读 planner；physical executor 仍未实施）
 - [备份与恢复](backup-restore.md)（WP4A backup contract；无 quarantine 载荷）
 - [运维 runbook](operations.md)（离线工具入口）
 - 数据库设计 [database-design.md](database-design.md)（sessions/projects 索引与 outbox 契约）

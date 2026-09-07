@@ -37,15 +37,6 @@ describe("parseIpAccessEnv", () => {
     expect(() => parseIpAccessEnv(fullEnv({ PI_ALLOWED_CLIENT_CIDRS: "10.0.0.0/8,,192.168.0.0/16" }))).toThrow("空白段");
   });
 
-  it("PI_DEFAULT_WORKSPACE_ROOT 已移除：property presence（含 undefined/空串）固定脱敏拒绝", () => {
-    // 当前内网不做 workspace enforcement；已移除配置不能通过任意值绕过启动门禁。
-    for (const value of ["/srv/ws/default", "", undefined]) {
-      expect(() => parseIpAccessEnv(fullEnv({ PI_DEFAULT_WORKSPACE_ROOT: value }))).toThrow(
-        "PI_DEFAULT_WORKSPACE_ROOT 已移除：设置即拒绝启动；当前不做 workspace enforcement",
-      );
-    }
-  });
-
   it("PI_IP_ACCESS_POLICY_FILE 可选；未设置/空白 → undefined；相对路径与 NUL 拒绝", () => {
     expect(parseIpAccessEnv(fullEnv()).policyFile).toBeUndefined();
     expect(parseIpAccessEnv(fullEnv({ PI_IP_ACCESS_POLICY_FILE: "" })).policyFile).toBeUndefined();

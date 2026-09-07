@@ -49,8 +49,8 @@ export type ServerDeps = {
   sessions: SessionStorePort;
   /**
    * WP5D-2 网络准入配置（严格必填，无默认）：app 全局 onRequest admission 唯一数据源。
-   * 运行时做严格 shape 校验（requireIpAccessRuntimeConfig）：缺失/伪造/旧字段（intranetCidrs/
-   * tokens/trustProxy）一律 failfast——直接 JS bypass 同样被拒。
+   * 运行时做严格 shape 校验（requireIpAccessRuntimeConfig）：缺失/伪造/字段非法一律 failfast——
+   * 直接 JS bypass 同样被拒。
    */
   ipAccess: IpAccessResolveInput;
   projects: ProjectStorePort;
@@ -203,8 +203,8 @@ export function safeResSerializer(reply: unknown): { statusCode?: number } {
 }
 
 export function buildApp(deps: ServerDeps): FastifyInstance {
-  // WP5D-2：ipAccess 运行时严格校验（failfast）——缺失/伪造/旧字段（intranetCidrs/tokens/
-  // trustProxy）在任何路由注册之前拒绝，JS/typed bypass 与 startServer 同语义。
+  // WP5D-2：ipAccess 运行时严格校验（failfast）——缺失/伪造/字段非法在任何路由注册之前拒绝，
+  // JS/typed bypass 与 startServer 同语义。
   const ipAccess = requireIpAccessRuntimeConfig(deps.ipAccess);
   const admission = createAdmission(ipAccess);
   const app = Fastify({

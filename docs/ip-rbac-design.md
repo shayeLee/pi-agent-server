@@ -1,16 +1,15 @@
 # IP Access Policy 设计（WP5D）
 
-> 当前 RC 以**直接 TCP 对端 IP**作为身份：`PI_ALLOWED_CLIENT_CIDRS` 显式必填，可选 `PI_IP_ACCESS_POLICY_FILE` 提供 per-IP role/disabled/token 画像；逐路由 RBAC 默认拒绝。IP-RBAC 不是 filesystem sandbox，公网暴露禁止。owner transfer 见 [owner-transfer.md](owner-transfer.md)，未来公网 IAM 见 [identity-access-plan.md](identity-access-plan.md)，工作包状态见 [Phase 3 状态台账](phase-3-data-retention-plan.md)。
+> 当前 RC 以**直接 TCP 对端 IP**作为身份：`PI_ALLOWED_CLIENT_CIDRS` 显式必填，可选 `PI_IP_ACCESS_POLICY_FILE` 提供 per-IP role/disabled/token 画像；逐路由 RBAC 默认拒绝。IP-RBAC 不是 filesystem sandbox，公网暴露禁止。owner transfer 见 [owner-transfer.md](owner-transfer.md)，未来公网 IAM 见 [identity-access-plan.md](identity-access-plan.md)；migration 与部署门禁见 [operations.md](operations.md)。
 
 ## 1. 动机与范围
 
 RC 阶段的接入控制把「哪些客户端 IP 能访问、以什么角色访问、是否需要出示 token」固化为显式、可审计、fail-fast 的
-**策略核心**：直接 TCP 对端 IP → CIDR gate →（可选）精确 IP 策略画像 → 逐路由 RBAC。旧变量 `INTRANET_CIDRS`/
-`TOKENS`/`TRUST_PROXY` 已废弃：设置即拒绝启动，无任何兼容迁移路径（见 §3）。
+**策略核心**：直接 TCP 对端 IP → CIDR gate →（可选）精确 IP 策略画像 → 逐路由 RBAC。
 
 WP5D-1 交付 **core**：CIDR/IP canonical 化与匹配、策略 JSON v1 解析、纯函数决策解析器、token 校验助手、环境变量解析与策略文件安全加载。**不修改**数据库 schema、不引入 owner transfer。
 
-WP5D-2 交付 **HTTP 接线**：startServer/buildApp 强制准入配置（failfast）、全局 onRequest admission（覆盖探针与 `/v1`）、旧变量/旧字段/TRUST_PROXY 拒绝启动、探针与 `/v1` 的 401/403 语义。**不执行** role 授权（WP5D-3）与 workspace 安全（当前 RC 决策：整体延期）。
+WP5D-2 交付 **HTTP 接线**：startServer/buildApp 强制准入配置（failfast）、全局 onRequest admission（覆盖探针与 `/v1`）、探针与 `/v1` 的 401/403 语义。**不执行** role 授权（WP5D-3）与 workspace 安全（当前 RC 决策：整体延期）。
 
 WP5D-3 交付 **role 授权矩阵**：基于 `request.access.role` 的逐路由授权（每路由显式 permission、全局
 default-deny、纯函数决策）、探针/metrics/operator/viewer/user/admin 冻结矩阵（见 §6）、403 固定响应体
@@ -20,17 +19,16 @@ owner 只读、workspace/sandbox 安全（current RC 决策：整体延期）、
 ## 2. 冻结决策（本工作包已定，不得在实现中偏离）
 
 1. **身份以直接 socket IP 为准**：不使用 `X-Forwarded-For` 等代理头推导客户端 IP；一律读
-   `request.raw.socket.remoteAddress`（`request.ip` 受 trustProxy 影响，亦不使用）。双栈 socket 上报的
+   `request.raw.socket.remoteAddress`（`request.ip` 受 Fastify trustProxy 配置影响，亦不使用）。双栈 socket 上报的
    `::ffff:a.b.c.d` **归一为 v4** 再参与后续判定，身份键/ownerKey 一律使用 canonical IP 文本。
-   `TRUST_PROXY` 已被废弃：设置即拒绝启动（不再存在代理透传链路）。
 2. **一个 IP = 一个用户**：策略解析的单位是 canonical IP；IP 是身份键、资源隔离键（`owner_key`）与速率限制主体的基础。
 3. **`PI_ALLOWED_CLIENT_CIDRS` 显式必填，无默认值**：缺失/空白直接拒绝启动。CIDR 外的 IP 一律 deny（默认拒绝模型）。
 4. **CIDR 内未登记（策略文件中无精确条目）的 IP 使用默认画像**：`role=user`、`tokenRequired=false`（token off）。**没有 workspace 概念**：IP-RBAC 不限制 cwd 或 Agent 工具的绝对路径/OS 权限（不是 sandbox；见 §7）。
-5. **可选 `PI_IP_ACCESS_POLICY_FILE`**：其中**精确 IP** 条目可覆盖：`role`（仅 `admin|user|viewer|operator` 四选一）、`disabled`、`tokenRequired`、绑定的 token `sha256` 哈希列表。`workspaceRoots` **已移除**：出现即未知字段 failfast（不留解析但不用）。
+5. **可选 `PI_IP_ACCESS_POLICY_FILE`**：其中**精确 IP** 条目可覆盖：`role`（仅 `admin|user|viewer|operator` 四选一）、`disabled`、`tokenRequired`、绑定的 token `sha256` 哈希列表。
 6. **token 只保存 `sha256:<64 位小写 hex>`**；全文件**全局唯一**（一个 token hash 只能绑定一个精确 IP）；`tokenRequired=true` 的条目**必须有**非空 hash 列表；未启用 `tokenRequired` 的条目**不得**携带任何 hash（off 不得 hash）。token gate **作用于 `/v1` 与 `/metrics`**：`tokenRequired` 画像的**实际请求**（GET/非预检 OPTIONS）必须出示绑定该 IP 的 Bearer token；合规 CORS 预检免 token；`/health`、`/readyz` 存活/就绪探针**永远免 token**（任意 admitted IP/role，不被令牌问题卡死）。
 7. **token 不换绑、不迁移**：token 与精确 IP 的绑定在策略文件中一次性固化；不存在换绑接口；迁移到未来 IAM 账号体系（identity-access-plan 工作包 1）**不**把策略 token 迁走，策略 token 只服务 IP 接入阶段。
 8. **规则异常 failfast**：任何非法/非规范/自相矛盾的配置（含策略条目超出允许 CIDR 的死配置）在加载期抛错，绝不静默降级、绝不部分生效。
-9. **workspaceRoots / `PI_DEFAULT_WORKSPACE_ROOT` 整体移除（当前 RC 用户决策，新 RC 无兼容负担）**：内网不做 workspace 强制；workspace 安全（收窄工具/会话可见根目录、防路径逃逸）**仅公网暴露前需要，延期**到未来 OIDC/IAM + workspace/sandbox 设计。本阶段：策略 JSON 出现 `workspaceRoots` → 未知字段 failfast；env/运行时不存在 `PI_DEFAULT_WORKSPACE_ROOT`/`defaultWorkspaceRoot`，设置即 failfast（含值为 `undefined`）；access profile 无 workspace 字段。当前服务 cwd（`AGENT_CWD` / 项目 cwd）行为保持原状，不被 IP-RBAC 约束。
+9. **工作目录不受 IP-RBAC 约束（当前 RC 决策）**：内网当前不做 workspace 强制；IP-RBAC 不限制 cwd 或 Agent 工具的绝对路径/OS 权限（不是 sandbox）。workspace 安全（收窄工具/会话可见根目录、防路径逃逸）**仅公网暴露前需要**，随未来 OIDC/IAM + workspace/sandbox 设计一起做。当前服务 cwd（`AGENT_CWD` / 项目 cwd）行为保持原状，不被 IP-RBAC 约束。
 
 ## 3. 配置契约
 
@@ -38,14 +36,6 @@ owner 只读、workspace/sandbox 安全（current RC 决策：整体延期）、
 | --- | --- | --- | --- |
 | `PI_ALLOWED_CLIENT_CIDRS` | **是**（无默认） | 逗号分隔的允许客户端 CIDR 列表 | 每个元素必须是**严格 canonical** CIDR（规范网络地址/前缀）；v4 无前导零、v6 小写且 RFC 5952 规范化、主机位为零；IPv4-mapped 形式允许并归一为 v4（前缀 ≥96，映射出的 v4 地址必须是对应前缀的网络地址、主机位为零：`::ffff:1.2.3.0/120` → `1.2.3.0/24`，`::ffff:1.2.3.4/120` 拒绝）；无重复 |
 | `PI_IP_ACCESS_POLICY_FILE` | 否 | 策略文件绝对路径 | 设置时必须为绝对路径；文件加载另有完整安全检查（§8） |
-
-> **已移除（当前 RC 用户决策）**：`PI_DEFAULT_WORKSPACE_ROOT` 不再是环境变量——内网不做 workspace 强制，
-> 设置该变量即拒绝启动（包括属性值为 `undefined`），且错误不回显配置值。workspace 安全延期至公网暴露前，需未来 OIDC/IAM + workspace/sandbox 设计。
-
-> **旧变量注记（已生效）**：WP5D-2 接线完成后，`INTRANET_CIDRS` 与 `TOKENS` **拒绝启动**（failfast 废弃，
-> 进程入口 `main.ts` 对设置任一旧变量即抛错，`startServer` 运行时对配置对象上的旧字段 `intranetCidrs`/
-> `tokens`/`trustProxy` 同样拒绝——JS/typed bypass 也 fail；值一律不回显），不再有「未配置即默认内网」的
-> 隐式语义。`TRUST_PROXY` 同时废弃（身份只信 TCP 对端）。
 
 ### 3.1 策略文件 JSON（version 1）
 
@@ -70,7 +60,7 @@ owner 只读、workspace/sandbox 安全（current RC 决策：整体延期）、
 
 - 顶层仅允许 `version`、`ips`；`version` 必须等于数字 1；`ips` 非空数组。
 - JSON 语法由**受限解析器**完整校验：**任意对象层级不得重复 key**（顶层/条目/tokens 内对象一律拒绝，不用 `JSON.parse` 的“后者覆盖前者”语义）；错误消息不回显文件内容或 key 名（脱敏）。
-- 条目仅允许 `ip/role/disabled/tokenRequired/tokens`；未知字段拒绝（防拼写错误）。**`workspaceRoots` 已移除：出现即按未知字段 failfast，绝不保留解析但不用**（当前 RC 用户决策，见 §2 决策 9）。
+- 条目仅允许 `ip/role/disabled/tokenRequired/tokens`；未知字段拒绝（防拼写错误）。
 - `disabled: true` 与 `role/tokenRequired/tokens` **互斥**（否定性死配置直接拒绝）。
 - `tokenRequired` 与 `tokens` 的组合严格互证（缺一即错）。
 - 精确 IP 不能重复（归一后判重）；token hash 全文件唯一（不换绑的直接体现）。
@@ -88,7 +78,7 @@ owner 只读、workspace/sandbox 安全（current RC 决策：整体延期）、
 策略文件是否有该精确 IP 条目？
    ├─ 有且 disabled → deny 403 (disabled)
    ├─ 有 → allowed：role=条目.role、tokenRequired=条目.tokenRequired、
-   │        tokenHashes=条目.tokens（**无 workspace 字段**）
+   │        tokenHashes=条目.tokens
    │        ├─ /v1 或 /metrics 且 tokenRequired：合规 CORS 预检（OPTIONS + Origin +
    │        │   Access-Control-Request-Method）免 token，随后交 CORS origin policy
    │        ├─ 其他 /v1 或 /metrics 实际请求（GET）与非预检 OPTIONS：缺失/错误 Bearer → deny 401 (token-required)
@@ -112,7 +102,7 @@ hashes**）注入 `request`；401/403 响应体不含原始 IP/token/path。prof
 - token off 的请求可不带 token（出示的 Bearer 一律忽略）；token required 时实际请求与非预检 OPTIONS 缺省/错误 token 一律 401。
   **token gate 作用于 `/v1` 与 `/metrics`**：合规 CORS 预检（`OPTIONS` + `Origin` + `Access-Control-Request-Method`）免 token，随后仍交 CORS origin policy；`/health`、`/readyz` 存活/就绪探针仅 IP gate（tokenRequired 画像的 IP
   访问这两个探针也无需出示 token）——探针可被监控正常消费，且不因未登记/令牌问题误报进程状态；`/metrics` 是 admin/operator 运维面，其画像 tokenRequired 时实际 GET 仍须出示 token（预检例外同上）。
-- **日志红线**：token 明文与哈希均不得记录；对外日志只允许 `publicProfile`（ip/role/tokenRequired/registered，无哈希、**无任何 workspace 字段**），且接线层日志只带 `subjectHash`（IP 派生哈希），**不记录原始 IP**；`request.access` 与 `request.user` 是唯一注入点，token hashes 从不挂到 request 上。
+- **日志红线**：token 明文与哈希均不得记录；对外日志只允许 `publicProfile`（ip/role/tokenRequired/registered，无哈希），且接线层日志只带 `subjectHash`（IP 派生哈希），**不记录原始 IP**；`request.access` 与 `request.user` 是唯一注入点，token hashes 从不挂到 request 上。
 - 配合既有 §5 日志约定：涉及主体聚合的日志字段继续使用 `subjectHash`（IP 的派生哈希），不记录原始 IP 或 token。
 
 ## 6. 角色矩阵（WP5D-3 已实现并强制）
@@ -143,7 +133,7 @@ hashes**）注入 `request`；401/403 响应体不含原始 IP/token/path。prof
 - **user/admin**：允许既有 own-resource 路由行为；资源访问仍 **owner 隔离**（列表/子资源访问他人
   资源统一 404）。**admin 跨 owner 只读未实现（WP5D 明确不做）**：admin 与其他角色一样只能访问
   自己的会话/项目。
-- **workspace 安全已延期（当前 RC 用户决策）**：`workspaceRoots` 已从策略/配置/access profile 中整体移除，不存在「选定未实现」的中间态——内网不做 workspace 强制，workspace 安全仅公网暴露前需要。
+- **workspace 安全已延期（当前 RC 用户决策）**：内网不做 workspace 强制，workspace 安全仅公网暴露前需要。
 - role 是 per-IP 画像的一部分（一个 IP = 一个用户），不因出示 token 而改变（token 只满足
 tokenRequired，不换角色）；未登记 IP 默认 `user`。
 
@@ -171,9 +161,9 @@ tokenRequired，不换角色）；未登记 IP 默认 `user`。
   的任意 cwd 创建项目接口，见 needs.md §7）；workspace/sandbox 安全设计（收窄工具/会话可见根、防路径
   逃逸）随未来 OIDC/IAM 工作包一起做。
 - **owner transfer 仅 DB 层面，且只存在 IP→IP 形态**：`owner-transfer` 离线 CLI（WP5D-4，见 [owner-transfer.md](owner-transfer.md)）在数据库层变更 owner 映射（把一个 IP 身份资源归属转到另一个 IP 身份，仅更新 projects.owner_key / sessions.owner_key）；**不迁移**政策文件的 IP 条目与 token 绑定、不迁移角色——接收方继承自己的 IP 画像，与资源原 owner 的画像无关。
-- **无 legacy 账号/token 迁移（RC 决策）**：新 RC **不存在** legacy 账号/token 的 owner 迁移——正式旧公网 token 数据从未存在，因此不实现任何「旧 token/旧账号 → 新主体」迁移代码，也不存在 owner transfer 的账号维度。早期开发数据按 RC 语义**删库重建**（legacy 无 ledger 库被 bootstrap/迁移引擎拒绝后手动重置，或直接删库后用 `pnpm migrate -- --bootstrap-baseline --bootstrap-confirm CONFIRMED` 重建唯一 canonical baseline），绝不在位转换（详见 [database-design.md](database-design.md) §7 与 [identity-access-plan.md](identity-access-plan.md) WP5D 注记）。
+- **无 legacy 账号/token 迁移（RC 决策）**：新 RC **不存在** legacy 账号/token 的 owner 迁移——正式旧公网 token 数据从未存在，因此不实现任何「旧 token/旧账号 → 新主体」迁移代码，也不存在 owner transfer 的账号维度。旧库或无 canonical baseline 的库不做在位转换；只有完全空目标可以按 [ADR 0002](decisions/0002-canonical-baseline-and-migration-gate.md) 离线 bootstrap，绝不把已有数据自动采用为 baseline。
 - **不做**：token 签发/轮换/撤销接口（无签发端点）、OIDC/账号体系（见 identity-access-plan 工作包 1–2）、基于 header 的客户端 IP 推导、审计落库（WP5D-2 接线时按 needs.md §7 要求补齐鉴权审计埋点）。
-- **只支持单实例**：每个 logical DB/schema + `DATA_DIR` 同时只允许一个 pi-agent-server；多实例共享同一存储不受支持。未来如启动多实例改造，策略分发一致性、共享 JSONL、分布式协调与 WP5B 必须一起重新设计。
+- **当前为单实例**：未来多实例改造需要统一设计策略分发、共享 JSONL 和分布式协调，架构边界见 [architecture.md](architecture.md)。
 
 ## 8. 策略文件加载安全（`readIpAccessPolicyFile`）
 
@@ -191,17 +181,14 @@ tokenRequired，不换角色）；未登记 IP 默认 `user`。
 
 接线已改变 HTTP 行为，本文上述语义在运行的服务上**生效**：
 
-- **启动路径**：`main.ts` 调 `rejectLegacyStartEnv(process.env)`（`INTRANET_CIDRS`/`TOKENS`/`TRUST_PROXY`
-  任一设置即拒绝启动，值不回显；其中 `PI_DEFAULT_WORKSPACE_ROOT` 也按 property presence 拒绝）→ `parseIpAccessEnv(process.env)`（`PI_ALLOWED_CLIENT_CIDRS` 显式必填，
-  已移除的 workspace 配置不会被读取）→ `loadIpAccessPolicy`（可选策略文件安全加载）→ 组装
-  `ipAccess` 注入 `startServer`；**缺失/非法配置拒绝启动**。`startServer` 与 `buildApp` 入口都执行
-  `requireIpAccessRuntimeConfig` 运行时严格 shape 校验（含旧字段拒绝与策略覆盖复核），直接 JS bypass 也 fail。
+- **启动路径**：`main.ts` 调 `parseIpAccessEnv(process.env)`（`PI_ALLOWED_CLIENT_CIDRS` 显式必填）→
+  `loadIpAccessPolicy`（可选策略文件安全加载）→ 组装 `ipAccess` 注入 `startServer`；
+  **缺失/非法配置拒绝启动**。`startServer` 与 `buildApp` 入口都执行
+  `requireIpAccessRuntimeConfig` 运行时严格 shape 校验（含策略覆盖复核），直接 JS bypass 也 fail。
 - **请求路径**：`buildApp` 注册**全局** `onRequest` admission（`createAdmission`），覆盖探针与 `/v1`：
   读 `request.raw.socket.remoteAddress` → CIDR/disabled gate（denied → 403）→（`/v1` 或 `/metrics` 且 tokenRequired，且非合规 CORS 预检）
   `verifyProfileToken`（缺失/错误 → 401）；allowed 注入 `request.user`（canonical IP 身份）与
   `request.access`（public profile，无 hashes），`subjectHash` 只进日志。unknown socket IP → failclosed 403。
-- **废弃 `INTRANET_CIDRS` / `TOKENS` / `TRUST_PROXY`**：env 与 StartConfig 两处都拒绝；RC 兼容逻辑
-  （`server/real-auth.ts`、`server/trust-proxy-policy.ts`）已删除。
 - HTTP 状态码：CIDR 外/disabled/不可解析 → `403`（body 不含原始 IP/token/path）；`/v1` 与 `/metrics`
   tokenRequired 缺失/错误 → `401`（沿用「缺少或无效的 Bearer Token」），token off 忽略 Bearer；
   `/health`、`/readyz` 仅 IP gate（任意 admitted role，免 token）。

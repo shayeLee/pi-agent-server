@@ -8,24 +8,21 @@ A long-running, session-oriented HTTP/SSE server around the Pi Agent runtime. It
 
 ## Current boundaries
 
-- **Single instance only:** one pi-agent-server process per logical SQLite database or PostgreSQL schema and its associated `DATA_DIR`. Shared-storage replicas and overlapping rolling upgrades are unsupported.
-- **Intranet only:** caller identity is the canonical direct TCP peer IP. Every route is gated by mandatory `PI_ALLOWED_CLIENT_CIDRS`; forwarded-IP headers are never trusted. Public exposure is prohibited until future OIDC/IAM and workspace/sandbox work is complete.
-- **Not a sandbox:** IP-RBAC does not restrict project `cwd`, absolute tool paths, or OS permissions. The default tool allowlist is read-only. WP5B durable idempotency/shutdown hardening must be completed before enabling `bash`/`edit`/`write`, multiple instances, or public access; no runtime guard currently enforces that policy.
-- **Logical deletion only:** deleting projects or sessions removes database-visible resources and records JSONL cleanup in `file_operations`. No worker drains the outbox and no physical JSONL unlink occurs.
-- **Local encrypted backups:** offline SQLite/PostgreSQL backup and restore tooling uses age encryption and a local `BACKUP_ROOT`. It does not cover simultaneous host/disk and backup loss. The age identity/private key is managed by operations and supplied only during restore.
-- **Isolated backup-freshness drill runner:** `pi-agent-server-drill` (`preflight` / `cleanup` / `run`) is a real one-shot drill executor. It requires an absolute `PI_DRILL_ROOT` (exact 0700, current-user, non-symlink, no special bits), fixed-preserves `$PI_DRILL_ROOT/secrets/` (drill-only age identity/recipient, exact 0600, non-link, no hardlink/special bits), rejects any overlap with formal data/backup/staging/auth paths (resolved from the service defaults plus explicit `PI_FORMAL_BACKUP_ROOT`/`PI_FORMAL_BACKUP_RECIPIENT`/`PI_FORMAL_BACKUP_IDENTITY` for backup root/recipient/identity), only touches Podman resources named with the `pi-agent-server-disaster-recovery-drill-` prefix, and never touches formal data/backup/staging/auth/PG/receiver. `run` executes the drill inside the isolated root: it seeds synthetic SQLite + PostgreSQL fixtures (each with one valid JSONL and one missing reference), bootstraps a unique canonical baseline, runs the real compiled backup/restore/migrate CLIs, and verifies the restore (canonical ledger, valid history, missing→NULL). It starts an ephemeral local node_exporter/Prometheus/Alertmanager/test-webhook stack, exercises the complete fail-closed and alert firing/recovery matrix, reports a real `PASS`/`FAIL`/`DEFERRED` (`DEFERRED` only when podman/age/pg tools are missing), and never self-certifies via an environment variable. Run-owned Podman resources are verified removed afterward; sanitized evidence remains until explicit `cleanup`. See the [drill SOP](docs/backup-freshness-drill-sop.md).
-- **Recovery policy:** RPO target is 24 hours; backup retention is 30 days with manual cleanup. RTO target is 4 hours, but signoff is deferred until the service is in use and has a representative data scale.
-- **Backup/runtime compatibility (Phase 3):** SQLite/PostgreSQL backup (including `--dry-run`) requires the exact canonical single-baseline source ledger before encryption, publication, success reporting, or freshness advancement; missing/legacy multi-row/checksum-mismatched ledgers fail closed. A DB reference to a missing JSONL remains missing-as-empty and may publish once that DB gate passes; JSONL is opaque during backup. Restore degrades a present-but-invalid history to empty (reference set to NULL, reported) while package-level age/hash/manifest integrity still fails the whole restore. Runtime and restore accept only current Pi JSONL v3; v1/v2 histories are never SDK-migrated (`migrateSessionEntries` is not used) and are fail-fast at runtime / invalid-as-empty during restore. Legacy backup packages remain **not recoverable**.
-- **Migration startup gate:** `PI_MIGRATION_GATE` is fixed to read-only `verify`; `off` (including `PI_DATA_MODE=rc`) is rejected before resources are created. The service never bootstraps a baseline: run the offline migration, then start only after it verifies the canonical single baseline. `PI_DATA_MODE` remains a deployment classification and cannot relax this requirement.
+- **Intranet-focused today:** support for public deployment is planned for a future release.
+- **Single instance today:** multi-instance deployment is planned for a future release.
+- **Default Pi tools:** `read`, `ls`, `find`, and `grep`. Configure the complete tool list through the `TOOLS` environment variable.
+- **Pi Session JSONL files are not cleaned up automatically yet:** deleting a project or session leaves the corresponding JSONL files in place.
+- **Local encrypted backups are available:** backup and restore tooling is included; off-site disaster recovery is still planned. See [Backup and restore](docs/backup-restore.md).
+- **Initialize the database on first deployment:** follow [Operations](docs/operations.md) before starting the service. If the release notes require a database schema update, follow [Operations](docs/operations.md) to upgrade the database before starting the new service version.
 
 ## Highlights
 
 - HTTP/JSON API plus Server-Sent Events.
 - `steer`, `follow-up`, and `abort` controls while a task is running.
-- Per-IP ownership isolation for projects and sessions.
+- Project and session ownership isolation by LAN IP.
 - SQLite by default; explicit PostgreSQL opt-in.
-- Pi JSONL conversation history plus database metadata and terminal request-idempotency records.
-- Central default-deny route RBAC with `viewer`, `user`, `operator`, and `admin` roles.
+- Conversations are saved as Pi JSONL files, with project, session, and task state kept in the database; repeated requests return the already-recorded result instead of running again.
+- Role-based route access control that denies by default: `viewer`, `user`, `operator`, and `admin`. IPs in the allowed range without an explicit profile default to `user`.
 - Optional exact-IP-bound Bearer tokens through a secure policy file.
 
 ## Quick start
@@ -53,16 +50,30 @@ pnpm web:mock
 
 Open <http://127.0.0.1:5173>. The mock server uses an in-memory database and a fake agent; no model credentials are required.
 
-### Real server
+### Real server from source (development mode)
 
-`PI_ALLOWED_CLIENT_CIDRS` is mandatory. It is matched against the direct socket peer IP for every route, including probes.
+```bash
+pnpm dev:real
+```
+
+`dev:real` presets `DATA_DIR=/tmp/pi-agent-server`, `PI_ALLOWED_CLIENT_CIDRS=127.0.0.0/8,10.0.0.0/8`, and a default model and thinking level (see `package.json`). `PI_ALLOWED_CLIENT_CIDRS` is mandatory and matched against the direct socket peer IP for every route, including probes.
+
+`dev:real` keeps its database under `/tmp/pi-agent-server`; the server verifies but never initializes it. Initialize once before the first run (or after clearing `/tmp`):
+
+```bash
+pnpm dev:real:init
+```
+
+This runs the offline bootstrap and verifies it back; re-running it is rejected once the database is non-empty. After that, just run `pnpm dev:real`.
+
+The default credential source is `~/.pi/agent/auth.json`. For a deployment, point `PI_AUTH_PATH` at a dedicated service credential file. A runtime default API key may instead be injected with `PI_MODEL_PROVIDER` and `PI_MODEL_API_KEY`.
+
+For a custom setup, set the variables and run `pnpm dev`:
 
 ```bash
 export PI_ALLOWED_CLIENT_CIDRS=127.0.0.0/8,10.0.0.0/8
 pnpm dev
 ```
-
-The default credential source is `~/.pi/agent/auth.json`. For a deployment, point `PI_AUTH_PATH` at a dedicated service credential file. A runtime default API key may instead be injected with `PI_MODEL_PROVIDER` and `PI_MODEL_API_KEY`.
 
 Optional model defaults:
 
@@ -83,7 +94,7 @@ Start the optional standalone Web UI with `pnpm web`.
 
 ## API overview
 
-All routes first pass direct-peer-IP admission. `/health` and `/readyz` are token-free for any admitted role. `/metrics` is restricted to `admin`/`operator` and still requires the IP-bound token when that profile has `tokenRequired=true`.
+All routes first check the source IP. `/health` and `/readyz` do not require a token. `/metrics` is for operational monitoring and is available only to `admin` and `operator`. If the policy file requires a token for an IP, requests to `/metrics` from that IP must also provide its configured token.
 
 | Method | Route | Purpose |
 | --- | --- | --- |
@@ -119,9 +130,8 @@ An optional absolute `PI_IP_ACCESS_POLICY_FILE` may define exact-IP profiles wit
 - `disabled`;
 - `tokenRequired` and globally unique `sha256:<64-lowercase-hex>` token hashes.
 
-An unregistered IP inside an allowed CIDR receives `role=user` with token disabled. Tokens cannot bypass CIDR admission, change role, or move between IPs. Cross-owner resources remain hidden with `404`; `admin` does not have cross-owner access.
+An unregistered IP inside an allowed CIDR receives `role=user` with token disabled. Tokens cannot bypass CIDR admission, change role, or move between IPs.
 
-Legacy `INTRANET_CIDRS`, `TOKENS`, and `TRUST_PROXY`, plus removed workspace settings, cause startup to fail. See [IP-RBAC design](docs/ip-rbac-design.md).
 
 ## Configuration
 
@@ -133,19 +143,15 @@ Legacy `INTRANET_CIDRS`, `TOKENS`, and `TRUST_PROXY`, plus removed workspace set
 | `DB_PATH` | `<DATA_DIR>/pi-agent-server.db` | SQLite file |
 | `PI_STORAGE_DIALECT` | `sqlite` | `sqlite` or explicit `postgres` |
 | `PI_DATABASE_URL` | unset | Required with PostgreSQL |
-| `PI_ALLOWED_CLIENT_CIDRS` | **none; required** | Canonical direct-peer CIDRs |
-| `PI_IP_ACCESS_POLICY_FILE` | unset | Optional absolute JSON v1 policy path |
+| `PI_ALLOWED_CLIENT_CIDRS` | **none; required** | Source IP ranges allowed to access the service, for example `127.0.0.0/8` |
+| `PI_IP_ACCESS_POLICY_FILE` | unset | Absolute path to an optional policy file that sets roles, disabled status, and token requirements for specific IPs |
 | `PI_AUTH_PATH` | `~/.pi/agent/auth.json` | Use a dedicated service file outside development |
 | `PI_MODEL_PROVIDER` / `PI_MODEL_API_KEY` | unset | Runtime default-provider credential injection |
 | `PI_DEFAULT_MODEL` | unset | `provider/modelId` |
 | `PI_DEFAULT_THINKING_LEVEL` | Pi default | `off` through `max` |
-| `TOOLS` | `read,ls,find,grep` | Side-effect tools require explicit configuration and the WP5B deployment gate |
-| `CORS_ORIGINS` | empty | Comma-separated browser origins |
-| `PI_DATA_MODE` | `managed` | Deployment classification only; it cannot relax the required offline-migrated/verified baseline |
-| `PI_MIGRATION_GATE` | `verify` | Fixed read-only startup verification; `off` is rejected and startup never bootstraps/migrates |
-| `PI_BACKUP_STAGING_ROOT` | per-user private application directory | Offline backup/migration plaintext staging |
-
-`PI_DEFAULT_WORKSPACE_ROOT`, `defaultWorkspaceRoot`, and `workspaceRoots` were removed and are rejected even when explicitly present with `undefined` through runtime configuration.
+| `TOOLS` | `read,ls,find,grep` | Complete comma-separated tool list; replaces the defaults when set, for example `read,ls,find,grep,bash,edit,write` |
+| `CORS_ORIGINS` | empty | Web page addresses allowed to call this service from a browser; separate multiple addresses with commas, for example `http://127.0.0.1:5173` |
+| `PI_BACKUP_STAGING_ROOT` | per-user private application directory | Temporary working directory for backups or database upgrades; usually does not need to be set |
 
 ## Persistence and operations
 
@@ -179,7 +185,8 @@ Start with the [documentation index](docs/README.md). Key references:
 - [Architecture](docs/architecture.md)
 - [Database design](docs/database-design.md)
 - [IP-RBAC design](docs/ip-rbac-design.md)
-- [Phase 3 status ledger](docs/phase-3-data-retention-plan.md)
+- [ADR index and maintenance rules](docs/decisions/README.md)
+- [ADR 0002: canonical baseline and migration gate](docs/decisions/0002-canonical-baseline-and-migration-gate.md)
 - [Backup and restore](docs/backup-restore.md)
 - [Operations index](docs/operations.md)
 - [Future public IAM plan](docs/identity-access-plan.md)

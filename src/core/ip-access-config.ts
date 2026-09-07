@@ -4,10 +4,6 @@
 // - PI_ALLOWED_CLIENT_CIDRS：显式必填（无默认），逗号分隔的严格 canonical CIDR，
 //   不得重复；缺失/空白/非法/非规范一律抛错（failfast）。
 // - PI_IP_ACCESS_POLICY_FILE：可选；设置时必须为绝对路径。
-// - PI_DEFAULT_WORKSPACE_ROOT 已移除（用户 2026-02 决策：内网不做 workspace 强制；
-//   workspace 安全延期至公网暴露前，需未来 OIDC/IAM + workspace/sandbox 设计）。
-// - 旧 INTRANET_CIDRS / TOKENS / TRUST_PROXY：WP5D-2 接线后由 main 的 rejectLegacyStartEnv
-//   与 startServer/buildApp 的 requireIpAccessRuntimeConfig 拒绝（本模块不读取它们）。
 
 import { isAbsolute } from "node:path";
 import { parseCidrStrict, type ParsedCidr } from "./cidr.js";
@@ -26,12 +22,6 @@ export type IpAccessEnvConfig = {
  * 错误消息不回显配置值（与既有启动门禁风格一致）。
  */
 export function parseIpAccessEnv(env: Readonly<Record<string, string | undefined>>): IpAccessEnvConfig {
-  // PI_DEFAULT_WORKSPACE_ROOT 已移除：按 property presence 拒绝，不能用值判断，
-  // 这样 `{ PI_DEFAULT_WORKSPACE_ROOT: undefined }` 也不会绕过启动门禁。
-  if (Object.hasOwn(env, "PI_DEFAULT_WORKSPACE_ROOT")) {
-    throw new Error("PI_DEFAULT_WORKSPACE_ROOT 已移除：设置即拒绝启动；当前不做 workspace enforcement");
-  }
-
   // PI_ALLOWED_CLIENT_CIDRS：显式必填、无默认
   const cidrsValue = env.PI_ALLOWED_CLIENT_CIDRS?.trim();
   if (!cidrsValue) {

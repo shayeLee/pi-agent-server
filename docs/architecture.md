@@ -29,9 +29,7 @@
 > runtime 返回稳定 204）、user/admin 维持 own-resource 行为（仍 owner 隔离，admin 暂不跨
 > owner）；每路由显式 permission、未声明即 default-deny 403。IP-RBAC 不限制 cwd 或 Agent 工具的
 > 绝对路径/OS 权限（不是 sandbox；workspace 安全 当前 RC 决策整体延期）。
-> WP5B 是正式启用副作用工具、多个服务实例或公网部署前的条件性部署门禁：当前代码不提供因 `TOOLS` 配置而拒绝
-> 启动的 runtime fail-fast；WP5B 当前行为仅为进程内 in-flight 去重与持久化终态读取，终态落库前崩溃仍可能导致
-> 相同 `requestId` 重执行，不承诺 exactly-once 或 durable at-most-once。admin cross-owner read 未实现（仍 owner 隔离）。
+> 当前请求幂等包含进程内 in-flight 去重与持久化终态读取；admin cross-owner read 未实现（仍 owner 隔离）。
 > **WP5D-4 owner transfer** 为 DB 层 IP→IP 离线 CLI（仅更新 projects/sessions 的 owner_key，不迁移策略 IP 条目/
 > token/角色），见 [owner-transfer.md](owner-transfer.md)。
 > ④⑤⑥⑦⑧ 的编排集中在 [`src/runtime/session-runtime.ts`](../src/runtime/session-runtime.ts)（`submitMessage` → `doSubmit` → `runStreamingTask` → `settle`）。
@@ -61,9 +59,9 @@ HTTP 路由在 `app.ts`，应用逻辑在 `session-service.ts`，编排在 `sess
 - **会话 JSONL** — `src/server/start.ts` 的 `createAdapter`：只记录 `piSessionFile` 路径，不直接读写文件；同会话由状态机串行保证单文件无并发写。
 - **数据库（SQLite）** — 读代码顺序：
   1. `src/server/start.ts` 创建 `DatabaseSync`（`timeout: 5000` + `enableForeignKeyConstraints: true`），初始化后 `ensureDefaultProject`（默认项目落库，`owner_key=''` 共享）
-  2. `src/storage/bootstrap.ts`：文件库启用 WAL（`:memory:` 跳过）+ Kysely schema builder 幂等 bootstrap（全部 `IF NOT EXISTS`，只面向新库/已是当前 schema 的库）；启动 migration 门禁默认 `verify`（`PI_DATA_MODE=managed` 强制 `verify`，只有显式 disposable `rc` 才允许 `off`），`verify` 只读校验 migration ledger/head 且绝不自动迁移
+  2. `src/storage/bootstrap.ts`：文件库启用 WAL（`:memory:` 跳过）+ Kysely schema builder 幂等 bootstrap（全部 `IF NOT EXISTS`，只面向新库/已是当前 schema 的库）；启动 migration 门禁默认 `verify`（所有 data mode 都必须 `verify`，`off` 一律拒绝），`verify` 只读校验 migration ledger/head 且绝不自动迁移
   3. 三个 Repository（`kysely-session-repository.ts` / `kysely-project-repository.ts` / `kysely-idempotency-repository.ts`）仅 CRUD；项目删除由 Kysely `transaction` 与 FK `ON DELETE CASCADE` 兜底（`sessions.project_id → projects.id`）
-  - **本质**：`DatabaseSync` 同步 API + 单线程事件循环 → 进程内天然串行（一个 `db.run()` 返回前事件循环不切走）；并发风险只在多实例。**一个逻辑 SQLite 库 / PG schema 及其关联 DATA_DIR 只支持一个 pi-agent-server 实例**——多实例共享同一 DB/schema+DATA_DIR 不受支持（WAL 单写者 + busy timeout 仅兑底）。
+  - **本质**：`DatabaseSync` 同步 API + 单线程事件循环 → 进程内天然串行（一个 `db.run()` 返回前事件循环不切走）；并发风险只在多实例。**一个逻辑 SQLite 库 / PG schema 及其关联 DATA_DIR 只支持一个 pi-agent-server 实例**——多实例共享同一 DB/schema+DATA_DIR 不受支持（WAL 单写者 + busy timeout 仅兜底）。后续多实例部署需要共享存储一致性与分布式协调改造。
 
 ## 二、目录职责
 

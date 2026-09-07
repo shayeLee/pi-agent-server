@@ -84,10 +84,7 @@ export type StartConfig = {
   /**
    * WP5D-2 网络准入配置（严格必填，无默认）：allowedClientCidrs + 可选 policy。
    * 进程入口由 main 经 parseIpAccessEnv + loadIpAccessPolicy 解析；此处（含 buildApp）做运行时
-   * 严格 shape 校验——缺失/伪造/旧字段（intranetCidrs/tokens/trustProxy）一律在任何资源创建前
-   * failfast（JS/typed bypass 同样拒绝）。已移除的顶层 `defaultWorkspaceRoot` / `workspaceRoots`
-   * （包括显式 `undefined`）同样在任何资源创建前拒绝。PI_DEFAULT_WORKSPACE_ROOT 已整体移除（2026-02 用户
-   * 决策：内网不做 workspace 强制；workspace 安全延期至公网暴露前）。
+   * 严格 shape 校验——缺失/伪造/字段非法一律在任何资源创建前 failfast（JS/typed bypass 同样拒绝）。
    */
   ipAccess: IpAccessResolveInput;
   /**
@@ -137,27 +134,6 @@ export type StartConfig = {
 };
 
 const THINKING_LEVELS = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
-
-/**
- * 旧启动变量拒绝（main 入口调用；值不回显）：WP5D-2 接线完成后，设置任一旧变量即拒绝启动，
- * 不再有「未配置即默认内网」的隐式语义。TRUST_PROXY 一并废弃：身份一律取直接 socket IP。
- * startServer 同样拒绝已移除的顶层 `defaultWorkspaceRoot` / `workspaceRoots`，按 property presence
- * 判定（显式 `undefined` 也拒绝），且错误消息固定脱敏。
- */
-export function rejectLegacyStartEnv(env: Readonly<Record<string, string | undefined>>): void {
-  for (const name of ["INTRANET_CIDRS", "TOKENS", "TRUST_PROXY"] as const) {
-    // Check property presence rather than value: explicitly supplied undefined is still a
-    // removed/legacy setting and must not bypass the startup gate.
-    if (Object.hasOwn(env, name)) {
-      throw new Error(
-        `${name} 已废弃（WP5D-2 网络准入）：设置即拒绝启动；请改用 PI_ALLOWED_CLIENT_CIDRS（可选 PI_IP_ACCESS_POLICY_FILE）`,
-      );
-    }
-  }
-  if (Object.hasOwn(env, "PI_DEFAULT_WORKSPACE_ROOT")) {
-    throw new Error("PI_DEFAULT_WORKSPACE_ROOT 已移除：设置即拒绝启动；当前不做 workspace enforcement");
-  }
-}
 
 /** 严格生产 migration 门禁失败时的统一 fail-fast 语义：绝不自动迁移，明确指引离线 migrate。 */
 function startupMigrationGateError(error: unknown): Error {
@@ -503,31 +479,9 @@ export function resolveStorageConfig(
   return resolveSharedStorageConfig(config, defaultDbPath);
 }
 
-function rejectLegacyStartConfig(config: unknown): void {
-  if (typeof config !== "object" || config === null) {
-    throw new Error("startServer 配置缺失或非法（值不回显）");
-  }
-  // Check property presence, not truthiness: even an explicitly supplied undefined is a
-  // legacy/removed bypass. Keep one fixed message so no config value can leak.
-  for (const legacy of [
-    "intranetCidrs",
-    "tokens",
-    "trustProxy",
-    "defaultWorkspaceRoot",
-    "workspaceRoots",
-  ] as const) {
-    if (legacy in config) {
-      throw new Error("StartConfig 包含已废弃的 legacy 网络字段（设置即拒绝启动；值不回显）");
-    }
-  }
-}
-
 export async function startServer(config: StartConfig) {
-  // This must remain the first operation: reject legacy top-level properties before reading
-  // ipAccess or creating any runtime, storage, filesystem, or network resource.
-  rejectLegacyStartConfig(config);
   // WP5D-2：网络准入配置在任何资源创建/网络访问之前严格校验（failfast）。
-  // 缺失/非法/伪造即拒绝；旧字段检查已在上方按 property presence 完成，错误消息不回显值。
+  // 缺失/非法/伪造即拒绝（JS/typed bypass 同样 fail），错误消息不回显值。
   const ipAccess = requireIpAccessRuntimeConfig(config.ipAccess);
   // 只接受精确 "verify"（undefined/null 归一化为 "verify"）；任何 off/未知值
   // （含大小写/空白变体）一律拒绝启动，且不回显原始值。

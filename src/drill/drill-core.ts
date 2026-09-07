@@ -466,7 +466,6 @@ export function collectRedactables(env: DrillEnv, extra: readonly string[] = [])
     "PI_DRILL_ROOT",
     "PI_DRILL_TEXTFILE_DIR",
     "PI_DRILL_MONITORING_CONFIG",
-    "TOKENS",
     "PGPASSWORD",
     "PGUSER",
     "PGPASSFILE",

@@ -1,6 +1,6 @@
 # WP4B 离线 file_operations planner：设计与运维 runbook
 
-> **状态：WP4B（方案 A）当前范围仅限安全只读 planner。** 当前交付物只列出/统计持久 `file_operations` outbox 的操作与安全错误/状态计数，**不执行任何文件操作**。`--apply` 立即 fail-closed，无任何确认词可绕过。物理 executor（包括 unlink）、retry/quarantine 仍未实现，真正执行留给未来受审计的 native helper（单独、尚未启动的事项）。**WP4C 为 DB-only reconcile analyzer**（见 [reconcile-jsonl.md](reconcile-jsonl.md)）：只读 DB 引用分析，绝不扫描文件系统、不读取 JSONL。WP5B 是正式启用副作用工具、多个服务实例或公网部署前的条件性部署门禁（当前代码不提供因 `TOOLS` 配置而拒绝启动的 runtime fail-fast）。该离线工具不启动正式服务或 worker，整体尚非生产就绪。约束（发布产物卫生：build 先清理输出 + 禁止残留 executor/file-system-policy/error-codes 文件与符号链接检查；last_error 固定 allowlist 错误策略（仓库/planner/restore 三处一致）；未知 CLI 参数不回显原始 argv）均属于当前代码契约。
+> **状态：WP4B（方案 A）当前范围仅限安全只读 planner。** 当前交付物只列出/统计持久 `file_operations` outbox 的操作与安全错误/状态计数，**不执行任何文件操作**。`--apply` 立即 fail-closed，无任何确认词可绕过。物理 executor（包括 unlink）、retry/quarantine 仍未实现，真正执行留给未来受审计的 native helper（单独、尚未启动的事项）。**WP4C 为 DB-only reconcile analyzer**（见 [reconcile-jsonl.md](reconcile-jsonl.md)）：只读 DB 引用分析，绝不扫描文件系统、不读取 JSONL。该离线工具不启动正式服务或 worker，整体尚非生产就绪。约束（发布产物卫生：build 先清理输出 + 禁止残留 executor/file-system-policy/error-codes 文件与符号链接检查；last_error 固定 allowlist 错误策略（仓库/planner/restore 三处一致）；未知 CLI 参数不回显原始 argv）均属于当前代码契约。
 
 ## 1. 职责与边界
 
@@ -77,7 +77,6 @@ pnpm file-ops -- run
 ## 5. 相关文档
 
 - WP4C 方案 A 收敛（DB-only reconcile analyzer）：[reconcile-jsonl.md](reconcile-jsonl.md)
-- [数据保留计划](phase-3-data-retention-plan.md)（WP4B 状态与工作包）
-- [备份与恢复](backup-restore.md)（WP4A backup contract；无 quarantine 载荷）
+- [备份与恢复](backup-restore.md)（backup contract；无 quarantine 载荷）
 - [运维 runbook](operations.md)（离线工具入口）
 - 数据库设计 [database-design.md](database-design.md)（outbox 表与 claim 契约）

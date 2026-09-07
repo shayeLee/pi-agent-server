@@ -1,8 +1,8 @@
 # 身份与访问管理（IAM）规划：未来公网方案
 
-> 本文只记录**未来公网暴露前**的 IAM 方案与路线图，是规划文档，**不是实现承诺**；凡标注「待定」的条目均未拍板，标注「尚未实现」的条目当前均为空白。**本文不复制 Phase 3 / WP 状态**——状态台账见 [phase-3-data-retention-plan.md](phase-3-data-retention-plan.md)；**不记录测试数量、不转述历史验收证据**。
+> 本文只记录**未来公网暴露前**的 IAM 方案与路线图，是规划文档，**不是实现承诺**；凡标注「待定」的条目均未拍板，标注「尚未实现」的条目当前均为空白。当前 migration 与备份操作分别以 [operations.md](operations.md) 和 [backup-restore.md](backup-restore.md) 为准；**不记录测试数量、不转述历史验收证据**。
 >
-> 当前接入控制（RC）由 **IP-RBAC（WP5D）** 承担，语义见 [ip-rbac-design.md](ip-rbac-design.md) 与 [owner-transfer.md](owner-transfer.md)，本文不重复。**旧 `TOKENS` / `INTRANET_CIDRS` / `TRUST_PROXY` 无兼容、无迁移**：这些变量现在设置即拒绝启动（见 §2），不存在 legacy token/账号迁移路径；IAM 从新主体体系开始，不读取、不迁移旧机制。
+> 当前接入控制（RC）由 **IP-RBAC（WP5D）** 承担，语义见 [ip-rbac-design.md](ip-rbac-design.md) 与 [owner-transfer.md](owner-transfer.md)，本文不重复。IAM 从新主体体系开始。
 
 ## 1. 目的、范围与非目标
 
@@ -34,11 +34,10 @@
 - Access Token 形态（JWT 还是 opaque 未决定，见 §6/§8）；
 - 具体时间表（不承诺交付日期，仅给工作包顺序与验收标准）。
 
-## 2. 当前接入控制（RC）边界与无兼容声明
+## 2. 当前接入控制（RC）边界
 
-- 当前接入控制由 **IP-RBAC** 承担：所有路由以直接 TCP 对端 IP 过 CIDR/disabled gate；`/v1` 与 `/metrics` 上 `tokenRequired` 画像才要求 Bearer token（hash 绑定精确 IP）；`/health`、`/readyz` 永不需要 token。详见 [ip-rbac-design.md](ip-rbac-design.md)。
-- **旧 `TOKENS` / `INTRANET_CIDRS` / `TRUST_PROXY` 无兼容**：这些环境变量设置即拒绝启动，值不回显；身份一律取直接 TCP 对端 IP，绝不使用 `X-Forwarded-For`/`request.ip`。
-- **无 legacy 账号/token 迁移**：本 RC 从未存在正式公网 token 数据，因此**不实现**任何「旧 token/旧账号 → 新主体」迁移代码；早期开发库按 RC 语义删库重建（legacy 无 ledger 库自行 fail-fast，重置后经离线 `pnpm migrate -- --bootstrap-baseline --bootstrap-confirm CONFIRMED` 建立唯一 canonical baseline），绝不在位转换。
+- 当前接入控制由 **IP-RBAC** 承担：所有路由以直接 TCP 对端 IP 过 CIDR/disabled gate；`/v1` 与 `/metrics` 上 `tokenRequired` 画像才要求 Bearer token（hash 绑定精确 IP）；`/health`、`/readyz` 永不需要 token；身份一律取直接 TCP 对端 IP，绝不使用 `X-Forwarded-For`/`request.ip`。详见 [ip-rbac-design.md](ip-rbac-design.md)。
+- **无 legacy 账号/token 迁移**：本 RC 从未存在正式公网 token 数据，因此**不实现**任何「旧 token/旧账号 → 新主体」迁移代码；旧库或无 canonical baseline 的库不做在位转换。只有完全空目标可以离线执行 `pnpm migrate -- --bootstrap-baseline --bootstrap-confirm CONFIRMED` 建立唯一 canonical baseline，具体接受面见 [ADR 0002](decisions/0002-canonical-baseline-and-migration-gate.md)。
 - **公网暴露禁止**，直到未来 OIDC/IAM + workspace/sandbox 设计落地；IP-RBAC 不是 sandbox、不限制 cwd 或 Agent 工具绝对路径/OS 权限（workspace/sandbox 安全延期至公网暴露前）。
 
 ## 3. 术语与边界
@@ -59,13 +58,13 @@
 
 1. **Client-neutral 接入**：HTTP/SSE API 是唯一接入表面，不做"浏览器专用"或"内部专用"的认证旁路。
 2. **Access Token only**：所有客户端统一使用 Bearer Access Token，不使用 Session Cookie / 会话式鉴权（无 Cookie、无 CSRF 依赖）。
-3. **无 legacy 兼容**：旧 `TOKENS` / `INTRANET_CIDRS` 机制无兼容、无迁移；IAM 从新主体体系开始（见 §2）。
+3. **从新主体体系开始**：IAM 从新主体体系开始（见 §2）。
 4. **最小权限**：默认无权限，按角色 + scope 显式授予；请求级校验集中化，禁止业务代码自行判断。
 5. **资源归属（ownership）**：`owner_key` 隔离是既有正确基线并继续演进；认证/身份层产出稳定 subject，资源归属以其为准。
 6. **审计**：认证、授权、token 签发/撤销、API Key 生命周期、鉴权失败均须持久化审计；记录主体、动作、资源、结果与时间，**不记录密钥、token 明文与消息正文**。
 7. **凭证不落明文**：app secret / API Key 明文只在签发时展示一次；落库与日志只存单向哈希 + 可检索前缀；token 记录同样只存哈希。
 8. **认证与身份分离**：token 校验通过后，身份取自账号体系，而不是 token 字符串本身、来源 IP 或静态映射账号名。
-9. **破坏性重建禁止**：一旦承诺保留真实用户数据，必须先冻结 destructive reset，建立正式 migration / 备份 / 回滚，IAM 表才能上线（前置见 [phase-3-data-retention-plan.md](phase-3-data-retention-plan.md)）。
+9. **数据变更门禁**：一旦承诺保留真实用户数据，IAM 表上线前必须完成正式 migration / 备份 / 回滚；当前不支持 reset、final reset 或 cutover，migration 只能走完全空目标 bootstrap 或已有 canonical baseline 的 apply（见 [ADR 0002](decisions/0002-canonical-baseline-and-migration-gate.md)）。
 
 ## 5. 目标架构与典型流程
 
@@ -119,7 +118,7 @@
 
 ## 6. 数据模型方向（非最终 DDL）
 
-> 以下表仅为**方向性设计**，不是最终 DDL。最终实现必须走既有约束：运行时 Schema Manifest 为唯一来源、`schema-types.ts` 推导类型、方言 DDL 由 bootstrap 生成（详见 [database-design.md](database-design.md)），并**先完成正式 migration / 备份 / 回滚**（前置见 [phase-3-data-retention-plan.md](phase-3-data-retention-plan.md)）。
+> 以下表仅为**方向性设计**，不是最终 DDL。最终实现必须走既有约束：运行时 Schema Manifest 为唯一来源、`schema-types.ts` 推导类型、方言 DDL 由 bootstrap 生成（详见 [database-design.md](database-design.md)），并**先完成正式 migration / 备份 / 回滚**（操作来源见 [operations.md](operations.md) 与 [backup-restore.md](backup-restore.md)）。
 
 | 表（方向） | 责任 | 关键字段方向 | 敏感字段处理 |
 | --- | --- | --- | --- |
@@ -145,18 +144,17 @@
 ### 工作包 0：前置（数据与基建就绪）
 
 - **内容**：
-  - 数据策略决策：是否开始保留真实用户数据；一旦保留，**冻结 destructive reset**，建立正式 migration / 备份 / 回滚——前置为 Phase 3 数据保留基础（[phase-3-data-retention-plan.md](phase-3-data-retention-plan.md)）：正式 migration / backup / rollback 与当前适用的门禁是 IAM 数据落地的前置条件；
-  - 公网启用门禁：WP5B（durable idempotency / shutdown-persistence 加固）在**公网部署前**必须完成并验收（状态见 phase-3-data-retention-plan.md）；
+  - 数据策略决策：是否开始保留真实用户数据；一旦保留，正式 migration / 备份 / 回滚与当前适用的启动门禁必须先就绪；操作来源是 [operations.md](operations.md) 与 [backup-restore.md](backup-restore.md)。
   - IAM schema decision：确定 §6 表集、Access Token 形态、哈希算法、scope 命名（产出决策记录，更新本文档）。
-- **依赖**：数据策略与 IAM schema 决策是本包自身应完成的内容；正式 migration / backup / rollback 依赖 Phase 3 就绪。
-- **验收**：数据策略与 IAM 决策书面确认；无任何真实库上执行 destructive reset；公网启用前置门禁已明确。
+- **依赖**：数据策略与 IAM schema 决策是本包自身应完成的内容；正式 migration / backup / rollback 依赖当前操作文档所定义的 canonical baseline 与门禁。
+- **验收**：数据策略与 IAM 决策书面确认；无任何真实库上执行 destructive reset；IAM schema 决策完成。
 
 ### 工作包 1：identity / token 基础
 
 - **内容**：
   - `users` / `external_identities` 基础模型与 Repository/Port/Service；
   - Access Token 签发 / 验证 / 过期 / 撤销（服务端 token 记录 + 哈希存储，形态可为 opaque，JWT 决策见 §8）；
-  - 认证与身份解耦：token 校验通过后身份一律来自账号体系；**无 legacy `TOKENS`/`INTRANET_CIDRS` 兼容或迁移**（见 §2），不做任何静态映射账号到新主体的迁移。
+  - 认证与身份解耦：token 校验通过后身份一律来自账号体系；不做任何静态映射账号到新主体的迁移。
 - **依赖**：工作包 0。
 - **验收**：token 生命周期（签发/过期/撤销）单测 + 集成测试通过；身份派生切换后 `owner_key` 隔离语义不变；既有测试与 build 全绿。
 
@@ -214,8 +212,6 @@
 | 6 | Token 存储与密码学：哈希算法、前缀长度、签名/加密密钥与 KMS | 工作包 1/4/5 | 影响密钥管理与轮换 |
 | 7 | 本地密码/MFA 是否纳入 | 全阶段 | 当前默认不依赖本地密码 |
 
-> 旧机制无兼容，因此不再存在「静态 token 迁移窗口/强制切换 deadline」待决策项（见 §2）。
-
 决策流程：每项决策须在对应工作包落地前书面记录（更新本文档与相关设计文档），并附验收口径。
 
 ## 9. 完成定义与相关文档
@@ -228,17 +224,15 @@
 2. 用户可经 OIDC 登录获取 Access Token，所有客户端统一 Bearer 接入，无任何 Session Cookie 路径残留；
 3. 业务系统经 API Key 获得 service identity 与 scope 授权；
 4. 授权遵循最小权限与资源归属，越权一律拒绝并审计；
-5. 旧 `TOKENS` / `INTRANET_CIDRS` 无任何残留（自始不兼容、不迁移）；
-6. 凭证全部哈希存储、明文仅签发时展示一次，日志无密钥/正文泄漏；
-7. 数据策略冻结：在保留真实数据的情况下无 destructive reset，正式 migration / 备份 / 回滚流程化；
-8. 公网部署前 WP5B（durable idempotency / shutdown-persistence 加固）已完成并验收（状态见 [phase-3-data-retention-plan.md](phase-3-data-retention-plan.md)）。
+5. 凭证全部哈希存储、明文仅签发时展示一次，日志无密钥/正文泄漏；
+6. 数据策略冻结：在保留真实数据的情况下无 destructive reset，正式 migration / 备份 / 回滚流程化。
 
 ### 相关文档
 
 - 架构与核心数据流：[architecture.md](architecture.md)
 - 数据库设计与 Schema Manifest 约束：[database-design.md](database-design.md)
 - 当前接入控制（IP-RBAC）：[ip-rbac-design.md](ip-rbac-design.md)、[owner-transfer.md](owner-transfer.md)
-- Phase 3 数据保留 / 状态台账：[phase-3-data-retention-plan.md](phase-3-data-retention-plan.md)
+- ADR 决策索引：[decisions/README.md](decisions/README.md)；当前 migration 门禁：[decisions/0002-canonical-baseline-and-migration-gate.md](decisions/0002-canonical-baseline-and-migration-gate.md)
 - 本地 PostgreSQL 测试流程：[postgres-podman-test.md](postgres-podman-test.md)
 - 平台需求基线：[../needs.md](../needs.md)
 - 对外状态与限制：[../README.md](../README.md) / [../README.zh-CN.md](../README.zh-CN.md)

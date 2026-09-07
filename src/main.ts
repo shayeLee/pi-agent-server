@@ -3,17 +3,12 @@
 //
 // WP5D-2 网络准入：
 // - PI_ALLOWED_CLIENT_CIDRS 显式必填（无默认），PI_IP_ACCESS_POLICY_FILE 可选（安全加载：
-//   符号链接/权限/属主/大小/TOCTOU 全程校验）；PI_DEFAULT_WORKSPACE_ROOT 已移除（2026-02 用户
-//   决策：内网不做 workspace 强制，workspace 安全延期至公网暴露前）；
-// - 旧变量 INTRANET_CIDRS / TOKENS / TRUST_PROXY 一律拒绝启动（值不回显）；
+//   符号链接/权限/属主/大小/TOCTOU 全程校验）；
 // - 身份 = 直接 socket IP，不信任任何代理头；CIDR 外 / disabled → 403，/v1 tokenRequired → 401。
 
-import { startServer, rejectLegacyStartEnv, type DataMode, type StorageDialect } from "./server/start.js";
+import { startServer, type DataMode, type StorageDialect } from "./server/start.js";
 import { parseIpAccessEnv } from "./core/ip-access-config.js";
 import { loadIpAccessPolicy } from "./core/ip-access-policy-file.js";
-
-// WP5D-2：旧启动变量拒绝（failfast，值不回显）：不再有「未配置即默认内网」的隐式语义。
-rejectLegacyStartEnv(process.env);
 
 // WP5D-2：严格解析准入环境变量 + 可选策略文件安全加载（任何缺失/非法配置 fail-fast）。
 const ipAccessEnv = parseIpAccessEnv(process.env);

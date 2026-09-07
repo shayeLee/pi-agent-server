@@ -6,7 +6,6 @@ import {
   requireIpAccessRuntimeConfig,
   type Admission,
 } from "../../src/server/network-admission.js";
-import { rejectLegacyStartEnv } from "../../src/server/start.js";
 import { parseIpAccessEnv } from "../../src/core/ip-access-config.js";
 import { hashBearerToken } from "../../src/core/ip-access-policy.js";
 import {
@@ -194,33 +193,21 @@ describe("requireIpAccessRuntimeConfig（startServer/buildApp 共用严格校验
     expect(() => requireIpAccessRuntimeConfig({ allowedClientCidrs: [], policy: null })).toThrow(/allowedClientCidrs/);
   });
 
-  it("旧字段 intranetCidrs / tokens / trustProxy 出现在配置对象 → 抛错（值不回显）", () => {
-    const good = { allowedClientCidrs: parseTestCidrs(["127.0.0.0/8"]), policy: null };
-    for (const legacy of ["intranetCidrs", "tokens", "trustProxy"]) {
-      try {
-        requireIpAccessRuntimeConfig({ ...good, [legacy]: "SECRET-BYPASS-VALUE" });
-        throw new Error(`应拒绝 ${legacy}`);
-      } catch (error) {
-        if (error instanceof Error && error.message.startsWith("应拒绝")) throw error;
-        expect((error as Error).message).toMatch(new RegExp(`^StartConfig 旧字段 ${legacy} 已废弃`));
-        expect((error as Error).message).not.toContain("SECRET-BYPASS-VALUE");
-      }
-    }
-  });
-
-  it("ipAccess 顶层严格 allowlist：未知字段（含 undefined）与 defaultWorkspaceRoot 拒绝", () => {
+  it("ipAccess 顶层严格 allowlist：任何未知字段（含 undefined）拒绝，值不回显", () => {
     const good = { allowedClientCidrs: parseTestCidrs(["127.0.0.0/8"]), policy: null };
     for (const [name, value] of [
-      ["defaultWorkspaceRoot", undefined],
-      ["defaultWorkspaceRoot", "/srv/ws/default"],
       ["unknown", undefined],
       ["unknown", "SECRET-UNKNOWN-VALUE"],
+      ["unknownField", undefined],
+      ["unknownField", "SECRET-UNKNOWN-VALUE"],
     ] as const) {
-      expect(() => requireIpAccessRuntimeConfig({ ...good, [name]: value })).toThrow(new RegExp(name));
+      expect(() => requireIpAccessRuntimeConfig({ ...good, [name]: value })).toThrow(
+        new RegExp(`^ipAccess 含未知字段 ${name}`),
+      );
     }
   });
 
-  it("非法 allowedClientCidrs / policy shape → 抛错；已移除字段 workspaceRoots 拒绝", () => {
+  it("非法 allowedClientCidrs / policy shape → 抛错；策略未知字段拒绝", () => {
     expect(() =>
       requireIpAccessRuntimeConfig({ allowedClientCidrs: [{ family: "v4", prefix: 8, bytes: [10, 0, 0, 0], text: "10.0.0.0/8" }], policy: null }),
     ).not.toThrow();
@@ -230,18 +217,9 @@ describe("requireIpAccessRuntimeConfig（startServer/buildApp 共用严格校验
     expect(() =>
       requireIpAccessRuntimeConfig({ allowedClientCidrs: parseTestCidrs(["127.0.0.0/8"]), policy: { version: 2, entries: [], byIp: new Map() } }),
     ).toThrow(/ipAccess.policy/);
-    // workspaceRoots 已整体移除：策略条目中出现它 → failfast（与解析器未知字段同一语义）。
+    // 策略条目/顶层出现未知字段 → failfast（防拼写错误；值不回显）。
     const policy = makePolicy([{ ip: "127.0.0.1" }]);
-    const forged = {
-      version: policy.version,
-      entries: policy.entries.map((e) => ({ ...e, workspaceRoots: ["/srv/ws/ops"] })),
-      byIp: policy.byIp,
-    };
-    expect(() =>
-      requireIpAccessRuntimeConfig({ allowedClientCidrs: parseTestCidrs(["127.0.0.0/8"]), policy: forged }),
-    ).toThrow(/workspaceRoots/);
-
-    for (const unknown of ["workspaceRoots", "unknownField"] as const) {
+    for (const unknown of ["unknownField"] as const) {
       const withUnknownEntry = {
         version: policy.version,
         entries: policy.entries.map((e) => ({ ...e, [unknown]: undefined })),
@@ -275,34 +253,5 @@ describe("requireIpAccessRuntimeConfig（startServer/buildApp 共用严格校验
     expect(() =>
       requireIpAccessRuntimeConfig({ allowedClientCidrs: parseTestCidrs(["127.0.0.0/8"]), policy: fake }),
     ).toThrow(/byIp/);
-  });
-});
-
-describe("rejectLegacyStartEnv（main 入口旧变量拒绝）", () => {
-  for (const name of ["INTRANET_CIDRS", "TOKENS", "TRUST_PROXY"]) {
-    it(`${name} 设置（含空串）即拒绝启动，值不回显`, () => {
-      try {
-        rejectLegacyStartEnv({ [name]: "SECRET-LEGACY-VALUE" });
-        throw new Error(`应拒绝 ${name}`);
-      } catch (error) {
-        if (error instanceof Error && error.message.startsWith("应拒绝")) throw error;
-        expect((error as Error).message).toMatch(new RegExp(`^${name} 已废弃`));
-        expect((error as Error).message).not.toContain("SECRET-LEGACY-VALUE");
-      }
-      expect(() => rejectLegacyStartEnv({ [name]: "" })).toThrow(/已废弃/);
-    });
-  }
-
-  it("PI_DEFAULT_WORKSPACE_ROOT property presence（含 undefined）即固定脱敏拒绝", () => {
-    for (const value of ["/srv/ws/default", "", undefined]) {
-      expect(() => rejectLegacyStartEnv({ PI_DEFAULT_WORKSPACE_ROOT: value })).toThrow(
-        "PI_DEFAULT_WORKSPACE_ROOT 已移除：设置即拒绝启动；当前不做 workspace enforcement",
-      );
-    }
-  });
-
-  it("未设置旧变量时不拒绝", () => {
-    expect(() => rejectLegacyStartEnv({ PI_ALLOWED_CLIENT_CIDRS: "10.0.0.0/8" })).not.toThrow();
-    expect(() => rejectLegacyStartEnv({})).not.toThrow();
   });
 });

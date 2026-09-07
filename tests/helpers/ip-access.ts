@@ -1,7 +1,6 @@
 // WP5D-2 测试共享准入配置构造：与生产同一语义（parseIpAccessEnv/loadIpAccessPolicy 之后的结构）。
 // 策略一律经 parseIpAccessPolicy 构造，保证测试 fixture 与生产解析器同约束
 // （tokenRequired ⇔ 非空 tokens；token 传明文，由 builder 哈希；精确 IP 必须落在允许 CIDR 内）。
-// workspaceRoots/PI_DEFAULT_WORKSPACE_ROOT 已移除（2026-02 用户决策：内网不做 workspace 强制）。
 
 import { parseCidrStrict, type ParsedCidr } from "../../src/core/cidr.js";
 import {

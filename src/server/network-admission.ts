@@ -228,9 +228,7 @@ function assertEntryShape(rawEntry: unknown): IpAccessEntry {
 
 /**
  * 严格校验运行时 ipAccess 配置（StartConfig.ipAccess / buildApp deps.ipAccess）：
- * - 缺失/非对象/任何字段非法 → 抛错（failfast，错误消息不回显配置值）；
- * - 旧字段 intranetCidrs/tokens/trustProxy 出现在配置对象上 → 抛错（JS/typed bypass 一律拒绝）；
- * - 策略条目含已移除字段 workspaceRoots → 抛错（同解析器未知字段 failfast 语义）；
+ * - 缺失/非对象/任何字段非法 → 抛错（failfast，错误消息不回显配置值；JS/typed bypass 一律拒绝）；
  * - 策略条目与允许 CIDR 的一致性（covered）在运行时复核（与 load 语义一致）。
  * 本函数是唯一入口：直接 JS bypass（绕开 main 的 env 解析）同样 fail。
  */
@@ -239,13 +237,6 @@ export function requireIpAccessRuntimeConfig(input: unknown): IpAccessResolveInp
     throw new Error("ipAccess（网络准入）配置缺失或非法：必须在任何资源创建前提供严格解析的准入配置");
   }
   const o = input as Record<string, unknown>;
-  // The resolved runtime contract is intentionally smaller than StartConfig. Check own
-  // property presence so undefined-valued removed/unknown fields cannot bypass it.
-  for (const legacy of ["intranetCidrs", "tokens", "trustProxy"] as const) {
-    if (Object.hasOwn(o, legacy)) {
-      throw new Error(`StartConfig 旧字段 ${legacy} 已废弃（WP5D-2 网络准入）：设置即拒绝启动（值不回显）`);
-    }
-  }
   assertExactOwnKeys(o, ["allowedClientCidrs", "policy"], "ipAccess");
   if (!Array.isArray(o.allowedClientCidrs) || o.allowedClientCidrs.length === 0) {
     throw new Error("ipAccess.allowedClientCidrs 必须是严格的非空 CIDR 数组（缺失/空即拒绝启动）");

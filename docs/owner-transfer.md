@@ -2,7 +2,7 @@
 
 > **状态：离线 CLI `owner-transfer` 已实现。** 本工具从未对任何真实用户 SQLite/PG/JSONL 执行过转移；
 > 对真实目标执行需运维/用户明确授权。
-> **当前契约：备份按 missing-as-empty（Phase 3 已确认语义）发布**——任一缺失的 session
+> **当前契约：备份按 missing-as-empty 语义发布**——任一缺失的 session
 > reference 记录进加密 manifest 后仍允许发布；恢复该锚点时对应 `sessions.pi_session_file` 归一为 `NULL`。
 > 旧的 always-strict（`requireCompleteSessionReferences: true`）已退役。
 >
@@ -73,7 +73,7 @@ owner 只读、HTTP 接口、自动 restore、任何 schema 变更（无 migrati
      `allowPublicSchema` 选项已删除**；系统/演练/public schema 一律被 `validateOwnerTransferSchema`
      与 backup core 拒绝）；
    - **owner-transfer 的备份按 missing-as-empty 发布**：缺失的 session reference 记录进加密 manifest
-     后仍允许发布，绝不因缺失引用中断转移；恢复该锚点时对应引用归一为 `NULL`（Phase 3 已确认语义，
+     后仍允许发布，绝不因缺失引用中断转移；恢复该锚点时对应引用归一为 `NULL`（当前 backup/restore 语义，
      原 hard-code 的 strict 门禁已退役）。
    restore（SQLite 与 PG）接受该 kind 并按其完整快照/转储正常演练——它只是一个带
    更强 binding 的完整备份，恢复语义不变。
@@ -197,6 +197,6 @@ dry-run 走独立 one-shot 路径），全部 fail-closed、绝不覆盖 in-flig
 - `pnpm build:owner-transfer`：compiled 与安装包 smoke；
 - `pnpm verify:release` 汇总发布门禁。具体用例以测试源码和 `package.json` 为准。
 
-## 9. 备份语义（Phase 3 missing-as-empty 已落地）
+## 9. 备份语义（missing-as-empty）
 
 缺失 session reference 的目标语义是 missing-as-empty：pre-owner-transfer 备份仍可发布，缺失引用记入加密 manifest，恢复时对应 `pi_session_file` 归一为 `NULL`。该语义已实现（SQLite 与 PG 路径一致），原 `requireCompleteSessionReferences: true` 硬编码已移除。

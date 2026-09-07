@@ -5,8 +5,7 @@
 > **当前状态**：RC 阶段 SQLite + PostgreSQL 双方言，schema Manifest 为唯一来源。WP4A 的 `file_operations` 持久
 > outbox 保留（删除事务只 enqueue，绝不物理删除文件）；WP4B 提供安全只读 planner（物理 executor 包括 unlink、
 > retry/quarantine 未实现）；WP4C 提供 DB-only reconcile analyzer（只读 DB 引用分析，绝不扫描文件系统、不读取
-> JSONL）。WP5B 是正式启用副作用工具、多个服务实例或公网部署前的条件性部署门禁（当前代码不提供因 `TOOLS` 配置
-> 而拒绝启动的 runtime fail-fast）。这些能力仍是离线开发期工具，不启动正式服务，整体尚非生产就绪。
+> JSONL）。这些能力仍是离线开发期工具，不启动正式服务，整体尚非生产就绪。
 
 ## 1. 范围与源码依据
 
@@ -194,7 +193,7 @@
   - 默认值：`24h`（`24 * 60 * 60 * 1000 ms`），定义于 `src/runtime/runtime-registry.ts` 的 `DEFAULT_IDEMPOTENCY_TTL_MS`，经 `RuntimeRegistryOptions.idempotencyTtlMs` 可覆盖；
   - 清理时机：启动时立即 `prune(now - ttl)` 一次 + 每 `expireIntervalMs`（默认 30s）定期扫描 `concurrency.expireQueued(now)` 与 `runtime.pruneIdempotency(before)` 及 `idempotencyRepo.prune(before)`；墓碑 `deleted` 另有 `TOMBSTONE_TTL_MS = 24h` 清理；
   - 语义：`prune(before)` 删除 `created_at < before` 的记录，过期后重发同 `requestId` 将被视为 `new` 重新执行。
-- **正名**：本机制是“**请求幂等**”（同一 `requestId` 的重复提交去重），**不是**“消息去重”或“永久防重”。不要误称为消息去重、内容去重或永久防重。WP5B 是正式启用副作用工具、多个服务实例或公网部署前的条件性部署门禁：当前行为仅为进程内 in-flight 去重与持久化终态读取——终态落库前崩溃，相同 `requestId` 仍可能再次执行，不承诺 exactly-once 或 durable at-most-once；当前代码不提供因 `TOOLS` 配置而拒绝启动的 runtime fail-fast。
+- **正名**：本机制是“**请求幂等**”（同一 `requestId` 的重复提交去重），**不是**“消息去重”或“永久防重”。不要误称为消息去重、内容去重或永久防重。当前实现包含进程内 in-flight 去重与持久化终态读取。
 
 ## 7. 设计原则和非目标
 
@@ -208,7 +207,7 @@
 ### 非目标（当前不做）
 
 - **不建 `users` / `messages` 表**：用户身份由 `UserIdentity` 派生的 `owner_key` 字符串承载，无需用户表；完整消息正文在 `pi_session_file` 指向的 JSONL 中，不在数据库中镜像 `messages` 表（避免双写一致性与大文本存储问题）。
-- **服务启动不做自动迁移**：数据模式 `PI_DATA_MODE`（默认 `managed`；`rc` = 显式 disposable）与启动门禁 `PI_MIGRATION_GATE`（默认 `verify`）已实现——服务启动仅接受 `verify`（显式 `off` 一律在任何资源创建前 fail-fast）；所有模式在启动路径都**绝不自动迁移/reset**。`verify` 启动前**真只读** ledger/head 校验（空/legacy/落后库 fail-fast，绝不自动迁移/reset）。非唯一 canonical baseline 或无 ledger 的旧库绝不自动采用；迁移引擎与服务 bootstrap 均 fail-fast。完全空 SQLite DB 或完全空 non-public/non-system PostgreSQL schema 必须先离线执行 `pnpm migrate -- --bootstrap-baseline --bootstrap-confirm CONFIRMED` 建立唯一 canonical baseline；该命令不可混用 backup/maintenance 参数且不会创建 pre-backup。服务 bootstrap 仍执行**严格 schema preflight（M1，非迁移）**：在任何建表/建索引 DDL 之前，库中已含任一 managed 表时要求完整物理契约一致，任何不一致立即失败且不执行 ALTER/补列/建表/建索引；全新/当前唯一 canonical baseline schema 不受影响。
+- **服务启动不做自动迁移**：数据模式 `PI_DATA_MODE`（默认 `managed`；`rc` = 显式 disposable）与启动门禁 `PI_MIGRATION_GATE`（默认 `verify`）已实现——所有 data mode 仅接受 `verify`（显式 `off` 一律在任何资源创建前 fail-closed）；所有模式在启动路径都**绝不自动迁移、reset 或 cutover**。`verify` 启动前**真只读** ledger/head 校验（空/legacy/落后库 fail-fast，绝不自动迁移/reset）。非唯一 canonical baseline 或无 ledger 的旧库绝不自动采用；迁移引擎与服务 bootstrap 均 fail-fast。完全空 SQLite DB 或完全空 non-public/non-system PostgreSQL schema 必须先离线执行 `pnpm migrate -- --bootstrap-baseline --bootstrap-confirm CONFIRMED` 建立唯一 canonical baseline；已有唯一 canonical baseline 的数据库才执行 `--apply`，其他状态均 fail-closed。该命令不可混用 backup/maintenance 参数且不会创建 pre-backup。服务 bootstrap 仍执行**严格 schema preflight（M1，非迁移）**：在任何建表/建索引 DDL 之前，库中已含任一 managed 表时要求完整物理契约一致，任何不一致立即失败且不执行 ALTER/补列/建表/建索引；全新/当前唯一 canonical baseline schema 不受影响。当前规则见 [ADR 0002](decisions/0002-canonical-baseline-and-migration-gate.md)。
 - **不做 SQLite→PostgreSQL 数据迁移**：当前无 SQLite→PG 数据迁移路径。
 - **WP1/WP4A 离线迁移基础（唯一 canonical baseline）**：`src/storage/migration-manifest.ts` 固化不可变唯一 canonical baseline（ledger version=0，manifest=完整 `schemaManifest`，含 `file_operations` 与 6 个业务索引）；`src/storage/migration-engine.ts` 使用自定义 `schema_migrations` ledger、稳定 checksum、SQLite `BEGIN IMMEDIATE` 与 PG advisory lock/transaction。`scripts/migrate.ts` 支持 `--bootstrap-baseline`、`--dry-run`、`--apply`、`--verify`：完全空 SQLite DB 或完全空 non-public/non-system PostgreSQL schema 必须使用 `--bootstrap-baseline --bootstrap-confirm CONFIRMED` 建立唯一 canonical baseline；该模式不 pre-backup 且拒绝 backup/maintenance 参数；`--apply` 只对已有唯一 canonical baseline 的数据库执行已验证 pre-backup→apply→verify；其他状态均 fail-fast。该工具不执行删除、不处理文件副作用；相关离线工具（`pnpm file-ops` 安全只读 planner、`pnpm reconcile-jsonl` DB-only 分析）详见 [file-operations.md](file-operations.md) 与 [reconcile-jsonl.md](reconcile-jsonl.md)，不改变正常服务启动行为。
 
@@ -216,7 +215,7 @@
 
 - 扩展前必须先产出：实体/字段/关系、查询清单（JOIN / filter / sort / page / aggregation）、索引/权限、Port/Repository 草案；
 - 实现顺序：`schema-manifest.ts`（唯一来源）→ `schema-types.ts`（类型推导）→ `bootstrap.ts`（SQLite/PG 各自方言）→ `Repository`/`Port` → `Service` → `API` → `Test`；
-- 一旦开始保留真实用户数据，立即**停止 destructive reset**，并建立正式迁移、备份、回滚与数据迁移策略（冻结删库重建，引入备份、回滚与数据迁移）。
+- 一旦开始保留真实用户数据，立即禁止把 destructive reset、final reset 或 cutover 当作迁移路径；新目标只能按 [ADR 0002](decisions/0002-canonical-baseline-and-migration-gate.md) 建立 canonical baseline，并建立正式迁移、备份和回滚策略。
 
 ## 8. 相关文档
 

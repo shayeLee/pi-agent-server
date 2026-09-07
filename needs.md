@@ -73,9 +73,9 @@ GET    /readyz                          进程启动与 migration gate 就绪检
 GET    /metrics                         固定 Prometheus 进程/readiness 指标
 ```
 
-网络准入与用户标识：所有 HTTP 路由（含 `/health`、`/readyz`、`/metrics`）先按**直接 TCP 对端 IP**准入；不信任 `X-Forwarded-For` 或 `request.ip`。`PI_ALLOWED_CLIENT_CIDRS` 必填，可选 `PI_IP_ACCESS_POLICY_FILE` 为精确 IP 定义 role、disabled 和绑定 IP 的 token。CIDR 外、disabled 或不可解析来源返回 403；仅 `/v1` 与 `/metrics` 上 `tokenRequired` 画像的实际请求要求 Bearer token；`/health`、`/readyz` 免 token。旧 `INTRANET_CIDRS`/`TOKENS`/`TRUST_PROXY` 设置即拒绝启动。
+网络准入与用户标识：所有 HTTP 路由（含 `/health`、`/readyz`、`/metrics`）先按**直接 TCP 对端 IP**准入；不信任 `X-Forwarded-For` 或 `request.ip`。`PI_ALLOWED_CLIENT_CIDRS` 必填，可选 `PI_IP_ACCESS_POLICY_FILE` 为精确 IP 定义 role、disabled 和绑定 IP 的 token。CIDR 外、disabled 或不可解析来源返回 403；仅 `/v1` 与 `/metrics` 上 `tokenRequired` 画像的实际请求要求 Bearer token；`/health`、`/readyz` 免 token。
 
-每个 canonical IP 是一个当前用户身份和 owner key。路由按中央 default-deny RBAC 矩阵授权：operator 仅访问运维探针，viewer 仅访问只读 `/v1`，user/admin 访问自己的资源；admin 暂不跨 owner。只读 export 不实例化 runtime，viewer 对无 live runtime 的 SSE 返回 204。IP-RBAC 不限制 cwd 或工具绝对路径，不是 sandbox；公网暴露前必须完成未来 OIDC/IAM、workspace/sandbox 与 WP5B。DB 层 IP→IP owner transfer 见 [owner-transfer](docs/owner-transfer.md)，不迁移策略 token 或角色。完整当前契约见 [IP-RBAC 设计](docs/ip-rbac-design.md)。
+每个 canonical IP 是一个当前用户身份和 owner key。路由按中央 default-deny RBAC 矩阵授权：operator 仅访问运维探针，viewer 仅访问只读 `/v1`，user/admin 访问自己的资源；admin 暂不跨 owner。只读 export 不实例化 runtime，viewer 对无 live runtime 的 SSE 返回 204。IP-RBAC 不限制 cwd 或工具绝对路径，不是 sandbox；公网能力随未来 OIDC/IAM 与 workspace/sandbox 一起规划。DB 层 IP→IP owner transfer 见 [owner-transfer](docs/owner-transfer.md)，不迁移策略 token 或角色。完整当前契约见 [IP-RBAC 设计](docs/ip-rbac-design.md)。
 
 用户自定义模型与个人凭证属于未来 IAM 能力：目标是按用户隔离模型配置和凭证、仅以 KMS/加密存储保存，并支持额度与撤销策略；当前服务只提供服务端模型配置与运行时 API key 注入，不得把未来用户凭证能力表述为已实现。
 
@@ -95,7 +95,7 @@ GET    /metrics                         固定 Prometheus 进程/readiness 指�
 
 模型调用并发：全局与每用户设并发上限，超出排队；每用户队列有长度上限（如 10）与排队超时（如 5 分钟），超上限返回 `429`，排队状态通过 SSE 可见；并发上限可配置（起步：每用户 2、全局 20，取上游 rate limit 的 60–80%），按 SLO 观察调优；全局超载时返回 `429`/`503` 让客户端退避。
 
-消息发送幂等：`messages` 请求必须携带客户端生成的 `requestId`，服务端当前仅提供进程内 in-flight 去重与持久化终态读取；正常重复提交返回同一结果并避免重复执行，但若终态落库前进程崩溃，相同 `requestId` 仍可能再次执行。不承诺 exactly-once 或 durable at-most-once；WP5B 必须在正式启用副作用工具、多个服务实例或公网部署前完成并验收。
+消息发送幂等：`messages` 请求必须携带客户端生成的 `requestId`，服务端当前提供进程内 in-flight 去重与持久化终态读取；正常重复提交返回同一结果并避免重复执行，但若终态落库前进程崩溃，相同 `requestId` 仍可能再次执行。不承诺 exactly-once 或 durable at-most-once。
 
 SSE 至少包含：`text_delta`、`tool_start`、`tool_update`、`tool_end`、`status`、`queued`、`error`、`completed`、`aborted`。事件带递增 id，支持 `Last-Event-ID` 断线续传；事件流持久化到服务库的有界缓冲，断连窗口内的事件可从缓冲补发；任务完成后提供按 owner 授权的会话消息/事件回放（复用 `GET /v1/sessions/:id/events`，带 `Last-Event-ID` 或时间范围参数）。SSE 长连接设每用户/全局连接数上限，超出返回 `429`。
 
@@ -215,9 +215,8 @@ Pi SDK 不设会话数量或文件体积上限，会话 JSONL 随对话单调增
 - 活跃会话：有活动即保留，不归档；容量告警时优先归档最旧的不活跃会话，持续不足时进入拒写或人工处置。
 - 不活跃会话：超过 N 天无活动 → 归档到冷存储 → 冷存储再保留 M 天 → 删除（归档 ≠ 立即删除）。
 - Job 元数据：完成态 Job 保留 N 天可查后归档或清理；运行中/待重试的 Job 不清理。
-- 备份：JSONL 与服务库须一起做定期完整备份；当前采用 age 加密的本机绝对目录，明确不覆盖主机/磁盘与备份同时丢失。异地/独立介质和增量备份不在当前范围。age identity 由运维托管，备份须受访问控制并定期做功能性恢复演练。
+- 备份：JSONL 与服务库须一起做定期完整备份；具体备份根路径访问控制、age identity/recipient 轮换、RPO/RTO、30 天人工 retention、恢复演练和异地备份边界以[备份与恢复](docs/backup-restore.md)为准。
 - 会话历史降级策略：DB 引用的 JSONL 缺失视为无历史，不阻止备份发布（缺失引用记入加密 manifest）；backup 只把实际存在的 JSONL 当作 opaque bytes，不校验内容合法性；restore 在包级加密/hash 校验通过后发现无效 JSONL 时，将该会话恢复为空历史（`pi_session_file` 归一为 `NULL` 并报告计数）。包、密文、manifest 或 hash 损坏仍必须整体失败。该语义已实现（详见 [备份与恢复](docs/backup-restore.md)）。
-- 运维目标：RPO 24 小时；本机完整备份固定不超过 12 小时一次；备份保留 30 天并人工清理。RTO 目标 4 小时，但 signoff 延期到投入使用且有代表性数据规模后。
 
 N、M 天数由部署配置决定。
 
@@ -248,24 +247,25 @@ N、M 天数由部署配置决定。
 
 ## 7. 安全与运维要求
 
-- 默认绑定 `127.0.0.1` 或内网网卡；业务 API 一律经 TLS（内网亦要求），公网部署必须先完成 OIDC/IAM、workspace/sandbox 与 WP5B，再配置网络边界。当前 WP5D IP-RBAC 只用于直接内网接入；旧 `TOKENS`/`INTRANET_CIDRS`/`TRUST_PROXY` 已废弃且设置即拒绝启动。
+- 默认绑定 `127.0.0.1` 或内网网卡；业务 API 一律经 TLS（内网亦要求），公网部署能力随 OIDC/IAM、workspace/sandbox 和网络边界一起规划。当前 IP-RBAC 只用于直接内网接入。
+- 正式使用 Podman 部署前，交付主服务 Containerfile、非 root 运行、外部数据/服务凭证挂载、显式 one-shot 数据库初始化与升级、健康检查、停止信号处理，以及镜像构建/启动/恢复 smoke test；当前 `docker/scheduler/Containerfile` 不作为主服务镜像。具体计划见[运维任务索引](docs/operations.md)。
 - Bearer Token 是当前 IP 策略支持的可选第二因子：仅 `/v1` 与 `/metrics` 上 `tokenRequired` 画像的实际请求强制；token-off 画像不要求。未来公网 IAM 统一使用 Bearer Access Token。部署环境增加每用户限流、请求体大小限制和 CORS 白名单。
-- 使用独立 `agentDir`、固定 `cwd`、固定系统提示词和固定工具列表，避免继承个人 Pi 配置；工具列表是已启用能力所声明工具的并集；系统提示词与工具列表按会话创建时的已启用能力生成并冻结，配置变更不影响既有会话。禁用项目目录自动发现（`.pi/extensions`、skills、prompts、`AGENTS.md`、themes），只从 manifest 显式注入受控资源，避免仓库中未声明的扩展被加载执行。正式启用 `bash`/`edit`/`write` 等副作用工具前必须完成并验收 WP5B；这是治理/部署门禁，当前代码不会因 `TOOLS` 配置包含这些工具而 runtime fail-fast。
+- 使用独立 `agentDir`、固定 `cwd`、固定系统提示词和固定工具列表，避免继承个人 Pi 配置；工具列表是已启用能力所声明工具的并集；系统提示词与工具列表按会话创建时的已启用能力生成并冻结，配置变更不影响既有会话。禁用项目目录自动发现（`.pi/extensions`、skills、prompts、`AGENTS.md`、themes），只从 manifest 显式注入受控资源，避免仓库中未声明的扩展被加载执行。
 - 服务端默认模型用 API key（环境变量/密钥系统读取）；各能力凭证同理；不得写入仓库、会话或日志。
   - 实现例外（本机开发便利）：凭证文件默认指向开发者本机个人 `~/.pi/agent/auth.json`（与 pi CLI 共用，OAuth token 刷新由 SDK 回写该文件，同文件带锁并发安全）；**生产部署必须**通过 `PI_AUTH_PATH` 指向服务端独立凭证文件或 KMS，不得沿用默认个人路径。
 - 用户自定义模型凭证：统一服务端加密存储（KMS）。支持 OAuth 登录（`login()` 授权、token 入库）或 API key 两种方式；不采用浏览器 localStorage 明文保存——XSS 可窃取、明文传输可被抓包、共享设备易残留；凭证不落明文库，按用户/会话独立 ModelRuntime 承载，会话期间经 `setRuntimeApiKey` 注入、结束后清零，禁止在共享实例上可竞争地设置用户密钥；日志按 §5 脱敏。
 - **多项目 cwd 安全边界**：`POST /v1/projects` 允许指定任意 cwd，因此**公网部署不得开放创建项目接口**（应仅内网/管理面开放）。若未来开放公网创建项目，必须先限制 cwd 到服务端配置的项目根目录下（`realpath` 防 `..` 与符号链接逃逸），否则启用文件/命令工具后用户可将 Agent 指向服务账号可访问的任意目录。
-- **来源 IP 准入与反向代理的组合边界（WP5D-2）**：准入依据**直接 TCP 对端 IP**（`request.raw.socket.remoteAddress`），**不信任任何 `X-Forwarded-For`/`request.ip`**；`TRUST_PROXY` 已废弃（设置即拒绝启动）。服务位于反向代理后时，所有请求的准入身份都是代理出口 IP——必须把代理出口网段（而非最终客户端网段）纳入 `PI_ALLOWED_CLIENT_CIDRS`，或将服务直接可达（TLS 终结于服务自身）；默认拒绝模型下未纳入即 403，不存在「未配置即默认内网」的隐式语义。
+- **来源 IP 准入与反向代理的组合边界（WP5D-2）**：准入依据**直接 TCP 对端 IP**（`request.raw.socket.remoteAddress`），**不信任任何 `X-Forwarded-For`/`request.ip`**。服务位于反向代理后时，所有请求的准入身份都是代理出口 IP——必须把代理出口网段（而非最终客户端网段）纳入 `PI_ALLOWED_CLIENT_CIDRS`，或将服务直接可达（TLS 终结于服务自身）；默认拒绝模型下未纳入即 403，不存在「未配置即默认内网」的隐式语义。
 - 日志字段、脱敏与分级遵循 §5 日志设计。
 - 有副作用的流程应使用独立 Worker 或权限受限的 Pi 自定义工具；写仓库、创建 PR、构建和部署等权限必须按能力最小化授予并审计。
 - 审计：有副作用的工具调用与 Job 须记录持久化审计——`UserIdentity`、会话/Job、工具/能力、授权范围、目标、结果、时间与关联 ID；不记录密钥与正文；审计记录单独定义保留期与访问权限，写入失败须告警。
-- 启动 schema 门禁：`PI_DATA_MODE` 默认 `managed`，`PI_MIGRATION_GATE` 默认 `verify`；managed 强制 `verify`，只有显式 disposable `rc` 才允许 `off`。`managed + off` 在资源创建前 fail-fast；任何模式都不自动 migration/reset，schema 变更由离线 CLI 在维护窗口执行。
-- 优雅关闭：停止接收新请求 → 等在途任务完成或超时（超时后 abort、SSE 发送 `aborted` 并标记终态）→ 通知 SSE 客户端重连 → 退出；排队中的 Job 已持久化，重启后恢复。
+- 启动 schema 门禁：`PI_DATA_MODE` 默认 `managed`，但所有 data mode 都必须使用 `PI_MIGRATION_GATE=verify`；`off`（包括 `rc`）在资源创建前 fail-closed。任何模式都不自动 migration、reset 或 cutover；只有完全空目标可离线 bootstrap canonical baseline，已有 canonical baseline 才可 `--apply`，其他状态均拒绝。schema 变更由离线 CLI 在维护窗口执行，细节见 [ADR 0002](docs/decisions/0002-canonical-baseline-and-migration-gate.md) 与[运维任务索引](docs/operations.md)。
+- 优雅关闭目标：停止接收新请求 → 等在途任务完成或超时 → 中止未完成任务 → 通知 SSE 客户端重连 → 退出。当前实现 readiness 回落、关闭 SSE、有界等待后 abort。
 
 ## 8. 计划与状态
 
-- 文档导航与单一事实来源约定：[docs/README.md](docs/README.md)。
-- 当前 Phase 3 工作包状态、完成条件和“已决策但待实现”差距：[Phase 3 状态台账](docs/phase-3-data-retention-plan.md)。
+- 文档导航与使用约定：[docs/README.md](docs/README.md)。
+- 决策演进与取代关系：[ADR 索引](docs/decisions/README.md)；当前 migration 启动门禁见 [ADR 0002](docs/decisions/0002-canonical-baseline-and-migration-gate.md)。
 - 当前数据库与跨存储边界：[数据库设计](docs/database-design.md)。
 - 当前内网 IP-RBAC：[IP access policy 设计](docs/ip-rbac-design.md)；未来公网 IAM：[身份与访问管理规划](docs/identity-access-plan.md)。
 - 备份、恢复与运维：[备份与恢复](docs/backup-restore.md)、[运维任务索引](docs/operations.md)。

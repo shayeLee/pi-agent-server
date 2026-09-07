@@ -7,9 +7,9 @@
 // - 直接 socket IP 为准；一个 IP = 一个用户（身份键 = canonical IP 文本）。
 // - CIDR 外一律 deny；CIDR 内未登记默认 role=user、token off（无任何 workspace 概念）。
 // - 可选策略文件中精确 IP 覆盖 role/disabled/tokenRequired/token sha256。
-// - workspaceRoots / PI_DEFAULT_WORKSPACE_ROOT 已整体移除：策略 JSON 中出现 workspaceRoots
-//   一律按未知字段 failfast，绝不保留解析但不使用。IP-RBAC 不限制 cwd 或 Agent 工具的绝对路径/
-//   OS 权限，不是 sandbox；公网暴露禁止，需未来 OIDC/IAM + workspace/sandbox 设计。
+// - 策略条目只允许 ip/role/disabled/tokenRequired/tokens，未知字段 failfast；
+//   IP-RBAC 不限制 cwd 或 Agent 工具的绝对路径/OS 权限，不是 sandbox；公网暴露禁止，需未来
+//   OIDC/IAM + workspace/sandbox 设计。
 // - token 只保存 sha256:<64 小写 hex>，全文件全局唯一；tokenRequired 必须有 hash，
 //   未启用 tokenRequired 的条目不得携带 hash；token 绑定精确 IP，不换绑、不迁移。
 // - 规则异常一律抛错（failfast），token 明文与哈希永不进入日志（此处无日志）。

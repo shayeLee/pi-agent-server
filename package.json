@@ -75,6 +75,7 @@
     "verify:release": "npm run typecheck && npm run test && npm run test:postgres && npm run test:pg-backup && npm run test:migration-prebackup && npm run test:file-ops-pg && npm run test:reconcile-jsonl-pg && npm run test:restore-real && npm run test:owner-transfer && npm run test:owner-transfer-pg && npm run build && npm run build:migrate && npm run build:backup && npm run build:file-ops && npm run build:reconcile-jsonl && npm run build:owner-transfer",
     "dev": "tsx src/main.ts",
     "dev:real": "cross-env DATA_DIR=/tmp/pi-agent-server PI_ALLOWED_CLIENT_CIDRS=127.0.0.0/8,10.0.0.0/8 PI_DEFAULT_MODEL=openai-codex/gpt-5.6-luna PI_DEFAULT_THINKING_LEVEL=medium tsx src/main.ts",
+    "dev:real:init": "sh scripts/dev-real-init.sh",
     "mock": "tsx scripts/mock-server.ts",
     "web": "pnpm --filter web dev",
     "web:mock": "VITE_API_TARGET=http://127.0.0.1:8081 pnpm --filter web dev",

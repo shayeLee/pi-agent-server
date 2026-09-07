@@ -148,14 +148,8 @@ describe("parseIpAccessPolicy：schema 与严格性", () => {
     expect(() => parseIpAccessPolicy(JSON.stringify({ version: 1, ips: [{ ip: "1.2.3.4", role: "" }] }))).toThrow();
   });
 
-  it("workspaceRoots 已移除：策略 JSON 中出现即未知字段 failfast（不做解析不使用）", () => {
-    // 2026-02 用户决策：内网不做 workspace 强制，workspaceRoots 整体删除，出现即拒绝。
-    const withRoots = (roots: unknown) =>
-      JSON.stringify({ version: 1, ips: [{ ip: "1.2.3.4", workspaceRoots: roots }] });
-    expect(() => parseIpAccessPolicy(withRoots(["/srv/ws/a"]))).toThrow("未知字段");
-    expect(() => parseIpAccessPolicy(withRoots([]))).toThrow("未知字段");
-    expect(() => parseIpAccessPolicy(withRoots("/srv/ws"))).toThrow("未知字段");
-    // workspaceRoots 之外的历史字段也同样按未知字段拒绝（错误消息不回显字段名内容）。
+  it("未知字段一律按未知字段 failfast（防拼写错误，不做解析不使用）", () => {
+    expect(() => parseIpAccessPolicy(JSON.stringify({ version: 1, ips: [{ ip: "1.2.3.4", workspaceRoot: ["/srv/ws/a"] }] }))).toThrow("未知字段");
     expect(() => parseIpAccessPolicy(minimalPolicy())).not.toThrow();
   });
 
@@ -164,8 +158,6 @@ describe("parseIpAccessPolicy：schema 与严格性", () => {
     expect(() => parseIpAccessPolicy(base({ role: "admin" }))).toThrow("disabled");
     expect(() => parseIpAccessPolicy(base({ tokenRequired: true }))).toThrow("disabled");
     expect(() => parseIpAccessPolicy(base({ tokens: [hash(SHA256_64)] }))).toThrow("disabled");
-    // workspaceRoots 已移除：disabled 条目里出现它同样被拒（未知字段，先于互斥语义）
-    expect(() => parseIpAccessPolicy(base({ workspaceRoots: ["/a"] }))).toThrow("未知字段");
     expect(() => parseIpAccessPolicy(base({ disabled: "yes" }))).toThrow("布尔");
     const policy = parseIpAccessPolicy(base({}));
     expect(policy.entries[0]!.disabled).toBe(true);

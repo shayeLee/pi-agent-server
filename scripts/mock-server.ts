@@ -1,7 +1,7 @@
 // E2E 测试用的 mock pi-agent-server：真实 buildApp + createAdmission + MockAgentAdapter。
 // 不依赖真实 Pi SDK 模型凭证，供 Playwright 端到端验证 HTTP/SSE 完整链路。
 // WP5D-2：准入配置与生产同一语义（直接 socket IP；127.0.0.0/8 + 10.0.0.0/8 允许，未登记默认
-// role=user / token off；workspaceRoots/PI_DEFAULT_WORKSPACE_ROOT 已移除）。
+// role=user / token off）。
 //
 // 存储层与生产（start.ts）一致：DatabaseSync（启用 FK）→ initializeDatabase → Kysely repositories，
 // 默认项目确保必须 await（不能 fire-and-forget），幂等 Kysely destroy / DB 关闭在 app.close 与

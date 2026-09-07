@@ -1,14 +1,16 @@
 # 备份与恢复 Runbook
 
-本文是 SQLite/PostgreSQL 备份、恢复和 migration pre-backup 的权威操作文档。工作包状态见 [Phase 3 状态台账](phase-3-data-retention-plan.md)，备份新鲜度部署见 [backup-freshness-exporter.md](backup-freshness-exporter.md)。
+本文是 SQLite/PostgreSQL 备份、恢复和 migration pre-backup 的权威操作文档；备份新鲜度部署见 [backup-freshness-exporter.md](backup-freshness-exporter.md)。
 
 ## 1. 固定边界
 
-- 备份写入本机绝对路径 `BACKUP_ROOT`；不做异地/独立故障域副本，因此不覆盖主机、磁盘与备份目录同时丢失。
-- 使用 age recipient 公钥加密。age identity 私钥由运维托管，只在恢复时通过受控路径提供，不进入仓库、应用服务、备份包、argv 或日志。
+- 备份写入本机绝对路径 `BACKUP_ROOT`。当前 CLI 拒绝文件系统根、symlink 路径、group/world 可写目录，以及与源数据路径重叠的目录；发布目录只保存密文包，plaintext staging 使用独立的私有 0700 目录。**正式部署使用的具体绝对路径、属主和介质访问控制尚待运维确认**，确认前不得隐含默认值。
+- 不做异地/独立故障域副本，因此不覆盖主机、磁盘与备份目录同时丢失；任何异地或独立介质复制都必须作为另行审核的部署能力，不能从本机备份语义推导出该保证。
+- 使用 age recipient 公钥加密。age identity 私钥由运维托管，只在恢复时通过受控路径提供，不进入仓库、应用服务、备份包、argv 或日志。recipient 文件只含公钥 recipient；当前 CLI 要求绝对路径、非 symlink/hardlink 的 regular file，且拒绝 group/world 可写。CLI 当前不强制 owner-only；正式权限策略仍待运维确认。
+- age identity/recipient 的生成、保管、访问控制和轮换由运维负责，不由仓库或服务隐式完成。**具体 recipient 值、轮换流程及撤销策略尚待运维确认**；正式部署前必须形成可恢复 retention 期内所有备份的书面策略，并完成恢复验证。
 - 凭证和 auth 文件不进入备份；PostgreSQL 凭证使用私有临时 `PGPASSFILE`。
 - 仓库不安装 scheduler、retention worker，也不自动回滚 migration。
-- 每个 logical DB/schema + `DATA_DIR` 只允许一个服务实例；migration 和 restore 前必须停服务并确认无 writer。
+- 每个 logical DB/schema + `DATA_DIR` 只允许一个服务实例；migration 和 restore 前必须停服务并确认无 writer。单实例/多实例约束的架构依据见 [architecture.md](architecture.md)。
 
 ## 2. 已落地语义（missing-as-empty / opaque JSONL / invalid-as-empty）
 
@@ -55,7 +57,7 @@ PI_DATABASE_URL=postgresql://...
 要求：
 
 - `AGENT_CWD`、`DATA_DIR`、`DB_PATH`、backup root、recipient file 均使用绝对路径；
-- recipient file 只包含公钥 recipient，0600 或更严格，非 symlink regular file；
+- recipient file 只包含公钥 recipient；当前 CLI 要求非 symlink/hardlink regular file，并拒绝 group/world 可写（owner-only 权限属于尚待确认的正式部署策略，不是当前 CLI 门禁）；
 - `age`/`age-keygen` 版本固定；PostgreSQL server、`pg_dump`、`pg_restore` major 完全一致；
 - `--dry-run` 不发布任何包，且仍执行唯一 canonical baseline source-ledger 检查；缺 ledger、旧多行或 checksum 不匹配必须非零失败，不得报告可成功。
 - 运行时只接受当前 Pi JSONL v3：持久会话在 `SessionManager.open` 前先验证 header `version:3`，v1/v2 或畸形历史 fail-fast 且不改写文件；只读 export 同样拒绝旧版本，绝不调用 SDK `migrateSessionEntries`。
@@ -119,9 +121,9 @@ pnpm restore -- restore \
 - restore 失败：不发布部分 target；保存脱敏错误和证据，由运维处理。
 - 日志和证据不得包含数据库 URL、密码、token、age identity、原始 argv、会话路径或正文。
 
-## 8. RPO、RTO、保留期
+## 8. RPO、RTO、保留期与恢复演练
 
 - **RPO 目标：24 小时**。部署计划以固定不超过 12 小时的完整备份节奏留出执行和告警预算。
-- **RTO 目标：4 小时；signoff 延期**。项目投入使用且有代表性数据规模后，再授权隔离环境完成 `restore → migration verify → start → health/readyz → 合成业务检查 → serviceable` 全流程计时；此前只记录功能性恢复证据，不宣称 RTO 已验收。
-- **备份保留：30 天**。自动删除未实现；由运维人工审核并清理过期备份。
-- **恢复演练：每季度及重大 migration 前**。当前 RTO signoff 延期不取消功能性恢复演练要求。
+- **RTO 目标：4 小时；signoff 延期**。项目投入使用且有代表性数据规模后，再授权隔离环境完成 `restore → migration verify → start → health/readyz → 合成业务检查 → serviceable` 全流程计时并签署；此前只记录功能性恢复证据，不宣称 RTO 已验收。
+- **备份保留：30 天**。自动删除未实现；由运维人工审核并清理过期备份。备份保留不延伸为会话、日志或审计数据的保留承诺。
+- **恢复演练：每季度及重大 migration 前**。当前 RTO signoff 延期不取消功能性恢复演练要求；演练必须使用隔离 target-like 环境和合成数据。
