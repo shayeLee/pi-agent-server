@@ -36,7 +36,9 @@ function seedSession(sessions: SessionStorePort, id: string): Promise<void> {
     title: "配额并发",
     createdAt: 1,
     updatedAt: 1,
-    piSessionFile: null,
+    agentKind: "pi",
+    conversationFormat: "pi-jsonl-v3",
+    conversationRef: null,
     modelProvider: null,
     modelId: null,
     thinkingLevel: null,
@@ -57,6 +59,9 @@ function makeStore(
     listByProject: (o, p) => inner.listByProject(o, p),
     backfillSystemPrompt: (s) => inner.backfillSystemPrompt(s),
     update: (id, patch) => inner.update(id, patch),
+    reserveConversation: (id, reservation) => inner.reserveConversation(id, reservation),
+    commitConversationReservation: (id, expectedRef, actualRef) => inner.commitConversationReservation(id, expectedRef, actualRef),
+    releaseConversationReservation: (id, expectedRef) => inner.releaseConversationReservation(id, expectedRef),
     delete: (id) => inner.delete(id),
   };
 }

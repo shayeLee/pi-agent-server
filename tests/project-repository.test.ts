@@ -50,7 +50,9 @@ function makeSession(overrides: Partial<SessionRecord> = {}): SessionRecord {
     title: "",
     createdAt: 1,
     updatedAt: 1,
-    piSessionFile: null,
+    agentKind: "pi",
+    conversationFormat: "pi-jsonl-v3",
+    conversationRef: null,
     modelProvider: null,
     modelId: null,
     thinkingLevel: null,
@@ -248,7 +250,9 @@ describe("项目索引存储（多项目，SQLite 实现）", () => {
       await repo.ensureDefaultProject(defaultRecord());
       await sessions.create({
         id: "s-default", ownerKey: "owner", projectId: DEFAULT_PROJECT_ID, title: "默认会话",
-        createdAt: 1, updatedAt: 1, piSessionFile: null, modelProvider: null,
+        agentKind: "pi",
+        conversationFormat: "pi-jsonl-v3",
+        createdAt: 1, updatedAt: 1, conversationRef: null, modelProvider: null,
         modelId: null, thinkingLevel: null, systemPrompt: null, capabilityVersions: null,
       });
 
@@ -264,7 +268,9 @@ describe("项目索引存储（多项目，SQLite 实现）", () => {
       await repo.ensureDefaultProject(defaultRecord());
       await sessions.create({
         id: "s-default", ownerKey: "owner", projectId: DEFAULT_PROJECT_ID, title: "默认会话",
-        createdAt: 1, updatedAt: 1, piSessionFile: null, modelProvider: null,
+        agentKind: "pi",
+        conversationFormat: "pi-jsonl-v3",
+        createdAt: 1, updatedAt: 1, conversationRef: null, modelProvider: null,
         modelId: null, thinkingLevel: null, systemPrompt: null, capabilityVersions: null,
       });
       await expect(repo.deleteProjectWithSessions(DEFAULT_PROJECT_ID, ["s-default"])).rejects.toThrow(/默认项目不可删除/);

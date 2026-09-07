@@ -12,7 +12,7 @@
 //   JSONL 有效性；
 // - --apply 立即 fail-closed（退出码 2）：WP4C 方案 A 零删除/移动/quarantine、
 //   零 DB 写入、零 outbox enqueue、零 v2 migration，不存在任何确认词可以绕过；
-// - DB 引用只经受控只读接口（session id/project id/pi_session_file 三字段），
+// - DB 引用只经受控只读接口（session id/project id/conversation_ref 三字段），
 //   绝不选取 title/system_prompt/cwd 等内容字段；migration 仅 verify（只读）；
 // - 报告只含 counts / 固定 issue codes / opaque 引用（sha256），不含任何
 //   relative/absolute 路径、DATA_DIR、URL、session id 或 prompt 内容；错误

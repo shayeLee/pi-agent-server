@@ -12,8 +12,9 @@ import {
 } from "../application/ports/project-store-port.js";
 import type { DatabaseSchema } from "./db-schema.js";
 import type { ConstraintErrorMapper } from "./constraint-error-mapper.js";
+import type { ConversationCleanupPlan, ConversationDescriptor } from "../application/ports/conversation-port.js";
 import { KyselyFileOperationRepository, type FileOperationTransactionWriter } from "./kysely-file-operation-repository.js";
-import { relativeWhitelistedPath, sessionDeleteOperationKey } from "./file-operation-policy.js";
+import { acquireTombstoneAdvisoryXactLock } from "./pg-advisory-lock.js";
 import { withSqliteWriteLock } from "./sqlite-write-lock.js";
 
 // 表行形态直接引用由 Schema Manifest 推导的 DatabaseSchema（无第二份手工声明）。
@@ -32,8 +33,12 @@ function toRecord(row: ProjectRow): ProjectRecord {
 export interface KyselyProjectRepositoryOptions {
   /** 共享的 file_operations writer；必须与本 repository 使用同一 Kysely/事务。 */
   readonly fileOperations?: FileOperationTransactionWriter;
-  /** 将 DB 中的历史绝对 pi_session_file 转为 DATA_DIR 下的相对白名单路径。 */
-  readonly relativePath?: (filePath: string) => string;
+  /** 将通用会话引用转换为事务内可入队的清理操作；具体格式由 Agent storage 实现解释。 */
+  readonly cleanupPlan?: (input: {
+    readonly sessionId: string;
+    readonly projectId: string;
+    readonly conversation: ConversationDescriptor;
+  }) => ConversationCleanupPlan | null;
   /** PG must use FOR UPDATE; SQLite storage uses BEGIN IMMEDIATE in its adapter. */
   readonly dialect?: "sqlite" | "postgres";
 }
@@ -42,14 +47,14 @@ export class KyselyProjectRepository implements ProjectStorePort {
   private readonly db: Kysely<DatabaseSchema>;
   private readonly constraintMapper: ConstraintErrorMapper;
   private readonly fileOperations: FileOperationTransactionWriter;
-  private readonly relativePath: (filePath: string) => string;
+  private readonly cleanupPlan?: KyselyProjectRepositoryOptions["cleanupPlan"];
   private readonly dialect: "sqlite" | "postgres";
 
   constructor(db: Kysely<DatabaseSchema>, constraintMapper: ConstraintErrorMapper, options: KyselyProjectRepositoryOptions = {}) {
     this.db = db;
     this.constraintMapper = constraintMapper;
     this.fileOperations = options.fileOperations ?? new KyselyFileOperationRepository(db);
-    this.relativePath = options.relativePath ?? ((filePath) => relativeWhitelistedPath("/", filePath));
+    this.cleanupPlan = options.cleanupPlan;
     this.dialect = options.dialect ??
       (options.fileOperations instanceof KyselyFileOperationRepository ? options.fileOperations.dialect : undefined) ??
       constraintMapper.dialect ?? "sqlite";
@@ -185,16 +190,28 @@ export class KyselyProjectRepository implements ProjectStorePort {
     return row !== undefined;
   }
 
-  private async listProjectSessionsForDelete(transaction: Kysely<DatabaseSchema>, projectId: string): Promise<Array<{ id: string; project_id: string; pi_session_file: string | null }>> {
+  private async listProjectSessionsForDelete(transaction: Kysely<DatabaseSchema>, projectId: string): Promise<Array<{
+    id: string;
+    project_id: string;
+    agent_kind: string;
+    conversation_format: string;
+    conversation_ref: string | null;
+  }>> {
     if (this.dialect === "postgres") {
-      const result = await sql<{ id: string; project_id: string; pi_session_file: string | null }>`
-        SELECT id, project_id, pi_session_file FROM "sessions" WHERE project_id = ${projectId} ORDER BY id FOR UPDATE
+      const result = await sql<{
+        id: string;
+        project_id: string;
+        agent_kind: string;
+        conversation_format: string;
+        conversation_ref: string | null;
+      }>`
+        SELECT id, project_id, agent_kind, conversation_format, conversation_ref FROM "sessions" WHERE project_id = ${projectId} ORDER BY id FOR UPDATE
       `.execute(transaction);
       return result.rows;
     }
     return transaction
       .selectFrom("sessions")
-      .select(["id", "project_id", "pi_session_file"])
+      .select(["id", "project_id", "agent_kind", "conversation_format", "conversation_ref"])
       .where("project_id", "=", projectId)
       .orderBy("id", "asc")
       .execute();
@@ -202,17 +219,43 @@ export class KyselyProjectRepository implements ProjectStorePort {
 
   private async enqueueSessionDeletes(
     transaction: Kysely<DatabaseSchema>,
-    sessions: ReadonlyArray<{ id: string; project_id: string; pi_session_file: string | null }>,
+    sessions: ReadonlyArray<{
+      id: string;
+      project_id: string;
+      agent_kind: string;
+      conversation_format: string;
+      conversation_ref: string | null;
+    }>,
   ): Promise<void> {
+    // 先对每个非空 ref 用 cleanupPlan 得出 operationKey，再在同一 deletion transaction
+    // 内按 operationKey 取 PG advisory xact lock，最后 enqueue/delete。
+    const plans: ConversationCleanupPlan[] = [];
     for (const session of sessions) {
-      if (session.pi_session_file === null) continue;
-      const relativePath = this.relativePath(session.pi_session_file);
-      await this.fileOperations.enqueueInTransaction(transaction, {
-        operationKey: sessionDeleteOperationKey(session.id, relativePath),
-        kind: "delete",
-        relativePath,
+      if (session.conversation_ref === null) continue;
+      // 非空 conversation identity 由 idx_sessions_conversation 唯一约束独占：
+      // 删除集合内的每个会话引用都是独占的，不会被集合外会话共享，直接登记清理。
+      if (!this.cleanupPlan) throw new Error("conversation cleanup planner is not configured");
+      const plan = this.cleanupPlan({
         sessionId: session.id,
         projectId: session.project_id,
+        conversation: {
+          agentKind: session.agent_kind,
+          conversationFormat: session.conversation_format,
+          conversationRef: session.conversation_ref,
+        },
+      });
+      if (plan) plans.push(plan);
+    }
+    // 并发项目删除可能按不同顺序取得多个 lock；按 operationKey 排序取锁避免锁顺序反转死锁。
+    plans.sort((left, right) =>
+      left.operationKey < right.operationKey ? -1 : left.operationKey > right.operationKey ? 1 : 0,
+    );
+    for (const plan of plans) {
+      if (this.dialect === "postgres") {
+        await acquireTombstoneAdvisoryXactLock(transaction, plan.operationKey);
+      }
+      await this.fileOperations.enqueueInTransaction(transaction, {
+        ...plan,
         createdAt: Date.now(),
       });
     }

@@ -127,9 +127,9 @@ hashes**）注入 `request`；401/403 响应体不含原始 IP/token/path。prof
   零 adapter/DB/文件副作用）；已有 runtime 的会话可正常订阅（200 流）。这是有意区分：documented
   404 = 不存在/越权，`204` = 存在但无 live 流。
 - **会话导出只读（P1）**：`GET /v1/sessions/:id/export` 对任何角色都**绝不实例化 runtime**：已有 runtime
-  走活会话导出；无 runtime 且未持久化（`piSessionFile` null）→ 空消息 + 游标 0；无 runtime 但已持久化 →
-  注入的 `SessionHistoryReader` 零写只读解析（与活会话导出同一 `{role,text}` 投影，文件指纹验证零写、
-  错误脱敏），绝不 createAdapter/写 DB/写 piSessionFile。
+  走活会话导出；无 runtime 且未持久化（`conversationRef` null）→ 空消息 + 游标 0；无 runtime 但已持久化 →
+  注入的 `ConversationStorage` 零写只读解析（与活会话导出同一 `{role,text}` 投影，文件指纹验证零写、
+  错误脱敏），绝不 createAdapter/写 DB/写 conversationRef。
 - **user/admin**：允许既有 own-resource 路由行为；资源访问仍 **owner 隔离**（列表/子资源访问他人
   资源统一 404）。**admin 跨 owner 只读未实现（WP5D 明确不做）**：admin 与其他角色一样只能访问
   自己的会话/项目。

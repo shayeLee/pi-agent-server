@@ -7,6 +7,7 @@ import path from "node:path";
 import { Readable, Writable } from "node:stream";
 import { afterEach, describe, expect, it } from "vitest";
 import { migrationChecksum, migrationDefinitions } from "../../src/storage/migration-manifest.js";
+import { DEFAULT_PROJECT_ID } from "../../src/application/ports/project-store-port.js";
 import { createCanonicalSqliteBaseline } from "./sqlite-fixture.js";
 import {
   AGE_PROCESS_TIMEOUT_MS,
@@ -45,9 +46,9 @@ function baseFixture(prefix: string): {
   const root = mkdtempSync(path.join(tmpdir(), prefix));
   cleanups.push(root);
   const dataDir = path.join(root, "data");
-  mkdirSync(path.join(dataDir, "sessions", "s1"), { recursive: true, mode: 0o700 });
+  mkdirSync(path.join(dataDir, "sessions", "session-1"), { recursive: true, mode: 0o700 });
   mkdirSync(path.join(dataDir, ".pi-agent"), { recursive: true, mode: 0o700 });
-  writeFileSync(path.join(dataDir, "sessions", "s1", "history.jsonl"), '{"secret":"payload-secret"}\n', { mode: 0o600 });
+  writeFileSync(path.join(dataDir, "sessions", "session-1", "history.jsonl"), '{"secret":"payload-secret"}\n', { mode: 0o600 });
   writeFileSync(path.join(dataDir, ".pi-agent", "models.json"), '{"models":[]}\n', { mode: 0o600 });
   const recipient = path.join(root, "recipient.txt");
   writeFileSync(recipient, "age1testrecipient\n", { mode: 0o600 });
@@ -103,7 +104,7 @@ function walkFiles(root: string, prefix = ""): string[] {
 
 function pgSourceClient(fixture: ReturnType<typeof baseFixture>) {
   const queries: string[] = [];
-  const session = path.join(fixture.dataDir, "sessions", "s1", "history.jsonl");
+  const session = path.join(fixture.dataDir, "sessions", "session-1", "history.jsonl");
   const client: PgBackupPoolClient & { readonly queries: string[] } = {
     queries,
     async query<T extends Record<string, unknown>>(text: string, values?: readonly unknown[]) {
@@ -119,7 +120,7 @@ function pgSourceClient(fixture: ReturnType<typeof baseFixture>) {
         return { rows: [{ present: table === "schema_migrations" || table === "sessions" }] as unknown as readonly T[] };
       }
       if (text.includes("FROM \"app_schema\".\"schema_migrations\"")) return { rows: [{ version: 0, name: "initial-schema", checksum: migrationChecksum(migrationDefinitions[0]!), applied_at: 1 }] as unknown as readonly T[] };
-      if (text.includes("FROM \"app_schema\".\"sessions\"")) return { rows: [{ id: "session-1", pi_session_file: session }] as unknown as readonly T[] };
+      if (text.includes("FROM \"app_schema\".\"sessions\"")) return { rows: [{ id: "session-1", project_id: DEFAULT_PROJECT_ID, agent_kind: "pi", conversation_format: "pi-jsonl-v3", conversation_ref: session }] as unknown as readonly T[] };
       throw new Error(`unexpected fake source query: ${text}`);
     },
   };

@@ -40,14 +40,14 @@ function npm(args) {
 }
 
 async function createFixture(runSqliteMigrations) {
-  mkdirSync(path.join(dataDir, "sessions", "s1"), { recursive: true, mode: 0o700 });
+  mkdirSync(path.join(dataDir, "projects", "p", "sessions", "s"), { recursive: true, mode: 0o700 });
   mkdirSync(path.join(dataDir, ".pi-agent"), { recursive: true, mode: 0o700 });
-  const sessionFile = path.join(dataDir, "sessions", "s1", "history.jsonl");
+  const sessionFile = path.join(dataDir, "projects", "p", "sessions", "s", "history.jsonl");
   writeFileSync(sessionFile, '{"type":"session","version":3,"id":"header","timestamp":"2024-01-01T00:00:00.000Z","cwd":"/smoke"}\n{"type":"message","id":"entry","parentId":null,"timestamp":"2024-01-01T00:00:00.000Z","message":{"role":"user","content":"smoke","timestamp":1}}\n', { mode: 0o600 });
   const db = new DatabaseSync(dbPath);
   await runSqliteMigrations(db, { mode: "apply" });
   db.prepare("INSERT INTO projects (id,name,cwd,owner_key,created_at) VALUES (?,?,?,?,?)").run("p", "smoke", "/smoke", "owner", 1);
-  db.prepare("INSERT INTO sessions (id,owner_key,project_id,title,created_at,updated_at,pi_session_file,capability_versions) VALUES (?,?,?,?,?,?,?,?)").run("s", "owner", "p", "smoke", 1, 1, sessionFile, JSON.stringify({ schema: 1 }));
+  db.prepare("INSERT INTO sessions (id,owner_key,project_id,title,created_at,updated_at,conversation_ref,capability_versions) VALUES (?,?,?,?,?,?,?,?)").run("s", "owner", "p", "smoke", 1, 1, sessionFile, JSON.stringify({ schema: 1 }));
   db.close();
 }
 
@@ -68,10 +68,10 @@ function verifyRestore(bin, packagePath) {
   if (!published) throw new Error("installed restore did not publish a drill directory");
   const finalPath = path.join(targetRoot, published);
   const db = new DatabaseSync(path.join(finalPath, "pi-agent-server.db"), { readOnly: true });
-  const row = db.prepare("SELECT pi_session_file FROM sessions WHERE id = 's'").get();
+  const row = db.prepare("SELECT conversation_ref FROM sessions WHERE id = 's'").get();
   db.close();
-  const expected = path.join(finalPath, "sessions/s1/history.jsonl");
-  if (!row || realpathSync(row.pi_session_file) !== realpathSync(expected) || row.pi_session_file.includes(path.join(dataDir, "sessions")) || !readFileSync(expected, "utf8").includes('"type":"session"')) throw new Error("installed restore data/remap verification failed");
+  const expected = path.join(finalPath, "projects/p/sessions/s/history.jsonl");
+  if (!row || realpathSync(row.conversation_ref) !== realpathSync(expected) || row.conversation_ref.includes(path.join(dataDir, "sessions")) || !readFileSync(expected, "utf8").includes('"type":"session"')) throw new Error("installed restore data/remap verification failed");
 }
 
 try {
@@ -112,7 +112,7 @@ try {
 
   // Missing-as-empty：缺失引用照常发布，机器报告计数。
   const missingDb = new DatabaseSync(dbPath);
-  missingDb.prepare("INSERT INTO sessions (id,owner_key,project_id,title,created_at,updated_at,pi_session_file,capability_versions) VALUES (?,?,?,?,?,?,?,?)").run("missing-session", "owner", "p", "missing", 1, 1, path.join(dataDir, "sessions", "gone", "history.jsonl"), JSON.stringify({ schema: 1 }));
+  missingDb.prepare("INSERT INTO sessions (id,owner_key,project_id,title,created_at,updated_at,conversation_ref,capability_versions) VALUES (?,?,?,?,?,?,?,?)").run("missing-session", "owner", "p", "missing", 1, 1, path.join(dataDir, "projects", "p", "sessions", "missing-session", "history.jsonl"), JSON.stringify({ schema: 1 }));
   missingDb.close();
   const missingPublished = spawnSync(backupBin, publishArgs, { cwd: process.cwd(), env: { ...process.env, AGENT_CWD: process.cwd(), DATA_DIR: dataDir, DB_PATH: dbPath, PI_AUTH_PATH: authPath }, encoding: "utf8" });
   if (missingPublished.status !== 0) throw new Error(`installed backup did not publish with a missing reference: ${missingPublished.stderr}`);
@@ -120,7 +120,7 @@ try {
   if (!missingLine) throw new Error("installed backup with a missing reference did not emit the machine report line");
   const missingReport = JSON.parse(missingLine.slice("backup-json-report: ".length));
   if (missingReport.status !== "published" || missingReport.dryRun !== false || missingReport.missingSessionReferences !== 1 || missingReport.strict !== undefined) throw new Error("installed machine report did not count the missing reference as missing-as-empty");
-  if ((missingPublished.stdout ?? "").includes("missing-session") || (missingPublished.stdout ?? "").includes(path.join("sessions", "gone"))) throw new Error("installed backup leaked a reference/path on the missing path");
+  if ((missingPublished.stdout ?? "").includes("missing-session") || (missingPublished.stdout ?? "").includes(path.join("projects", "p", "sessions", "missing-session"))) throw new Error("installed backup leaked a reference/path on the missing path");
   if (readdirSync(backupRoot).filter((entry) => entry.startsWith("backup-")).length !== 3) throw new Error("installed backup with a missing reference did not publish a third package");
 
   // Keep the safety-failure smoke independent of the successful E2E path.

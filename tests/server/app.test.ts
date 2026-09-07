@@ -56,7 +56,7 @@ async function createSession(
   app: FastifyInstance,
   ip: string,
   title?: string,
-): Promise<Omit<SessionRecord, "piSessionFile">> {
+): Promise<Omit<SessionRecord, "agentKind" | "conversationFormat" | "conversationRef">> {
   const res = await app.inject({
     method: "POST",
     url: "/v1/sessions",
@@ -131,10 +131,10 @@ describe("HTTP 层：鉴权与会话 CRUD（needs.md §4.2）", () => {
       const owner = OWNER_A;
       const other = OWNER_B;
       for (const rec of [
-        { id: "s-old", ownerKey: owner, projectId: DEFAULT_PROJECT_ID, title: "旧", createdAt: 1000, updatedAt: 1000, piSessionFile: null, modelProvider: null, modelId: null, thinkingLevel: null, systemPrompt: null, capabilityVersions: null },
-        { id: "s-new", ownerKey: owner, projectId: DEFAULT_PROJECT_ID, title: "新", createdAt: 3000, updatedAt: 3000, piSessionFile: null, modelProvider: null, modelId: null, thinkingLevel: null, systemPrompt: null, capabilityVersions: null },
-        { id: "s-mid", ownerKey: owner, projectId: DEFAULT_PROJECT_ID, title: "中", createdAt: 2000, updatedAt: 2000, piSessionFile: null, modelProvider: null, modelId: null, thinkingLevel: null, systemPrompt: null, capabilityVersions: null },
-        { id: "s-other", ownerKey: other, projectId: DEFAULT_PROJECT_ID, title: "他人", createdAt: 9999, updatedAt: 9999, piSessionFile: null, modelProvider: null, modelId: null, thinkingLevel: null, systemPrompt: null, capabilityVersions: null },
+        { id: "s-old", ownerKey: owner, projectId: DEFAULT_PROJECT_ID, title: "旧", createdAt: 1000, updatedAt: 1000, agentKind: "pi", conversationFormat: "pi-jsonl-v3", conversationRef: null, modelProvider: null, modelId: null, thinkingLevel: null, systemPrompt: null, capabilityVersions: null },
+        { id: "s-new", ownerKey: owner, projectId: DEFAULT_PROJECT_ID, title: "新", createdAt: 3000, updatedAt: 3000, agentKind: "pi", conversationFormat: "pi-jsonl-v3", conversationRef: null, modelProvider: null, modelId: null, thinkingLevel: null, systemPrompt: null, capabilityVersions: null },
+        { id: "s-mid", ownerKey: owner, projectId: DEFAULT_PROJECT_ID, title: "中", createdAt: 2000, updatedAt: 2000, agentKind: "pi", conversationFormat: "pi-jsonl-v3", conversationRef: null, modelProvider: null, modelId: null, thinkingLevel: null, systemPrompt: null, capabilityVersions: null },
+        { id: "s-other", ownerKey: other, projectId: DEFAULT_PROJECT_ID, title: "他人", createdAt: 9999, updatedAt: 9999, agentKind: "pi", conversationFormat: "pi-jsonl-v3", conversationRef: null, modelProvider: null, modelId: null, thinkingLevel: null, systemPrompt: null, capabilityVersions: null },
       ]) {
         await sessions.create(rec);
       }

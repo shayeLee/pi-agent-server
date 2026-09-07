@@ -19,7 +19,7 @@ import type {
   ModelDescriptor,
   ObservabilityPort,
   ProjectStorePort,
-  SessionHistoryReader,
+  ConversationStorageRegistry,
   SessionStorePort,
   SystemPromptPort,
 } from "../application/ports/index.js";
@@ -59,12 +59,10 @@ export type ServerDeps = {
   modelCatalog?: ModelCatalogPort;
   defaultModel?: ModelDescriptor | null;
   defaultThinkingLevel?: string;
+  /** 通用 runtime adapter 工厂；生产组合由 SessionConversationCoordinator 提供。 */
   createAdapter: (sessionId: string) => Promise<AgentAdapter>;
-  /**
-   * 只读会话历史解析口（WP5D-3 P1，生产组合 root 注入）：GET export 对「已持久化但
-   * 未实例化」的会话做零写只读导出；缺省只在测试/非生产组合缺失，命中即 failclosed。
-   */
-  sessionHistoryReader?: SessionHistoryReader;
+  /** 生产组合根注入的通用会话存储 registry；用于未实例化会话的只读导出。 */
+  conversationStorage?: ConversationStorageRegistry;
   /**
    * 可注入的 RuntimeRegistry（默认内部创建）：测试注入共享 registry 以便预置 runtime
    * 验证 SSE viewer 已有 runtime 的订阅路径；生产组合不传。
@@ -272,7 +270,7 @@ export function buildApp(deps: ServerDeps): FastifyInstance {
     systemPrompt: deps.systemPrompt,
     systemPromptResolver: deps.systemPromptResolver,
     capabilityVersions: deps.capabilityVersions,
-    sessionHistoryReader: deps.sessionHistoryReader,
+    conversationStorage: deps.conversationStorage,
     createId: randomUUID,
     now: Date.now,
   });
@@ -489,7 +487,7 @@ export function buildApp(deps: ServerDeps): FastifyInstance {
     // SSE is a transport concern: headers, connection limits, heartbeats and byte backpressure stay in HTTP.
     api.get<{ Params: { id: string } }>("/sessions/:id/events", { ...requirePermission("sessions:events") }, async (request, reply) => {
       // WP5D-3 P2 顺序红线：关闭检查与配额检查+占位必须在任何 runtime 创建/查询**之前**同步完成
-      // ——429/503 及后续所有拒绝路径零 adapter/DB/piSessionFile 副作用。
+      // ——429/503 及后续所有拒绝路径零 adapter/DB/conversation_ref 副作用。
       // 关闭中：拒绝建立新 SSE 连接，避免 preClose 之后晚建立的连接阻塞 close。
       if (closing) {
         return reply.code(503).send({ statusCode: 503, error: "Service Unavailable", message: "服务正在关闭" });

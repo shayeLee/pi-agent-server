@@ -6,7 +6,7 @@ import { DatabaseSync } from "node:sqlite";
 import { DEFAULT_PROJECT_ID } from "../../src/application/ports/project-store-port.js";
 import { migrationDefinitions } from "../../src/storage/migration-manifest.js";
 import { runSqliteMigrations, runSqliteMigrationsForTest } from "../../src/storage/migration-engine.js";
-import { FileOperationPathError, isRedactedFileOperationError, redactFileOperationError, sessionDeleteOperationKey } from "../../src/storage/file-operation-policy.js";
+import { artifactDeleteOperationKey, FileOperationPathError, isRedactedFileOperationError, redactFileOperationError } from "../../src/storage/file-operation-policy.js";
 import { makeInitializedMemoryDb, type SqliteTestStorage } from "../helpers/sqlite.js";
 
 const open: SqliteTestStorage[] = [];
@@ -42,7 +42,9 @@ describe("WP4A file_operations outbox（SQLite）", () => {
     await storage.projects.ensureDefaultProject({ id: DEFAULT_PROJECT_ID, name: "默认项目", cwd: root, ownerKey: "", createdAt: 0 });
     await storage.sessions.create({
       id: "s1", ownerKey: "owner", projectId: DEFAULT_PROJECT_ID, title: "t", createdAt: 1, updatedAt: 1,
-      piSessionFile: file, modelProvider: null, modelId: null, thinkingLevel: null,
+      agentKind: "pi",
+      conversationFormat: "pi-jsonl-v3",
+      conversationRef: file, modelProvider: null, modelId: null, thinkingLevel: null,
       systemPrompt: null, capabilityVersions: null,
     });
 
@@ -50,7 +52,7 @@ describe("WP4A file_operations outbox（SQLite）", () => {
     expect(await storage.sessions.get("s1")).toBeNull();
     expect(await storage.fileOperations.list()).toEqual([
       expect.objectContaining({
-        operationKey: sessionDeleteOperationKey("s1", "sessions/s1/history.jsonl"),
+        operationKey: artifactDeleteOperationKey("pi", "pi-jsonl-v3", "sessions/s1/history.jsonl"),
         kind: "delete",
         relativePath: "sessions/s1/history.jsonl",
         state: "pending",
@@ -71,7 +73,9 @@ describe("WP4A file_operations outbox（SQLite）", () => {
     for (const id of ["s1", "s2"]) {
       await storage.sessions.create({
         id, ownerKey: "owner", projectId: "p1", title: id, createdAt: 1, updatedAt: 1,
-        piSessionFile: join(root, "projects", "p1", "sessions", id, "history.jsonl"),
+        agentKind: "pi",
+        conversationFormat: "pi-jsonl-v3",
+        conversationRef: join(root, "projects", "p1", "sessions", id, "history.jsonl"),
         modelProvider: null, modelId: null, thinkingLevel: null, systemPrompt: null, capabilityVersions: null,
       });
     }
@@ -103,7 +107,7 @@ describe("WP4A file_operations outbox（SQLite）", () => {
     });
     expect(second).toEqual(first);
     const otherPath = await storage.fileOperations.enqueue({
-      operationKey: sessionDeleteOperationKey("idempotent", "sessions/idempotent/other.jsonl"),
+      operationKey: artifactDeleteOperationKey("pi", "pi-jsonl-v3", "sessions/idempotent/other.jsonl"),
       relativePath: "sessions/idempotent/other.jsonl",
       createdAt: 30,
     });
@@ -176,6 +180,21 @@ describe("WP4A file_operations outbox（SQLite）", () => {
     }
   });
 
+  it("artifact delete operationKey 不含 sessionId，且同一 artifact 恒定", () => {
+    const key = artifactDeleteOperationKey("pi", "pi-jsonl-v3", "sessions/s1-custom/history.jsonl");
+    expect(key).not.toContain("s1-custom");
+    // 同一 artifact（相对路径 + agent kind + conversation format）恒定
+    expect(artifactDeleteOperationKey("pi", "pi-jsonl-v3", "sessions/s1-custom/history.jsonl")).toBe(key);
+    // 不同路径或不同 kind/format 生成不同键
+    expect(artifactDeleteOperationKey("pi", "pi-jsonl-v3", "sessions/s2-custom/history.jsonl")).not.toBe(key);
+    expect(artifactDeleteOperationKey("pi", "pi-jsonl-v2", "sessions/s1-custom/history.jsonl")).not.toBe(key);
+    // 非空 kind/format 被拒绝
+    expect(() => artifactDeleteOperationKey("", "pi-jsonl-v3", "sessions/s1/history.jsonl")).toThrow(/agent kind/);
+    expect(() => artifactDeleteOperationKey("pi", "", "sessions/s1/history.jsonl")).toThrow(/conversation format/);
+    // 非白名单相对路径被拒绝
+    expect(() => artifactDeleteOperationKey("pi", "pi-jsonl-v3", "../escape.jsonl")).toThrow(FileOperationPathError);
+  });
+
   it("路径校验失败时事务整体回滚，项目/会话都保留且不产生 outbox", async () => {
     const root = mkdtempSync(join(tmpdir(), "pi-file-operation-rollback-"));
     const storage = await makeInitializedMemoryDb({ cwd: root, dataDir: root });
@@ -183,7 +202,9 @@ describe("WP4A file_operations outbox（SQLite）", () => {
     await storage.projects.create({ id: "p-bad", name: "P", cwd: root, ownerKey: "owner", createdAt: 1 });
     await storage.sessions.create({
       id: "s-bad", ownerKey: "owner", projectId: "p-bad", title: "bad", createdAt: 1, updatedAt: 1,
-      piSessionFile: "/outside/not-whitelisted.jsonl", modelProvider: null, modelId: null, thinkingLevel: null,
+      agentKind: "pi",
+      conversationFormat: "pi-jsonl-v3",
+      conversationRef: "/outside/not-whitelisted.jsonl", modelProvider: null, modelId: null, thinkingLevel: null,
       systemPrompt: null, capabilityVersions: null,
     });
     await expect(storage.projects.deleteProjectWithSessions("p-bad", ["s-bad"])).rejects.toBeInstanceOf(FileOperationPathError);

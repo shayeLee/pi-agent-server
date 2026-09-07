@@ -17,7 +17,7 @@ export const FILE_OPERATION_TRANSITIONS: Readonly<Record<FileOperationState, rea
 
 export interface FileOperationRecord {
   id: string;
-  /** 稳定且绑定相对路径的业务幂等键，例如 delete-session:<sessionId>:<path-digest>。 */
+  /** 稳定且绑定 agent kind + conversation format + 相对路径的业务幂等键，例如 delete-artifact:<agentKind>:<conversationFormat>:<path-digest>（不含 sessionId）。 */
   operationKey: string;
   kind: FileOperationKind;
   /** 相对 DATA_DIR 的、经过白名单校验的 JSONL 路径。 */

@@ -24,7 +24,7 @@ async function fixture(realAge = true, options: { customAgentDir?: boolean; exte
   const dataDir = path.join(root, "source-data");
   const agentDir = options.customAgentDir ? path.join(root, "custom-agent") : path.join(dataDir, ".pi-agent");
   const backupRoot = path.join(root, "source-backups");
-  mkdirSync(path.join(dataDir, "sessions", "s1"), { recursive: true, mode: 0o700 });
+  mkdirSync(path.join(dataDir, "projects", "p", "sessions", "db-session"), { recursive: true, mode: 0o700 });
   mkdirSync(path.join(dataDir, "projects"), { recursive: true, mode: 0o700 });
   mkdirSync(agentDir, { recursive: true, mode: 0o700 });
   mkdirSync(backupRoot, { recursive: true, mode: 0o700 });
@@ -35,8 +35,8 @@ async function fixture(realAge = true, options: { customAgentDir?: boolean; exte
   // Current single-baseline world: the canonical v0 baseline builds the full schema.
   await runSqliteMigrations(db, { mode: "apply" });
   db.prepare("INSERT INTO projects (id,name,cwd,owner_key,created_at) VALUES (?,?,?,?,?)").run("p", "project", "/source/project", "owner", 1);
-  const sessionFile = path.join(dataDir, "sessions", "s1", "history.jsonl");
-  db.prepare("INSERT INTO sessions (id,owner_key,project_id,title,created_at,updated_at,pi_session_file,capability_versions) VALUES (?,?,?,?,?,?,?,?)").run("db-session", "owner", "p", "session", 1, 1, sessionFile, JSON.stringify({ schema: 1 }));
+  const sessionFile = path.join(dataDir, "projects", "p", "sessions", "db-session", "history.jsonl");
+  db.prepare("INSERT INTO sessions (id,owner_key,project_id,title,created_at,updated_at,conversation_ref,capability_versions) VALUES (?,?,?,?,?,?,?,?)").run("db-session", "owner", "p", "session", 1, 1, sessionFile, JSON.stringify({ schema: 1 }));
   db.prepare("INSERT INTO idempotency (session_id,request_id,result,created_at) VALUES (?,?,?,?)").run("db-session", "request", JSON.stringify({ accepted: true }), 1);
   db.close();
   writeFileSync(sessionFile, '{"type":"session","version":3,"id":"pi-header","timestamp":"2024-01-01T00:00:00.000Z","cwd":"/source/project"}\n{"type":"message","id":"entry","parentId":null,"timestamp":"2024-01-01T00:00:00.000Z","message":{"role":"user","content":"hello","timestamp":1}}\n', { mode: 0o600 });
@@ -265,12 +265,12 @@ describe("SQLite restore drill", () => {
   });
   it("runs the complete core path with an injectable crypto adapter and preserves payload hashes", async () => {
     const f = await fixture(false);
-    const sourceFile = path.join(f.dataDir, "sessions", "s1", "history.jsonl");
+    const sourceFile = path.join(f.dataDir, "projects", "p", "sessions", "db-session", "history.jsonl");
     const sourceBytes = readFileSync(sourceFile);
     const backup = await createSqliteBackup({ paths: { dataDir: f.dataDir, dbPath: f.dbPath, backupRoot: f.backupRoot, ageRecipientFile: f.recipient }, age: fakeAge() });
     const result = await restoreSqliteBackup({ paths: { inputBackup: backup.finalPath!, targetRoot: path.join(f.root, "restore-target"), ageIdentityFile: f.identity }, age: fakeAge() });
     expect(result.finalPath).toBeTruthy();
-    expect(readFileSync(path.join(result.finalPath!, "sessions/s1/history.jsonl"))).toEqual(sourceBytes);
+    expect(readFileSync(path.join(result.finalPath!, "projects/p/sessions/db-session/history.jsonl"))).toEqual(sourceBytes);
     expect(existsSync(path.join(result.finalPath!, ".manifest.json"))).toBe(false);
   });
 
@@ -306,9 +306,9 @@ describe("SQLite restore drill", () => {
     expect(result.report.counts).toMatchObject({ projects: 1, sessions: 1, idempotencyRows: 1, jsonlFiles: 1, sessionHeaders: 1 });
     expect(result.finalPath).toBeTruthy();
     const restoredDb = new DatabaseSync(path.join(result.finalPath!, "pi-agent-server.db"), { readOnly: true });
-    const row = restoredDb.prepare("SELECT pi_session_file FROM sessions").get() as { pi_session_file: string };
-    expect(row.pi_session_file).toContain(`${path.basename(result.finalPath!)}/sessions/s1/history.jsonl`);
-    expect(row.pi_session_file).not.toContain(f.dataDir);
+    const row = restoredDb.prepare("SELECT conversation_ref FROM sessions").get() as { conversation_ref: string };
+    expect(row.conversation_ref).toContain(`${path.basename(result.finalPath!)}/projects/p/sessions/db-session/history.jsonl`);
+    expect(row.conversation_ref).not.toContain(f.dataDir);
     restoredDb.close();
     expect(readFileSync(f.dbPath)).toEqual(sourceBefore);
     expect(existsSync(path.join(result.finalPath!, ".manifest.json"))).toBe(false);
@@ -398,12 +398,12 @@ describe("SQLite restore drill", () => {
 
   it("reports an exact missing session reference, normalizes its reference to NULL, then rejects a mismatched mapping", async () => {
     const f = await fixture(false);
-    const missing = path.join(f.dataDir, "sessions", "gone", "history.jsonl");
+    const missing = path.join(f.dataDir, "projects", "p", "sessions", "missing-session", "missing.jsonl");
+    const sharedMissing = path.join(f.dataDir, "projects", "p", "sessions", "missing-shared", "missing.jsonl");
     const db = new DatabaseSync(f.dbPath);
-    db.prepare("INSERT INTO sessions (id,owner_key,project_id,title,created_at,updated_at,pi_session_file,capability_versions) VALUES (?,?,?,?,?,?,?,?)").run("missing-session", "owner", "p", "missing", 1, 1, missing, null);
-    // pi_session_file is not unique: two metadata sessions may share the same
-    // missing history, and both (sessionId,path) records must be restorable.
-    db.prepare("INSERT INTO sessions (id,owner_key,project_id,title,created_at,updated_at,pi_session_file,capability_versions) VALUES (?,?,?,?,?,?,?,?)").run("missing-shared", "owner", "p", "missing shared", 1, 1, missing, null);
+    db.prepare("INSERT INTO sessions (id,owner_key,project_id,title,created_at,updated_at,conversation_ref,capability_versions) VALUES (?,?,?,?,?,?,?,?)").run("missing-session", "owner", "p", "missing", 1, 1, missing, null);
+    // Pi 路径必须绑定各自的 session/project；每个缺失引用独立归一。
+    db.prepare("INSERT INTO sessions (id,owner_key,project_id,title,created_at,updated_at,conversation_ref,capability_versions) VALUES (?,?,?,?,?,?,?,?)").run("missing-shared", "owner", "p", "missing shared", 1, 1, sharedMissing, null);
     db.close();
     const backup = await createSqliteBackup({ paths: { dataDir: f.dataDir, dbPath: f.dbPath, backupRoot: f.backupRoot, ageRecipientFile: f.recipient }, age: fakeAge() });
     const target = path.join(f.root, "missing-target");
@@ -411,10 +411,10 @@ describe("SQLite restore drill", () => {
     expect(restored.report.counts.missingSessionReferences).toBe(2);
     expect(restored.report.counts.invalidSessionHistories).toBe(0);
     const finalDb = new DatabaseSync(path.join(restored.finalPath!, "pi-agent-server.db"), { readOnly: true });
-    const rows = finalDb.prepare("SELECT id, pi_session_file FROM sessions WHERE id IN ('missing-session', 'missing-shared') ORDER BY id").all() as Array<{ id: string; pi_session_file: string | null }>;
+    const rows = finalDb.prepare("SELECT id, conversation_ref FROM sessions WHERE id IN ('missing-session', 'missing-shared') ORDER BY id").all() as Array<{ id: string; conversation_ref: string | null }>;
     finalDb.close();
-    // missing-as-empty：共享缺失路径的两个引用均独立归一为 NULL。
-    expect(rows).toEqual([{ id: "missing-session", pi_session_file: null }, { id: "missing-shared", pi_session_file: null }]);
+    // missing-as-empty：两个规范缺失引用均独立归一为 NULL。
+    expect(rows).toEqual([{ id: "missing-session", conversation_ref: null }, { id: "missing-shared", conversation_ref: null }]);
 
     rewriteManifest(backup.finalPath!, (manifest) => { manifest.missingSessionReferences[0].sessionId = "wrong-session"; });
     const mismatchTarget = path.join(f.root, "missing-mismatch-target");
@@ -429,7 +429,7 @@ describe("SQLite restore drill", () => {
   ])("degrades JSONL %s (invalid-as-empty): restores the session without history, nulls the reference and reports the count", async (_label, text) => {
     const f = await fixture(false);
     const backup = await createSqliteBackup({ paths: { dataDir: f.dataDir, dbPath: f.dbPath, backupRoot: f.backupRoot, ageRecipientFile: f.recipient }, age: fakeAge() });
-    rewritePayload(backup.finalPath!, "payload/sessions/s1/history.jsonl.age", () => Buffer.from(`${text}\n`, "utf8"));
+    rewritePayload(backup.finalPath!, "payload/projects/p/sessions/db-session/history.jsonl.age", () => Buffer.from(`${text}\n`, "utf8"));
     const target = path.join(f.root, `jsonl-${(_label as string).replaceAll(" ", "-")}`);
     const restored = await restoreSqliteBackup({ paths: { inputBackup: backup.finalPath!, targetRoot: target, ageIdentityFile: f.identity }, age: fakeAge() });
     expect(restored.finalPath).toBeTruthy();
@@ -438,11 +438,11 @@ describe("SQLite restore drill", () => {
     expect(restored.report.counts.sessionHeaders).toBe(0);
     expect(restored.report.counts.missingSessionReferences).toBe(0);
     // 无效历史被丢弃：restored 输出里没有该 JSONL，DB 引用归一为 NULL。
-    expect(existsSync(path.join(restored.finalPath!, "sessions/s1/history.jsonl"))).toBe(false);
+    expect(existsSync(path.join(restored.finalPath!, "projects/p/sessions/db-session/history.jsonl"))).toBe(false);
     const finalDb = new DatabaseSync(path.join(restored.finalPath!, "pi-agent-server.db"), { readOnly: true });
-    const row = finalDb.prepare("SELECT pi_session_file FROM sessions WHERE id = 'db-session'").get() as { pi_session_file: string | null };
+    const row = finalDb.prepare("SELECT conversation_ref FROM sessions WHERE id = 'db-session'").get() as { conversation_ref: string | null };
     finalDb.close();
-    expect(row.pi_session_file).toBeNull();
+    expect(row.conversation_ref).toBeNull();
   });
 
   it("rejects a package without the canonical single-baseline migration ledger before payload staging", async () => {
@@ -461,41 +461,41 @@ describe("SQLite restore drill", () => {
     const f = await fixture(false);
     const backup = await createSqliteBackup({ paths: { dataDir: f.dataDir, dbPath: f.dbPath, backupRoot: f.backupRoot, ageRecipientFile: f.recipient }, age: fakeAge() });
     const v1 = '{"type":"session","id":"legacy-header","timestamp":"2024-01-01T00:00:00.000Z","cwd":"/source/project"}\n{"type":"message","message":{"role":"user","content":"legacy"}}\n';
-    rewritePayload(backup.finalPath!, "payload/sessions/s1/history.jsonl.age", () => Buffer.from(v1, "utf8"));
+    rewritePayload(backup.finalPath!, "payload/projects/p/sessions/db-session/history.jsonl.age", () => Buffer.from(v1, "utf8"));
     const restored = await restoreSqliteBackup({ paths: { inputBackup: backup.finalPath!, targetRoot: path.join(f.root, "restore-v1-rejected"), ageIdentityFile: f.identity }, age: fakeAge() });
     expect(restored.report.counts.invalidSessionHistories).toBe(1);
     expect(restored.report.counts.sessionHeaders).toBe(0);
-    expect(existsSync(path.join(restored.finalPath!, "sessions/s1/history.jsonl"))).toBe(false);
+    expect(existsSync(path.join(restored.finalPath!, "projects/p/sessions/db-session/history.jsonl"))).toBe(false);
     const finalDb = new DatabaseSync(path.join(restored.finalPath!, "pi-agent-server.db"), { readOnly: true });
-    const row = finalDb.prepare("SELECT pi_session_file FROM sessions WHERE id = 'db-session'").get() as { pi_session_file: string | null };
+    const row = finalDb.prepare("SELECT conversation_ref FROM sessions WHERE id = 'db-session'").get() as { conversation_ref: string | null };
     finalDb.close();
-    expect(row.pi_session_file).toBeNull();
+    expect(row.conversation_ref).toBeNull();
   });
 
   it("restores companion sessions when one history is invalid: the package succeeds and only the invalid history is discarded", async () => {
     const f = await fixture(false);
     // 第二个完整会话：文件 + 行均有效，必须照常恢复。
-    const companionFile = path.join(f.dataDir, "sessions", "s2", "companion.jsonl");
+    const companionFile = path.join(f.dataDir, "projects", "p", "sessions", "companion", "companion.jsonl");
     mkdirSync(path.dirname(companionFile), { recursive: true, mode: 0o700 });
     writeFileSync(companionFile, '{"type":"session","version":3,"id":"companion-header","timestamp":"2024-01-01T00:00:00.000Z","cwd":"/source/project"}\n', { mode: 0o600 });
     const db = new DatabaseSync(f.dbPath);
-    db.prepare("INSERT INTO sessions (id,owner_key,project_id,title,created_at,updated_at,pi_session_file,capability_versions) VALUES (?,?,?,?,?,?,?,?)").run("companion", "owner", "p", "companion", 1, 1, companionFile, null);
+    db.prepare("INSERT INTO sessions (id,owner_key,project_id,title,created_at,updated_at,conversation_ref,capability_versions) VALUES (?,?,?,?,?,?,?,?)").run("companion", "owner", "p", "companion", 1, 1, companionFile, null);
     db.close();
     const backup = await createSqliteBackup({ paths: { dataDir: f.dataDir, dbPath: f.dbPath, backupRoot: f.backupRoot, ageRecipientFile: f.recipient }, age: fakeAge() });
     // 把 db-session 的历史改成无效内容（包级 hash 同步更新，保持字节完整性）。
-    rewritePayload(backup.finalPath!, "payload/sessions/s1/history.jsonl.age", () => Buffer.from('{"type":"session","id":"h"},{"not":"jsonl"}\n', "utf8"));
+    rewritePayload(backup.finalPath!, "payload/projects/p/sessions/db-session/history.jsonl.age", () => Buffer.from('{"type":"session","id":"h"},{"not":"jsonl"}\n', "utf8"));
     const restored = await restoreSqliteBackup({ paths: { inputBackup: backup.finalPath!, targetRoot: path.join(f.root, "restore-companion"), ageIdentityFile: f.identity }, age: fakeAge() });
     expect(restored.report.status).toBe("success");
     expect(restored.report.counts.invalidSessionHistories).toBe(1);
     expect(restored.report.counts.sessionHeaders).toBe(1);
     expect(restored.report.counts.jsonlFiles).toBe(2);
     const finalDb = new DatabaseSync(path.join(restored.finalPath!, "pi-agent-server.db"), { readOnly: true });
-    const rows = finalDb.prepare("SELECT id, pi_session_file FROM sessions ORDER BY id").all() as Array<{ id: string; pi_session_file: string | null }>;
+    const rows = finalDb.prepare("SELECT id, conversation_ref FROM sessions ORDER BY id").all() as Array<{ id: string; conversation_ref: string | null }>;
     finalDb.close();
-    const byId = new Map(rows.map((row) => [row.id, row.pi_session_file]));
+    const byId = new Map(rows.map((row) => [row.id, row.conversation_ref]));
     expect(byId.get("db-session")).toBeNull();
-    expect(byId.get("companion")?.endsWith("sessions/s2/companion.jsonl")).toBe(true);
-    expect(readFileSync(path.join(restored.finalPath!, "sessions/s2/companion.jsonl")).toString()).toContain("companion-header");
-    expect(existsSync(path.join(restored.finalPath!, "sessions/s1/history.jsonl"))).toBe(false);
+    expect(byId.get("companion")?.endsWith("projects/p/sessions/companion/companion.jsonl")).toBe(true);
+    expect(readFileSync(path.join(restored.finalPath!, "projects/p/sessions/companion/companion.jsonl")).toString()).toContain("companion-header");
+    expect(existsSync(path.join(restored.finalPath!, "projects/p/sessions/db-session/history.jsonl"))).toBe(false);
   });
 });

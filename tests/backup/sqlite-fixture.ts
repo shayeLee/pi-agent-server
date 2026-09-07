@@ -29,7 +29,7 @@ export function createCanonicalSqliteBaseline(db: DatabaseSync): void {
   db.prepare("INSERT INTO schema_migrations VALUES (0, 'initial-schema', ?, 1)").run(migrationChecksum(migrationDefinitions[0]!));
 }
 
-/** Insert one canonical sessions row (only pi_session_file is caller-provided). */
+/** Insert one canonical sessions row (only conversation_ref is caller-provided). */
 export function insertCanonicalSession(db: DatabaseSync, id: string, file: string): void {
   // The canonical sessions.project_id FK references projects.id; ensure the
   // immutable DEFAULT_PROJECT_ID row exists so the inserted session is a valid
@@ -38,7 +38,7 @@ export function insertCanonicalSession(db: DatabaseSync, id: string, file: strin
     "INSERT OR IGNORE INTO projects (id, name, cwd, owner_key, created_at) VALUES (?, ?, ?, ?, ?)",
   ).run(DEFAULT_PROJECT_ID, "default", "/", "owner", 1);
   db.prepare(
-    "INSERT INTO sessions (id, owner_key, project_id, title, created_at, updated_at, pi_session_file) " +
+    "INSERT INTO sessions (id, owner_key, project_id, title, created_at, updated_at, conversation_ref) " +
     "VALUES (?, ?, ?, ?, ?, ?, ?)",
   ).run(id, "owner", DEFAULT_PROJECT_ID, id, 1, 1, file);
 }

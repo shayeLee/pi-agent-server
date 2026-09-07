@@ -24,6 +24,7 @@ import path from "node:path";
 import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
 import { runSqliteMigrations } from "../storage/migration-engine.js";
+import { classifyPiJsonlReference } from "../agent/pi-jsonl-reference.js";
 import { migrationPrefixForLedger, type MigrationDefinition, type MigrationLedgerSnapshot } from "../storage/migration-manifest.js";
 import { stableSerialize } from "../storage/migration-manifest.js";
 import { validateRestoredFileOperations } from "./restore-validation.js";
@@ -383,7 +384,7 @@ function validateManifest(value: unknown): BackupManifest {
     const relative = relativePayloadPath(reference.path);
     const key = `${reference.sessionId}\u0000${relative}`;
     // Several sessions may legitimately share a missing JSONL path; the DB has
-    // no uniqueness constraint on pi_session_file, and restore normalizes each
+    // no uniqueness constraint on conversation_ref, and restore normalizes each
     // (sessionId, path) mapping independently.
     if (!isJsonlRelative(relative) || missingKeys.has(key) || seen.has(`payload/${relative}.age`)) fail("manifest missing-reference metadata conflicts with payloads");
     missingKeys.add(key);
@@ -516,13 +517,13 @@ export function parseJsonl(file: string): number {
 }
 
 export function deriveRelativeSessionPath(source: string): string {
-  if (!path.isAbsolute(source)) fail("sessions.pi_session_file is not absolute");
+  if (!path.isAbsolute(source)) fail("session conversation reference is not absolute");
   const parts = source.split(path.sep).filter(Boolean);
   const projects = parts.lastIndexOf("projects");
   if (projects >= 0 && parts.length === projects + 5 && parts[projects + 2] === "sessions" && parts.at(-1)?.endsWith(".jsonl")) return parts.slice(projects).join("/");
   const sessions = parts.lastIndexOf("sessions");
   if (sessions >= 0 && parts.length === sessions + 3 && parts.at(-1)?.endsWith(".jsonl")) return parts.slice(sessions).join("/");
-  fail("sessions.pi_session_file is outside the restore data layout");
+  fail("session conversation reference is outside the restore data layout");
 }
 
 type RestoreMigrationContext = {
@@ -565,36 +566,46 @@ function remapDatabase(dbPath: string, finalPath: string, manifest: BackupManife
     if (!table) fail("restored database has no sessions table");
     const missingKeys = new Set(manifest.missingSessionReferences.map((reference) => `${reference.sessionId}\u0000${reference.path}`));
     const consumedMissing = new Set<string>();
-    const rows = db.prepare("SELECT id, pi_session_file FROM sessions WHERE pi_session_file IS NOT NULL").all() as Array<{ id: unknown; pi_session_file: unknown }>;
+    const rows = db.prepare("SELECT id, project_id, agent_kind, conversation_format, conversation_ref FROM sessions WHERE conversation_ref IS NOT NULL").all() as Array<{ id: unknown; project_id: unknown; agent_kind: unknown; conversation_format: unknown; conversation_ref: unknown }>;
     let missing = 0;
     db.exec("BEGIN IMMEDIATE");
     try {
       for (const row of rows) {
-        if (typeof row.id !== "string" || typeof row.pi_session_file !== "string") fail("restored session reference is malformed");
-        const relative = deriveRelativeSessionPath(row.pi_session_file);
+        if (typeof row.id !== "string" || typeof row.project_id !== "string" || row.agent_kind !== "pi" || row.conversation_format !== "pi-jsonl-v3" || typeof row.conversation_ref !== "string") fail("restored session conversation reference is malformed");
+        const relative = deriveRelativeSessionPath(row.conversation_ref);
         const payloadRelative = `payload/${relative}.age`;
         const restored = path.join(finalPath, relative);
         if (!within(finalPath, restored) || !isJsonlRelative(relative)) fail("restored session reference escapes target data directory");
+        const classification = classifyPiJsonlReference(finalPath, {
+          sessionId: row.id,
+          projectId: row.project_id,
+          agentKind: row.agent_kind,
+          conversationFormat: row.conversation_format,
+          conversationRef: restored,
+        });
+        if (classification.kind !== "valid" || !classification.idsMatch || classification.canonical !== relative) {
+          fail("restored session conversation reference does not match its Pi session/project layout");
+        }
         const missingKey = `${row.id}\u0000${relative}`;
         if (missingKeys.has(missingKey)) {
           // Missing-as-empty: the referenced history never existed at backup
           // time, so the restored session has no history.
           missing++;
           consumedMissing.add(missingKey);
-          db.prepare("UPDATE sessions SET pi_session_file = NULL WHERE id = ?").run(row.id);
+          db.prepare("UPDATE sessions SET conversation_ref = NULL WHERE id = ?").run(row.id);
           continue;
         }
         if (invalidHistories.has(relative)) {
           // Invalid-as-empty degradation: the payload bytes are authentic
           // (package integrity already passed) but the history is not a valid
           // Pi session, so the history is discarded and the reference nulled.
-          db.prepare("UPDATE sessions SET pi_session_file = NULL WHERE id = ?").run(row.id);
+          db.prepare("UPDATE sessions SET conversation_ref = NULL WHERE id = ?").run(row.id);
           continue;
         }
         if (!included.has(payloadRelative) || !existsSync(path.join(path.dirname(dbPath), relative))) {
           fail("restored session reference has no matching manifest payload");
         }
-        db.prepare("UPDATE sessions SET pi_session_file = ? WHERE id = ?").run(restored, row.id);
+        db.prepare("UPDATE sessions SET conversation_ref = ? WHERE id = ?").run(restored, row.id);
       }
       if (consumedMissing.size !== missingKeys.size) fail("manifest missing session references do not match the database exactly");
       db.exec("COMMIT");
@@ -638,7 +649,7 @@ async function validateDatabase(
     if (ledgerRows.some((row) => !Number.isSafeInteger(row.version) || typeof row.name !== "string" || typeof row.checksum !== "string" || !Number.isSafeInteger(row.applied_at))) fail("restored migration ledger is malformed");
     const normalizedLedger = ledgerRows.map((row) => ({ version: Number(row.version), name: row.name as string, checksum: row.checksum as string, applied_at: Number(row.applied_at) }));
     const projects = db.prepare("SELECT id, name, cwd, owner_key FROM projects").all() as Array<Record<string, unknown>>;
-    const sessions = db.prepare("SELECT id, owner_key, project_id, title, pi_session_file, capability_versions FROM sessions").all() as Array<Record<string, unknown>>;
+    const sessions = db.prepare("SELECT id, owner_key, project_id, title, agent_kind, conversation_format, conversation_ref, capability_versions FROM sessions").all() as Array<Record<string, unknown>>;
     const idempotency = db.prepare("SELECT session_id, request_id, result FROM idempotency").all() as Array<Record<string, unknown>>;
     // The canonical single baseline always ships file_operations; restore
     // validates its rows but never executes any pending deletion task.
@@ -646,8 +657,9 @@ async function validateDatabase(
     validateRestoredFileOperations(fileOperations);
     for (const row of projects) if (![row.id, row.name, row.cwd, row.owner_key].every((value) => typeof value === "string")) fail("restored project data is malformed");
     for (const row of sessions) {
-      if (![row.id, row.owner_key, row.project_id, row.title].every((value) => typeof value === "string")) fail("restored session data is malformed");
-      if (row.pi_session_file !== null && (typeof row.pi_session_file !== "string" || !path.isAbsolute(row.pi_session_file) || !within(finalPath, row.pi_session_file))) fail("restored session path was not safely remapped");
+      if (![row.id, row.owner_key, row.project_id, row.title, row.agent_kind, row.conversation_format].every((value) => typeof value === "string")) fail("restored session data is malformed");
+      if (row.agent_kind !== "pi" || row.conversation_format !== "pi-jsonl-v3") fail("restored session uses an unsupported conversation kind or format");
+      if (row.conversation_ref !== null && (typeof row.conversation_ref !== "string" || !path.isAbsolute(row.conversation_ref) || !within(finalPath, row.conversation_ref))) fail("restored session conversation reference was not safely remapped");
       if (row.capability_versions !== null) { try { JSON.parse(String(row.capability_versions)); } catch { fail("restored capability_versions is invalid JSON"); } }
     }
     for (const row of idempotency) {

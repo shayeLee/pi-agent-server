@@ -2,11 +2,12 @@ import { afterEach, describe, expect, it } from "vitest";
 import { SessionService, MAX_ID_RETRIES, type CreateSessionResult } from "../../src/application/session-service.js";
 import { DEFAULT_PROJECT_ID } from "../../src/application/ports/project-store-port.js";
 import { DuplicateIdError, ProjectForeignKeyError } from "../../src/application/ports/store-errors.js";
+import { ConversationStorageRegistry } from "../../src/application/ports/index.js";
 import type {
+  ConversationReservationInput,
   ModelCatalogPort,
   ProjectRecord,
   ProjectStorePort,
-  SessionHistoryReader,
   SessionRecord,
   SessionRecordPatch,
   SessionStorePort,
@@ -33,6 +34,24 @@ class MemorySessions implements SessionStorePort {
     const current = this.records.get(id);
     if (!current) return false;
     this.records.set(id, { ...current, ...patch });
+    return true;
+  }
+  async reserveConversation(id: string, reservation: ConversationReservationInput) {
+    const current = this.records.get(id);
+    if (!current || current.conversationRef !== null) return false;
+    this.records.set(id, { ...current, conversationRef: reservation.conversationRef });
+    return true;
+  }
+  async commitConversationReservation(id: string, expectedRef: string, actualRef: string) {
+    const current = this.records.get(id);
+    if (!current || current.conversationRef !== expectedRef) return false;
+    this.records.set(id, { ...current, conversationRef: actualRef });
+    return true;
+  }
+  async releaseConversationReservation(id: string, expectedRef: string) {
+    const current = this.records.get(id);
+    if (!current || current.conversationRef !== expectedRef) return false;
+    this.records.set(id, { ...current, conversationRef: null });
     return true;
   }
   async delete(id: string) { return this.records.delete(id); }
@@ -184,7 +203,7 @@ function makeService(
   projectsOverride?: MemoryProjects,
   now: () => number = () => 1234,
   systemPromptResolver?: (cwd: string) => Promise<string>,
-  sessionHistoryReader?: SessionHistoryReader,
+  conversationStorage?: ConversationStorageRegistry,
 ) {
   const projects = projectsOverride ?? new MemoryProjects(sessions);
   // 默认项目落库（与真实 SQLite 实现的 ensureDefaultProject 对齐）：resolveProject 现按查库判定。
@@ -212,8 +231,7 @@ function makeService(
     createId,
     now,
     systemPromptResolver: systemPromptResolver ? { resolve: systemPromptResolver } : undefined,
-    sessionHistoryReader,
-    removeSessionFile: async (path) => { removed.push(path); },
+    conversationStorage,
   });
   return { service, sessions, projects, adapters, removed };
 }
@@ -483,14 +501,23 @@ describe("SessionService", () => {
       undefined,
       undefined,
       undefined,
-      // WP5D-3 P1：只读解析口（有文件但未实例化的会话经它零写导出，绝不实例化 runtime）。
-      { readSessionHistory: async (file: string) => { readCalls.push(file); return []; } },
+      // 只读存储（有引用但未实例化的会话经它零写导出，绝不实例化 runtime）。
+      (() => {
+        const storage = new ConversationStorageRegistry();
+        storage.register({
+          agentKind: "pi",
+          conversationFormat: "pi-jsonl-v3",
+          readExport: async (conversation) => { readCalls.push(conversation.conversationRef!); return []; },
+          planCleanup: () => null,
+        });
+        return storage;
+      })(),
     );
     await projects.create({ id: "project-a", name: "A", cwd: "/workspace/a", ownerKey: "owner-a", createdAt: 1 });
     const first = createdSession(await service.createSession("owner-a", { projectId: "project-a" }));
     const second = createdSession(await service.createSession("owner-a", { projectId: "project-a" }));
-    await sessions.update(first.id, { piSessionFile: "/tmp/first.jsonl" });
-    await sessions.update(second.id, { piSessionFile: "/tmp/second.jsonl" });
+    await sessions.reserveConversation(first.id, { conversationRef: "/tmp/first.jsonl", tombstoneOperationKey: "tombstone-first" });
+    await sessions.reserveConversation(second.id, { conversationRef: "/tmp/second.jsonl", tombstoneOperationKey: "tombstone-second" });
 
     // 有文件但无 runtime：只经只读解析口导出（同一投影），不创建 adapter、不写 DB/文件。
     expect(await service.exportSession("owner-a", first.id)).toEqual({ messages: [], lastEventId: 0 });

@@ -9,7 +9,7 @@
 // - face 用 runPostgresMigrations apply（**含 ledger**）建随机专属 schema；种子
 //   数据一律 $1 参数绑定，绝不用 ident() 拼值；不在文件系统创建/写入任何文件——
 //   DATA_DIR 只是参与词法绑定的字符串；
-// - 受控只读引用（session id/project id/pi_session_file）在真实 PG 上取数；
+// - 受控只读引用（session id/project id/conversation_ref）在真实 PG 上取数；
 // - 连接串严格校验（协议/host/database 显式、禁止 fragment）；CLI/库层有界超时
 //   （connect/query/statement/lock）；readOnly URL 保留随机 schema search_path
 //   并强制只读（SHOW 双断言），迁移 verify 只读可用，写操作被服务端拒绝；
@@ -130,12 +130,12 @@ describePg("WP4C reconcile analyzer（real PostgreSQL）", () => {
     }
   });
 
-  async function seedSessions(rows: Array<{ sessionId: string; projectId?: string; piSessionFile: string | null }>): Promise<void> {
+  async function seedSessions(rows: Array<{ sessionId: string; projectId?: string; conversationRef: string | null }>): Promise<void> {
     for (const row of rows) {
       await pool!.query(
-        `INSERT INTO sessions (id, owner_key, project_id, title, created_at, updated_at, pi_session_file, model_provider, model_id, thinking_level, system_prompt, capability_versions)
+        `INSERT INTO sessions (id, owner_key, project_id, title, created_at, updated_at, conversation_ref, model_provider, model_id, thinking_level, system_prompt, capability_versions)
          VALUES ($1, $2, $3, $4, $5, $6, $7, NULL, NULL, NULL, NULL, NULL)`,
-        [row.sessionId, "owner", row.projectId ?? DEFAULT_PROJECT_ID, "title", 1, 1, row.piSessionFile],
+        [row.sessionId, "owner", row.projectId ?? DEFAULT_PROJECT_ID, "title", 1, 1, row.conversationRef],
       );
     }
   }
@@ -146,11 +146,13 @@ describePg("WP4C reconcile analyzer（real PostgreSQL）", () => {
     const s2 = randomUUID();
     const s3 = randomUUID();
     const s4 = randomUUID();
+    // 非空 conversation identity 唯一约束禁止共享同一引用：s4 使用自己独占的合法引用。
+    const s4File = path.join(DATA_DIR, "sessions", s4, "2025-01-01T00-00-00_x.jsonl");
     await seedSessions([
-      { sessionId: s1, piSessionFile: validFile }, // valid（文件无需存在：不扫描）
-      { sessionId: s2, piSessionFile: null }, // unmaterialized（normal）
-      { sessionId: s3, piSessionFile: path.join(DATA_DIR, "..", "escape.jsonl") }, // traversal → invalid
-      { sessionId: s4, piSessionFile: validFile }, // duplicate（owner 是 s1）
+      { sessionId: s1, conversationRef: validFile }, // valid（文件无需存在：不扫描）
+      { sessionId: s2, conversationRef: null }, // unmaterialized（normal）
+      { sessionId: s3, conversationRef: path.join(DATA_DIR, "..", "escape.jsonl") }, // traversal → invalid
+      { sessionId: s4, conversationRef: s4File }, // valid（独占引用，唯一约束禁止共享）
     ]);
 
     // 经生产代码（enforceReadOnlyPostgresUrl）构造只读 URL：严格解析仅 search_path
@@ -187,9 +189,9 @@ describePg("WP4C reconcile analyzer（real PostgreSQL）", () => {
       expect(report.cannotDetect).toEqual({ orphanFile: false, lostFile: false, jsonlValidity: false });
       expect(report.references).toBe(4);
       expect(report.unmaterialized).toBe(1);
-      expect(report.valid).toBe(1);
+      expect(report.valid).toBe(2); // s1 + s4（各自独占引用）
       expect(report.invalidReferences).toBe(1);
-      expect(report.duplicateReferences).toBe(1);
+      expect(report.duplicateReferences).toBe(0); // 唯一约束使共享非空引用不可能
       // 报告无路径/URL/schema/session id 泄漏。
       const serialized = JSON.stringify(report);
       expect(serialized).not.toContain("sessions");
@@ -201,7 +203,7 @@ describePg("WP4C reconcile analyzer（real PostgreSQL）", () => {
       // 零 DB 变化。
       const count = await readOnlyPool.query("SELECT count(*) AS n FROM sessions");
       expect(Number(count.rows[0]?.n)).toBe(4);
-      const unchanged = await readOnlyPool.query("SELECT id, pi_session_file FROM sessions ORDER BY id");
+      const unchanged = await readOnlyPool.query("SELECT id, conversation_ref FROM sessions ORDER BY id");
       expect(unchanged.rows).toHaveLength(4);
 
       // 写尝试必须被服务端拒绝（fail-closed 证明连接确实是只读的）。
@@ -219,8 +221,8 @@ describePg("WP4C reconcile analyzer（real PostgreSQL）", () => {
     const s1 = randomUUID();
     const s2 = randomUUID();
     await seedSessions([
-      { sessionId: s1, piSessionFile: path.join(DATA_DIR, "sessions", s1, "2025-01-01T00-00-00_s1.jsonl") },
-      { sessionId: s2, piSessionFile: null },
+      { sessionId: s1, conversationRef: path.join(DATA_DIR, "sessions", s1, "2025-01-01T00-00-00_s1.jsonl") },
+      { sessionId: s2, conversationRef: null },
     ]);
     // 主题隔离：URL 直接携带随机 schema 的 search_path options；CLI 严格解析
     // options（仅 search_path）并合并 default_transaction_read_only=on 与

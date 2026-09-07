@@ -17,6 +17,7 @@ import { tmpdir } from "node:os";
 import { createPostgresKysely, createPostgresPool } from "../storage/postgres-bootstrap.js";
 import { isPostgresSystemSchema } from "../storage/postgres-schema-guard.js";
 import { runPostgresMigrations } from "../storage/migration-engine.js";
+import { classifyPiJsonlReference } from "../agent/pi-jsonl-reference.js";
 import { migrationPrefixForLedger, type MigrationDefinition, type MigrationLedgerSnapshot } from "../storage/migration-manifest.js";
 import { stableSerialize } from "../storage/migration-manifest.js";
 import { validateRestoredFileOperations } from "./restore-validation.js";
@@ -833,7 +834,7 @@ async function validateDatabase(
   idempotencyRows: number;
   fileOperations: number;
   foreignKeyViolations: number;
-  sessionRows: readonly { id: unknown; pi_session_file: unknown; capability_versions: unknown }[];
+  sessionRows: readonly { id: unknown; agent_kind: unknown; conversation_format: unknown; conversation_ref: unknown; capability_versions: unknown }[];
   sessionEntries: number;
 }> {
   const checked = verifyMigrations ? await verifyMigrations(client, schema) : fail("PostgreSQL restore requires a migration verification adapter");
@@ -860,16 +861,17 @@ async function validateDatabase(
     validateRestoredFileOperations(fileOperations);
     const [projects, sessions, idempotency, fks] = await Promise.all([
       client.query<Record<string, unknown>>(`SELECT id, name, cwd, owner_key FROM ${qschema}."projects"`),
-      client.query<{ id: unknown; pi_session_file: unknown; capability_versions: unknown }>(`SELECT id, pi_session_file, capability_versions FROM ${qschema}."sessions"`),
+      client.query<{ id: unknown; agent_kind: unknown; conversation_format: unknown; conversation_ref: unknown; capability_versions: unknown }>(`SELECT id, agent_kind, conversation_format, conversation_ref, capability_versions FROM ${qschema}."sessions"`),
       client.query<Record<string, unknown>>(`SELECT session_id, request_id, result FROM ${qschema}."idempotency"`),
       client.query<{ total: number | string; invalid: number | string }>("SELECT count(*)::int AS total, count(*) FILTER (WHERE NOT con.convalidated)::int AS invalid FROM pg_constraint con JOIN pg_namespace ns ON ns.oid = con.connamespace WHERE ns.nspname = $1 AND con.contype = 'f'", [schema]),
     ]);
     for (const row of projects.rows) if (![row.id, row.name, row.cwd, row.owner_key].every((value) => typeof value === "string")) fail("restored PostgreSQL project data is malformed");
     for (const row of sessions.rows) {
       if (typeof row.id !== "string") fail("restored PostgreSQL session data is malformed");
-      // The source dump still contains source JSONL paths at this point; the
-      // remap transaction below is the operation that binds them to finalPath.
-      if (row.pi_session_file !== null && (typeof row.pi_session_file !== "string" || !path.isAbsolute(row.pi_session_file))) fail("restored PostgreSQL session path is malformed");
+      // The source dump still contains source conversation refs at this point; the
+      // remap transaction below is the operation that binds Pi refs to finalPath.
+      if (row.agent_kind !== "pi" || row.conversation_format !== "pi-jsonl-v3") fail("restored PostgreSQL session uses an unsupported conversation kind or format");
+      if (row.conversation_ref !== null && (typeof row.conversation_ref !== "string" || !path.isAbsolute(row.conversation_ref))) fail("restored PostgreSQL conversation reference is malformed");
       if (row.capability_versions !== null) { try { JSON.parse(String(row.capability_versions)); } catch { fail("restored PostgreSQL capability_versions is invalid JSON"); } }
     }
     for (const row of idempotency.rows) {
@@ -938,30 +940,40 @@ async function remapDatabase(client: PgRestoreClient, schema: string, finalPath:
   let missing = 0;
   try {
     await client.query("BEGIN");
-    const result = await client.query<{ id: unknown; pi_session_file: unknown }>(`SELECT id, pi_session_file FROM ${qschema}."sessions" WHERE pi_session_file IS NOT NULL`);
+    const result = await client.query<{ id: unknown; project_id: unknown; agent_kind: unknown; conversation_format: unknown; conversation_ref: unknown }>(`SELECT id, project_id, agent_kind, conversation_format, conversation_ref FROM ${qschema}."sessions" WHERE conversation_ref IS NOT NULL`);
     for (const row of result.rows) {
-      if (typeof row.id !== "string" || typeof row.pi_session_file !== "string") fail("restored PostgreSQL session reference is malformed");
-      const relative = deriveRelativeSessionPath(row.pi_session_file);
+      if (typeof row.id !== "string" || typeof row.project_id !== "string" || row.agent_kind !== "pi" || row.conversation_format !== "pi-jsonl-v3" || typeof row.conversation_ref !== "string") fail("restored PostgreSQL session conversation reference is malformed");
+      const relative = deriveRelativeSessionPath(row.conversation_ref);
       const key = `${row.id}\u0000${relative}`;
       const restoredFile = path.join(assembledRoot, relative);
       if (!within(assembledRoot, restoredFile) || !isJsonlRelative(relative)) fail("restored PostgreSQL session reference escapes target data directory");
+      const classification = classifyPiJsonlReference(assembledRoot, {
+        sessionId: row.id,
+        projectId: row.project_id,
+        agentKind: row.agent_kind,
+        conversationFormat: row.conversation_format,
+        conversationRef: restoredFile,
+      });
+      if (classification.kind !== "valid" || !classification.idsMatch || classification.canonical !== relative) {
+        fail("restored PostgreSQL session reference does not match its Pi session/project layout");
+      }
       if (missingKeys.has(key)) {
         // Missing-as-empty: the referenced history never existed at backup time.
         missing++;
         consumed.add(key);
-        await client.query(`UPDATE ${qschema}."sessions" SET pi_session_file = NULL WHERE id = $1`, [row.id]);
+        await client.query(`UPDATE ${qschema}."sessions" SET conversation_ref = NULL WHERE id = $1`, [row.id]);
         continue;
       }
       if (invalidHistories.has(relative)) {
         // Invalid-as-empty degradation: authentic bytes but not a valid Pi
         // session; the history is discarded and the reference nulled.
-        await client.query(`UPDATE ${qschema}."sessions" SET pi_session_file = NULL WHERE id = $1`, [row.id]);
+        await client.query(`UPDATE ${qschema}."sessions" SET conversation_ref = NULL WHERE id = $1`, [row.id]);
         continue;
       }
       if (!included.has(`payload/${relative}.age`) || !existsSync(restoredFile)) {
         fail("restored PostgreSQL session reference has no matching JSONL payload");
       }
-      await client.query(`UPDATE ${qschema}."sessions" SET pi_session_file = $1 WHERE id = $2`, [path.join(finalPath, relative), row.id]);
+      await client.query(`UPDATE ${qschema}."sessions" SET conversation_ref = $1 WHERE id = $2`, [path.join(finalPath, relative), row.id]);
     }
     if (consumed.size !== missingKeys.size) fail("manifest missing session references do not match the restored PostgreSQL database exactly");
     await client.query("COMMIT");

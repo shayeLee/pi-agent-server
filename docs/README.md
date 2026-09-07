@@ -14,6 +14,7 @@
 ### 架构与存储
 
 - [architecture.md](architecture.md) —— 架构与核心数据流（单实例并发模型、SQLite 锁语义、目录/端口边界）。
+- [agent-session-decoupling-plan.md](agent-session-decoupling-plan.md) —— RC 阶段 Agent Session 创建/存储解耦实施计划（Pi 仍为唯一实现；多 Agent 能力差异后置）。
 - [database-design.md](database-design.md) —— 数据库设计、Schema Manifest 单一来源、双库方言与迁移约束（canonical baseline；不支持受控 cutover）。
 - [pi-sdk-api.md](pi-sdk-api.md) —— Pi SDK 使用索引（HTTP 接口形态以 `src/server/app.ts` 为准）。
 - [postgres-podman-test.md](postgres-podman-test.md) —— 本地 PostgreSQL（Podman）测试流程。

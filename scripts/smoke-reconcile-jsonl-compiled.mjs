@@ -34,9 +34,9 @@ function cli(args, options = {}) {
 }
 const env = () => ({ ...process.env, DB_PATH: dbPath, DATA_DIR: dataDir });
 
-function insertSession(db, sessionId, piSessionFile) {
-  db.prepare("INSERT INTO sessions (id, owner_key, project_id, title, created_at, updated_at, pi_session_file, model_provider, model_id, thinking_level, system_prompt, capability_versions) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)").run(
-    sessionId, "owner", DEFAULT_PROJECT_ID, "title", 1, 1, piSessionFile, null, null, null, null, null,
+function insertSession(db, sessionId, conversationRef) {
+  db.prepare("INSERT INTO sessions (id, owner_key, project_id, title, created_at, updated_at, conversation_ref, model_provider, model_id, thinking_level, system_prompt, capability_versions) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)").run(
+    sessionId, "owner", DEFAULT_PROJECT_ID, "title", 1, 1, conversationRef, null, null, null, null, null,
   );
 }
 
@@ -48,11 +48,10 @@ try {
   const db = new DatabaseSync(dbPath);
   await runSqliteMigrations(db, { mode: "apply" });
   db.prepare("INSERT INTO projects (id, name, cwd, owner_key, created_at) VALUES (?,?,?,?,?)").run(DEFAULT_PROJECT_ID, "默认项目", "/tmp", "", 0);
-  // s1 valid、s2 unmaterialized（null）、s3 traversal → invalid、s1-dup → duplicate。
+  // s1 valid、s2 unmaterialized（null）、s3 traversal → invalid。规范库的唯一约束禁止 duplicate。
   insertSession(db, "s1", path.join(dataDir, "sessions", "s1", "2025-01-01T00-00-00_s1.jsonl"));
   insertSession(db, "s2", null);
   insertSession(db, "s3", path.join(dataDir, "..", "escape.jsonl"));
-  insertSession(db, "s1-dup", path.join(dataDir, "sessions", "s1", "2025-01-01T00-00-00_s1.jsonl"));
   db.close();
   const beforeBytes = readFileSync(dbPath);
 
@@ -64,15 +63,15 @@ try {
     dryReport.status !== "analyzed" || dryReport.mode !== "dry-run" || dryReport.executable !== false ||
     dryReport.filesystemNotScanned !== true ||
     dryReport.cannotDetect?.orphanFile !== false || dryReport.cannotDetect?.lostFile !== false || dryReport.cannotDetect?.jsonlValidity !== false ||
-    dryReport.references !== 4 || dryReport.unmaterialized !== 1 || dryReport.valid !== 1 ||
-    dryReport.invalidReferences !== 1 || dryReport.duplicateReferences !== 1
+    dryReport.references !== 3 || dryReport.unmaterialized !== 1 || dryReport.valid !== 1 ||
+    dryReport.invalidReferences !== 1 || dryReport.duplicateReferences !== 0
   ) {
     throw new Error("compiled dry-run reconcile analyzer contract violated");
   }
   if (!readFileSync(dbPath).equals(beforeBytes)) throw new Error("compiled dry-run modified the database file");
   if (sidecars().length !== 1) throw new Error("compiled dry-run created -wal/-shm sidecars");
   const allOutput = `${dry.stdout}\n${dry.stderr ?? ""}`;
-  for (const secret of [dataDir, dbPath, ".jsonl", "sessions/", "s1", "s1-dup", "escape.jsonl", "postgres://"]) {
+  for (const secret of [dataDir, dbPath, ".jsonl", "sessions/", "s1", "escape.jsonl", "postgres://"]) {
     if (allOutput.includes(secret)) throw new Error(`compiled dry-run leaked: ${secret}`);
   }
   if (existsSync(dataDir)) throw new Error("compiled dry-run created the DATA_DIR");

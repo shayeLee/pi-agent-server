@@ -120,7 +120,7 @@ describe("offline backup CLI", () => {
     const db = new DatabaseSync(dbPath);
     createCanonicalLedger(db);
     insertCanonicalSession(db, "ok", path.join(dataDir, "sessions", "ok", "history.jsonl"));
-    insertCanonicalSession(db, "missing-cli-session", path.join(dataDir, "sessions", "gone", "history.jsonl"));
+    insertCanonicalSession(db, "missing-cli-session", path.join(dataDir, "sessions", "missing-cli-session", "history.jsonl"));
     db.close();
     const backupRoot = path.join(root, "backup-root");
     const stagingRoot = mkdtempSync(path.join(tmpdir(), "pi-backup-cli-missing-staging-"));

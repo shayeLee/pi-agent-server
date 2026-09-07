@@ -1,4 +1,4 @@
-// WP5D-3 P1 只读会话历史解析口（生产实现 createSessionHistoryReader）：
+// Pi JSONL 只读会话历史解析（生产实现 PiJsonlConversationStorage）：
 // - 真实 SDK JSONL fixture（SessionManager 真实写入）→ 只读解析 → 与 PiAgentAdapter 同一投影；
 // - 零写验证：读取前后文件 stat+sha256 逐字节一致；
 // - 错误脱敏：缺失/损坏/被篡改文件只抛固定文案，不含路径/内容；空文件 = 新会话空导出。
@@ -9,7 +9,7 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import { readFileSync, statSync, writeFileSync } from "node:fs";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
-import { createSessionHistoryReader } from "../../src/server/start.js";
+import { readPiJsonlExport } from "../../src/agent/pi-jsonl-conversation-storage.js";
 import { PiAgentAdapter, type AgentSessionLike } from "../../src/agent/pi-agent-adapter.js";
 
 function makeSessionDir(): string {
@@ -39,13 +39,11 @@ function fingerprint(file: string): string {
   return JSON.stringify({ size: st.size, mtimeMs: st.mtimeMs, sha256: createHash("sha256").update(readFileSync(file)).digest("hex") });
 }
 
-describe("createSessionHistoryReader（WP5D-3 P1 只读导出解析）", () => {
+describe("PiJsonlConversationStorage（只读导出解析）", () => {
   it("只读解析真实 JSONL，投影与 PiAgentAdapter.exportSession 完全一致（role/text，忽略 thinking/toolResult）", async () => {
     const dir = makeSessionDir();
     const { file, manager } = makeFixtureSession(dir);
-    const reader = createSessionHistoryReader();
-
-    const exported = (await reader.readSessionHistory(file)) as Array<{ role: string; text: string }>;
+    const exported = (await readPiJsonlExport(file)) as Array<{ role: string; text: string }>;
 
     // 只保留 user/assistant 并提取 text 块；thinking 与 toolResult 一律忽略。
     expect(exported).toEqual([
@@ -65,7 +63,7 @@ describe("createSessionHistoryReader（WP5D-3 P1 只读导出解析）", () => {
     const dir = makeSessionDir();
     const { file } = makeFixtureSession(dir);
     const before = fingerprint(file);
-    await createSessionHistoryReader().readSessionHistory(file);
+    await readPiJsonlExport(file);
     expect(fingerprint(file)).toBe(before);
   });
 
@@ -74,7 +72,7 @@ describe("createSessionHistoryReader（WP5D-3 P1 只读导出解析）", () => {
     const file = path.join(dir, "empty.jsonl");
     writeFileSync(file, "");
     const before = fingerprint(file);
-    const exported = await createSessionHistoryReader().readSessionHistory(file);
+    const exported = await readPiJsonlExport(file);
     expect(exported).toEqual([]);
     expect(fingerprint(file)).toBe(before);
   });
@@ -88,16 +86,15 @@ describe("createSessionHistoryReader（WP5D-3 P1 只读导出解析）", () => {
         : `{"type":"session","version":${version},"id":"legacy","timestamp":"2024-01-01T00:00:00.000Z","cwd":"/tmp/project"}`;
       writeFileSync(file, `${header}\n{"type":"message","message":{"role":"user","content":"legacy"}}\n`);
       const before = fingerprint(file);
-      await expect(createSessionHistoryReader().readSessionHistory(file)).rejects.toThrow("会话历史读取失败");
+      await expect(readPiJsonlExport(file)).rejects.toThrow("会话历史读取失败");
       expect(fingerprint(file)).toBe(before);
     }
   });
 
   it("缺失文件：脱敏错误（不含文件路径/内容）", async () => {
     const dir = makeSessionDir();
-    const reader = createSessionHistoryReader();
     try {
-      await reader.readSessionHistory(path.join(dir, "no-such.jsonl"));
+      await readPiJsonlExport(path.join(dir, "no-such.jsonl"));
       expect.unreachable("应当抛错");
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -117,7 +114,7 @@ describe("createSessionHistoryReader（WP5D-3 P1 只读导出解析）", () => {
       "",
     ].join("\n"));
     const before = fingerprint(file);
-    await expect(createSessionHistoryReader().readSessionHistory(file)).rejects.toThrow("会话历史读取失败");
+    await expect(readPiJsonlExport(file)).rejects.toThrow("会话历史读取失败");
     expect(fingerprint(file)).toBe(before);
   });
 
@@ -126,7 +123,7 @@ describe("createSessionHistoryReader（WP5D-3 P1 只读导出解析）", () => {
     const file = path.join(dir, "non-pi.jsonl");
     writeFileSync(file, '{"type":"message","id":"m1","parentId":null,"timestamp":"2026-01-01T00:00:01.000Z","message":{"role":"user","content":[{"type":"text","text":"hi"}]}}\n');
     const before = fingerprint(file);
-    await expect(createSessionHistoryReader().readSessionHistory(file)).rejects.toThrow("会话历史读取失败");
+    await expect(readPiJsonlExport(file)).rejects.toThrow("会话历史读取失败");
     expect(fingerprint(file)).toBe(before);
   });
 
@@ -136,7 +133,7 @@ describe("createSessionHistoryReader（WP5D-3 P1 只读导出解析）", () => {
     writeFileSync(file, "this is not json\n{\"broken\":\n");
     const before = fingerprint(file);
     try {
-      await createSessionHistoryReader().readSessionHistory(file);
+      await readPiJsonlExport(file);
       expect.unreachable("应当抛错");
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

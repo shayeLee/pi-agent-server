@@ -67,10 +67,10 @@ try {
   await runSqliteMigrations(db, { mode: "apply" });
   db.prepare("INSERT INTO projects (id, name, cwd, owner_key, created_at) VALUES (?,?,?,?,?)").run(DEFAULT_PROJECT_ID, "默认项目", "/tmp", "", 0);
   db.prepare(
-    "INSERT INTO sessions (id, owner_key, project_id, title, created_at, updated_at, pi_session_file, model_provider, model_id, thinking_level, system_prompt, capability_versions) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+    "INSERT INTO sessions (id, owner_key, project_id, title, created_at, updated_at, conversation_ref, model_provider, model_id, thinking_level, system_prompt, capability_versions) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
   ).run("pkg-s1", "owner", DEFAULT_PROJECT_ID, "title", 1, 1, path.join(dataDir, "sessions", "pkg-s1", "2025-01-01T00-00-00_pkg-s1.jsonl"), null, null, null, null, null);
   db.prepare(
-    "INSERT INTO sessions (id, owner_key, project_id, title, created_at, updated_at, pi_session_file, model_provider, model_id, thinking_level, system_prompt, capability_versions) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+    "INSERT INTO sessions (id, owner_key, project_id, title, created_at, updated_at, conversation_ref, model_provider, model_id, thinking_level, system_prompt, capability_versions) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
   ).run("pkg-lazy", "owner", DEFAULT_PROJECT_ID, "title", 1, 1, null, null, null, null, null);
   db.close();
   const beforeBytes = readFileSync(dbPath);

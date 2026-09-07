@@ -65,8 +65,8 @@ try {
   await initializeDatabase(db);
   db.prepare("INSERT INTO projects (id, name, cwd, owner_key, created_at) VALUES (?,?,?,?,?)").run(DEFAULT_PROJECT_ID, "默认项目", cwd, "", 0);
   db.prepare("INSERT INTO projects (id, name, cwd, owner_key, created_at) VALUES (?,?,?,?,?)").run("p1", "custom", "/cwd", SOURCE_OWNER, 1);
-  db.prepare("INSERT INTO sessions (id, owner_key, project_id, title, created_at, updated_at, pi_session_file, capability_versions) VALUES (?,?,?,?,?,?,?,?)").run("s1", SOURCE_OWNER, DEFAULT_PROJECT_ID, "default", 1, 1, sessionFile, "{}");
-  db.prepare("INSERT INTO sessions (id, owner_key, project_id, title, created_at, updated_at, pi_session_file, capability_versions) VALUES (?,?,?,?,?,?,?,?)").run("s2", SOURCE_OWNER, "p1", "custom", 1, 1, null, "{}");
+  db.prepare("INSERT INTO sessions (id, owner_key, project_id, title, created_at, updated_at, conversation_ref, capability_versions) VALUES (?,?,?,?,?,?,?,?)").run("s1", SOURCE_OWNER, DEFAULT_PROJECT_ID, "default", 1, 1, sessionFile, "{}");
+  db.prepare("INSERT INTO sessions (id, owner_key, project_id, title, created_at, updated_at, conversation_ref, capability_versions) VALUES (?,?,?,?,?,?,?,?)").run("s2", SOURCE_OWNER, "p1", "custom", 1, 1, null, "{}");
   db.close();
 
   const identity = path.join(root, "identity");
@@ -150,7 +150,7 @@ try {
   await initializeDatabase(missDb);
   missDb.prepare("INSERT INTO projects (id, name, cwd, owner_key, created_at) VALUES (?,?,?,?,?)").run(DEFAULT_PROJECT_ID, "默认项目", missCwd, "", 0);
   missDb.prepare("INSERT INTO projects (id, name, cwd, owner_key, created_at) VALUES (?,?,?,?,?)").run("p1", "custom", "/cwd", SOURCE_OWNER, 1);
-  missDb.prepare("INSERT INTO sessions (id, owner_key, project_id, title, created_at, updated_at, pi_session_file, capability_versions) VALUES (?,?,?,?,?,?,?,?)").run("s1", SOURCE_OWNER, DEFAULT_PROJECT_ID, "t", 1, 1, path.join(missDataDir, "sessions", "ghost", "ghost.jsonl"), "{}");
+  missDb.prepare("INSERT INTO sessions (id, owner_key, project_id, title, created_at, updated_at, conversation_ref, capability_versions) VALUES (?,?,?,?,?,?,?,?)").run("s1", SOURCE_OWNER, DEFAULT_PROJECT_ID, "t", 1, 1, path.join(missDataDir, "sessions", "s1", "ghost.jsonl"), "{}");
   missDb.close();
   // The installed bin uses the shared backup root; snapshot its published
   // package count before the run so we can prove exactly one more was added.
@@ -214,7 +214,7 @@ try {
       }
       await admin.query(`INSERT INTO ${ident(schema)}.projects (id, name, cwd, owner_key, created_at) VALUES ($1, $2, $3, $4, $5)`, [DEFAULT_PROJECT_ID, "默认项目", "/cwd", "", 0]);
       await admin.query(`INSERT INTO ${ident(schema)}.projects (id, name, cwd, owner_key, created_at) VALUES ($1, $2, $3, $4, $5)`, [PG_CUSTOM_PROJECT_ID, "custom", "/cwd", SOURCE_OWNER, 1]);
-      await admin.query(`INSERT INTO ${ident(schema)}.sessions (id, owner_key, project_id, title, created_at, updated_at, pi_session_file, capability_versions) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`, [PG_SESSION_ONE_ID, SOURCE_OWNER, DEFAULT_PROJECT_ID, "t", 1, 1, null, "{}"]);
+      await admin.query(`INSERT INTO ${ident(schema)}.sessions (id, owner_key, project_id, title, created_at, updated_at, conversation_ref, capability_versions) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`, [PG_SESSION_ONE_ID, SOURCE_OWNER, DEFAULT_PROJECT_ID, "t", 1, 1, null, "{}"]);
       const pgRoot = path.join(root, "pg-fixture");
       const pgCwd = path.join(pgRoot, "app-cwd");
       const pgDataDir = path.join(pgRoot, "data");

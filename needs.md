@@ -216,7 +216,7 @@ Pi SDK 不设会话数量或文件体积上限，会话 JSONL 随对话单调增
 - 不活跃会话：超过 N 天无活动 → 归档到冷存储 → 冷存储再保留 M 天 → 删除（归档 ≠ 立即删除）。
 - Job 元数据：完成态 Job 保留 N 天可查后归档或清理；运行中/待重试的 Job 不清理。
 - 备份：JSONL 与服务库须一起做定期完整备份；具体备份根路径访问控制、age identity/recipient 轮换、RPO/RTO、30 天人工 retention、恢复演练和异地备份边界以[备份与恢复](docs/backup-restore.md)为准。
-- 会话历史降级策略：DB 引用的 JSONL 缺失视为无历史，不阻止备份发布（缺失引用记入加密 manifest）；backup 只把实际存在的 JSONL 当作 opaque bytes，不校验内容合法性；restore 在包级加密/hash 校验通过后发现无效 JSONL 时，将该会话恢复为空历史（`pi_session_file` 归一为 `NULL` 并报告计数）。包、密文、manifest 或 hash 损坏仍必须整体失败。该语义已实现（详见 [备份与恢复](docs/backup-restore.md)）。
+- 会话历史降级策略：DB 引用的 JSONL 缺失视为无历史，不阻止备份发布（缺失引用记入加密 manifest）；backup 只把实际存在的 JSONL 当作 opaque bytes，不校验内容合法性；restore 在包级加密/hash 校验通过后发现无效 JSONL 时，将该会话恢复为空历史（`conversation_ref` 归一为 `NULL` 并报告计数）。包、密文、manifest 或 hash 损坏仍必须整体失败。该语义已实现（详见 [备份与恢复](docs/backup-restore.md)）。
 
 N、M 天数由部署配置决定。
 

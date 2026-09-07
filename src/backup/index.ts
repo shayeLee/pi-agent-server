@@ -32,7 +32,7 @@ export {
   type PgProcessAdapter,
   type PgProcessRequest,
   type PgProcessResult,
-  type SessionFileReference,
+  type ConversationReference,
 } from "./backup-core.js";
 export {
   restoreAgeAdapter,

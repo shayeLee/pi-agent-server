@@ -113,10 +113,10 @@ async function insertData(adminPool: Pool, schema: string, ids: TransferFixtureI
   const q = (sql: string, params: readonly unknown[] = []) => adminPool.query(sql, params as never[]);
   await q(`INSERT INTO ${ident(schema)}.projects (id, name, cwd, owner_key, created_at) VALUES ($1, $2, $3, $4, $5)`, [DEFAULT_PROJECT_ID, "默认项目", "/cwd", "", 0]);
   await q(`INSERT INTO ${ident(schema)}.projects (id, name, cwd, owner_key, created_at) VALUES ($1, $2, $3, $4, $5)`, [ids.projectId, "custom", "/cwd", SOURCE_OWNER, 1]);
-  await q(`INSERT INTO ${ident(schema)}.sessions (id, owner_key, project_id, title, created_at, updated_at, pi_session_file, capability_versions) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`, [ids.defaultSessionId, SOURCE_OWNER, DEFAULT_PROJECT_ID, "default-session", 1, 1, null, "{}"]);
-  await q(`INSERT INTO ${ident(schema)}.sessions (id, owner_key, project_id, title, created_at, updated_at, pi_session_file, capability_versions) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`, [ids.projectSessionId, SOURCE_OWNER, ids.projectId, "project-session", 1, 1, null, "{}"]);
+  await q(`INSERT INTO ${ident(schema)}.sessions (id, owner_key, project_id, title, created_at, updated_at, conversation_ref, capability_versions) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`, [ids.defaultSessionId, SOURCE_OWNER, DEFAULT_PROJECT_ID, "default-session", 1, 1, null, "{}"]);
+  await q(`INSERT INTO ${ident(schema)}.sessions (id, owner_key, project_id, title, created_at, updated_at, conversation_ref, capability_versions) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`, [ids.projectSessionId, SOURCE_OWNER, ids.projectId, "project-session", 1, 1, null, "{}"]);
   if (ids.otherSessionId) {
-    await q(`INSERT INTO ${ident(schema)}.sessions (id, owner_key, project_id, title, created_at, updated_at, pi_session_file, capability_versions) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`, [ids.otherSessionId, ownerKeyForIp("10.1.2.9"), DEFAULT_PROJECT_ID, "other", 1, 1, null, "{}"]);
+    await q(`INSERT INTO ${ident(schema)}.sessions (id, owner_key, project_id, title, created_at, updated_at, conversation_ref, capability_versions) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`, [ids.otherSessionId, ownerKeyForIp("10.1.2.9"), DEFAULT_PROJECT_ID, "other", 1, 1, null, "{}"]);
   }
   const defaults = await adminPool.query(`SELECT owner_key FROM ${ident(schema)}.projects WHERE id = $1`, [DEFAULT_PROJECT_ID]);
   expect(defaults.rows[0]?.owner_key).toBe("");
@@ -319,8 +319,8 @@ describeGate("WP5D-4 real PostgreSQL owner-transfer gate (random isolated schema
     await admin!.query(`INSERT INTO ${ident(schema)}.projects (id, name, cwd, owner_key, created_at) VALUES ($1, $2, $3, $4, $5)`, [DEFAULT_PROJECT_ID, "默认项目", "/cwd", "", 0]);
     await admin!.query(`INSERT INTO ${ident(schema)}.projects (id, name, cwd, owner_key, created_at) VALUES ($1, $2, $3, $4, $5)`, [OCCUPIED_IDS.sourceProjectId, "source", "/cwd", SOURCE_OWNER, 1]);
     await admin!.query(`INSERT INTO ${ident(schema)}.projects (id, name, cwd, owner_key, created_at) VALUES ($1, $2, $3, $4, $5)`, [OCCUPIED_IDS.targetProjectId, "target-held", "/cwd", TARGET_OWNER, 1]);
-    await admin!.query(`INSERT INTO ${ident(schema)}.sessions (id, owner_key, project_id, title, created_at, updated_at, pi_session_file, capability_versions) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`, [OCCUPIED_IDS.sourceSessionId, SOURCE_OWNER, OCCUPIED_IDS.sourceProjectId, "t", 1, 1, null, "{}"]);
-    await admin!.query(`INSERT INTO ${ident(schema)}.sessions (id, owner_key, project_id, title, created_at, updated_at, pi_session_file, capability_versions) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`, [OCCUPIED_IDS.targetSessionId, TARGET_OWNER, OCCUPIED_IDS.targetProjectId, "t", 1, 1, null, "{}"]);
+    await admin!.query(`INSERT INTO ${ident(schema)}.sessions (id, owner_key, project_id, title, created_at, updated_at, conversation_ref, capability_versions) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`, [OCCUPIED_IDS.sourceSessionId, SOURCE_OWNER, OCCUPIED_IDS.sourceProjectId, "t", 1, 1, null, "{}"]);
+    await admin!.query(`INSERT INTO ${ident(schema)}.sessions (id, owner_key, project_id, title, created_at, updated_at, conversation_ref, capability_versions) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`, [OCCUPIED_IDS.targetSessionId, TARGET_OWNER, OCCUPIED_IDS.targetProjectId, "t", 1, 1, null, "{}"]);
     const occupiedDefault = await admin!.query(`SELECT owner_key FROM ${ident(schema)}.projects WHERE id = $1`, [DEFAULT_PROJECT_ID]);
     expect(occupiedDefault.rows[0]?.owner_key).toBe("");
     await admin!.query(`CREATE SCHEMA ${ident(bystander)}`);
@@ -360,7 +360,7 @@ describeGate("WP5D-4 real PostgreSQL owner-transfer gate (random isolated schema
     // absent. Under missing-as-empty (Phase 3), the pre-owner-transfer backup
     // still publishes and the transfer proceeds.
     const ghostFile = path.join(fixture.dataDir, "projects", MISSING_IDS.projectId, "sessions", MISSING_IDS.ghostSessionId, "history.jsonl");
-    await admin!.query(`INSERT INTO ${ident(schema)}.sessions (id, owner_key, project_id, title, created_at, updated_at, pi_session_file, capability_versions) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`, [MISSING_IDS.ghostSessionId, SOURCE_OWNER, MISSING_IDS.projectId, "t", 1, 1, ghostFile, "{}"]);
+    await admin!.query(`INSERT INTO ${ident(schema)}.sessions (id, owner_key, project_id, title, created_at, updated_at, conversation_ref, capability_versions) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`, [MISSING_IDS.ghostSessionId, SOURCE_OWNER, MISSING_IDS.projectId, "t", 1, 1, ghostFile, "{}"]);
     const databaseName = await currentDatabaseName();
 
     const cli = parseOwnerTransferArgs([

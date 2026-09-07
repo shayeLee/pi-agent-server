@@ -1,6 +1,6 @@
 # 数据库设计（RC / SQLite + PostgreSQL）
 
-> RC 阶段 SQLite 详细设计，单一事实来源的表/字段/约束/索引/查询、幂等与 file-operation outbox 规则。本文可独立阅读，但源码为准：schema 定义与建库 DDL 的**唯一来源**是 `src/storage/schema-manifest.ts`（当前为唯一 canonical baseline，运行时 Manifest 含编译期/运行期校验），`DatabaseSchema` 类型由其推导（`src/storage/schema-types.ts`，`db-schema.ts` 仅为兼容 re-export）；查询与存储规则见 `src/storage/kysely-*-repository.ts` / `src/runtime/runtime-registry.ts` / `src/application/ports/*-store-port.ts`。
+> RC 阶段 SQLite/PostgreSQL 双方言设计，单一事实来源的表/字段/约束/索引/查询、幂等与 file-operation outbox 规则。本文可独立阅读，但源码为准：schema 定义与建库 DDL 的**唯一来源**是 `src/storage/schema-manifest.ts`（当前为唯一 canonical baseline，运行时 Manifest 含编译期/运行期校验），`DatabaseSchema` 类型由其推导（`src/storage/schema-types.ts`，`db-schema.ts` 仅为兼容 re-export）；查询与存储规则见 `src/storage/kysely-*-repository.ts` / `src/runtime/runtime-registry.ts` / `src/application/ports/*-store-port.ts`。
 >
 > **当前状态**：RC 阶段 SQLite + PostgreSQL 双方言，schema Manifest 为唯一来源。WP4A 的 `file_operations` 持久
 > outbox 保留（删除事务只 enqueue，绝不物理删除文件）；WP4B 提供安全只读 planner（物理 executor 包括 unlink、
@@ -28,21 +28,23 @@
 
 ## 2. 总体设计
 
-- **数据库只存索引、配置与文件副作用队列**：`projects` / `sessions` 存项目与会话的索引、归属、时间戳与会话级配置；`idempotency` 存幂等终态；`file_operations` 存 JSONL 清理 outbox。不存完整消息正文、工具调用历史或对话内容。
-- **完整对话历史在 JSONL**：`sessions.pi_session_file` 指向 Pi SDK 管理的 JSONL 会话文件（`SessionManager.create/open` 产生），重启后据此恢复对话。SQLite（元数据）与 JSONL（完整历史）是两个独立存储系统，无法合并为单个原子事务；写入顺序与残余边界见下方 `### JSONL 与 SQLite 的跨存储边界`。
-- **命名映射**：数据库列为 `snake_case`（`owner_key` / `created_at` / `pi_session_file` 等），领域记录为 `camelCase`（`ownerKey` / `createdAt` / `piSessionFile`），由各 Repository 的 `toRecord(row)` 显式映射，`db-schema.ts` 仅 re-export 派生类型、不做转换。
+- **数据库只存索引、配置与文件副作用队列**：`projects` / `sessions` 存项目与会话的索引、归属、时间戳与会话级配置；`idempotency` 存幂等终态；`file_operations` 存会话清理 outbox。不存完整消息正文、工具调用历史或对话内容。
+- **完整对话历史由 Agent 存储实现管理**：当前 `conversation_ref` 由 Pi JSONL storage 解释，指向 Pi SDK 管理的 JSONL 会话文件（`SessionManager.create/open` 产生）；重启后据此恢复。数据库元数据与会话历史是两个独立存储系统，无法合并为单个原子事务；写入顺序与残余边界见下方 `### 会话引用与数据库的跨存储边界`。
+- **命名映射**：数据库列为 `snake_case`（`owner_key` / `created_at` / `conversation_ref` 等），领域记录为 `camelCase`（`ownerKey` / `createdAt` / `conversationRef`），由各 Repository 的 `toRecord(row)` 显式映射，`db-schema.ts` 仅 re-export 派生类型、不做转换。
 - **应用 ID 与时间**：所有 `id` 由应用层生成（`randomUUID` 等），`created_at` / `updated_at` 为应用写入的毫秒时间戳（`Date.now()`），非数据库自增或 `DEFAULT CURRENT_TIMESTAMP`。
 - **单实例假设**：一个逻辑 SQLite 库 / PG schema 及其关联的 DATA_DIR（JSONL 会话目录）同时只支持一个 pi-agent-server 实例使用——多实例共享同一 DB/schema+DATA_DIR 不受支持（SQLite WAL 单写者 + busy timeout 仅兑底，PG 亦无多实例写协调）。离线 CLI（file-ops / reconcile-jsonl / owner-transfer）在服务停止时以只读或受控方式访问同一库。
 
-### JSONL 与 SQLite 的跨存储边界
+### 会话引用与数据库的跨存储边界
 
 - **两个存储系统，非单事务**：`projects` / `sessions` 等元数据存 SQLite；完整对话历史存 Pi SDK 管理的 JSONL。二者分属不同存储，无法参与同一个原子事务，跨存储的「要么全成、要么全无」无法由数据库本身保证。
 - **创建顺序（持久路径 barrier）**：
-  1. 先创建 SQLite 会话记录，`pi_session_file = null`（见 `session-service.ts` 的 `createSession`，`piSessionFile: null`）；
-  2. 首次发消息时先由 `SessionManager.create` 计算目标文件名，但此时尚未要求 SDK 持久化文件；`server/start.ts` 将该绝对路径先回写 SQLite；
-  3. 只有路径预留成功后才创建 Agent session/写 JSONL；随后再次确认 SDK 路径。删除事务锁住父项目/会话并读取该预留，因此会为已预留路径入队；若最终回写返回 false，则对实际已创建路径执行幂等 outbox enqueue。
+  1. 先创建 SQLite/PostgreSQL 会话记录，`conversation_ref = null`（见 `session-service.ts` 的 `createSession`）；
+  2. 首次发消息时由会话创建服务调用当前 Agent factory 准备会话引用；对 Pi 实现，`SessionManager.create` 先计算目标 JSONL 文件名；
+  3. 会话创建服务先以 factory 提供的唯一稳定实际引用计算 tombstone operationKey（经 `ConversationStorage.planCleanup`），并在 `conversation_ref` 为 NULL 且 `file_operations` 不存在该 operationKey 时原子写入 `conversation_ref` reservation，只有 reservation 成功后才创建 Agent Session/写 JSONL；打开成功后仅对同一引用做 CAS 确认。删除事务读取该引用并由对应 storage 生成清理 outbox。
 
-  这不是跨存储原子事务，但它把路径变成持久删除事实，覆盖 delete 与 lazy create 的交错窗口；恢复/删除路径均不调用 `unlink`。
+  **tombstone 语义**：删除会话（或一次失败创建）会在同一事务把删除操作以 `delete-artifact:<agentKind>:<conversationFormat>:<path-digest>` 写入 `file_operations`，该键不随 sessionId 变化。再次为同一 artifact 路径做 reservation 时，只要 `file_operations` 存在该 operationKey——无论 `pending` / `processing` / `completed` / `failed` 任一状态——`reserveConversation` 一律返回 false，即 tombstone 永久禁止复用已删除的 artifact（SQLite 与 PostgreSQL 同一单条条件更新语义一致）。
+
+  这不是跨存储原子事务，但它把会话引用变成持久删除事实；恢复/删除路径均不调用 `unlink`。
 - **残余边界（WP4B 物理 executor 未实施，仅安全只读 planner；WP4C 为 DB-only reconcile analyzer）**：进程可能在路径预留后、文件创建前退出，留下一个数据库指向尚未存在文件的预留；后续删除会安全入队，未来执行器（受审计外部运维工具或 native helper）可将不存在文件按幂等成功处理；当前无执行器，outbox 只读可见。进程在文件创建后崩溃不会留下无 owner 的未记录路径；WP4C analyzer 仅做只读 DB reference 分析（null = normal unmaterialized；non-null 词法校验 invalid_reference/duplicate_reference + opaque 引用，零处置、不扫描文件系统、不能探测 orphan/lost/JSONL 损坏），自动 worker/quarantine 入队仍未实现。
 - **删除顺序（WP4A）**：
   1. 在一个数据库事务内读取会话文件引用、向 `file_operations` 写入 `pending` 删除操作并删除 `sessions`/`projects` 行；
@@ -50,9 +52,9 @@
   3. **DELETE 请求绝不 unlink**，物理文件由未来 worker 在原子 claim 后执行。
 
   outbox 的相对路径在入队时限制为 DATA_DIR 下两种 JSONL 白名单布局；路径校验失败会回滚同一事务，业务行不丢失。删除项目显式删除 sessions，且 `file_operations` 不设级联 FK，因此待处理 outbox 不会被父行删除级联掉。
-- **`ensureDefaultProject` 与 `backfillSystemPrompt` 均非 JSONL/SQLite 对账**：
+- **`ensureDefaultProject` 与 `backfillSystemPrompt` 均非会话历史对账**：
   - `ensureDefaultProject` 仅用于确保 SQLite 默认项目记录存在（`INSERT OR IGNORE`，`id=DEFAULT_PROJECT_ID`（`6f1a2b3c-4d5e-4f6a-8b9c-0d1e2f3a4b5c`）、空 owner），服务于外键不变量，与 JSONL 无关；
-  - `backfillSystemPrompt` 仅补写 SQLite `sessions` 中 `system_prompt` 为 `null` 的字段，与 JSONL 无关。
+  - `backfillSystemPrompt` 仅补写数据库 `sessions` 中 `system_prompt` 为 `null` 的字段，是防御性补齐，与会话历史无关。
 
 
   二者都不能弥合上述跨存储边界。
@@ -85,15 +87,17 @@
 | `title` | `text` | NOT NULL | — | 会话标题 |
 | `created_at` | `integer` | NOT NULL | — | 创建时间，毫秒时间戳 |
 | `updated_at` | `integer` | NOT NULL | — | 更新时间，毫秒时间戳（列表排序键） |
-| `pi_session_file` | `text` | NULL | — | Pi JSONL 文件绝对路径；首次 runtime 创建前为 `null`，随后先预留路径，文件可能稍后才物化 |
+| `agent_kind` | `text` | NOT NULL | 默认 `pi` | Agent 类型；当前仅注册 Pi |
+| `conversation_format` | `text` | NOT NULL | 默认 `pi-jsonl-v3` | 会话引用格式；由对应 Agent storage 解释 |
+| `conversation_ref` | `text` | NULL | 唯一索引列 | 不透明会话引用；首次 runtime 创建前为 `null`，当前 Pi 实现为 JSONL 绝对路径。非空引用被 `idx_sessions_conversation` 唯一约束独占（禁止共享） |
 | `model_provider` | `text` | NULL | — | 会话级模型 provider（`null` 表示沿用服务端默认） |
 | `model_id` | `text` | NULL | — | 会话级模型 id（同上） |
 | `thinking_level` | `text` | NULL | — | 思考级别（`off`/`minimal`/`low`/`medium`/`high`/`xhigh`/`max`，`null` 为默认） |
 | `system_prompt` | `text` | NULL | — | 创建时冻结的系统提示词；历史会话 `backfillSystemPrompt()` 补齐一次 |
 | `capability_versions` | `text` | NULL | — | 创建时冻结的能力版本快照（JSON：`id→version`，`null` 为无能力） |
 
-- **源码**：`sessions` 表 12 列由 Manifest 声明；`bootstrap.ts` 中 `id` 为单列主键（列级 `primaryKey()` 内联），`project_id` 的默认值在 Manifest 中为 `DEFAULT_PROJECT_ID`（引用 `src/application/ports/project-store-port.ts` 的同一常量，不硬编码字符串），其余 6 个扩展列（`pi_session_file` 等）声明 `nullable: true` 即为可空。
-- **Repository 映射**：`kysely-session-repository.ts` 的 `toRecord` 逐列映射为 `SessionRecord`（`ownerKey` / `projectId` / `piSessionFile` 等）；`update()` 仅写入 `patch` 中显式非 `null` 的字段。
+- **源码**：`sessions` 表 14 列由 Manifest 声明；`bootstrap.ts` 中 `id` 为单列主键（列级 `primaryKey()` 内联），`project_id` 的默认值在 Manifest 中为 `DEFAULT_PROJECT_ID`（引用 `src/application/ports/project-store-port.ts` 的同一常量，不硬编码字符串）；`agent_kind` 和 `conversation_format` 当前为非空且默认 Pi 值，`conversation_ref` 可空，其余会话配置列按各自声明处理。
+- **Repository 映射**：`kysely-session-repository.ts` 的 `toRecord` 逐列映射为 `SessionRecord`（`ownerKey` / `projectId` / `agentKind` / `conversationRef` 等）；`update()` 对 `conversationRef` 区分 `undefined`（不更新）和显式 `null`（清空引用）。
 
 ### 3.3 idempotency（请求幂等终态）
 
@@ -112,7 +116,7 @@
 | 列名 | 类型 | 可空 | 语义 |
 | --- | --- | --- | --- |
 | `id` | `text` / `uuid` | NOT NULL | 应用生成的 outbox ID，主键 |
-| `operation_key` | `text` | NOT NULL | 绑定 session 与相对路径摘要的稳定幂等键；当前删除使用 `delete-session:<sessionId>:<path-digest>`，避免懒创建预留路径与实际路径互相吞掉 |
+| `operation_key` | `text` | NOT NULL | 绑定 `agent kind` + `conversation format` + 相对路径摘要的稳定幂等键；当前删除使用 `delete-artifact:<agentKind>:<conversationFormat>:<path-digest>`，**不含 sessionId**，同一 artifact 恒定。删除/failed-creation 入队即形成 tombstone，`reserveConversation` 以同一键拒绝复用已删除 artifact |
 | `kind` | `text` | NOT NULL | 当前仅为 `delete` |
 | `relative_path` | `text` | NOT NULL | 相对 `DATA_DIR` 的 JSONL 路径；只允许 `sessions/<id>/<file>.jsonl` 或 `projects/<id>/sessions/<id>/<file>.jsonl` |
 | `session_id` / `project_id` | `text` / `uuid` | NULL | 关联事实字段，**不设 FK**，避免删除父行时级联丢 outbox |
@@ -143,6 +147,7 @@
 - **索引**：
   - `idx_sessions_owner_updated` ON `sessions(owner_key, updated_at DESC)` —— 服务于 `listByOwner(ownerKey) ORDER BY updated_at DESC, id DESC`（`updated_at` 倒序为查询主排序键）；
   - `idx_sessions_owner_project` ON `sessions(owner_key, project_id)` —— 服务于 `listByProject(ownerKey, projectId) ORDER BY updated_at DESC, id DESC`（按项目过滤）。
+  - `idx_sessions_conversation` ON `sessions(agent_kind, conversation_format, conversation_ref)`（UNIQUE）—— 禁止共享非空 conversation identity：同 `(agent_kind, conversation_format, conversation_ref)` 至多一个会话；`conversation_ref` 为 NULL 时在 SQLite/PG 中彼此不冲突（唯一索引对 NULL 默认视为互不相同），允许多个未实例化（unmaterialized）会话共存。
   - `kysely-session-repository.ts` 与 `kysely-project-repository.ts` 的 `listByOwner` / `listByProject` 均显式 `orderBy("updated_at","desc").orderBy("id","desc")`（`id` 倒序为并列时的确定性次级排序）。
 
 ### 4.3 idempotency
@@ -206,7 +211,7 @@
 
 ### 非目标（当前不做）
 
-- **不建 `users` / `messages` 表**：用户身份由 `UserIdentity` 派生的 `owner_key` 字符串承载，无需用户表；完整消息正文在 `pi_session_file` 指向的 JSONL 中，不在数据库中镜像 `messages` 表（避免双写一致性与大文本存储问题）。
+- **不建 `users` / `messages` 表**：用户身份由 `UserIdentity` 派生的 `owner_key` 字符串承载，无需用户表；完整消息正文由 `conversation_ref` 对应的 Agent storage 管理，不在数据库中镜像 `messages` 表（避免双写一致性与大文本存储问题）。
 - **服务启动不做自动迁移**：数据模式 `PI_DATA_MODE`（默认 `managed`；`rc` = 显式 disposable）与启动门禁 `PI_MIGRATION_GATE`（默认 `verify`）已实现——所有 data mode 仅接受 `verify`（显式 `off` 一律在任何资源创建前 fail-closed）；所有模式在启动路径都**绝不自动迁移、reset 或 cutover**。`verify` 启动前**真只读** ledger/head 校验（空/legacy/落后库 fail-fast，绝不自动迁移/reset）。非唯一 canonical baseline 或无 ledger 的旧库绝不自动采用；迁移引擎与服务 bootstrap 均 fail-fast。完全空 SQLite DB 或完全空 non-public/non-system PostgreSQL schema 必须先离线执行 `pnpm migrate -- --bootstrap-baseline --bootstrap-confirm CONFIRMED` 建立唯一 canonical baseline；已有唯一 canonical baseline 的数据库才执行 `--apply`，其他状态均 fail-closed。该命令不可混用 backup/maintenance 参数且不会创建 pre-backup。服务 bootstrap 仍执行**严格 schema preflight（M1，非迁移）**：在任何建表/建索引 DDL 之前，库中已含任一 managed 表时要求完整物理契约一致，任何不一致立即失败且不执行 ALTER/补列/建表/建索引；全新/当前唯一 canonical baseline schema 不受影响。当前规则见 [ADR 0002](decisions/0002-canonical-baseline-and-migration-gate.md)。
 - **不做 SQLite→PostgreSQL 数据迁移**：当前无 SQLite→PG 数据迁移路径。
 - **WP1/WP4A 离线迁移基础（唯一 canonical baseline）**：`src/storage/migration-manifest.ts` 固化不可变唯一 canonical baseline（ledger version=0，manifest=完整 `schemaManifest`，含 `file_operations` 与 6 个业务索引）；`src/storage/migration-engine.ts` 使用自定义 `schema_migrations` ledger、稳定 checksum、SQLite `BEGIN IMMEDIATE` 与 PG advisory lock/transaction。`scripts/migrate.ts` 支持 `--bootstrap-baseline`、`--dry-run`、`--apply`、`--verify`：完全空 SQLite DB 或完全空 non-public/non-system PostgreSQL schema 必须使用 `--bootstrap-baseline --bootstrap-confirm CONFIRMED` 建立唯一 canonical baseline；该模式不 pre-backup 且拒绝 backup/maintenance 参数；`--apply` 只对已有唯一 canonical baseline 的数据库执行已验证 pre-backup→apply→verify；其他状态均 fail-fast。该工具不执行删除、不处理文件副作用；相关离线工具（`pnpm file-ops` 安全只读 planner、`pnpm reconcile-jsonl` DB-only 分析）详见 [file-operations.md](file-operations.md) 与 [reconcile-jsonl.md](reconcile-jsonl.md)，不改变正常服务启动行为。

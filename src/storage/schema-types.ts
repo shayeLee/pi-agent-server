@@ -45,7 +45,9 @@ type Equal<A, B> = (<X>() => X extends A ? 1 : 2) extends <X>() => X extends B ?
 
 type _AssertProjectsId = Assert<Equal<DatabaseSchema["projects"]["id"], string>>;
 type _AssertProjectsCreatedAt = Assert<Equal<DatabaseSchema["projects"]["created_at"], number>>;
-type _AssertSessionsPiSessionFile = Assert<Equal<DatabaseSchema["sessions"]["pi_session_file"], string | null>>;
+type _AssertSessionsAgentKind = Assert<Equal<DatabaseSchema["sessions"]["agent_kind"], string>>;
+type _AssertSessionsConversationFormat = Assert<Equal<DatabaseSchema["sessions"]["conversation_format"], string>>;
+type _AssertSessionsConversationRef = Assert<Equal<DatabaseSchema["sessions"]["conversation_ref"], string | null>>;
 type _AssertSessionsProjectId = Assert<Equal<DatabaseSchema["sessions"]["project_id"], string>>;
 type _AssertIdempotencyResult = Assert<Equal<DatabaseSchema["idempotency"]["result"], string>>;
 type _AssertIdempotencyPkCols = Assert<Equal<keyof DatabaseSchema["idempotency"], "session_id" | "request_id" | "result" | "created_at">>;

@@ -28,7 +28,9 @@ function sessionRecord(overrides: Partial<SessionRecord> = {}): SessionRecord {
     title: "保密标题-do-not-leak",
     createdAt: 1000,
     updatedAt: 1000,
-    piSessionFile: null,
+    agentKind: "pi",
+    conversationFormat: "pi-jsonl-v3",
+    conversationRef: null,
     modelProvider: "provider",
     modelId: "model",
     thinkingLevel: "medium",
@@ -43,19 +45,19 @@ export function defineReconcileReferenceContract(
   makeStorage: () => Promise<ReconcileReferenceContractStorage>,
 ): void {
   describe(suiteName, () => {
-    it("listReconcileReferences 返回每行会话的 sessionId/projectId/piSessionFile（含 null），按 id 升序", async () => {
+    it("listReconcileReferences 返回每行会话的 sessionId/projectId/conversationRef（含 null），按 id 升序", async () => {
       const storage = await makeStorage();
       try {
-        const first = sessionRecord({ piSessionFile: "/data/sessions/s1/history.jsonl" });
-        const second = sessionRecord({ piSessionFile: null });
+        const first = sessionRecord({ conversationRef: "/data/sessions/s1/history.jsonl" });
+        const second = sessionRecord({ conversationRef: null });
         await storage.sessions.create(first);
         await storage.sessions.create(second);
 
         const rows = await new KyselyReconcileReferenceRepository(storage.kysely).listReconcileReferences();
         expect(rows).toHaveLength(2);
         const byId = new Map(rows.map((row) => [row.sessionId, row]));
-        expect(byId.get(first.id)).toEqual({ sessionId: first.id, projectId: DEFAULT_PROJECT_ID, piSessionFile: "/data/sessions/s1/history.jsonl" });
-        expect(byId.get(second.id)).toEqual({ sessionId: second.id, projectId: DEFAULT_PROJECT_ID, piSessionFile: null });
+        expect(byId.get(first.id)).toEqual({ sessionId: first.id, projectId: DEFAULT_PROJECT_ID, agentKind: "pi", conversationFormat: "pi-jsonl-v3", conversationRef: "/data/sessions/s1/history.jsonl" });
+        expect(byId.get(second.id)).toEqual({ sessionId: second.id, projectId: DEFAULT_PROJECT_ID, agentKind: "pi", conversationFormat: "pi-jsonl-v3", conversationRef: null });
         // 确定性顺序：id 升序。
         expect(rows.map((row) => row.sessionId)).toEqual([...rows.map((row) => row.sessionId)].sort());
       } finally {
@@ -66,14 +68,14 @@ export function defineReconcileReferenceContract(
     it("引用记录绝不携带任何内容字段（title/systemPrompt/cwd/ownerKey 等）", async () => {
       const storage = await makeStorage();
       try {
-        await storage.sessions.create(sessionRecord({ piSessionFile: "/data/sessions/s1/history.jsonl" }));
+        await storage.sessions.create(sessionRecord({ conversationRef: "/data/sessions/s1/history.jsonl" }));
         const rows = await new KyselyReconcileReferenceRepository(storage.kysely).listReconcileReferences();
         const serialized = JSON.stringify(rows);
         expect(serialized).not.toContain("SECRET_PROMPT_MARKER");
         expect(serialized).not.toContain("保密");
         expect(serialized).not.toContain("owner-a");
         expect(serialized).not.toContain("provider");
-        expect(Object.keys(rows[0]!)).toEqual(["sessionId", "projectId", "piSessionFile"]);
+        expect(Object.keys(rows[0]!)).toEqual(["sessionId", "projectId", "agentKind", "conversationFormat", "conversationRef"]);
       } finally {
         await storage.close();
       }
@@ -82,7 +84,7 @@ export function defineReconcileReferenceContract(
     it("纯 SELECT：调用前后行数与内容完全不变（零写入）", async () => {
       const storage = await makeStorage();
       try {
-        const first = sessionRecord({ piSessionFile: "/data/sessions/s1/history.jsonl" });
+        const first = sessionRecord({ conversationRef: "/data/sessions/s1/history.jsonl" });
         await storage.sessions.create(first);
         const before = await storage.sessions.get(first.id);
         const rows = await new KyselyReconcileReferenceRepository(storage.kysely).listReconcileReferences();

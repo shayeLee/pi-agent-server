@@ -12,6 +12,7 @@ import { runPostgresMigrations } from "../../src/storage/migration-engine.js";
 import { assertPostgresClientServerMajor, assertPostgresToolMajorMatch, createPostgresBackup, createPostgresBackupForTest, defaultVerifyPostgresSourceSchema, parseClientMajor, parseServerVersionNumMajor, parseVersion, pgProcessAdapter, postgresIdentity, redactPgDiagnostic, runPgProcess, type PgBackupClient, type PgProcessAdapter, type PgProcessRequest } from "../../src/backup/postgres-backup-core.js";
 import { POSTGRES_RESTORE_SAFETY_CONTRACT, restorePostgresBackup, type PgRestoreClient } from "../../src/backup/restore-core.js";
 import { assertRequiredPgTestEnvironment } from "../../scripts/pg-test-gate.js";
+import { DEFAULT_PROJECT_ID } from "../../src/application/ports/project-store-port.js";
 import { checkPgBackupBinaries } from "../../scripts/test-pg-backup.js";
 
 const pgUrl = process.env.PI_TEST_PG_URL?.trim();
@@ -33,7 +34,7 @@ function fixture(): { root: string; dataDir: string; backupRoot: string; recipie
   const root = mkdtempSync(path.join(tmpdir(), "pi-pg-backup-fake-"));
   cleanups.push(root);
   const dataDir = path.join(root, "data");
-  const session = path.join(dataDir, "sessions", "s1", "history.jsonl");
+  const session = path.join(dataDir, "sessions", "session-1", "history.jsonl");
   mkdirSync(path.dirname(session), { recursive: true, mode: 0o700 });
   mkdirSync(path.join(dataDir, ".pi-agent"), { recursive: true, mode: 0o700 });
   writeFileSync(session, '{"type":"session","version":3,"id":"header","timestamp":"2024-01-01T00:00:00.000Z","cwd":"/source/project"}\n{"type":"message","id":"entry","parentId":null,"timestamp":"2024-01-01T00:00:00.000Z","message":{"role":"user","content":"entry","timestamp":1}}\n', { mode: 0o600 });
@@ -79,7 +80,7 @@ function sourceClient(f: ReturnType<typeof fixture>, schema = "app_schema"): PgB
         const rows = [{ version: 0, name: "initial-schema", checksum: canonicalChecksum, applied_at: 1 }];
         return { rows: rows as unknown as readonly T[] };
       }
-      if (text.includes(`FROM "${schema}"."sessions"`)) return { rows: [{ id: "session-1", pi_session_file: f.session } as unknown as T] };
+      if (text.includes(`FROM "${schema}"."sessions"`)) return { rows: [{ id: "session-1", project_id: DEFAULT_PROJECT_ID, agent_kind: "pi", conversation_format: "pi-jsonl-v3", conversation_ref: f.session } as unknown as T] };
       throw new Error(`unexpected fake source query: ${text}`);
     },
   };
@@ -511,11 +512,11 @@ describe("PostgreSQL backup core fake-process safety (WP3B2)", () => {
 
   it("records a missing session reference as missing-as-empty and publishes (never fail-closed)", async () => {
     const f = fixture();
-    const missing = path.join(f.dataDir, "sessions", "gone", "history.jsonl");
+    const missing = path.join(f.dataDir, "sessions", "missing-session", "history.jsonl");
     const source = sourceClient(f);
     const missingClient: PgBackupClient = {
       async query<T extends Record<string, unknown>>(text: string, values?: readonly unknown[]) {
-        if (text.includes("FROM \"app_schema\".\"sessions\"")) return { rows: [{ id: "missing-session", pi_session_file: missing } as unknown as T] };
+        if (text.includes("FROM \"app_schema\".\"sessions\"")) return { rows: [{ id: "missing-session", project_id: DEFAULT_PROJECT_ID, agent_kind: "pi", conversation_format: "pi-jsonl-v3", conversation_ref: missing } as unknown as T] };
         return source.query<T>(text, values);
       },
     };
@@ -525,7 +526,7 @@ describe("PostgreSQL backup core fake-process safety (WP3B2)", () => {
 }, async () => ({ version: 0, pending: 0 }));
     expect(result.finalPath).toBeTruthy();
     expect(existsSync(path.join(result.finalPath!, "COMPLETE"))).toBe(true);
-    expect(result.missingSessionReferences).toEqual([{ sessionId: "missing-session", path: "sessions/gone/history.jsonl", status: "missing" }]);
+    expect(result.missingSessionReferences).toEqual([{ sessionId: "missing-session", path: "sessions/missing-session/history.jsonl", status: "missing" }]);
     // dry-run 同样成功并记录缺失（不再 fail-closed）。
     const dry = await createPostgresBackupForTest({
       storageDialect: "postgres", databaseUrl: "postgres://u:p@example.test/source_db", paths: backupPaths(f), age: fakeAge(),
@@ -625,8 +626,8 @@ class FakeTargetDatabase implements PgRestoreClient {
     if (text.includes("SELECT id, operation_key, kind, relative_path")) {
       return { rows: [{ id: "operation-1", operation_key: "delete-session:session-1:hash", kind: "delete", relative_path: "sessions/s1/history.jsonl", session_id: "session-1", project_id: "project-1", state: "pending", attempt_count: 0, available_at: 1, lease_until: null, lease_token: null, last_error: null, created_at: 1, updated_at: 1 }] as unknown as readonly T[] };
     }
-    if (text.includes("SELECT id, pi_session_file, capability_versions")) return { rows: [{ id: "session-1", pi_session_file: this.sessionFile, capability_versions: "{}" } as unknown as T] };
-    if (text.includes("SELECT id, pi_session_file FROM")) return { rows: [{ id: "session-1", pi_session_file: this.sessionFile } as unknown as T] };
+    if (text.includes("SELECT id, agent_kind, conversation_format, conversation_ref, capability_versions")) return { rows: [{ id: "session-1", agent_kind: "pi", conversation_format: "pi-jsonl-v3", conversation_ref: this.sessionFile, capability_versions: "{}" } as unknown as T] };
+    if (text.includes("SELECT id, project_id, agent_kind, conversation_format, conversation_ref FROM")) return { rows: [{ id: "session-1", project_id: DEFAULT_PROJECT_ID, agent_kind: "pi", conversation_format: "pi-jsonl-v3", conversation_ref: this.sessionFile } as unknown as T] };
     if (text.includes("SELECT id, name, cwd, owner_key")) return { rows: [{ id: "project-1", name: "project", cwd: "/tmp/project", owner_key: "owner" } as unknown as T] };
     if (text.includes("SELECT session_id, request_id, result")) return { rows: [{ session_id: "session-1", request_id: "request-1", result: "{}" } as unknown as T] };
     if (text.includes("count(*)::int")) return { rows: [{ total: 1, invalid: 0 } as unknown as T] };
@@ -775,7 +776,7 @@ describe("PostgreSQL restore new-empty-target gate (fake catalog)", () => {
     expect(harness.target.namespaces).toEqual(["public", "app_schema"]);
     expect(harness.target.objects.every((object) => object.schema === "app_schema")).toBe(true);
     expect(result.report.target.schemaSummary.tableCount).toBe(5);
-    expect(existsSync(path.join(result.finalPath!, "sessions/s1/history.jsonl"))).toBe(true);
+    expect(existsSync(path.join(result.finalPath!, "sessions/session-1/history.jsonl"))).toBe(true);
   });
 
   it("rejects a public-source package before pg_restore (no business public schema)", async () => {
@@ -1160,7 +1161,7 @@ describe("PostgreSQL restore target safety (fake process)", () => {
     const restore = processAdapter.requests.find((request) => request.args[0] !== "--version" && request.args[0] !== "--list");
     expect(restore?.args).not.toContain("--schema=app_schema");
     expect(restore?.args.join(" ")).not.toContain("target-password");
-    expect(existsSync(path.join(result.finalPath!, "sessions/s1/history.jsonl"))).toBe(true);
+    expect(existsSync(path.join(result.finalPath!, "sessions/session-1/history.jsonl"))).toBe(true);
   });
 
   it("restores a PG backup whose referenced session history is missing: normalizes the reference to NULL (missing-as-empty)", async () => {
@@ -1170,7 +1171,7 @@ describe("PostgreSQL restore target safety (fake process)", () => {
     const source = sourceClient(f);
     const missingSource: PgBackupClient = {
       async query<T extends Record<string, unknown>>(text: string, values?: readonly unknown[]) {
-        if (text.includes("FROM \"app_schema\".\"sessions\"")) return { rows: [{ id: "session-1", pi_session_file: f.session } as unknown as T] };
+        if (text.includes("FROM \"app_schema\".\"sessions\"")) return { rows: [{ id: "session-1", project_id: DEFAULT_PROJECT_ID, agent_kind: "pi", conversation_format: "pi-jsonl-v3", conversation_ref: f.session } as unknown as T] };
         return source.query<T>(text, values);
       },
     };
@@ -1178,30 +1179,30 @@ describe("PostgreSQL restore target safety (fake process)", () => {
       storageDialect: "postgres", databaseUrl: "postgres://u:p@example.test/source_db", paths: backupPaths(f), age: fakeAge(),
       pgClient: missingSource, pgProcess: pgProcessAdapter, pgDumpBinary: controlledPgExecutable(f), pgRestoreBinary: controlledPgExecutable(f, "pg_restore"),
 }, async () => ({ version: 0, pending: 0 }));
-    expect(backup.manifest?.missingSessionReferences).toEqual([{ sessionId: "session-1", path: "sessions/s1/history.jsonl", status: "missing" }]);
+    expect(backup.manifest?.missingSessionReferences).toEqual([{ sessionId: "session-1", path: "sessions/session-1/history.jsonl", status: "missing" }]);
     const target = new FakeTargetDatabase("pi_restore_missing", f.session);
     const processAdapter = new FakeRestoreProcess(target);
     const result = await restorePostgresBackup({ paths: { inputBackup: backup.finalPath!, targetRoot: path.join(f.root, "target-missing"), ageIdentityFile: f.identity }, targetDatabaseUrl: "postgres://u:target-password@example.test/pi_restore_missing", safetyContract: POSTGRES_RESTORE_SAFETY_CONTRACT, age: fakeAge(), pgClient: target, pgProcess: processAdapter, verifyMigrations: async () => ({ version: 0, pending: 0 }) });
     expect(result.report.counts.missingSessionReferences).toBe(1);
     expect(result.report.counts.invalidSessionHistories).toBe(0);
     // NULL 更新（$1 只有 session id），绝无指向 finalPath 的路径写入。
-    expect(target.queries.some((text) => /SET pi_session_file = NULL/.test(text))).toBe(true);
-    expect(target.queries.some((text) => /SET pi_session_file = \$1/.test(text))).toBe(false);
+    expect(target.queries.some((text) => /SET conversation_ref = NULL/.test(text))).toBe(true);
+    expect(target.queries.some((text) => /SET conversation_ref = \$1/.test(text))).toBe(false);
   });
 
   it("degrades a present-but-invalid PG session history (invalid-as-empty): nulls the reference and reports the count", async () => {
     const f = fixture();
     const backup = await productionBackup(f);
     // 包级字节完整性保持（hash 同步重绑定），但内容不是合法 Pi session。
-    rewritePgPayload(backup.finalPath!, "payload/sessions/s1/history.jsonl.age", Buffer.from('{"type":"session","id":"h"},{"not":"jsonl"}\n', "utf8"));
+    rewritePgPayload(backup.finalPath!, "payload/sessions/session-1/history.jsonl.age", Buffer.from('{"type":"session","id":"h"},{"not":"jsonl"}\n', "utf8"));
     const harness = fakeRestoreHarness(f, backup.finalPath!, "pi_restore_invalid");
     const result = await harness.restore();
     expect(result.report.status).toBe("success");
     expect(result.report.counts.invalidSessionHistories).toBe(1);
     expect(result.report.counts.sessionHeaders).toBe(0);
     expect(result.report.counts.missingSessionReferences).toBe(0);
-    expect(harness.target.queries.some((text) => /SET pi_session_file = NULL/.test(text))).toBe(true);
-    expect(existsSync(path.join(result.finalPath!, "sessions/s1/history.jsonl"))).toBe(false);
+    expect(harness.target.queries.some((text) => /SET conversation_ref = NULL/.test(text))).toBe(true);
+    expect(existsSync(path.join(result.finalPath!, "sessions/session-1/history.jsonl"))).toBe(false);
   });
 });
 function databaseUrl(base: string, database: string, schema?: string): string {
@@ -1275,12 +1276,12 @@ describeRealPgBackup("real PostgreSQL pg_dump/pg_restore gate (WP3B2)", () => {
       sourceKysely = createPostgresKysely(sourcePool);
       await runPostgresMigrations(sourceKysely);
       await sourcePool.query("INSERT INTO projects (id, name, cwd, owner_key, created_at) VALUES ($1,$2,$3,$4,$5)", ["00000000-0000-4000-8000-000000000001", "real", "/tmp/real", "owner", 1]);
-      const session = path.join(dataDir, "sessions", "real", "history.jsonl");
+      const session = path.join(dataDir, "projects", "00000000-0000-4000-8000-000000000001", "sessions", "00000000-0000-4000-8000-000000000002", "history.jsonl");
       mkdirSync(path.dirname(session), { recursive: true, mode: 0o700 });
       mkdirSync(path.join(dataDir, ".pi-agent"), { recursive: true, mode: 0o700 });
       writeFileSync(session, '{"type":"session","version":3,"id":"real-header","timestamp":"2024-01-01T00:00:00.000Z","cwd":"/tmp/real"}\n{"type":"message","id":"real-entry","parentId":null,"timestamp":"2024-01-01T00:00:00.000Z","message":{"role":"user","content":"real","timestamp":1}}\n', { mode: 0o600 });
       writeFileSync(path.join(dataDir, ".pi-agent", "models.json"), '{"models":[]}\n', { mode: 0o600 });
-      await sourcePool.query("INSERT INTO sessions (id, owner_key, project_id, title, created_at, updated_at, pi_session_file, capability_versions) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)", ["00000000-0000-4000-8000-000000000002", "owner", "00000000-0000-4000-8000-000000000001", "real", 1, 1, session, "{}"]); await sourcePool.query("INSERT INTO idempotency (session_id, request_id, result, created_at) VALUES ($1,$2,$3,$4)", ["00000000-0000-4000-8000-000000000002", "real-request", "{}", 1]);
+      await sourcePool.query("INSERT INTO sessions (id, owner_key, project_id, title, created_at, updated_at, conversation_ref, capability_versions) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)", ["00000000-0000-4000-8000-000000000002", "owner", "00000000-0000-4000-8000-000000000001", "real", 1, 1, session, "{}"]); await sourcePool.query("INSERT INTO idempotency (session_id, request_id, result, created_at) VALUES ($1,$2,$3,$4)", ["00000000-0000-4000-8000-000000000002", "real-request", "{}", 1]);
       await closeSource();
       const identity = path.join(root, "identity");
       const recipient = path.join(root, "recipient");
@@ -1311,7 +1312,7 @@ describeRealPgBackup("real PostgreSQL pg_dump/pg_restore gate (WP3B2)", () => {
     const backupRoot = path.join(root, "backups");
     const identity = path.join(root, "identity");
     const recipient = path.join(root, "recipient");
-    const sessionFile = path.join(dataDir, "sessions", "real", "history.jsonl");
+    const sessionFile = path.join(dataDir, "projects", "00000000-0000-4000-8000-000000000031", "sessions", "00000000-0000-4000-8000-000000000032", "history.jsonl");
     mkdirSync(path.dirname(sessionFile), { recursive: true, mode: 0o700 });
     mkdirSync(path.join(dataDir, ".pi-agent"), { recursive: true, mode: 0o700 });
     writeFileSync(sessionFile, '{"type":"session","version":3,"id":"real-variant-header","timestamp":"2024-01-01T00:00:00.000Z","cwd":"/tmp/real-variant"}\n{"type":"message","id":"real-variant-entry","parentId":null,"timestamp":"2024-01-01T00:00:00.000Z","message":{"role":"user","content":"variant","timestamp":1}}\n', { mode: 0o600 });
@@ -1328,7 +1329,7 @@ describeRealPgBackup("real PostgreSQL pg_dump/pg_restore gate (WP3B2)", () => {
       setupKysely = createPostgresKysely(setupPool);
       await runPostgresMigrations(setupKysely);
       await setupPool.query("INSERT INTO projects (id, name, cwd, owner_key, created_at) VALUES ($1,$2,$3,$4,$5)", ["00000000-0000-4000-8000-000000000031", "real", "/tmp/real-variant", "owner", 1]);
-      await setupPool.query("INSERT INTO sessions (id, owner_key, project_id, title, created_at, updated_at, pi_session_file, capability_versions) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)", ["00000000-0000-4000-8000-000000000032", "owner", "00000000-0000-4000-8000-000000000031", "real", 1, 1, sessionFile, "{}"]);
+      await setupPool.query("INSERT INTO sessions (id, owner_key, project_id, title, created_at, updated_at, conversation_ref, capability_versions) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)", ["00000000-0000-4000-8000-000000000032", "owner", "00000000-0000-4000-8000-000000000031", "real", 1, 1, sessionFile, "{}"]);
       await setupPool.query("INSERT INTO idempotency (session_id, request_id, result, created_at) VALUES ($1,$2,$3,$4)", ["00000000-0000-4000-8000-000000000032", "request", "{}", 1]);
       if (setupKysely) await setupKysely.destroy();
       else await setupPool.end();
@@ -1530,9 +1531,9 @@ describeRealPgBackup("real PostgreSQL pg_dump/pg_restore gate (WP3B2)", () => {
       // The report points at the unique authenticated non-public schema, never at public.
       expect(restored.report.target.schemaIdentity).toBe(createHash("sha256").update(`${PG_IDENTITY_PREFIX_SCHEMA}\0${fixtureData.schema}`, "utf8").digest("hex"));
       expect(restored.report.target.schemaSummary).toMatchObject({ tableCount: 5, migrationVersion: 0, foreignKeyViolations: 0 });
-      const row = (await targetPool.query(`SELECT pi_session_file FROM "${fixtureData.schema}"."sessions" WHERE id = $1`, ["00000000-0000-4000-8000-000000000002"])).rows[0] as { pi_session_file: string };
-      expect(row.pi_session_file).toContain(path.basename(restored.finalPath!));
-      expect(readFileSync(path.join(restored.finalPath!, "sessions/real/history.jsonl")).toString()).toContain("real-entry");
+      const row = (await targetPool.query(`SELECT conversation_ref FROM "${fixtureData.schema}"."sessions" WHERE id = $1`, ["00000000-0000-4000-8000-000000000002"])).rows[0] as { conversation_ref: string };
+      expect(row.conversation_ref).toContain(path.basename(restored.finalPath!));
+      expect(readFileSync(path.join(restored.finalPath!, "projects/00000000-0000-4000-8000-000000000001/sessions/00000000-0000-4000-8000-000000000002/history.jsonl")).toString()).toContain("real-entry");
 
       // After the restore, public is still the empty bootstrap namespace and the
       // authenticated non-public schema is the only other non-system namespace.
@@ -1677,8 +1678,8 @@ describeRealPgBackup("real PostgreSQL pg_dump/pg_restore gate (WP3B2)", () => {
     const dataDir = path.join(root, "data");
     const backupRoot = path.join(root, "backups");
     mkdirSync(dataDir, { recursive: true, mode: 0o700 });
-    // 引用必须位于白名单根内（sessions/<id>/<file> 布局）但文件缺失。
-    const missing = path.join(dataDir, "sessions", "gone", "history.jsonl");
+    // 引用必须位于白名单根内（projects/<projectId>/sessions/<id>/<file> 布局）但文件缺失。
+    const missing = path.join(dataDir, "projects", "00000000-0000-4000-8000-000000000041", "sessions", "00000000-0000-4000-8000-000000000042", "history.jsonl");
     const recipient = path.join(root, "recipient");
     let pool: Pool | undefined;
     let kysely: Awaited<ReturnType<typeof createPostgresKysely>> | undefined;
@@ -1689,7 +1690,7 @@ describeRealPgBackup("real PostgreSQL pg_dump/pg_restore gate (WP3B2)", () => {
       kysely = createPostgresKysely(pool);
       await runPostgresMigrations(kysely);
       await pool.query("INSERT INTO projects (id, name, cwd, owner_key, created_at) VALUES ($1,$2,$3,$4,$5)", ["00000000-0000-4000-8000-000000000041", "missing", "/tmp/missing", "owner", 1]);
-      await pool.query("INSERT INTO sessions (id, owner_key, project_id, title, created_at, updated_at, pi_session_file, capability_versions) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)", ["00000000-0000-4000-8000-000000000042", "owner", "00000000-0000-4000-8000-000000000041", "missing", 1, 1, missing, "{}"]);
+      await pool.query("INSERT INTO sessions (id, owner_key, project_id, title, created_at, updated_at, conversation_ref, capability_versions) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)", ["00000000-0000-4000-8000-000000000042", "owner", "00000000-0000-4000-8000-000000000041", "missing", 1, 1, missing, "{}"]);
       await kysely.destroy();
       kysely = undefined;
       pool = undefined;
@@ -1705,7 +1706,7 @@ describeRealPgBackup("real PostgreSQL pg_dump/pg_restore gate (WP3B2)", () => {
       // missing-as-empty：照常发布，缺失引用记入 manifest。
       expect(result.finalPath).toBeTruthy();
       expect(existsSync(path.join(result.finalPath!, "COMPLETE"))).toBe(true);
-      expect(result.missingSessionReferences).toEqual([{ sessionId: "00000000-0000-4000-8000-000000000042", path: "sessions/gone/history.jsonl", status: "missing" }]);
+      expect(result.missingSessionReferences).toEqual([{ sessionId: "00000000-0000-4000-8000-000000000042", path: "projects/00000000-0000-4000-8000-000000000041/sessions/00000000-0000-4000-8000-000000000042/history.jsonl", status: "missing" }]);
     } finally {
       await kysely?.destroy().catch(() => undefined);
       if (pool && !pool.ending) await pool.end().catch(() => undefined);
@@ -1729,7 +1730,7 @@ describeRealPgBackup("real PostgreSQL pg_dump/pg_restore gate (WP3B2)", () => {
     const dataDir = path.join(root, "data");
     const backupRoot = path.join(root, "backups");
     mkdirSync(dataDir, { recursive: true, mode: 0o700 });
-    const session = path.join(dataDir, "sessions", "cli", "history.jsonl");
+    const session = path.join(dataDir, "projects", "00000000-0000-4000-8000-000000000051", "sessions", "00000000-0000-4000-8000-000000000052", "history.jsonl");
     if (complete) {
       mkdirSync(path.dirname(session), { recursive: true, mode: 0o700 });
       writeFileSync(session, '{"type":"session","id":"cli-header"}\n', { mode: 0o600 });
@@ -1744,7 +1745,7 @@ describeRealPgBackup("real PostgreSQL pg_dump/pg_restore gate (WP3B2)", () => {
       kysely = createPostgresKysely(pool);
       await runPostgresMigrations(kysely);
       await pool.query("INSERT INTO projects (id, name, cwd, owner_key, created_at) VALUES ($1,$2,$3,$4,$5)", ["00000000-0000-4000-8000-000000000051", "cli-strict", "/tmp/cli-strict", "owner", 1]);
-      await pool.query("INSERT INTO sessions (id, owner_key, project_id, title, created_at, updated_at, pi_session_file, capability_versions) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)", ["00000000-0000-4000-8000-000000000052", "owner", "00000000-0000-4000-8000-000000000051", "cli-strict", 1, 1, complete ? session : path.join(dataDir, "sessions", "gone", "history.jsonl"), "{}"]);
+      await pool.query("INSERT INTO sessions (id, owner_key, project_id, title, created_at, updated_at, conversation_ref, capability_versions) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)", ["00000000-0000-4000-8000-000000000052", "owner", "00000000-0000-4000-8000-000000000051", "cli-strict", 1, 1, session, "{}"]);
       await kysely.destroy();
       kysely = undefined;
       pool = undefined;
@@ -1810,7 +1811,7 @@ describeRealPgBackup("real PostgreSQL pg_dump/pg_restore gate (WP3B2)", () => {
       // 诊断可见：断言失败时完整 stdout+stderr 随消息展示。
       expect(cli.status, `CLI failed; stdout+stderr:\n${output}`).toBe(0);
       // missing-as-empty：发布成功，机器报告包含缺失计数；绝不泄露 session id/路径/URL。
-      expect(output).not.toContain("gone");
+      expect(output).not.toContain("00000000-0000-4000-8000-000000000052");
       expect(output).not.toContain(fixtureData.url);
       const lines = cli.stdout.split(/\r?\n/).filter((line) => line.startsWith("backup-json-report: "));
       expect(lines).toHaveLength(1);

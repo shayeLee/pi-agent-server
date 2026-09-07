@@ -65,9 +65,9 @@ try {
     await initializeDatabase(db);
     db.prepare("INSERT INTO projects (id, name, cwd, owner_key, created_at) VALUES (?,?,?,?,?)").run(DEFAULT_PROJECT_ID, "默认项目", cwd, "", 0);
     db.prepare("INSERT INTO projects (id, name, cwd, owner_key, created_at) VALUES (?,?,?,?,?)").run("p1", "custom", "/cwd", SOURCE_OWNER, 1);
-    db.prepare("INSERT INTO sessions (id, owner_key, project_id, title, created_at, updated_at, pi_session_file, capability_versions) VALUES (?,?,?,?,?,?,?,?)").run("s1", SOURCE_OWNER, DEFAULT_PROJECT_ID, "default", 1, 1, sessionFile, "{}");
-    db.prepare("INSERT INTO sessions (id, owner_key, project_id, title, created_at, updated_at, pi_session_file, capability_versions) VALUES (?,?,?,?,?,?,?,?)").run("s2", SOURCE_OWNER, "p1", "custom", 1, 1, null, "{}");
-    db.prepare("INSERT INTO sessions (id, owner_key, project_id, title, created_at, updated_at, pi_session_file, capability_versions) VALUES (?,?,?,?,?,?,?,?)").run("s3", "ip:10.1.2.9", DEFAULT_PROJECT_ID, "other", 1, 1, null, "{}");
+    db.prepare("INSERT INTO sessions (id, owner_key, project_id, title, created_at, updated_at, conversation_ref, capability_versions) VALUES (?,?,?,?,?,?,?,?)").run("s1", SOURCE_OWNER, DEFAULT_PROJECT_ID, "default", 1, 1, sessionFile, "{}");
+    db.prepare("INSERT INTO sessions (id, owner_key, project_id, title, created_at, updated_at, conversation_ref, capability_versions) VALUES (?,?,?,?,?,?,?,?)").run("s2", SOURCE_OWNER, "p1", "custom", 1, 1, null, "{}");
+    db.prepare("INSERT INTO sessions (id, owner_key, project_id, title, created_at, updated_at, conversation_ref, capability_versions) VALUES (?,?,?,?,?,?,?,?)").run("s3", "ip:10.1.2.9", DEFAULT_PROJECT_ID, "other", 1, 1, null, "{}");
     db.close();
     return { root, cwd, dataDir, agentDir, dbPath, backupRoot: path.join(root, "backups") };
   };
@@ -165,7 +165,7 @@ try {
   const missFixture = await createFixture("missing-jsonl");
   {
     const missDb = new DatabaseSync(missFixture.dbPath);
-    missDb.prepare("UPDATE sessions SET pi_session_file = ? WHERE id = ?").run(path.join(missFixture.dataDir, "sessions", "ghost", "ghost.jsonl"), "s1");
+    missDb.prepare("UPDATE sessions SET conversation_ref = ? WHERE id = ?").run(path.join(missFixture.dataDir, "sessions", "s1", "ghost.jsonl"), "s1");
     missDb.close();
   }
   const missing = spawnSync(process.execPath, [ownerTransferBin, ...args(missFixture, recipient)], { env: env(missFixture), encoding: "utf8" });
@@ -175,7 +175,7 @@ try {
     missReport.transfer.projectsTransferred !== 1 || missReport.transfer.sessionsTransferred !== 2) {
     throw new Error("compiled owner-transfer missing-as-empty success report is incomplete");
   }
-  if ((missing.stderr ?? "").includes(missFixture.dataDir) || (missing.stderr ?? "").includes(path.join(missFixture.dataDir, "sessions", "ghost"))) {
+  if ((missing.stderr ?? "").includes(missFixture.dataDir) || (missing.stderr ?? "").includes(path.join(missFixture.dataDir, "sessions", "s1", "ghost.jsonl"))) {
     throw new Error("compiled owner-transfer missing-as-empty path leaked the data directory");
   }
   const missOwners = readOwners(missFixture.dbPath);
@@ -228,8 +228,8 @@ try {
       }
       await admin.query(`INSERT INTO ${ident(schema)}.projects (id, name, cwd, owner_key, created_at) VALUES ($1, $2, $3, $4, $5)`, [DEFAULT_PROJECT_ID, "默认项目", "/cwd", "", 0]);
       await admin.query(`INSERT INTO ${ident(schema)}.projects (id, name, cwd, owner_key, created_at) VALUES ($1, $2, $3, $4, $5)`, [PG_CUSTOM_PROJECT_ID, "custom", "/cwd", SOURCE_OWNER, 1]);
-      await admin.query(`INSERT INTO ${ident(schema)}.sessions (id, owner_key, project_id, title, created_at, updated_at, pi_session_file, capability_versions) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`, [PG_SESSION_ONE_ID, SOURCE_OWNER, DEFAULT_PROJECT_ID, "t", 1, 1, null, "{}"]);
-      await admin.query(`INSERT INTO ${ident(schema)}.sessions (id, owner_key, project_id, title, created_at, updated_at, pi_session_file, capability_versions) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`, [PG_SESSION_TWO_ID, SOURCE_OWNER, PG_CUSTOM_PROJECT_ID, "t", 1, 1, null, "{}"]);
+      await admin.query(`INSERT INTO ${ident(schema)}.sessions (id, owner_key, project_id, title, created_at, updated_at, conversation_ref, capability_versions) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`, [PG_SESSION_ONE_ID, SOURCE_OWNER, DEFAULT_PROJECT_ID, "t", 1, 1, null, "{}"]);
+      await admin.query(`INSERT INTO ${ident(schema)}.sessions (id, owner_key, project_id, title, created_at, updated_at, conversation_ref, capability_versions) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`, [PG_SESSION_TWO_ID, SOURCE_OWNER, PG_CUSTOM_PROJECT_ID, "t", 1, 1, null, "{}"]);
       await admin.query(`CREATE TABLE ${ident(bystander)}.bystander_table (id int)`);
       const pgRoot = path.join(directory, "pg-fixture");
       const pgCwd = path.join(pgRoot, "app-cwd");

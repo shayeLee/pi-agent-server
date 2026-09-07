@@ -36,7 +36,9 @@ function makeRecord(overrides: Partial<SessionRecord> = {}): SessionRecord {
     title: "测试会话",
     createdAt: 1000,
     updatedAt: 1000,
-    piSessionFile: null,
+    agentKind: "pi",
+    conversationFormat: "pi-jsonl-v3",
+    conversationRef: null,
     modelProvider: null,
     modelId: null,
     thinkingLevel: null,
@@ -185,6 +187,31 @@ describe("会话索引存储（needs.md §4.1 / §4.2，SQLite 实现）", () =>
     it("update 不存在的会话返回 false", async () => {
       const repo = await makeRepo();
       expect(await repo.update("no-such-id", { title: "x" })).toBe(false);
+    });
+  });
+
+  describe("conversation_ref reservation", () => {
+    it("只允许第一个 reservation 写入引用，且不覆盖已有引用", async () => {
+      const repo = await makeRepo();
+      const rec = makeRecord();
+      await repo.create(rec);
+
+      expect(await repo.reserveConversation(rec.id, { conversationRef: "/tmp/sessions/s1/history.jsonl", tombstoneOperationKey: "tombstone-none" })).toBe(true);
+      expect(await repo.reserveConversation(rec.id, { conversationRef: "/tmp/sessions/s1/other.jsonl", tombstoneOperationKey: "tombstone-none" })).toBe(false);
+      expect((await repo.get(rec.id))?.conversationRef).toBe("/tmp/sessions/s1/history.jsonl");
+      expect(await repo.reserveConversation("missing", { conversationRef: "/tmp/sessions/missing/history.jsonl", tombstoneOperationKey: "tombstone-none" })).toBe(false);
+    });
+
+    it("仅持有相同 reservation 的创建者可以提交实际引用", async () => {
+      const repo = await makeRepo();
+      const rec = makeRecord();
+      await repo.create(rec);
+      expect(await repo.reserveConversation(rec.id, { conversationRef: "proposal", tombstoneOperationKey: "tombstone-none" })).toBe(true);
+      expect(await repo.commitConversationReservation(rec.id, "other", "actual")).toBe(false);
+      expect((await repo.get(rec.id))?.conversationRef).toBe("proposal");
+      expect(await repo.commitConversationReservation(rec.id, "proposal", "actual")).toBe(true);
+      expect((await repo.get(rec.id))?.conversationRef).toBe("actual");
+      expect(await repo.commitConversationReservation("missing", "actual", "next")).toBe(false);
     });
   });
 

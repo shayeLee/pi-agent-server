@@ -106,7 +106,9 @@ describePg("PostgreSQL 集成测试（PI_TEST_PG_URL 门控；随机 schema 隔�
       title: "会话",
       createdAt: Date.now(),
       updatedAt: Date.now(),
-      piSessionFile: null,
+      agentKind: "pi",
+      conversationFormat: "pi-jsonl-v3",
+      conversationRef: null,
       modelProvider: null,
       modelId: null,
       thinkingLevel: null,
@@ -256,12 +258,13 @@ describePg("PostgreSQL 集成测试（PI_TEST_PG_URL 门控；随机 schema 隔�
       expect(col?.column_default).toContain(DEFAULT_PROJECT_ID);
     });
 
-    it("6 个显式业务索引 + schema_migrations 的 name UNIQUE 索引齐备，outbox key 唯一且 claim 非唯一，含 updated_at DESC；PK 自动索引被排除", async () => {
+    it("7 个显式业务索引 + schema_migrations 的 name UNIQUE 索引齐备，outbox key 与 conversation identity 唯一且 claim 非唯一，含 updated_at DESC；PK 自动索引被排除", async () => {
       // PostgreSQL 会为每个 PRIMARY KEY / UNIQUE 约束自动创建索引（如 projects_pkey、sessions_pkey、
       // idempotency_pk、schema_migrations_pkey）。这里仅查询 indisprimary = false 的非主键索引
-      // （PK 索引自动排除）。除 Manifest 显式声明的 6 个业务索引外，bootstrap 的 schema_migrations
+      // （PK 索引自动排除）。除 Manifest 显式声明的 7 个业务索引外，bootstrap 的 schema_migrations
       // 基线 ledger 的 name UNIQUE 约束也会生成一个非主键 UNIQUE索引（schema_migrations_name_key），
-      // 它必须被纳入 —— 且除 outbox key（idx_file_operations_key）外是唯一的 UNIQUE 索引。
+      // 它必须被纳入 —— 且除 outbox key（idx_file_operations_key）与 conversation identity
+      // （idx_sessions_conversation）外是唯一的 UNIQUE 索引。
       const indexes = (
         await pool.query(
           `SELECT ic.relname AS indexname,
@@ -278,11 +281,11 @@ describePg("PostgreSQL 集成测试（PI_TEST_PG_URL 门控；随机 schema 隔�
       ).rows as Array<{ indexname: string; indexdef: string; indisunique: boolean }>;
       const names = indexes.map((r) => r.indexname).sort();
       expect(names).toEqual(
-        ["idx_file_operations_claim", "idx_file_operations_key", "idx_idempotency_created_at", "idx_projects_owner", "idx_sessions_owner_project", "idx_sessions_owner_updated", "schema_migrations_name_key"].sort(),
+        ["idx_file_operations_claim", "idx_file_operations_key", "idx_idempotency_created_at", "idx_projects_owner", "idx_sessions_conversation", "idx_sessions_owner_project", "idx_sessions_owner_updated", "schema_migrations_name_key"].sort(),
       );
-      // 6 个 Manifest 业务索引显式非唯一（无 unique: true），仅 outbox key 与 ledger 的
-      // name 约束索引是 UNIQUE。
-      const uniqueIndexNames = new Set(["idx_file_operations_key", "schema_migrations_name_key"]);
+      // 7 个 Manifest 业务索引中，仅 outbox key（idx_file_operations_key）与 conversation identity
+      // （idx_sessions_conversation）以及 ledger 的 name 约束索引是 UNIQUE，其余显式非唯一（无 unique: true）。
+      const uniqueIndexNames = new Set(["idx_file_operations_key", "idx_sessions_conversation", "schema_migrations_name_key"]);
       for (const row of indexes) {
         expect(row.indisunique, `索引 ${row.indexname} unique 语义`).toBe(uniqueIndexNames.has(row.indexname));
       }
@@ -582,7 +585,7 @@ describePg("PostgreSQL 集成测试（PI_TEST_PG_URL 门控；随机 schema 隔�
             title TEXT NOT NULL,
             created_at BIGINT NOT NULL,
             updated_at BIGINT NOT NULL,
-            pi_session_file TEXT,
+            conversation_ref TEXT,
             model_provider TEXT,
             model_id TEXT,
             thinking_level TEXT,
@@ -640,7 +643,7 @@ describePg("PostgreSQL 集成测试（PI_TEST_PG_URL 门控；随机 schema 隔�
             title TEXT NOT NULL,
             created_at BIGINT NOT NULL,
             updated_at BIGINT NOT NULL,
-            pi_session_file TEXT,
+            conversation_ref TEXT,
             model_provider TEXT,
             model_id TEXT,
             thinking_level TEXT,

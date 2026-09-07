@@ -1,44 +1,37 @@
-// WP4C（方案 A 收敛）受控只读引用仓库：只读列取 sessions 的 session id /
-// project id / pi_session_file（纯 SELECT，方言无关：SQLite/PG 共用同一实现）。
-//
-// 边界：
-// - 唯一的查询是单条 SELECT，不做任何 UPDATE/INSERT/DELETE/DDL；
-// - 列集合固定为三个标识字段，不选取任何内容字段（title/system_prompt/cwd/
-//   owner_key 等绝不进入 analyzer 的内存与报告）；
-// - pi_session_file 为 null 时原样保留（懒会话尚未创建 = normal
-//   unmaterialized，由 analyzer 计数、不判为 issue）；
-// - 排序按 session id 升序，跨运行稳定，便于确定性去重与报告。
+// reconcile 唯一允许接触的 DB-only 引用读取器（SQLite/PG 共用）。
+// 只读取 session id/project id 与通用 conversation descriptor，不读取内容字段。
 
 import type { Kysely } from "kysely";
-import type { DatabaseSchema } from "./db-schema.js";
 import type {
   ReconcileReferenceRecord,
   ReconcileReferenceStorePort,
 } from "../application/ports/reconcile-reference-port.js";
+import type { DatabaseSchema } from "./db-schema.js";
 
-type ReconcileReferenceRow = Pick<DatabaseSchema["sessions"], "id" | "project_id" | "pi_session_file">;
+type ReconcileReferenceRow = Pick<
+  DatabaseSchema["sessions"],
+  "id" | "project_id" | "agent_kind" | "conversation_format" | "conversation_ref"
+>;
 
 function toRecord(row: ReconcileReferenceRow): ReconcileReferenceRecord {
   return {
     sessionId: row.id,
     projectId: row.project_id,
-    piSessionFile: row.pi_session_file,
+    agentKind: row.agent_kind,
+    conversationFormat: row.conversation_format,
+    conversationRef: row.conversation_ref,
   };
 }
 
 export class KyselyReconcileReferenceRepository implements ReconcileReferenceStorePort {
-  private readonly db: Kysely<DatabaseSchema>;
-
-  constructor(db: Kysely<DatabaseSchema>) {
-    this.db = db;
-  }
+  constructor(private readonly db: Kysely<DatabaseSchema>) {}
 
   async listReconcileReferences(): Promise<readonly ReconcileReferenceRecord[]> {
     const rows = await this.db
       .selectFrom("sessions")
-      .select(["id", "project_id", "pi_session_file"])
+      .select(["id", "project_id", "agent_kind", "conversation_format", "conversation_ref"])
       .orderBy("id", "asc")
       .execute();
-    return rows.map(toRecord);
+    return rows.map((row) => toRecord(row));
   }
 }

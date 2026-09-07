@@ -11,6 +11,7 @@
   "include": [
     "scripts/reconcile-jsonl.ts",
     "src/file-operations/reconcile.ts",
+    "src/agent/pi-jsonl-reference.ts",
     "src/application/ports/project-store-port.ts",
     "src/application/ports/reconcile-reference-port.ts",
     "src/storage/db-schema.ts",

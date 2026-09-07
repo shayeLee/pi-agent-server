@@ -149,7 +149,9 @@ describe("空数据库 bootstrap（Kysely schema builder + bootstrap.ts）", () 
     await projects.create({ id: "p1", name: "P1", cwd: "/p1", ownerKey: "o", createdAt: 1 });
     await sessions.create({
       id: "s1", ownerKey: "o", projectId: "p1", title: "t", createdAt: 1, updatedAt: 1,
-      piSessionFile: null, modelProvider: null, modelId: null, thinkingLevel: null,
+      agentKind: "pi",
+      conversationFormat: "pi-jsonl-v3",
+      conversationRef: null, modelProvider: null, modelId: null, thinkingLevel: null,
       systemPrompt: null, capabilityVersions: null,
     });
     expect(await sessions.get("s1")).toMatchObject({ id: "s1", projectId: "p1", title: "t" });
@@ -165,7 +167,7 @@ describe("空数据库 bootstrap（Kysely schema builder + bootstrap.ts）", () 
     expect(nn["project_id"]).toBe(1);
     expect(nn["created_at"]).toBe(1);
     expect(nn["updated_at"]).toBe(1);
-    expect(nn["pi_session_file"]).toBe(0);
+    expect(nn["conversation_ref"]).toBe(0);
     await destroyAll(kysely);
   });
 });
@@ -256,7 +258,7 @@ describe("旧 schema 严格兼容性 preflight（M1：列名齐全但类型/FK/�
         title TEXT NOT NULL,
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL,
-        pi_session_file TEXT,
+        conversation_ref TEXT,
         model_provider TEXT,
         model_id TEXT,
         thinking_level TEXT,
@@ -364,7 +366,7 @@ describe("旧 schema 严格兼容性 preflight（M1：列名齐全但类型/FK/�
         title TEXT NOT NULL,
         created_at INTEGER NOT NULL,
         updated_at INTEGER NOT NULL,
-        pi_session_file TEXT,
+        conversation_ref TEXT,
         model_provider TEXT,
         model_id TEXT,
         thinking_level TEXT,

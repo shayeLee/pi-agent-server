@@ -6,6 +6,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { bindReferencesToPayload, createSqliteBackup, type AgeAdapter } from "../../src/backup/backup-core.js";
 import { createCanonicalSqliteBaseline, insertCanonicalSession } from "./sqlite-fixture.js";
+import { DEFAULT_PROJECT_ID } from "../../src/application/ports/project-store-port.js";
 
 const cleanups: string[] = [];
 afterEach(() => { for (const directory of cleanups.splice(0)) rmSync(directory, { recursive: true, force: true }); });
@@ -69,7 +70,7 @@ describe("SQLite online backup core (WP3A)", () => {
     // Use a private temporary copy solely for checking the encrypted snapshot.
     writeFileSync(path.join(f.root, "decrypted.db"), dbPayload);
     const checked = new DatabaseSync(path.join(f.root, "decrypted.db"), { readOnly: true });
-    expect(checked.prepare("SELECT id, pi_session_file FROM sessions").all()).toHaveLength(1);
+    expect(checked.prepare("SELECT id, conversation_ref FROM sessions").all()).toHaveLength(1);
     checked.close();
     const manifest = JSON.parse(age.decrypt(readFileSync(path.join(result.finalPath!, "manifest.json.age"))).toString()) as {
       files: Array<{ path: string; sha256: string }>;
@@ -152,10 +153,10 @@ describe("SQLite online backup core (WP3A)", () => {
 
   it("reports missing in-root session references without claiming inclusion", async () => {
     const f = fixture();
-    const missing = path.join(f.dataDir, "sessions", "gone", "history.jsonl");
+    const missing = path.join(f.dataDir, "sessions", "missing-session", "history.jsonl");
     putSession(f.dbPath, "missing-session", missing);
     const result = await createSqliteBackup({ paths: makePaths(f), age: fakeAge() });
-    expect(result.missingSessionReferences).toEqual([{ sessionId: "missing-session", path: "sessions/gone/history.jsonl", status: "missing" }]);
+    expect(result.missingSessionReferences).toEqual([{ sessionId: "missing-session", path: "sessions/missing-session/history.jsonl", status: "missing" }]);
     expect(result.manifest?.missingSessionReferences).toHaveLength(1);
   });
 
@@ -163,19 +164,27 @@ describe("SQLite online backup core (WP3A)", () => {
     const f = fixture();
     const session = path.join(f.dataDir, "sessions", "s1", "history.jsonl");
     writeFileSync(session, '{"type":"session"}\n', { mode: 0o600 });
-    const bound = bindReferencesToPayload([{ sessionId: "s1", file: session }], realpathSync(f.dataDir), []);
+    const bound = bindReferencesToPayload([{ sessionId: "s1", projectId: DEFAULT_PROJECT_ID, agentKind: "pi", conversationFormat: "pi-jsonl-v3", conversationRef: session }], realpathSync(f.dataDir), []);
     expect(bound.missing).toEqual([]);
     expect(bound.files).toEqual([{ sourcePath: realpathSync(session), relativePath: "sessions/s1/history.jsonl", kind: "jsonl" }]);
   });
 
+  it("fails closed when a Pi reference is inside DATA_DIR but belongs to a different session", () => {
+    const f = fixture();
+    const foreign = path.join(f.dataDir, "sessions", "other-session", "history.jsonl");
+    expect(() => bindReferencesToPayload([
+      { sessionId: "claimed-session", projectId: DEFAULT_PROJECT_ID, agentKind: "pi", conversationFormat: "pi-jsonl-v3", conversationRef: foreign },
+    ], realpathSync(f.dataDir), [])).toThrow(/does not match its Pi session/);
+  });
+
   it("treats missing session references as missing-as-empty: records them in the manifest and still publishes (fail-open, never strict)", async () => {
     const f = fixture();
-    const missing = path.join(f.dataDir, "sessions", "gone", "history.jsonl");
+    const missing = path.join(f.dataDir, "sessions", "missing-as-empty", "history.jsonl");
     putSession(f.dbPath, "missing-as-empty", missing);
     const result = await createSqliteBackup({ paths: makePaths(f), age: fakeAge() });
     expect(result.finalPath).toBeTruthy();
     expect(existsSync(path.join(result.finalPath!, "COMPLETE"))).toBe(true);
-    expect(result.missingSessionReferences).toEqual([{ sessionId: "missing-as-empty", path: "sessions/gone/history.jsonl", status: "missing" }]);
+    expect(result.missingSessionReferences).toEqual([{ sessionId: "missing-as-empty", path: "sessions/missing-as-empty/history.jsonl", status: "missing" }]);
     expect(result.manifest?.missingSessionReferences).toHaveLength(1);
     // 缺失引用不影响发布；dry-run 同样成功并记录缺失。
     const dry = await createSqliteBackup({ paths: makePaths(f), dryRun: true, age: fakeAge() });
@@ -196,7 +205,7 @@ describe("SQLite online backup core (WP3A)", () => {
     // The write lands deterministically AFTER the inspect-time reference
     // check (which runs before any staging) and BEFORE the VACUUM INTO: the
     // ensureAvailable hook is the only code between inspection and staging.
-    const lateFile = path.join(f.dataDir, "sessions", "late", "history.jsonl");
+    const lateFile = path.join(f.dataDir, "sessions", "late-session", "history.jsonl");
     const age: AgeAdapter = {
       ...fakeAge(),
       ensureAvailable() {
@@ -213,12 +222,12 @@ describe("SQLite online backup core (WP3A)", () => {
       writeFileSync(path.join(f.root, "decrypted.db"), dbPayload);
       const checked = new DatabaseSync(path.join(f.root, "decrypted.db"), { readOnly: true });
       try {
-        const row = checked.prepare("SELECT id, pi_session_file FROM sessions WHERE id = ?").get("late-session") as { id: string; pi_session_file: string } | undefined;
+        const row = checked.prepare("SELECT id, conversation_ref FROM sessions WHERE id = ?").get("late-session") as { id: string; conversation_ref: string } | undefined;
         expect(row).toBeDefined();
-        expect(row!.pi_session_file).toBe(lateFile);
+        expect(row!.conversation_ref).toBe(lateFile);
       } finally { checked.close(); }
-      expect(existsSync(path.join(result.finalPath!, "payload/sessions/late/history.jsonl.age"))).toBe(false);
-      expect(result.manifest?.missingSessionReferences).toEqual([{ sessionId: "late-session", path: "sessions/late/history.jsonl", status: "missing" }]);
+      expect(existsSync(path.join(result.finalPath!, "payload/sessions/late-session/history.jsonl.age"))).toBe(false);
+      expect(result.manifest?.missingSessionReferences).toEqual([{ sessionId: "late-session", path: "sessions/late-session/history.jsonl", status: "missing" }]);
     } finally {
       writer.close();
     }
@@ -234,7 +243,7 @@ describe("SQLite online backup core (WP3A)", () => {
     // 并发写入同时创建新会话文件并插入引用：文件存在但不在 inspect 阶段收集的
     // payload 集合里。最终 snapshot 绑定按精确引用把该文件加入 payload，
     // 无需再次扫描会话目录。
-    const freshFile = path.join(f.dataDir, "sessions", "fresh", "history.jsonl");
+    const freshFile = path.join(f.dataDir, "sessions", "fresh-session", "history.jsonl");
     const age: AgeAdapter = {
       ...fakeAge(),
       ensureAvailable() {
@@ -247,7 +256,7 @@ describe("SQLite online backup core (WP3A)", () => {
       const result = await createSqliteBackup({ paths: makePaths(f), age });
       expect(result.finalPath).toBeTruthy();
       expect(existsSync(path.join(result.finalPath!, "COMPLETE"))).toBe(true);
-      expect(existsSync(path.join(result.finalPath!, "payload/sessions/fresh/history.jsonl.age"))).toBe(true);
+      expect(existsSync(path.join(result.finalPath!, "payload/sessions/fresh-session/history.jsonl.age"))).toBe(true);
       expect(result.manifest?.missingSessionReferences).toEqual([]);
     } finally { writer.close(); }
   });

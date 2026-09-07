@@ -1,7 +1,7 @@
 // WP4C（方案 A 收敛）安全 DB-only reconcile analyzer。
 //
 // 本模块是会话索引与 JSONL 双存储对账的唯一离线实现，边界如下：
-// - 数据来源只有一处：受控只读 DB 引用列表（session id/project id/pi_session_file，
+// - 数据来源只有一处：受控只读 DB 引用列表（session id/project id/agent kind/format/ref，
 //   纯 SELECT，绝不选取 title/system_prompt/cwd 等任何内容字段）；
 // - 本实现是纯 DB reference 分析：**绝不触碰文件系统**——不递归遍历、不
 //   lstat/open/readFile、不解析任何 JSONL；DATA_DIR 仅作为字符串参与规范布局
@@ -25,7 +25,7 @@
 
 import { createHash } from "node:crypto";
 import path from "node:path";
-import { DEFAULT_PROJECT_ID } from "../application/ports/project-store-port.js";
+import { classifyPiJsonlReference } from "../agent/pi-jsonl-reference.js";
 import type { ReconcileReferenceRecord } from "../application/ports/reconcile-reference-port.js";
 
 /** 固定 issue 类别（报告 key 的唯二合法来源；顺序即报告输出顺序）。 */
@@ -58,7 +58,7 @@ export interface ReconcileReport {
   };
   /** DB 引用行数（受控只读引用列表行数）。 */
   readonly references: number;
-  /** pi_session_file 为 null 的会话数（懒会话未创建：normal unmaterialized，非 issue）。 */
+  /** conversation_ref 为 null 的会话数（懒会话未创建：normal unmaterialized，非 issue）。 */
   readonly unmaterialized: number;
   /** 词法合法且无重复的规范引用数。 */
   readonly valid: number;
@@ -138,56 +138,14 @@ type ReferenceOutcome =
   | { readonly outcome: "shapeInvalid" }
   | { readonly outcome: "shapeValid"; readonly canonical: string; readonly idsMatch: boolean };
 
-/**
- * 单个引用的词法分类（纯字符串，绝不触碰文件系统）：
- * - null → unmaterialized（normal，非 issue）；
- * - 非 null：NUL/UNC/空/非绝对/root/parsed root 与 DATA_DIR 不一致（跨卷/伪
- *   root）/不在 DATA_DIR 之下/固定 literal 段不符（同段数伪目录也拒绝，如
- *   sessions2/、Projects/、project/、foo/）/traversal/非法 file name
- *   → shapeInvalid；
- * - 形态合法 → shapeValid：canonical = 规范相对引用（仅用作重复检测，绝不进入
- *   报告），idsMatch = 路径中的 session id/project id 与 DB 行一致（不一致 =
- *   id mismatch）。
- * 重复检测在调用方按 canonical 分组，**owner 优先且与输入/ID 顺序无关**：形态
- * 合法但 id 不匹配的成员不是 owner，见 analyzeReconcileReferences。
- */
-function classifyReference(
-  dataDirRoot: string,
-  dataDirSegments: readonly string[],
-  reference: ReconcileReferenceRecord,
-): ReferenceOutcome {
-  const file = reference.piSessionFile;
-  if (file === null) return { outcome: "unmaterialized" };
-  if (file.trim() === "") return { outcome: "shapeInvalid" };
-  const segments = splitCleanSegments(file);
-  if (segments === null) return { outcome: "shapeInvalid" }; // NUL/UNC/非绝对/root 自身/traversal/空段
-  // 拒绝跨卷/伪 root：parsed root/volume 必须与 DATA_DIR 完全一致（Windows 上
-  // C:\ vs D:\ 在此即被拒绝；posix 上 //、\\ 等形态已在 splitCleanSegments 拒绝）。
-  if (path.parse(file).root !== dataDirRoot) return { outcome: "shapeInvalid" };
-  // 规范布局绑定：文件必须严格位于 DATA_DIR 之下（段数多且前缀逐字一致）。
-  if (segments.length <= dataDirSegments.length) return { outcome: "shapeInvalid" };
-  for (let index = 0; index < dataDirSegments.length; index++) {
-    if (segments[index] !== dataDirSegments[index]) return { outcome: "shapeInvalid" }; // 错误 DATA_DIR 前缀
+/** 由当前唯一的 Pi conversation storage 承担引用布局解释；本调用仍严格 DB-only。 */
+function classifyReference(dataDir: string, reference: ReconcileReferenceRecord): ReferenceOutcome {
+  const result = classifyPiJsonlReference(dataDir, reference);
+  switch (result.kind) {
+    case "unmaterialized": return { outcome: "unmaterialized" };
+    case "invalid": return { outcome: "shapeInvalid" };
+    case "valid": return { outcome: "shapeValid", canonical: result.canonical, idsMatch: result.idsMatch };
   }
-  const layout = segments.slice(dataDirSegments.length);
-  const fileName = layout[layout.length - 1]!;
-  if (fileName === "." || fileName === ".." || !fileName.endsWith(".jsonl") || fileName.length <= ".jsonl".length) {
-    return { outcome: "shapeInvalid" }; // 非法 file name（单个 *.jsonl 文件；空 stem 如 ".jsonl" 拒绝）
-  }
-  const isDefaultProject = reference.projectId === DEFAULT_PROJECT_ID;
-  if (isDefaultProject) {
-    // 固定段布局：sessions / <sessionId> / <file>；literal 段逐字相等
-    // （同段数伪目录 sessionsx/、Projects/ 等一律拒绝）。
-    if (layout.length !== 3 || layout[0] !== "sessions") return { outcome: "shapeInvalid" };
-    const idsMatch = layout[1] === reference.sessionId;
-    return { outcome: "shapeValid", canonical: layout.join("/"), idsMatch };
-  }
-  // 固定段布局：projects / <projectId> / sessions / <sessionId> / <file>。
-  if (layout.length !== 5 || layout[0] !== "projects" || layout[2] !== "sessions") {
-    return { outcome: "shapeInvalid" };
-  }
-  const idsMatch = layout[1] === reference.projectId && layout[3] === reference.sessionId;
-  return { outcome: "shapeValid", canonical: layout.join("/"), idsMatch };
 }
 
 /**
@@ -200,11 +158,9 @@ export async function analyzeReconcileReferences(
   references: readonly ReconcileReferenceRecord[],
 ): Promise<ReconcileReport> {
   const boundDataDir = requireReconcileDataDir(dataDir);
-  const dataDirRoot = path.parse(boundDataDir).root;
-  const dataDirSegments = boundDataDir.slice(dataDirRoot.length).split(path.sep);
   const outcomes = references.map((reference) => ({
     reference,
-    result: classifyReference(dataDirRoot, dataDirSegments, reference),
+    result: classifyReference(boundDataDir, reference),
   }));
 
   // 同一 sessionId 只分类一次（repository 按 id 升序唯一返回；防御去重）。

@@ -348,10 +348,10 @@ export class LiveDrillExecutor implements DrillExecutor {
       mkdirSync(path.dirname(validHostFile), { recursive: true, mode: 0o700 });
       writeJsonlV3(validHostFile, 3);
       const validStored = path.posix.join(containerDataDir.split(path.sep).join("/"), "sessions", validSessionId, "session.jsonl");
-      db.prepare("INSERT INTO sessions (id, owner_key, project_id, title, created_at, updated_at, pi_session_file) VALUES (?, ?, ?, ?, ?, ?, ?)").run(validSessionId, "drill-owner", projectId, "valid-session", now, now, validStored);
+      db.prepare("INSERT INTO sessions (id, owner_key, project_id, title, created_at, updated_at, conversation_ref) VALUES (?, ?, ?, ?, ?, ?, ?)").run(validSessionId, "drill-owner", projectId, "valid-session", now, now, validStored);
       const missingSessionId = "bbbb0000-0000-4000-8000-000000000002";
       const missingStored = path.posix.join(containerDataDir.split(path.sep).join("/"), "sessions", missingSessionId, "session.jsonl");
-      db.prepare("INSERT INTO sessions (id, owner_key, project_id, title, created_at, updated_at, pi_session_file) VALUES (?, ?, ?, ?, ?, ?, ?)").run(missingSessionId, "drill-owner", projectId, "missing-ref-session", now, now, missingStored);
+      db.prepare("INSERT INTO sessions (id, owner_key, project_id, title, created_at, updated_at, conversation_ref) VALUES (?, ?, ?, ?, ?, ?, ?)").run(missingSessionId, "drill-owner", projectId, "missing-ref-session", now, now, missingStored);
     } finally {
       db.close();
     }
@@ -429,11 +429,11 @@ export class LiveDrillExecutor implements DrillExecutor {
     try {
       const ledger = restored.prepare("SELECT version, name, checksum FROM schema_migrations ORDER BY version").all() as Array<{ version: unknown; name: unknown; checksum: unknown }>;
       if (ledger.length !== 1 || Number(ledger[0]!.version) !== 0) return { ok: false, detail: "restored ledger is not canonical single baseline" };
-      const sessions = restored.prepare("SELECT id, pi_session_file FROM sessions").all() as Array<{ id: unknown; pi_session_file: unknown }>;
+      const sessions = restored.prepare("SELECT id, conversation_ref FROM sessions").all() as Array<{ id: unknown; conversation_ref: unknown }>;
       const valid = sessions.find((s) => s.id === VALID_SESSION_ID);
       const missing = sessions.find((s) => s.id === MISSING_SESSION_ID);
-      const validOk = Boolean(valid && typeof valid.pi_session_file === "string" && valid.pi_session_file.endsWith(".jsonl"));
-      const missingOk = Boolean(missing && missing.pi_session_file === null);
+      const validOk = Boolean(valid && typeof valid.conversation_ref === "string" && valid.conversation_ref.endsWith(".jsonl"));
+      const missingOk = Boolean(missing && missing.conversation_ref === null);
       const validJsonl = findFileSuffix(targetRoot, "session.jsonl");
       const jsonlOk = validJsonl !== null && readFileSync(validJsonl, "utf8").includes(`"version":3`);
       if (!validOk || !missingOk || !jsonlOk) return { ok: false, detail: `restore mismatch (valid=${validOk ? "ok" : "bad"} missing=${missingOk ? "NULL" : "not-null"} jsonl=${jsonlOk ? "ok" : "bad"})` };
@@ -458,7 +458,7 @@ export class LiveDrillExecutor implements DrillExecutor {
         [FIXTURE_PROJECT_ID, "drill-project", containerDataDir, "drill-owner", now],
       );
       await pool.query(
-        "INSERT INTO sessions (id, owner_key, project_id, title, created_at, updated_at, pi_session_file) VALUES ($1, $2, $3, $4, $5, $6, $7), ($8, $2, $3, $9, $5, $6, $10)",
+        "INSERT INTO sessions (id, owner_key, project_id, title, created_at, updated_at, conversation_ref) VALUES ($1, $2, $3, $4, $5, $6, $7), ($8, $2, $3, $9, $5, $6, $10)",
         [VALID_SESSION_ID, "drill-owner", FIXTURE_PROJECT_ID, "valid-session", now, now, path.posix.join(containerDataDir.split(path.sep).join("/"), "sessions", VALID_SESSION_ID, "session.jsonl"), MISSING_SESSION_ID, "missing-ref-session", path.posix.join(containerDataDir.split(path.sep).join("/"), "sessions", MISSING_SESSION_ID, "session.jsonl")],
       );
     } finally {
@@ -587,12 +587,12 @@ export class LiveDrillExecutor implements DrillExecutor {
     const pool = new Pool({ connectionString: pgUrl(targetUrl, schema), max: 1, connectionTimeoutMillis: 5_000 });
     try {
       const ledger = await pool.query<{ version: unknown; name: unknown; checksum: unknown }>("SELECT version, name, checksum FROM schema_migrations ORDER BY version");
-      const sessions = await pool.query<{ id: unknown; pi_session_file: unknown }>("SELECT id, pi_session_file FROM sessions ORDER BY id");
+      const sessions = await pool.query<{ id: unknown; conversation_ref: unknown }>("SELECT id, conversation_ref FROM sessions ORDER BY id");
       const valid = sessions.rows.find((row) => row.id === VALID_SESSION_ID);
       const missing = sessions.rows.find((row) => row.id === MISSING_SESSION_ID);
       const ledgerOk = ledger.rows.length === 1 && Number(ledger.rows[0]?.version) === 0 && ledger.rows[0]?.name === "initial-schema";
-      const validOk = typeof valid?.pi_session_file === "string" && path.isAbsolute(valid.pi_session_file) && valid.pi_session_file.endsWith(".jsonl");
-      const missingOk = missing?.pi_session_file === null;
+      const validOk = typeof valid?.conversation_ref === "string" && path.isAbsolute(valid.conversation_ref) && valid.conversation_ref.endsWith(".jsonl");
+      const missingOk = missing?.conversation_ref === null;
       const recoveredJsonl = findFileSuffix(targetRoot, "session.jsonl");
       const jsonlOk = recoveredJsonl !== null && readFileSync(recoveredJsonl, "utf8").includes('"version":3');
       if (!ledgerOk || !validOk || !missingOk || !jsonlOk) return { ok: false, detail: `postgres restore mismatch (ledger=${ledgerOk ? "ok" : "bad"} valid=${validOk ? "ok" : "bad"} missing=${missingOk ? "NULL" : "not-null"} jsonl=${jsonlOk ? "ok" : "bad"})` };

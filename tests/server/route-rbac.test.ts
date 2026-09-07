@@ -84,7 +84,9 @@ async function seedSession(sessions: SessionStorePort, ownerKey: string, id: str
     title,
     createdAt: 1,
     updatedAt: 1,
-    piSessionFile: null,
+    agentKind: "pi",
+    conversationFormat: "pi-jsonl-v3",
+    conversationRef: null,
     modelProvider: null,
     modelId: null,
     thinkingLevel: null,
@@ -283,7 +285,7 @@ describe("WP5D-3 权限矩阵：own 资源子路由", () => {
       }
 
       // viewer 全部写请求被拒 → 会话记录逐字节不变（零 service side effects：
-      // piSessionFile 未 lazy 创建、title/updatedAt 未动、模型/思考级别未配）。
+      // conversationRef 未 lazy 创建、title/updatedAt 未动、模型/思考级别未配）。
       const viewerBefore = await sessions.get(`own-viewer-messages`);
       const viewerId = `own-viewer-messages`;
       await app.inject({
@@ -331,7 +333,7 @@ describe("WP5D-3 权限矩阵：own 资源子路由", () => {
         id: "v-write",
         ownerKey: ownerOf(ROLE_IP.viewer),
         title: "v",
-        piSessionFile: null,
+        conversationRef: null,
       });
       expect(adapters.get("v-write")).toBeUndefined();
     } finally {
@@ -561,7 +563,7 @@ describe("WP5D-3 SSE：viewer 只读可，writes 拒", () => {
       expect(res.statusCode).toBe(200);
       expect(res.json()).toEqual({ messages: [], lastEventId: 0 });
       expect(adapters.get("v-export")).toBeUndefined();
-      expect(await sessions.get("v-export")).toMatchObject({ id: "v-export", piSessionFile: null });
+      expect(await sessions.get("v-export")).toMatchObject({ id: "v-export", conversationRef: null });
     } finally {
       await app.close();
     }

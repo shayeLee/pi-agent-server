@@ -121,7 +121,7 @@ export type ExportMessage = { role: string; text: string };
 /**
  * 会话导出投影（唯一实现点）：SDK AgentMessage[] → { role, text }[]。
  * 只保留 user/assistant，提取 text 块（忽略 thinking/toolResult）；
- * 只读路径（SessionHistoryReader）必须与活会话导出（PiAgentAdapter.exportSession）共用本函数，
+ * 只读路径（PiJsonlConversationStorage）必须与活会话导出（PiAgentAdapter.exportSession）共用本函数，
  * 保证两类导出返回逐字节一致的投影。
  */
 export function projectExportMessages(messages: readonly unknown[]): ExportMessage[] {

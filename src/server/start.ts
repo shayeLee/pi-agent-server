@@ -12,31 +12,29 @@ import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
-  buildSessionContext,
   createAgentSession,
   DefaultResourceLoader,
   ModelRuntime,
-  parseSessionEntries,
   SessionManager,
   SettingsManager,
-  type NewSessionOptions,
-  type SessionEntry,
-  type SessionHeader,
 } from "@earendil-works/pi-coding-agent";
 import type { FastifyInstance } from "fastify";
 import { buildApp } from "./app.js";
 import {
   DEFAULT_PROJECT_ID,
+  DefaultAgentSessionFactoryRegistry,
+  ConversationStorageRegistry,
   toolPolicyFromAllowlist,
   type CredentialPort,
-  type SessionHistoryReader,
   type SystemPromptPort,
 } from "../application/ports/index.js";
 import { requireIpAccessRuntimeConfig } from "./network-admission.js";
 import type { IpAccessResolveInput } from "../core/ip-access-policy.js";
 import { createIdempotentStorageCloser } from "./storage-close.js";
 import { createOperationStatus, validateMigrationGate, validateDataMode, enforceDataModeGate, type DataMode } from "./ops-status.js";
-import { SessionDeletedError } from "../runtime/session-runtime.js";
+import { SessionConversationCoordinator } from "../application/session-conversation-coordinator.js";
+import { PiAgentSessionFactory } from "../agent/pi-agent-session-factory.js";
+import { PiJsonlConversationStorage } from "../agent/pi-jsonl-conversation-storage.js";
 import { runSqliteMigrations } from "../storage/migration-engine.js";
 import { initializeDatabaseVerifyOnly } from "../storage/bootstrap.js";
 import { sqliteConstraintErrorMapper } from "../storage/sqlite-constraint-errors.js";
@@ -58,8 +56,6 @@ import { KyselySessionRepository } from "../storage/kysely-session-repository.js
 import { KyselyProjectRepository } from "../storage/kysely-project-repository.js";
 import { KyselyIdempotencyRepository } from "../storage/kysely-idempotency-repository.js";
 import { KyselyFileOperationRepository } from "../storage/kysely-file-operation-repository.js";
-import { relativeWhitelistedPath, sessionDeleteOperationKey } from "../storage/file-operation-policy.js";
-import { PiAgentAdapter, projectExportMessages, type AgentSessionLike } from "../agent/pi-agent-adapter.js";
 import { PiModelRuntimeCatalog } from "../model-adapters/pi-model-runtime-catalog.js";
 import { PiModelRuntimeCredentials } from "../model-adapters/pi-model-runtime-credentials.js";
 import { CapabilityRegistry, collectPromptFragmentSources } from "../application/capabilities/index.js";
@@ -208,213 +204,6 @@ async function runSqliteMigrationGateReadonly(dbPath: string): Promise<void> {
     }
   }
   if (gateError) throw startupMigrationGateError(gateError);
-}
-
-/** 单个会话 JSONL 文件的零写指纹（stat + sha256；与 SQLite migration gate 同一模式）。 */
-function sessionFileFingerprint(filePath: string): GateFileFingerprint {
-  try {
-    const st = statSync(filePath);
-    let sha256: string | null = null;
-    if (st.isFile()) sha256 = createHash("sha256").update(readFileSync(filePath)).digest("hex");
-    return { exists: true, dev: st.dev, ino: st.ino, nlink: st.nlink, mode: st.mode, size: st.size, mtimeMs: st.mtimeMs, sha256 };
-  } catch {
-    return { exists: false, dev: 0, ino: 0, nlink: 0, mode: 0, size: 0, mtimeMs: 0, sha256: null };
-  }
-}
-
-function sameSessionFileFingerprint(a: GateFileFingerprint, b: GateFileFingerprint): boolean {
-  return JSON.stringify(a) === JSON.stringify(b);
-}
-
-/**
- * 严格校验会话文件内存内容必须是「当前 Pi JSONL v3」。
- * - 空白/空内容：这里放行，只读导出 reader 把它当新会话（空消息列表）；
- * - 每个非空行必须是合法 JSON 对象（坏行立即拒绝，绝不静默跳过——SDK 的 parseSessionEntries
- *   会跳过坏行，服务不做该宽容处理）；
- * - 首条必须是 Pi session 头且 version === 3（缺失头/非 session 首行/v1/v2 一律拒绝）。
- * 旧版/非 Pi 历史一律 fail-closed，绝不迁移或改写。
- */
-function assertCurrentSessionHistory(content: string): void {
-  if (content.trim().length === 0) return; // reader：空文件 = 新会话，空导出
-  let headerChecked = false;
-  let entryCount = 0;
-  const ids = new Set<string>();
-  const parents = new Map<string, string | null>();
-  const records: Array<{ type?: unknown; version?: unknown; id?: unknown; parentId?: unknown }> = [];
-  for (const line of content.split("\n")) {
-    const trimmed = line.trim();
-    if (trimmed.length === 0) continue;
-    let entry: { type?: unknown; version?: unknown; id?: unknown; parentId?: unknown };
-    try {
-      entry = JSON.parse(trimmed) as { type?: unknown; version?: unknown; id?: unknown };
-    } catch {
-      throw new Error("session history contains a malformed line");
-    }
-    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
-      throw new Error("session history contains a malformed entry");
-    }
-    entryCount++;
-    records.push(entry);
-    if (typeof entry.id !== "string" || entry.id.length === 0 || ids.has(entry.id)) {
-      throw new Error("session history is not Pi JSONL v3");
-    }
-    ids.add(entry.id);
-    if (!headerChecked) {
-      headerChecked = true;
-      if (entry.type !== "session" || entry.version !== 3) {
-        throw new Error("session history is not Pi JSONL v3");
-      }
-    } else {
-      if (!(entry.parentId === null || typeof entry.parentId === "string")) {
-        throw new Error("session history is not Pi JSONL v3");
-      }
-      if (entry.parentId === entry.id) throw new Error("session history is not Pi JSONL v3");
-      parents.set(entry.id, entry.parentId);
-    }
-  }
-  if (!headerChecked || entryCount === 0 || records.filter((record) => record.type === "session").length !== 1) {
-    throw new Error("session history is not Pi JSONL v3");
-  }
-  for (const parent of parents.values()) {
-    if (parent !== null && !ids.has(parent)) throw new Error("session history is not Pi JSONL v3");
-  }
-  for (const id of parents.keys()) {
-    const seen = new Set<string>();
-    let current: string | null | undefined = id;
-    while (current !== null && current !== undefined) {
-      if (seen.has(current)) throw new Error("session history is not Pi JSONL v3");
-      seen.add(current);
-      current = parents.get(current);
-    }
-  }
-}
-
-/**
- * WP5D-3 P1 runtime open boundary（内容校验，不含任何文件读取；调用方须先读入内容）：
- * - 空白/空内容 → 拒绝（运行期打开空文件会让 SDK 隐式写入 session header）；
- * - 坏行/非对象/非 session 首行/非 v3 → 拒绝（不含任何迁移/宽容）；
- * - 末行必须以换行结尾：SDK 写出的 v3 文件恒以换行结尾；缺末行换行的文件不是 SDK 写出的
- *   规范副本，SDK 在 open 时会补写换行（对原文件写入），且运行时后续 append 会把新条目拼到
- *   末行造成损坏。服务严格拒绝非规范 v3 副本（fail-closed，绝不改写）。
- * 旧版/非 Pi/非规范历史一律 fail-closed，绝不迁移或改写。
- */
-function assertOpenableCurrentSessionFile(content: string): void {
-  if (content.trim().length === 0) {
-    throw new Error("session history is empty");
-  }
-  assertCurrentSessionHistory(content);
-  if (!content.endsWith("\n")) {
-    throw new Error("session history is not Pi JSONL v3");
-  }
-}
-
-/**
- * 用已严格校验的 v3 条目构造一个指向原路径（file）的持久化 SessionManager。
- * 目的：绝不把可替换的原路径交给会隐式迁移/写入的 SDK 路径 SessionManager.open(file)
- * （empty→header、v1/v2→v3、末行补换行都会改写原文件，正是 TOCTOU 的写点）。
- * 这里复用 SDK 内部构造路径（与 SessionManager.open 相同），但预置的是内存中的 v3 条目，
- * 因此 SDK 只读内存、不读原文件、不做任何迁移/重写（CURRENT_SESSION_VERSION=3，migrate 恒 false）。
- * 合法 v3 运行行为（getSessionFile() === file、后续可正常 append 持久化）保持不变。
- */
-function buildPersistedSessionManager(file: string, entries: SessionEntry[]): SessionManager {
-  const header = entries[0] as SessionHeader | undefined;
-  const cwd = typeof header?.cwd === "string" ? header.cwd : process.cwd();
-  const sessionDir = path.dirname(file);
-  // SessionManager 构造函数是 private；此处按 SDK internal 构造签名镜像（open 用同样的
-  // 6 参构造 + preloadedFileEntries），不调用任何会读/写原路径的公共 API。
-  const SessionManagerCtor = SessionManager as unknown as new (
-    cwd: string,
-    sessionDir: string,
-    sessionFile: string | undefined,
-    persist: boolean,
-    newSessionOptions: NewSessionOptions | undefined,
-    preloadedFileEntries?: SessionEntry[],
-  ) => SessionManager;
-  return new SessionManagerCtor(cwd, sessionDir, file, true, undefined, entries);
-}
-
-/**
- * WP5D-3 P1 runtime open（TOCTOU 修复）：只读一次原文件内容并严格校验为当前 Pi JSONL v3，
- * 之后绝不把可替换的原路径交给会自动迁移/写入的 SDK 路径 SessionManager.open——而是用已在
- * 内存中严格校验的 v3 条目构造指向原路径的持久化 manager（SDK 只读内存，不读/不写原文件）。
- * 因此「校验到打开之间文件被替换为 v1/v2/empty」时，替换进来的文件绝不被 SDK 改写。
- * 打开前后对原文件做 stat+sha256 指纹比对：任何变化（被替换/清空/降级/换成另一份文件）一律
- * fail-closed——此时 SDK 未写它，但我们拒绝继续，绝不静默接受被替换的内容。
- *
- * @param options.onContentValidated 测试注入点（生产不传，无操作）：在校验通过后、构造 manager 前被调用，
- *   用于模拟「校验读取到 SDK 构造之间文件被替换」的竞态，验证替换文件字节不变。
- */
-export function openRuntimeSessionFile(
-  file: string,
-  options?: { onContentValidated?: (content: string) => void },
-): SessionManager {
-  const before = sessionFileFingerprint(file);
-  // 严格 pre-open 校验（一次性读取 + 内容校验）：空文件/坏行/旧版本/非 Pi/非规范 v3 在此
-  // fail-closed——绝不进入任何会读+可能写原文件的 SDK 路径，也绝不触发 SDK 的隐式迁移/重写。
-  let content: string;
-  try {
-    content = readFileSync(file, "utf8");
-  } catch {
-    throw new Error("session history is unavailable");
-  }
-  assertOpenableCurrentSessionFile(content);
-  const entries = parseSessionEntries(content) as SessionEntry[];
-  if (entries.length === 0) {
-    // 防御性（assertOpenableCurrentSessionFile 已拒绝空文件）：非空但零可解析条目 = 损坏/非会话文件。
-    throw new Error("session history is not Pi JSONL v3");
-  }
-  // 测试注入点：在校验通过后、构造 manager 前调用（生产不传，无操作）。
-  options?.onContentValidated?.(content);
-  // 用已校验的 v3 条目构造指向原路径的持久化 manager；SDK 只读内存条目（不读/不写原文件），
-  // 绝不调用 SessionManager.open(file)——它会读原文件并可能隐式迁移/重写（TOCTOU 的根源）。
-  const manager = buildPersistedSessionManager(file, entries);
-  const after = sessionFileFingerprint(file);
-  if (!sameSessionFileFingerprint(before, after)) {
-    // 校验到构造之间文件被改写（空→header、v1/v2→v3、末行补换行，或换成另一份文件）：
-    // SDK 未写它，但我们拒绝继续（fail-closed），绝不静默接受被替换的内容。
-    throw new Error("会话文件在打开期间被修改（拒绝 SDK 隐式迁移/重写）");
-  }
-  return manager;
-}
-
-/**
- * WP5D-3 P1 只读会话历史解析口（生产实现）：
- * - 用 SDK 公开只读 API 纯内存解析（parseSessionEntries + buildSessionContext），绝不 createAgentSession/createAdapter、绝不写 DB、绝不写 piSessionFile；
- * - 投影复用 PiAgentAdapter 同一 projectExportMessages——持久化会话导出与活会话导出逐字节一致；
- * - 零写验证：读取前后对会话文件做 stat+sha256 指纹比对，任何变化视为只读边界被破坏而失败；
- * - 错误脱敏：任何失败只抛固定文案（不含文件路径/内容/解析细节），HTTP 层同样以固定体呈现。
- */
-export function createSessionHistoryReader(): SessionHistoryReader {
-  return {
-    async readSessionHistory(piSessionFile: string): Promise<unknown> {
-      const before = sessionFileFingerprint(piSessionFile);
-      let messages: unknown;
-      try {
-        const content = readFileSync(piSessionFile, "utf8");
-        // parseSessionEntries is used only to inspect already-current bytes.
-        // It deliberately does not call migrateSessionEntries: v1/v2 are
-        // rejected rather than migrated or rewritten by the runtime.
-        const parsed = parseSessionEntries(content);
-        assertCurrentSessionHistory(content);
-        // 非空但零可解析条目：文件损坏/非会话文件，failclosed 脱敏错误（空文件 = 新会话，返回空导出）。
-        if (content.length > 0 && parsed.length === 0) {
-          throw new Error("cannot parse session file");
-        }
-        // buildSessionContext：与 SDK AgentSession.messages 同一构造（compaction/分支摘要感知），
-        // leafId 缺省 = 末条记录（append-only 树语义，与 SDK _buildIndex 一致）。
-        const context = buildSessionContext(parsed as unknown as SessionEntry[]);
-        messages = projectExportMessages(context.messages as unknown[]);
-      } catch (error) {
-        // 脱敏：不透出文件路径/内容/解析细节（cause 仅用于内部诊断，不进响应）。
-        throw new Error("会话历史读取失败", { cause: error });
-      }
-      const after = sessionFileFingerprint(piSessionFile);
-      if (!sameSessionFileFingerprint(before, after)) {
-        throw new Error("会话历史读取失败：会话文件在读取期间被修改");
-      }
-      return messages;
-    },
-  };
 }
 
 /** 支持的存储方言：sqlite（默认）/ postgres（显式开启）。 */
@@ -629,7 +418,7 @@ export async function startServer(config: StartConfig) {
     },
   };
 
-  // 会话元数据索引（SQLite）：默认落在 dataDir 下持久化，重启后经 piSessionFile 恢复 JSONL 历史。
+  // 会话元数据索引（SQLite/PG）：默认落在 dataDir 下持久化，重启后经 conversation_ref 恢复 Agent Session。
   // timeout=5000：写锁等待（多连接/多进程并发写冲突时等待而非立即 SQLITE_BUSY）；
   // enableForeignKeyConstraints：开启外键约束检查（sessions.project_id → projects.id ON DELETE CASCADE）。
   // 上述 SQLite 专有选项仅在该方言分支生效；PG 用 Pool（PostgresDialect），FK/并发语义由 PG 自身保证。
@@ -701,12 +490,26 @@ export async function startServer(config: StartConfig) {
       kysely,
       storage.dialect === "postgres" ? "postgres" : "sqlite",
     );
-    const fileOperationOptions = {
+    const conversationStorage = new ConversationStorageRegistry();
+    const piStorage = new PiJsonlConversationStorage(dataDir);
+    conversationStorage.register(piStorage);
+    const agentFactories = new DefaultAgentSessionFactoryRegistry();
+    const piFactory = new PiAgentSessionFactory({
+      modelRuntime,
+      resourceLoader,
+      defaultModel: configuredDefaultModel,
+      defaultThinkingLevel,
+      agentToolConfig,
+    });
+    agentFactories.register(piFactory);
+    const cleanupPlan = (input: Parameters<PiJsonlConversationStorage["planCleanup"]>[0]) =>
+      conversationStorage.require(input.conversation).planCleanup(input);
+    const repositoryOptions = {
       fileOperations,
-      relativePath: (filePath: string) => relativeWhitelistedPath(dataDir, filePath),
+      cleanupPlan,
     } as const;
     const projects = new KyselyProjectRepository(kysely, constraintMapper, {
-      ...fileOperationOptions,
+      ...repositoryOptions,
       dialect: storage.dialect,
     });
     await projects.ensureDefaultProject({
@@ -716,11 +519,21 @@ export async function startServer(config: StartConfig) {
       ownerKey: "",
       createdAt: 0,
     });
-    const sessions = new KyselySessionRepository(kysely, constraintMapper, fileOperationOptions);
-    // 已存在会话（同 schema 旧运行）没有可恢复的独立副本；以 Pi 当前默认提示词补齐一次，
-    // 后续服务端配置变化不会覆盖已写入的会话值。
+    const sessions = new KyselySessionRepository(kysely, constraintMapper, repositoryOptions);
+    // 对当前数据库中仍为 NULL 的系统提示词做防御性补齐；正常新会话创建时已冻结该值。
     await sessions.backfillSystemPrompt(defaultSystemPrompt);
     const idempotencyRepo = new KyselyIdempotencyRepository(kysely);
+    const sessionConversationCoordinator = new SessionConversationCoordinator({
+      sessions,
+      projects,
+      factories: agentFactories,
+      conversationStorage,
+      fileOperations,
+      defaultProjectCwd: cwd,
+      dataDir,
+      defaultThinkingLevel,
+      agentToolConfig,
+    });
     // 测试注入点（生产不传，无操作）：存储初始化完成后、buildApp 前回调，用于验证
     // 启动失败/成功路径的幂等 storage close（抛错即进入下方 catch 的统一清理路径）。
     await config.onStorageReady?.(kysely);
@@ -734,98 +547,9 @@ export async function startServer(config: StartConfig) {
     modelCatalog: new PiModelRuntimeCatalog(modelRuntime),
     // WP5D-2：准入配置已在函数入口严格校验（requireIpAccessRuntimeConfig），此处直接注入。
     ipAccess,
-    // WP5D-3 P1：只读会话历史解析口（GET export 对持久化未实例化的会话零写导出）。
-    sessionHistoryReader: createSessionHistoryReader(),
-    createAdapter: async (sessionId) => {
-      // 会话持久化映射（重启恢复）：查该会话的 Pi JSONL 路径，有则恢复，无则懒创建并记录。
-      const record = await sessions.get(sessionId);
-      // 会话已删（删除竞态）：禁止回退默认项目/cwd 创建 runtime，避免孤儿会话或错误 cwd 执行。
-      if (!record) throw new SessionDeletedError(sessionId);
-      // 多项目：默认项目用固定 cwd + dataDir/sessions；额外项目用各自 cwd + dataDir/projects/<pid>/sessions
-      const projectId = record.projectId;
-      const project =
-        projectId === DEFAULT_PROJECT_ID
-          ? { id: DEFAULT_PROJECT_ID, cwd }
-          : await projects.get(projectId);
-      // 所属项目已删：同样禁止回退默认 cwd。
-      if (!project) throw new SessionDeletedError(sessionId);
-      const projectCwd = project.cwd;
-      const sessionDir =
-        projectId === DEFAULT_PROJECT_ID
-          ? path.join(dataDir, "sessions", sessionId)
-          : path.join(dataDir, "projects", projectId, "sessions", sessionId);
-      // Reserve the deterministic session-file name in the database before
-      // asking the SDK to persist anything.  Project/session deletion locks
-      // this row and enqueues the reserved path in the same transaction, so
-      // a delete racing this lazy create cannot observe a file without a
-      // durable cleanup record.  SessionManager.create only materializes the
-      // file when the agent session starts, after this reservation commits.
-      let reservedSessionFile: string | undefined;
-      const sessionManager = record.piSessionFile
-        ? openRuntimeSessionFile(record.piSessionFile)
-        : SessionManager.create(projectCwd, sessionDir);
-      if (!record.piSessionFile) {
-        reservedSessionFile = sessionManager.getSessionFile();
-        if (!reservedSessionFile) throw new Error("new Pi session did not provide a session file");
-        const reserved = await sessions.update(sessionId, { piSessionFile: reservedSessionFile });
-        if (!reserved) throw new SessionDeletedError(sessionId);
-      }
-
-      // 会话级模型/思考级别覆盖服务端默认；已落 JSONL 的旧会话由 SDK 恢复其历史模型，
-      // 不因修改服务端默认配置而被覆盖。
-      const isNewSession = !record.piSessionFile;
-      const model =
-        record.modelProvider && record.modelId
-          ? modelRuntime.getModel(record.modelProvider, record.modelId)
-          : isNewSession
-            ? configuredDefaultModel
-            : undefined;
-      const thinkingLevel = (record.thinkingLevel ?? (isNewSession ? defaultThinkingLevel : undefined)) as
-        | "off"
-        | "minimal"
-        | "low"
-        | "medium"
-        | "high"
-        | "xhigh"
-        | "max"
-        | undefined;
-      const { session } = await createAgentSession({
-        sessionManager,
-        modelRuntime,
-        resourceLoader,
-        settingsManager: SettingsManager.inMemory(),
-        cwd: projectCwd,
-        ...(model ? { model } : {}),
-        ...(thinkingLevel ? { thinkingLevel } : {}),
-        // 默认只开放只读工具 read/ls/find/grep；bash/edit/write 仅在显式配置 TOOLS 时按 allowlist 开放。
-        // 知识库问答等能力工具由 manifest 显式注入（阶段 2），不走内置工具。
-        ...agentToolConfig,
-      });
-
-      // Confirm the SDK path after initialization.  Normally it is the
-      // reserved path; if a future SDK changes it, persist the actual path.
-      // A false write-back means deletion won the race: enqueue the exact
-      // now-created path idempotently instead of leaving an orphan.  This
-      // path is still relative-whitelist checked and no unlink is performed.
-      if (isNewSession && session.sessionFile) {
-        const persisted = await sessions.update(sessionId, { piSessionFile: session.sessionFile });
-        if (!persisted) {
-          const relativePath = relativeWhitelistedPath(dataDir, session.sessionFile);
-          await fileOperations.enqueue({
-            operationKey: sessionDeleteOperationKey(sessionId, relativePath),
-            kind: "delete",
-            relativePath,
-            sessionId,
-            projectId,
-          });
-        }
-      }
-
-      // 真实 AgentSession 结构满足 AgentSessionLike，此处用断言隔离 SDK 事件完整类型与我们的子集类型
-      return new PiAgentAdapter(session as unknown as AgentSessionLike, (provider, modelId) =>
-        modelRuntime.getModel(provider, modelId),
-      );
-    },
+    // 未实例化会话的只读导出由通用 registry 分派到 Pi JSONL storage。
+    conversationStorage,
+    createAdapter: (sessionId) => sessionConversationCoordinator.createAdapter(sessionId),
     idempotencyRepo,
     serverEpoch: randomUUID(),
     systemPrompt: defaultSystemPrompt,

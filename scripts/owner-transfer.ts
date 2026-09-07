@@ -155,7 +155,7 @@ async function runPostgres(cli: OwnerTransferCliOptions, environment: StorageEnv
         // Missing session references are missing-as-empty (confirmed Phase 3
         // semantics): they are recorded in the encrypted manifest and the
         // pre-owner-transfer backup still publishes. A later restore of this
-        // anchor normalizes the corresponding sessions.pi_session_file to NULL.
+        // anchor normalizes the corresponding sessions.conversation_ref to NULL.
         stagingRoot: environment.PI_BACKUP_STAGING_ROOT,
         onStage: report,
       }),

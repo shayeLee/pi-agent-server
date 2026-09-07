@@ -1,16 +1,16 @@
 # WP4C 离线 DB-only reconcile analyzer（方案 A 收敛）：设计与运维 runbook
 
-> **状态：WP4C（方案 A 收敛）当前交付物是安全 DB-only reconcile analyzer**（`pnpm reconcile-jsonl` / bin `pi-agent-server-reconcile-jsonl`）：只读 DB 引用（session id / project id / pi_session_file）+ 纯字符串/lexical 规范布局绑定，输出 counts、固定 issue codes 与 opaque 引用（sha256），**绝不扫描文件系统、不读取任何 JSONL**。因此本工具**不能探测 orphan、lost 或 JSONL 损坏**（报告以固定 `filesystemNotScanned` / `cannotDetect` 字段明确声明），也**不执行任何处置**：`--apply` 立即 fail-closed，无任何确认词可绕过；不存在物理 delete/move/quarantine、DB 写入、outbox enqueue 或 v2 migration。真实 filesystem reconcile（探测 orphan/lost/JSONL 有效性并处置）留给未来受审计的 native helper（单独、尚未启动的事项）。WP4B 物理 executor 仍未实施（WP4B 与 WP4C 均为低集成度离线工具：不接入服务启动、不安装 worker、不触碰正式数据），两个工具连同正式 worker 均为离线开发期工具，整体尚非生产就绪。
+> **状态：WP4C（方案 A 收敛）当前交付物是安全 DB-only reconcile analyzer**（`pnpm reconcile-jsonl` / bin `pi-agent-server-reconcile-jsonl`）：只读 DB 引用（session id / project id / agent kind / conversation format / conversation_ref）+ 由 Pi storage 提供的纯字符串/lexical 规范布局绑定，输出 counts、固定 issue codes 与 opaque 引用（sha256），**绝不扫描文件系统、不读取任何 JSONL**。因此本工具**不能探测 orphan、lost 或 JSONL 损坏**（报告以固定 `filesystemNotScanned` / `cannotDetect` 字段明确声明），也**不执行任何处置**：`--apply` 立即 fail-closed，无任何确认词可绕过；不存在物理 delete/move/quarantine、DB 写入、outbox enqueue 或 v2 migration。真实 filesystem reconcile（探测 orphan/lost/JSONL 有效性并处置）留给未来受审计的 native helper（单独、尚未启动的事项）。WP4B 物理 executor 仍未实施（WP4B 与 WP4C 均为低集成度离线工具：不接入服务启动、不安装 worker、不触碰正式数据），两个工具连同正式 worker 均为离线开发期工具，整体尚非生产就绪。
 
 ## 1. 职责与边界
 
 WP4C（方案 A 收敛）对 `sessions` 索引中的 JSONL 引用做**只读 DB reference 分析**：
 
-- **受控只读 DB 引用** `src/application/ports/reconcile-reference-port.ts`：只取 session id / project id / pi_session_file 三个标识字段（纯 SELECT，`KyselyReconcileReferenceRepository` 方言中立；SQLite/PG 注册同一运行时契约，见 `tests/storage/reconcile-reference-contract.ts`）；**绝不选取 owner_key/title/system_prompt/cwd 等内容字段**，报告不可能泄漏 prompt 内容；
+- **受控只读 DB 引用** `src/application/ports/reconcile-reference-port.ts`：只取 session id / project id / agent kind / conversation format / conversation_ref 五个标识字段（纯 SELECT，`KyselyReconcileReferenceRepository` 方言中立；SQLite/PG 注册同一运行时契约，见 `tests/storage/reconcile-reference-contract.ts`）；**绝不选取 owner_key/title/system_prompt/cwd 等内容字段**，报告不可能泄漏 prompt 内容；
 - **绝不触碰文件系统**：无 `DATA_DIR/sessions`、`DATA_DIR/projects` 递归遍历，无 lstat/open/readFile，不解析任何 JSONL。`DATA_DIR` 仅作为**纯字符串**（显式、绝对、非文件系统 root、路径段无 traversal）参与规范布局绑定——**不要求存在、不做 realpath/canonical 化、绝不扫描**；
-- **null 引用 = normal unmaterialized**：`pi_session_file IS NULL` 表示懒会话尚未创建，计数进 `unmaterialized` 但**不是 issue**；
+- **null 引用 = normal unmaterialized**：`conversation_ref IS NULL` 表示懒会话尚未创建，计数进 `unmaterialized` 但**不是 issue**；
 - **非 null 引用的纯字符串/lexical 验证**：绝对路径 → 位于指定 `DATA_DIR` 下的规范布局，**固定 literal 段逐字校验**——default project → `DATA_DIR/sessions/<sessionId>/<file>`（3 段），other project → `DATA_DIR/projects/<projectId>/sessions/<sessionId>/<file>`（5 段）；同段数伪目录（`sessions2/`、`Projects/`、`project/`、`foo/` 等非 literal 段）一律拒绝；同时拒绝 NUL、UNC（`//` 或 `\\` 开头）、traversal（`..`/`.`/空段）、空字符串、parsed root/volume 与 DATA_DIR 不一致（跨卷/伪 root）、错误 DATA_DIR 前缀（default 项目引用 `projects/` 布局、other 项目引用 `sessions/` 布局、不在任何布局根下）、id mismatch（路径中的 session id/project id 与 DB 行不一致）、非法 file name（须为单个非空 stem 的 `*.jsonl`）；
-- **重复检测（owner 优先，与输入/ID 顺序无关）**：按 canonical reference（规范相对引用）分组；组内**完全匹配 layout 身份**（路径中的 session/project id 与 DB 行一致）的成员是 owner → `valid`（每 canonical 至多一个）；存在 owner 时组内其余成员一律 `duplicate_reference`；无任何 owner（该 canonical 的所属会话不在 DB 引用中）→ 组内成员一律 `invalid_reference`（id mismatch），不产生 duplicate。分类结果只依赖组内成员集合，不依赖输入顺序或 session id 的排序；
+- **重复检测（owner 优先，与输入/ID 顺序无关）**：按 canonical reference（规范相对引用）分组；组内**完全匹配 layout 身份**（路径中的 session/project id 与 DB 行一致）的成员是 owner → `valid`（每 canonical 至多一个）；存在 owner 时组内其余成员一律 `duplicate_reference`；无任何 owner（该 canonical 的所属会话不在 DB 引用中）→ 组内成员一律 `invalid_reference`（id mismatch），不产生 duplicate。分类结果只依赖组内成员集合，不依赖输入顺序或 session id 的排序。由于 RC baseline 对 `sessions` 的 `(agent_kind, conversation_format, conversation_ref)` 建立了**非空唯一约束**（允许多个 NULL，见 `database-design.md`），规范数据库不可能再出现两个会话共享同一非空引用——`duplicate_reference` 只作为对异常/遗留库的**防御性分类**保留；从 canonical 库读取时 `duplicateReferences` 恒为 `0`。
 - **报告**：仅 counts、固定 issue codes 与 opaque 引用（sha256 十六进制），**绝不包含 relative/absolute 路径、DATA_DIR、URL、session id 或 prompt 内容**；`executable` 恒为 `false`；`filesystemNotScanned: true` 与 `cannotDetect: { orphanFile: false, lostFile: false, jsonlValidity: false }` **明确声明不能探测 orphan/lost/JSONL 损坏**；
 - 不接入 `startServer`、不安装 timer/scheduler；真实 filesystem reconcile 与处置需受审计的外部运维工具或未来 native helper（单独事项）。
 
@@ -48,10 +48,9 @@ pnpm reconcile-jsonl -- run
   "filesystemNotScanned": true,
   "cannotDetect": { "orphanFile": false, "lostFile": false, "jsonlValidity": false },
   "references": 4, "unmaterialized": 1, "valid": 2,
-  "invalidReferences": 1, "duplicateReferences": 1,
+  "invalidReferences": 1, "duplicateReferences": 0,
   "issues": [
-    { "code": "invalid_reference", "count": 1, "references": ["<sha256>"] },
-    { "code": "duplicate_reference", "count": 1, "references": ["<sha256>"] }
+    { "code": "invalid_reference", "count": 1, "references": ["<sha256>"] }
   ] }
 ```
 
@@ -64,10 +63,10 @@ pnpm reconcile-jsonl -- run
 | `filesystemNotScanned` | 恒为 `true`：明确声明本分析不扫描文件系统、不读取任何 JSONL |
 | `cannotDetect` | 固定 false 字段：`orphanFile` / `lostFile` / `jsonlValidity`——不扫描文件系统就不能判定这些状态，绝不 pretend 能探测 |
 | `references` | DB 引用行数（受控只读引用列表行数） |
-| `unmaterialized` | `pi_session_file` 为 null 的会话数（懒会话未创建：**normal，不是 issue**） |
+| `unmaterialized` | `conversation_ref` 为 null 的会话数（懒会话未创建：**normal，不是 issue**） |
 | `valid` | 词法合法且为 canonical 组 owner（layout 身份完全匹配）的引用数 |
 | `invalidReferences` | 词法非法引用数（空/NUL/UNC/非绝对/root/traversal/跨卷与伪 root/错误前缀/错误布局与同段数伪目录/id mismatch/非法 file name；含无 owner canonical 组的全部成员） |
-| `duplicateReferences` | 重复引用数（同一 canonical reference 中 owner 之外的成员；owner 优先、与输入/ID 顺序无关） |
+| `duplicateReferences` | 重复引用数（同一 canonical reference 中 owner 之外的成员；owner 优先、与输入/ID 顺序无关）。规范库因非空唯一约束恒为 `0`；仅异常/遗留库可能出现非 0（防御性分类） |
 | `issues[]` | 按固定 code 分组：`count` + `references`（sha256 opaque 引用；均为 session id 的 hash，绝不含路径原文） |
 
 Issue codes（固定、有限）：
@@ -75,7 +74,7 @@ Issue codes（固定、有限）：
 | code | 含义 |
 | --- | --- |
 | `invalid_reference` | 空/NUL/UNC/非绝对/root/越界 DATA_DIR/traversal/跨卷与伪 root/错误布局与同段数伪目录/id mismatch/非法 file name |
-| `duplicate_reference` | 同一 canonical reference 被多个会话引用（owner 之外的成员） |
+| `duplicate_reference` | 同一 canonical reference 被多个会话引用（owner 之外的成员）。规范库因非空唯一约束不可发生；仅异常/遗留库的防御性分类 |
 
 错误输出只暴露稳定类别（`用法：…`、`reconcile-jsonl error: RECONCILE_FAILED`），绝不回显环境路径、URL、凭证或 DB 内容。
 

@@ -2,7 +2,7 @@
 // 1. Manifest 是唯一手工声明：表/列/PK/FK/索引全部在 schemaManifest 中声明一次；
 //    Manifest → SQLite bootstrap 可生成与 PRAGMA 实际观察一致的 schema（等价 DDL）。
 // 2. 真实 DatabaseSync 空库验证：所有表、列（类型/nullable/default）、单列/复合主键、
-//    FK cascade、6 个索引（含 updated_at DESC 与 outbox claim/key）、文件库 WAL、无 kysely_migration。
+//    FK cascade、7 个索引（含 updated_at DESC、conversation identity 唯一与 outbox claim/key）、文件库 WAL、无 kysely_migration。
 // 3. defineSchema 运行期校验：重复表/列/索引名、未知列引用、FK 目标不存在或声明顺序错误、
 //    FK 源/目标列非空且等长、源/目标逻辑类型一致、主键列不可 nullable、
 //    onDelete 非法、default 类型不匹配（含 boolean 拒绝）均抛错。
@@ -154,7 +154,9 @@ describe("Schema Manifest 契约：Manifest → SQLite bootstrap DDL 等价（�
       ["title", "text", false],
       ["created_at", "integer", false],
       ["updated_at", "integer", false],
-      ["pi_session_file", "text", true],
+      ["agent_kind", "text", false],
+      ["conversation_format", "text", false],
+      ["conversation_ref", "text", true],
       ["model_provider", "text", true],
       ["model_id", "text", true],
       ["thinking_level", "text", true],
@@ -176,6 +178,7 @@ describe("Schema Manifest 契约：Manifest → SQLite bootstrap DDL 等价（�
     ).toEqual([
       ["idx_sessions_owner_updated", ["owner_key", "updated_at desc"]],
       ["idx_sessions_owner_project", ["owner_key", "project_id"]],
+      ["idx_sessions_conversation", ["agent_kind", "conversation_format", "conversation_ref"]],
     ]);
 
     expect(tables[2]!.columns.map((c) => [c.name, c.type, c.nullable])).toEqual([
@@ -285,7 +288,9 @@ describe("Schema Manifest 契约：Manifest → SQLite bootstrap DDL 等价（�
     await projects.create({ id: "p-cascade", name: "P", cwd: "/p", ownerKey: "o", createdAt: 1 });
     await sessions.create({
       id: "s-cascade", ownerKey: "o", projectId: "p-cascade", title: "t", createdAt: 1, updatedAt: 1,
-      piSessionFile: null, modelProvider: null, modelId: null, thinkingLevel: null,
+      agentKind: "pi",
+      conversationFormat: "pi-jsonl-v3",
+      conversationRef: null, modelProvider: null, modelId: null, thinkingLevel: null,
       systemPrompt: null, capabilityVersions: null,
     });
     await projects.delete("p-cascade");
@@ -293,7 +298,7 @@ describe("Schema Manifest 契约：Manifest → SQLite bootstrap DDL 等价（�
     await kysely.destroy();
   });
 
-  it("6 个索引齐备，outbox key 唯一且 claim 索引非唯一，含 updated_at DESC 排序语义", async () => {
+  it("7 个索引齐备，outbox key 与 conversation identity 唯一、claim 等索引非唯一，含 updated_at DESC 排序语义", async () => {
     const { db, kysely } = await initMemoryDb();
     // 宽化为 TableManifest：索引列字面量仅供 DatabaseSchema 推导，这里只做值的断言。
     const tables: readonly TableManifest[] = schemaManifest.tables;
@@ -305,11 +310,13 @@ describe("Schema Manifest 契约：Manifest → SQLite bootstrap DDL 等价（�
       expect(actual[name]).toBe(table);
     }
 
-    // 业务索引的 UNIQUE 语义也来自 Manifest：只有 operation_key 幂等索引唯一。
+    // 业务索引的 UNIQUE 语义也来自 Manifest：operation_key 幂等索引与
+    // (agent_kind, conversation_format, conversation_ref) 非空 conversation identity 唯一。
     const uniqueness = indexUniqueness(db);
     expect(Object.keys(uniqueness).sort()).toEqual(expectedIndexes.map(([name]) => name).sort());
     expect(uniqueness.idx_file_operations_key).toBe(1);
-    for (const name of Object.keys(uniqueness).filter((name) => name !== "idx_file_operations_key")) {
+    expect(uniqueness.idx_sessions_conversation).toBe(1);
+    for (const name of Object.keys(uniqueness).filter((name) => name !== "idx_file_operations_key" && name !== "idx_sessions_conversation")) {
       expect(uniqueness[name], `索引 ${name} 不应是 UNIQUE`).toBe(0);
     }
 
@@ -383,7 +390,9 @@ describe("Schema Manifest 契约：Manifest → SQLite bootstrap DDL 等价（�
         title: "t",
         created_at: 1,
         updated_at: 1,
-        pi_session_file: null,
+        agent_kind: "pi",
+        conversation_format: "pi-jsonl-v3",
+        conversation_ref: null,
         model_provider: null,
         model_id: null,
         thinking_level: null,
@@ -449,7 +458,9 @@ describe("DDL 审计基础（SQLite）：显式索引非唯一 + DEFAULT 实际�
         title,
         createdAt: 1,
         updatedAt: 500,
-        piSessionFile: null,
+        agentKind: "pi",
+        conversationFormat: "pi-jsonl-v3",
+        conversationRef: null,
         modelProvider: null,
         modelId: null,
         thinkingLevel: null,
@@ -467,6 +478,33 @@ describe("DDL 审计基础（SQLite）：显式索引非唯一 + DEFAULT 实际�
       await projects.create({ id: "p-b", name: "B", cwd: "/b", ownerKey: "owner-proj-same", createdAt: 7 });
       // 同 owner + 同 created_at → 次级排序 id desc
       expect((await projects.listByOwner("owner-proj-same")).map((r) => r.id)).toEqual(["p-b", "p-a"]);
+    } finally {
+      await kysely.destroy();
+    }
+  });
+
+  it("非空 conversation identity 唯一：同 (agent_kind, conversation_format, conversation_ref) 至多一个；NULL 引用允许多个共存", async () => {
+    const { kysely } = await initMemoryDb();
+    try {
+      const projects = new KyselyProjectRepository(kysely, sqliteConstraintErrorMapper);
+      const sessions = new KyselySessionRepository(kysely, sqliteConstraintErrorMapper);
+      await projects.ensureDefaultProject({
+        id: DEFAULT_PROJECT_ID, name: "默认项目", cwd: "/srv", ownerKey: "", createdAt: 0,
+      });
+      const base = (id: string, conversationRef: string | null, agentKind = "pi") => ({
+        id, ownerKey: "owner", projectId: DEFAULT_PROJECT_ID, title: id, createdAt: 1, updatedAt: 1,
+        agentKind, conversationFormat: "pi-jsonl-v3", conversationRef, modelProvider: null,
+        modelId: null, thinkingLevel: null, systemPrompt: null, capabilityVersions: null,
+      });
+      // 多个 NULL 引用共存（懒会话未实例化；唯一索引对 NULL 不冲突）
+      await sessions.create(base("s-null-1", null));
+      await sessions.create(base("s-null-2", null));
+      // 非空引用独占：同 (pi, pi-jsonl-v3, ref) 的第二个会话被唯一约束拒绝
+      await sessions.create(base("s-ref-1", "/tmp/sessions/shared/history.jsonl"));
+      await expect(sessions.create(base("s-ref-2", "/tmp/sessions/shared/history.jsonl"))).rejects.toThrow(/UNIQUE constraint failed/);
+      // identity 三元组含 kind/format：不同 agent_kind 可复用同一非空引用
+      await sessions.create(base("s-ref-3", "/tmp/sessions/shared/history.jsonl", "other-agent"));
+      expect((await sessions.get("s-ref-3"))?.conversationRef).toBe("/tmp/sessions/shared/history.jsonl");
     } finally {
       await kysely.destroy();
     }

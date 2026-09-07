@@ -20,7 +20,7 @@ export { SessionDeletedError } from "./session-runtime.js";
 
 export type RuntimeRegistryOptions = {
   concurrency: ConcurrencyController;
-  /** 按 sessionId 异步创建 Agent 适配器（真实 Pi SDK 的 createAgentSession 为异步）。 */
+  /** 按 sessionId 异步创建通用 Agent 适配器；具体 Agent Session 由 application factory 负责。 */
   createAdapter: (sessionId: string) => Promise<AgentAdapter>;
   /** 时钟注入（默认 Date.now），便于测试；透传给 SessionRuntime。 */
   now?: () => number;

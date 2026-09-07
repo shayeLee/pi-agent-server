@@ -10,7 +10,8 @@ import { pgConstraintErrorMapper } from "../../src/storage/pg-constraint-errors.
 import { migrationDefinitions } from "../../src/storage/migration-manifest.js";
 import { runPostgresMigrations, runPostgresMigrationsForTest } from "../../src/storage/migration-engine.js";
 import { DEFAULT_PROJECT_ID } from "../../src/application/ports/project-store-port.js";
-import { sessionDeleteOperationKey } from "../../src/storage/file-operation-policy.js";
+import { artifactDeleteOperationKey } from "../../src/storage/file-operation-policy.js";
+import type { ConversationDescriptor } from "../../src/application/ports/conversation-port.js";
 import type { DatabaseSchema } from "../../src/storage/db-schema.js";
 import type { Kysely } from "kysely";
 
@@ -44,7 +45,16 @@ function scopedUrl(schema: string): string {
     kysely = createPostgresKysely(pool);
     await runPostgresMigrations(kysely);
     operations = new KyselyFileOperationRepository(kysely, "postgres");
-    const opts = { fileOperations: operations, relativePath: (value: string) => value } as const;
+    const opts = {
+      fileOperations: operations,
+      cleanupPlan: ({ sessionId, projectId, conversation }: { sessionId: string; projectId: string; conversation: ConversationDescriptor }) => conversation.conversationRef === null ? null : {
+        operationKey: artifactDeleteOperationKey(conversation.agentKind, conversation.conversationFormat, conversation.conversationRef),
+        kind: "delete" as const,
+        relativePath: conversation.conversationRef,
+        sessionId,
+        projectId,
+      },
+    } as const;
     projects = new KyselyProjectRepository(kysely, pgConstraintErrorMapper, opts);
     sessions = new KyselySessionRepository(kysely, pgConstraintErrorMapper, opts);
     await projects.ensureDefaultProject({ id: DEFAULT_PROJECT_ID, name: "默认项目", cwd: "/tmp/default", ownerKey: "", createdAt: 0 });
@@ -93,7 +103,13 @@ function scopedUrl(schema: string): string {
     const secondOperations = new KyselyFileOperationRepository(secondKysely, "postgres");
     const secondSessions = new KyselySessionRepository(secondKysely, pgConstraintErrorMapper, {
       fileOperations: secondOperations,
-      relativePath: (value: string) => value,
+      cleanupPlan: ({ sessionId, projectId, conversation }: { sessionId: string; projectId: string; conversation: ConversationDescriptor }) => conversation.conversationRef === null ? null : {
+        operationKey: artifactDeleteOperationKey(conversation.agentKind, conversation.conversationFormat, conversation.conversationRef),
+        kind: "delete" as const,
+        relativePath: conversation.conversationRef,
+        sessionId,
+        projectId,
+      },
       dialect: "postgres",
     });
     const holder = await firstPool.connect();
@@ -105,14 +121,16 @@ function scopedUrl(schema: string): string {
       await projects.create({ id: projectId, name: "reservation", cwd: "/p", ownerKey: "owner", createdAt: 1 });
       await sessions.create({
         id: sessionId, ownerKey: "owner", projectId, title: "S", createdAt: 1, updatedAt: 1,
-        piSessionFile: null, modelProvider: null, modelId: null, thinkingLevel: null,
+        agentKind: "pi",
+        conversationFormat: "pi-jsonl-v3",
+        conversationRef: null, modelProvider: null, modelId: null, thinkingLevel: null,
         systemPrompt: null, capabilityVersions: null,
       });
 
       // Hold the row lock exactly as the lazy reservation UPDATE does. The
       // delete must wait here, then lock/read the row before its outbox write.
       await holder.query("BEGIN");
-      await holder.query("UPDATE sessions SET pi_session_file = $1 WHERE id = $2", [reservedPath, sessionId]);
+      await holder.query("UPDATE sessions SET conversation_ref = $1 WHERE id = $2", [reservedPath, sessionId]);
       let deleteFinished = false;
       const deleting = secondSessions.delete(sessionId).then((value) => {
         deleteFinished = true;
@@ -126,7 +144,7 @@ function scopedUrl(schema: string): string {
       // The SDK may have materialized a different path after the reservation.
       // Its fallback enqueue must use a different durable idempotency key.
       await secondOperations.enqueue({
-        operationKey: sessionDeleteOperationKey(sessionId, actualPath),
+        operationKey: artifactDeleteOperationKey("pi", "pi-jsonl-v3", actualPath),
         relativePath: actualPath,
         sessionId,
         projectId,
@@ -137,9 +155,9 @@ function scopedUrl(schema: string): string {
       expect(ours.map((row) => row.relativePath).sort()).toEqual([actualPath, reservedPath].sort());
       expect(new Set(ours.map((row) => row.operationKey)).size).toBe(2);
       expect(ours.find((row) => row.relativePath === reservedPath)?.operationKey)
-        .toBe(sessionDeleteOperationKey(sessionId, reservedPath));
+        .toBe(artifactDeleteOperationKey("pi", "pi-jsonl-v3", reservedPath));
       expect(ours.find((row) => row.relativePath === actualPath)?.operationKey)
-        .toBe(sessionDeleteOperationKey(sessionId, actualPath));
+        .toBe(artifactDeleteOperationKey("pi", "pi-jsonl-v3", actualPath));
     } finally {
       try { await holder.query("ROLLBACK"); } catch { /* already committed */ }
       holder.release();
@@ -152,11 +170,13 @@ function scopedUrl(schema: string): string {
     const projectId = "00000000-0000-4000-8000-000000000010";
     const sessionId = "00000000-0000-4000-8000-000000000011";
     const relativePath = "projects/p/sessions/s/history.jsonl";
-    const operationKey = sessionDeleteOperationKey(sessionId, relativePath);
+    const operationKey = artifactDeleteOperationKey("pi", "pi-jsonl-v3", relativePath);
     await projects.create({ id: projectId, name: "P", cwd: "/p", ownerKey: "owner", createdAt: 1 });
     await sessions.create({
       id: sessionId, ownerKey: "owner", projectId, title: "S", createdAt: 1, updatedAt: 1,
-      piSessionFile: relativePath, modelProvider: null, modelId: null,
+      agentKind: "pi",
+      conversationFormat: "pi-jsonl-v3",
+      conversationRef: relativePath, modelProvider: null, modelId: null,
       thinkingLevel: null, systemPrompt: null, capabilityVersions: null,
     });
     await projects.deleteProjectWithSessions(projectId, [sessionId]);

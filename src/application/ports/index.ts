@@ -33,11 +33,32 @@ export type {
 } from "./tool-authorization-policy-port.js";
 export { toolPolicyFromAllowlist } from "./tool-authorization-policy-port.js";
 export type {
+  ConversationReservationInput,
   SessionRecord,
   SessionRecordPatch,
   SessionStorePort,
 } from "./session-store-port.js";
-export type { SessionHistoryReader } from "./session-history-reader-port.js";
+export type {
+  AgentSessionContext,
+  AgentSessionFactory,
+  AgentSessionFactoryRegistry,
+  CleanupConversationInput,
+  ConversationCleanupPlan,
+  ConversationDescriptor,
+  ConversationReadContext,
+  ConversationReferenceClassification,
+  ConversationReferenceRecord,
+  ConversationStorage,
+  OpenedAgentSession,
+  PreparedAgentSession,
+} from "./conversation-port.js";
+export {
+  ConversationStorageRegistry,
+  DefaultAgentSessionFactoryRegistry,
+  PI_AGENT_KIND,
+  PI_CONVERSATION_FORMAT,
+  conversationStorageKey,
+} from "./conversation-port.js";
 export {
   DEFAULT_PROJECT_ID,
 } from "./project-store-port.js";

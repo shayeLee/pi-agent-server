@@ -6,13 +6,15 @@
 import { sql, type Kysely } from "kysely";
 import type { DatabaseSchema } from "./db-schema.js";
 import type {
+  ConversationReservationInput,
   SessionRecord,
   SessionRecordPatch,
   SessionStorePort,
 } from "../application/ports/session-store-port.js";
 import type { ConstraintErrorMapper } from "./constraint-error-mapper.js";
+import type { ConversationCleanupPlan, ConversationDescriptor } from "../application/ports/conversation-port.js";
 import { KyselyFileOperationRepository, type FileOperationTransactionWriter } from "./kysely-file-operation-repository.js";
-import { relativeWhitelistedPath, sessionDeleteOperationKey } from "./file-operation-policy.js";
+import { acquireTombstoneAdvisoryXactLock } from "./pg-advisory-lock.js";
 import { withSqliteWriteLock } from "./sqlite-write-lock.js";
 
 // 表行形态直接引用由 Schema Manifest 推导的 DatabaseSchema（无第二份手工声明）。
@@ -26,7 +28,9 @@ function toRecord(row: SessionRow): SessionRecord {
     title: row.title,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
-    piSessionFile: row.pi_session_file,
+    agentKind: row.agent_kind,
+    conversationFormat: row.conversation_format,
+    conversationRef: row.conversation_ref,
     modelProvider: row.model_provider,
     modelId: row.model_id,
     thinkingLevel: row.thinking_level,
@@ -38,8 +42,12 @@ function toRecord(row: SessionRow): SessionRecord {
 export interface KyselySessionRepositoryOptions {
   /** 共享的 file_operations writer；必须与本 repository 使用同一 Kysely/事务。 */
   readonly fileOperations?: FileOperationTransactionWriter;
-  /** 将 DB 中的历史绝对 pi_session_file 转为 DATA_DIR 下的相对路径。 */
-  readonly relativePath?: (filePath: string) => string;
+  /** 将通用会话引用转换为事务内可入队的清理操作；具体格式由 Agent storage 实现解释。 */
+  readonly cleanupPlan?: (input: {
+    readonly sessionId: string;
+    readonly projectId: string;
+    readonly conversation: ConversationDescriptor;
+  }) => ConversationCleanupPlan | null;
   readonly dialect?: "sqlite" | "postgres";
 }
 
@@ -47,14 +55,14 @@ export class KyselySessionRepository implements SessionStorePort {
   private readonly db: Kysely<DatabaseSchema>;
   private readonly constraintMapper: ConstraintErrorMapper;
   private readonly fileOperations: FileOperationTransactionWriter;
-  private readonly relativePath: (filePath: string) => string;
+  private readonly cleanupPlan?: KyselySessionRepositoryOptions["cleanupPlan"];
   private readonly dialect: "sqlite" | "postgres";
 
   constructor(db: Kysely<DatabaseSchema>, constraintMapper: ConstraintErrorMapper, options: KyselySessionRepositoryOptions = {}) {
     this.db = db;
     this.constraintMapper = constraintMapper;
     this.fileOperations = options.fileOperations ?? new KyselyFileOperationRepository(db);
-    this.relativePath = options.relativePath ?? ((filePath) => relativeWhitelistedPath("/", filePath));
+    this.cleanupPlan = options.cleanupPlan;
     this.dialect = options.dialect ??
       (options.fileOperations instanceof KyselyFileOperationRepository ? options.fileOperations.dialect : undefined) ??
       constraintMapper.dialect ?? "sqlite";
@@ -72,7 +80,9 @@ export class KyselySessionRepository implements SessionStorePort {
             title: record.title,
             created_at: record.createdAt,
             updated_at: record.updatedAt,
-            pi_session_file: record.piSessionFile,
+            agent_kind: record.agentKind,
+            conversation_format: record.conversationFormat,
+            conversation_ref: record.conversationRef,
             model_provider: record.modelProvider,
             model_id: record.modelId,
             thinking_level: record.thinkingLevel,
@@ -136,13 +146,11 @@ export class KyselySessionRepository implements SessionStorePort {
 
   async update(id: string, patch: SessionRecordPatch): Promise<boolean> {
     return this.withWriteLock(async () => {
-    // 只把显式提供的字段写入（patch 字段可选）；null 视为「未提供」，与旧 COALESCE(?, col) 语义一致
-    // （旧实现用 null → 保持原值，无法置空）。应用层也约定不用 null 表示未提供（见 session-service）。
+    // 只把显式提供的元数据字段写入（patch 字段可选）；conversation_ref
+    // 只能经 reservation/commit/release 生命周期 API 修改，不能被普通 update 绕过。
     const set: Partial<SessionRow> = {};
     if (patch.title !== undefined && patch.title !== null) set.title = patch.title;
     if (patch.updatedAt !== undefined && patch.updatedAt !== null) set.updated_at = patch.updatedAt;
-    if (patch.piSessionFile !== undefined && patch.piSessionFile !== null)
-      set.pi_session_file = patch.piSessionFile;
     if (patch.modelProvider !== undefined && patch.modelProvider !== null)
       set.model_provider = patch.modelProvider;
     if (patch.modelId !== undefined && patch.modelId !== null) set.model_id = patch.modelId;
@@ -167,6 +175,67 @@ export class KyselySessionRepository implements SessionStorePort {
     });
   }
 
+  async reserveConversation(id: string, reservation: ConversationReservationInput): Promise<boolean> {
+    if (reservation.conversationRef.length === 0) throw new Error("conversation reference must be non-empty");
+    if (reservation.tombstoneOperationKey.length === 0) {
+      throw new Error("tombstone operation key must be non-empty");
+    }
+    return this.withWriteLock(() => this.db.transaction().execute(async (transaction) => {
+      const tx = transaction as unknown as Kysely<DatabaseSchema>;
+      // 与 session/project delete 对同一 tombstone operationKey 的 outbox 写入串行化：
+      // PG 先取 transaction-scoped advisory lock，再执行 NOT EXISTS 条件 update，确保
+      // 子查询看到的是已经提交的 tombstone 状态；SQLite 由 BEGIN IMMEDIATE +
+      // withSqliteWriteLock 承担同一串行化。
+      if (this.dialect === "postgres") {
+        await acquireTombstoneAdvisoryXactLock(tx, reservation.tombstoneOperationKey);
+      }
+      // 同一条件更新内同时要求：conversation_ref 仍为 NULL，且 file_operations
+      // 不存在该 operation_key。无论 tombstone 处于 pending/processing/completed/failed
+      // 任一状态，都视为已被删除而禁止复用（永久 tombstone）。SQLite/PG 语义一致。
+      const result = await tx
+        .updateTable("sessions")
+        .set({ conversation_ref: reservation.conversationRef })
+        .where("id", "=", id)
+        .where("conversation_ref", "is", null)
+        .where(({ not, exists }) => not(exists(
+          tx
+            .selectFrom("file_operations")
+            .select("operation_key")
+            .where("operation_key", "=", reservation.tombstoneOperationKey),
+        )))
+        .executeTakeFirst();
+      return Number(result.numUpdatedRows) > 0;
+    }));
+  }
+
+  async commitConversationReservation(id: string, expectedRef: string, actualRef: string): Promise<boolean> {
+    if (expectedRef.length === 0 || actualRef.length === 0) {
+      throw new Error("conversation reference must be non-empty");
+    }
+    return this.withWriteLock(async () => {
+      const result = await this.db
+        .updateTable("sessions")
+        .set({ conversation_ref: actualRef })
+        .where("id", "=", id)
+        .where("conversation_ref", "=", expectedRef)
+        .executeTakeFirst();
+      return Number(result.numUpdatedRows) > 0;
+    });
+  }
+
+  async releaseConversationReservation(id: string, expectedRef: string): Promise<boolean> {
+    if (expectedRef.length === 0) throw new Error("conversation reference must be non-empty");
+    return this.withWriteLock(async () => {
+      const result = await this.db
+        .updateTable("sessions")
+        .set({ conversation_ref: null })
+        .where("id", "=", id)
+        .where("conversation_ref", "=", expectedRef)
+        .executeTakeFirst();
+      return Number(result.numUpdatedRows) > 0;
+    });
+  }
+
   async delete(id: string): Promise<boolean> {
     // 删除与 file_operations enqueue 处于同一事务；enqueue 失败时会话也保留。
     // PG lock order is session row -> outbox unique key -> session DELETE,
@@ -175,25 +244,46 @@ export class KyselySessionRepository implements SessionStorePort {
     return this.withWriteLock(() => this.db.transaction().execute(async (transaction) => {
       const tx = transaction as unknown as Kysely<DatabaseSchema>;
       const existing = this.dialect === "postgres"
-        ? (await sql<{ id: string; project_id: string; pi_session_file: string | null }>`
-            SELECT id, project_id, pi_session_file FROM "sessions" WHERE id = ${id} FOR UPDATE
+        ? (await sql<{
+            id: string;
+            project_id: string;
+            agent_kind: string;
+            conversation_format: string;
+            conversation_ref: string | null;
+          }>`
+            SELECT id, project_id, agent_kind, conversation_format, conversation_ref FROM "sessions" WHERE id = ${id} FOR UPDATE
           `.execute(tx)).rows[0]
         : await tx
             .selectFrom("sessions")
-            .select(["id", "project_id", "pi_session_file"])
+            .select(["id", "project_id", "agent_kind", "conversation_format", "conversation_ref"])
             .where("id", "=", id)
             .executeTakeFirst();
       if (!existing) return false;
-      if (existing.pi_session_file !== null) {
-        const relativePath = this.relativePath(existing.pi_session_file);
-        await this.fileOperations.enqueueInTransaction(tx, {
-          operationKey: sessionDeleteOperationKey(existing.id, relativePath),
-          kind: "delete",
-          relativePath,
+      if (existing.conversation_ref !== null) {
+        // 非空 conversation identity 由 idx_sessions_conversation 唯一约束独占：
+        // 同 (agent_kind, conversation_format, conversation_ref) 至多一个会话。
+        // 删除本会话即代表该实际引用不再被任何会话引用，直接登记清理，无需再检查共享引用。
+        if (!this.cleanupPlan) throw new Error("conversation cleanup planner is not configured");
+        const plan = this.cleanupPlan({
           sessionId: existing.id,
           projectId: existing.project_id,
-          createdAt: Date.now(),
+          conversation: {
+            agentKind: existing.agent_kind,
+            conversationFormat: existing.conversation_format,
+            conversationRef: existing.conversation_ref,
+          },
         });
+        if (plan) {
+          // 与 reserveConversation 对同一 operationKey 的 tombstone 检查串行化：
+          // 先取 PG advisory xact lock，再写入同一 artifact delete outbox，再删除会话。
+          if (this.dialect === "postgres") {
+            await acquireTombstoneAdvisoryXactLock(tx, plan.operationKey);
+          }
+          await this.fileOperations.enqueueInTransaction(tx, {
+            ...plan,
+            createdAt: Date.now(),
+          });
+        }
       }
       const result = await tx.deleteFrom("sessions").where("id", "=", id).executeTakeFirst();
       return Number(result?.numDeletedRows ?? 0) > 0;

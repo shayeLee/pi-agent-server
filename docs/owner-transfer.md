@@ -3,7 +3,7 @@
 > **状态：离线 CLI `owner-transfer` 已实现。** 本工具从未对任何真实用户 SQLite/PG/JSONL 执行过转移；
 > 对真实目标执行需运维/用户明确授权。
 > **当前契约：备份按 missing-as-empty 语义发布**——任一缺失的 session
-> reference 记录进加密 manifest 后仍允许发布；恢复该锚点时对应 `sessions.pi_session_file` 归一为 `NULL`。
+> reference 记录进加密 manifest 后仍允许发布；恢复该锚点时对应 `sessions.conversation_ref` 归一为 `NULL`。
 > 旧的 always-strict（`requireCompleteSessionReferences: true`）已退役。
 >
 > 关联文档：[ip-rbac-design.md](ip-rbac-design.md) §7、[identity-access-plan.md](identity-access-plan.md)、
@@ -142,7 +142,7 @@ CLI 非零退出、不输出成功；备份保留、绝不自动 restore。
   `UPDATE sessions SET owner_key = target WHERE owner_key = source`，随后
   `verifyOwnerTransferOutcome`（事务后）：source 归零、target 恰好持有 plan 数量、
   默认项目 owner 仍为空串；不一致 → ROLLBACK。
-- 只触碰两列；`id`/`project_id`/`pi_session_file`/`title` 等全部不动；JSONL 文件、
+- 只触碰两列；`id`/`project_id`/`conversation_ref`/`title` 等全部不动；JSONL 文件、
   models.json、凭证文件零触碰。
 
 ## 6. PG 专用：同连接门禁
@@ -199,4 +199,4 @@ dry-run 走独立 one-shot 路径），全部 fail-closed、绝不覆盖 in-flig
 
 ## 9. 备份语义（missing-as-empty）
 
-缺失 session reference 的目标语义是 missing-as-empty：pre-owner-transfer 备份仍可发布，缺失引用记入加密 manifest，恢复时对应 `pi_session_file` 归一为 `NULL`。该语义已实现（SQLite 与 PG 路径一致），原 `requireCompleteSessionReferences: true` 硬编码已移除。
+缺失 session reference 的目标语义是 missing-as-empty：pre-owner-transfer 备份仍可发布，缺失引用记入加密 manifest，恢复时对应 `conversation_ref` 归一为 `NULL`。该语义已实现（SQLite 与 PG 路径一致），原 `requireCompleteSessionReferences: true` 硬编码已移除。

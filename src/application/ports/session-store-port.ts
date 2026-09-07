@@ -9,8 +9,12 @@ export interface SessionRecord {
   title: string;
   createdAt: number; // 毫秒时间戳
   updatedAt: number; // 毫秒时间戳
-  /** Pi 会话文件（JSONL）路径；首次发消息时懒创建并记录，重启后据此恢复对话历史。 */
-  piSessionFile: string | null;
+  /** Agent 类型；当前实现为 "pi"。 */
+  agentKind: string;
+  /** 会话引用格式；当前实现为 "pi-jsonl-v3"。 */
+  conversationFormat: string;
+  /** Agent 会话引用；首次真正运行前为空，具体语义由对应 factory/storage 解释。 */
+  conversationRef: string | null;
   /** 模型 provider（null = 服务端默认）。 */
   modelProvider: string | null;
   /** 模型 id（null = 服务端默认）。 */
@@ -26,12 +30,23 @@ export interface SessionRecord {
 export interface SessionRecordPatch {
   title?: string;
   updatedAt?: number;
-  piSessionFile?: string | null;
   modelProvider?: string | null;
   modelId?: string | null;
   thinkingLevel?: string | null;
   systemPrompt?: string | null;
 }
+
+/**
+ * 为新会话 reservation 提供的输入。conversationRef 是要写入的实际引用；
+ * tombstoneOperationKey 是对应 artifact 的持久删除键，用于把删除的 outbox 行
+ * 当作永久 tombstone：只要 file_operations 存在该键（无论 pending/processing/
+ * completed/failed 任一状态），reservation 一律拒绝，即禁止复用已删除的 artifact。
+ */
+export type ConversationReservationInput = {
+  readonly conversationRef: string;
+  /** 该 artifact 的删除/tombstone operationKey（由 ConversationStorage.planCleanup 生成）。 */
+  readonly tombstoneOperationKey: string;
+};
 
 export interface SessionStorePort {
   create(record: SessionRecord): Promise<void>;
@@ -39,10 +54,22 @@ export interface SessionStorePort {
   listByOwner(ownerKey: string): Promise<SessionRecord[]>;
   /** 按项目列出会话（owner + project 双重隔离）。 */
   listByProject(ownerKey: string, projectId: string): Promise<SessionRecord[]>;
-  /** 为历史会话补写首次启用此字段时的系统提示词；已有记录不可覆盖。 */
+  /** 对 system_prompt 为 NULL 的记录做防御性补齐；已有记录不可覆盖。 */
   backfillSystemPrompt(systemPrompt: string): Promise<number>;
   update(id: string, patch: SessionRecordPatch): Promise<boolean>;
-  /** 更新返回 false 表示行已被删除；lazy JSONL 创建方必须据此将已创建路径幂等 enqueue 到 file_operations。 */
+  /**
+   * 原子 reservation：只在 conversation_ref 仍为 NULL，且 file_operations 不存在
+   * tombstoneOperationKey（任意状态都视为 tombstone，永久禁止复用）时写入。
+   * false 表示会话不存在、已被其他创建者占用，或其 artifact 已被删除。
+   */
+  reserveConversation(id: string, reservation: ConversationReservationInput): Promise<boolean>;
+  /**
+   * 原子完成 reservation：只在当前引用仍为 expectedRef 时确认实际引用。
+   * false 表示会话已被删除或 reservation 已不再属于调用方，调用方不得覆盖当前值。
+   */
+  commitConversationReservation(id: string, expectedRef: string, actualRef: string): Promise<boolean>;
+  /** 仅当当前引用仍等于 expectedRef 时清除 reservation；仅用于确认未物化的失败路径。 */
+  releaseConversationReservation(id: string, expectedRef: string): Promise<boolean>;
   /** 删除与 file_operations enqueue 在 repository 的同一数据库事务内完成；不执行文件副作用。 */
   delete(id: string): Promise<boolean>;
 }

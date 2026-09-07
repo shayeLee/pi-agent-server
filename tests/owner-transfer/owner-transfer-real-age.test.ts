@@ -62,7 +62,7 @@ describeGate("WP5D-4 real-age SQLite owner-transfer gate", () => {
     const insertProject = db.prepare("INSERT INTO projects (id, name, cwd, owner_key, created_at) VALUES (?, ?, ?, ?, ?)");
     insertProject.run(DEFAULT_PROJECT_ID, "默认项目", cwd, "", 0);
     insertProject.run("p1", "custom", "/cwd", SOURCE_OWNER, 1);
-    const insertSession = db.prepare("INSERT INTO sessions (id, owner_key, project_id, title, created_at, updated_at, pi_session_file, capability_versions) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
+    const insertSession = db.prepare("INSERT INTO sessions (id, owner_key, project_id, title, created_at, updated_at, conversation_ref, capability_versions) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
     insertSession.run("s1", SOURCE_OWNER, DEFAULT_PROJECT_ID, "default-session", 1, 1, sessionFile, "{}");
     insertSession.run("s2", SOURCE_OWNER, "p1", "project-session", 1, 1, projectSessionFile, "{}");
     // An unrelated owner sitting on the shared default project must be untouched.
@@ -170,10 +170,10 @@ describeGate("WP5D-4 real-age SQLite owner-transfer gate", () => {
     const insertProject = db.prepare("INSERT INTO projects (id, name, cwd, owner_key, created_at) VALUES (?, ?, ?, ?, ?)");
     insertProject.run(DEFAULT_PROJECT_ID, "默认项目", cwd, "", 0);
     insertProject.run("p1", "custom", "/cwd", SOURCE_OWNER, 1);
-    const insertSession = db.prepare("INSERT INTO sessions (id, owner_key, project_id, title, created_at, updated_at, pi_session_file, capability_versions) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
+    const insertSession = db.prepare("INSERT INTO sessions (id, owner_key, project_id, title, created_at, updated_at, conversation_ref, capability_versions) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
     insertSession.run("s1", SOURCE_OWNER, DEFAULT_PROJECT_ID, "default-session", 1, 1, sessionFile, "{}");
     // s2 引用一个不存在的 JSONL：missing-as-empty 下备份照常发布、转移照常执行。
-    const ghostFile = path.join(dataDir, "sessions", "ghost", "ghost.jsonl");
+    const ghostFile = path.join(dataDir, "sessions", "s2", "ghost.jsonl");
     insertSession.run("s2", SOURCE_OWNER, DEFAULT_PROJECT_ID, "ghost-session", 1, 1, ghostFile, "{}");
     db.close();
 
@@ -229,7 +229,7 @@ describeGate("WP5D-4 real-age SQLite owner-transfer gate", () => {
       const decrypted = spawnSync("age", ["--decrypt", "--identity", identity, path.join(packagePath, "manifest.json.age")], { encoding: "utf8" });
       expect(decrypted.status).toBe(0);
       const manifest = JSON.parse(decrypted.stdout);
-      expect(manifest.missingSessionReferences).toEqual([{ sessionId: "s2", path: "sessions/ghost/ghost.jsonl", status: "missing" }]);
+      expect(manifest.missingSessionReferences).toEqual([{ sessionId: "s2", path: "sessions/s2/ghost.jsonl", status: "missing" }]);
     } finally {
       if (previousStaging === undefined) delete process.env.PI_BACKUP_STAGING_ROOT;
       else process.env.PI_BACKUP_STAGING_ROOT = previousStaging;

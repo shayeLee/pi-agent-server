@@ -360,7 +360,8 @@ function deepFreeze<T>(value: T): T {
  *   比历史 DDL 更严格、但符合「主键值不可为 NULL」的业务语义；
  * - idempotency 复合主键 → 命名约束 idempotency_pk；
  * - sessions.project_id → projects.id ON DELETE CASCADE；
- * - 6 个业务索引含 idx_sessions_owner_updated 的 updated_at DESC 顺序语义；file_operations 的幂等
+ * - 7 个业务索引含 idx_sessions_owner_updated 的 updated_at DESC 顺序语义、
+ *   idx_sessions_conversation 的非空 conversation identity 唯一约束；file_operations 的幂等
  *   key 唯一索引与 claim 索引；
  * - file_operations 刻意不设 FK：projects/sessions 删除提交后，待处理 outbox 必须保留。
  *
@@ -396,7 +397,9 @@ export const schemaManifest = defineSchema([
       { name: "title", type: "text", nullable: false },
       { name: "created_at", type: "integer", nullable: false },
       { name: "updated_at", type: "integer", nullable: false },
-      { name: "pi_session_file", type: "text", nullable: true },
+      { name: "agent_kind", type: "text", nullable: false, default: "pi" },
+      { name: "conversation_format", type: "text", nullable: false, default: "pi-jsonl-v3" },
+      { name: "conversation_ref", type: "text", nullable: true },
       { name: "model_provider", type: "text", nullable: true },
       { name: "model_id", type: "text", nullable: true },
       { name: "thinking_level", type: "text", nullable: true },
@@ -421,6 +424,18 @@ export const schemaManifest = defineSchema([
       {
         name: "idx_sessions_owner_project",
         columns: [{ name: "owner_key" }, { name: "project_id" }],
+      },
+      {
+        // 非空 conversation identity 独占：同 (agent_kind, conversation_format,
+        // conversation_ref) 的会话至多一个；NULL 引用在 SQLite/PG 中彼此不冲突
+        // （唯一索引对 NULL 默认视为互不相同），允许多个未实例化（unmaterialized）会话共存。
+        name: "idx_sessions_conversation",
+        columns: [
+          { name: "agent_kind" },
+          { name: "conversation_format" },
+          { name: "conversation_ref" },
+        ],
+        unique: true,
       },
     ],
   },

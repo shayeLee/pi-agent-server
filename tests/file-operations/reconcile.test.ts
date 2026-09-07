@@ -43,8 +43,8 @@ function dataDirFixture(): string {
   return dir;
 }
 
-function ref(sessionId: string, piSessionFile: string | null, projectId = DEFAULT_PROJECT_ID): ReconcileReferenceRecord {
-  return { sessionId, projectId, piSessionFile };
+function ref(sessionId: string, conversationRef: string | null, projectId = DEFAULT_PROJECT_ID): ReconcileReferenceRecord {
+  return { sessionId, projectId, agentKind: "pi", conversationFormat: "pi-jsonl-v3", conversationRef };
 }
 
 function hashSession(sessionId: string): string {

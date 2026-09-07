@@ -3,7 +3,7 @@ import type { FastifyInstance } from "fastify";
 import { buildApp } from "../../src/server/app.js";
 import { MockAgentAdapter } from "../../src/agent/mock-agent-adapter.js";
 import type { AgentAdapter } from "../../src/agent/agent-adapter.js";
-import type { SessionHistoryReader } from "../../src/application/ports/index.js";
+import { ConversationStorageRegistry } from "../../src/application/ports/index.js";
 import { makeInitializedMemoryDb } from "../helpers/sqlite.js";
 import { makeTestIpAccess } from "../helpers/ip-access.js";
 import { DEFAULT_PROJECT_ID } from "../../src/application/ports/index.js";
@@ -20,7 +20,7 @@ const OTHER_TOKEN = "10.0.0.2";
 
 async function makeApp(options: {
   createAdapter?: (sessionId: string) => Promise<AgentAdapter>;
-  sessionHistoryReader?: SessionHistoryReader;
+  conversationStorage?: ConversationStorageRegistry;
 } = {}): Promise<{
   app: FastifyInstance;
   adapters: Map<string, AgentAdapter>;
@@ -32,7 +32,7 @@ async function makeApp(options: {
     projects,
     defaultProjectCwd: "/tmp/default-project",
     ipAccess: makeTestIpAccess(),
-    sessionHistoryReader: options.sessionHistoryReader,
+    conversationStorage: options.conversationStorage,
     createAdapter: async (sessionId) => {
       const adapter = await (options.createAdapter ?? (async () => new MockAgentAdapter()))(sessionId);
       adapters.set(sessionId, adapter);
@@ -158,21 +158,25 @@ describe("HTTP 层：会话导出（GET /v1/sessions/:id/export）", () => {
     expect((res.body as { lastEventId: number }).lastEventId).toBeGreaterThan(0);
   });
 
-  it("持久化但未实例化（piSessionFile 有值、无 runtime）：注入 reader 只读解析，createAdapter 0 且文件指纹不变", async () => {
+  it("持久化但未实例化（conversationRef 有值、无 runtime）：注入 reader 只读解析，createAdapter 0 且文件指纹不变", async () => {
     const fixture = makeJsonlFixture();
     const calls: string[] = [];
-    const reader: SessionHistoryReader = {
-      async readSessionHistory(piSessionFile: string): Promise<unknown> {
-        calls.push(piSessionFile);
-        // 生产实现行为（tests/server/session-history-reader.test.ts 覆盖真实 SDK 解析）；
+    const conversationStorage = new ConversationStorageRegistry();
+    conversationStorage.register({
+      agentKind: "pi",
+      conversationFormat: "pi-jsonl-v3",
+      async readExport(conversation) {
+        calls.push(conversation.conversationRef!);
+        // 生产实现行为（PiJsonlConversationStorage 测试覆盖真实 SDK 解析）；
         // 这里用与 PiAgentAdapter 同一投影的固定返回模拟其输出契约。
         return [
           { role: "user", text: "hi" },
           { role: "assistant", text: "hello" },
         ];
       },
-    };
-    const { app, sessions, adapters } = await makeAppWithPersistedSession(fixture, reader);
+      planCleanup: () => null,
+    });
+    const { app, sessions, adapters } = await makeAppWithPersistedSession(fixture, conversationStorage);
 
     const before = fileFingerprint(fixture);
     const res = await get(app, `/v1/sessions/persisted/export`, TOKEN);
@@ -187,18 +191,22 @@ describe("HTTP 层：会话导出（GET /v1/sessions/:id/export）", () => {
     });
     expect(calls).toEqual([fixture]); // 只读解析口被精确调用
     expect(adapters.size).toBe(0); // 零 createAdapter 副作用
-    expect(await sessions.get("persisted")).toMatchObject({ id: "persisted", piSessionFile: fixture });
-    expect(fileFingerprint(fixture)).toBe(before); // piSessionFile 逐字节不变
+    expect(await sessions.get("persisted")).toMatchObject({ id: "persisted", conversationRef: fixture });
+    expect(fileFingerprint(fixture)).toBe(before); // conversationRef 逐字节不变
   });
 
   it("持久化但未实例化且注入的 reader 抛错：500 脱敏（不含路径），createAdapter 0", async () => {
     const fixture = makeJsonlFixture();
-    const reader: SessionHistoryReader = {
-      async readSessionHistory(): Promise<unknown> {
+    const conversationStorage = new ConversationStorageRegistry();
+    conversationStorage.register({
+      agentKind: "pi",
+      conversationFormat: "pi-jsonl-v3",
+      async readExport() {
         throw new Error("internal parse detail: /secret/path/leak");
       },
-    };
-    const { app, adapters } = await makeAppWithPersistedSession(fixture, reader);
+      planCleanup: () => null,
+    });
+    const { app, adapters } = await makeAppWithPersistedSession(fixture, conversationStorage);
 
     const res = await get(app, `/v1/sessions/persisted/export`, TOKEN);
 
@@ -218,25 +226,29 @@ describe("HTTP 层：会话导出（GET /v1/sessions/:id/export）", () => {
     expect(res.statusCode).toBe(500);
     expect(JSON.stringify(res.body)).toContain("会话历史只读解析不可用");
     expect(adapters.size).toBe(0);
-    expect((await sessions.get("persisted"))?.piSessionFile).toBe(fixture);
+    expect((await sessions.get("persisted"))?.conversationRef).toBe(fixture);
   });
 
   it("已有 runtime 的持久化会话：活会话导出优先，reader 不被调用", async () => {
     const fixture = makeJsonlFixture();
     const readerCalls: string[] = [];
-    const reader: SessionHistoryReader = {
-      async readSessionHistory(piSessionFile: string): Promise<unknown> {
-        readerCalls.push(piSessionFile);
+    const conversationStorage = new ConversationStorageRegistry();
+    conversationStorage.register({
+      agentKind: "pi",
+      conversationFormat: "pi-jsonl-v3",
+      async readExport(conversation) {
+        readerCalls.push(conversation.conversationRef!);
         return [];
       },
-    };
+      planCleanup: () => null,
+    });
     const liveMessages = [
       { role: "user", content: [{ type: "text", text: "live-hi" }] },
       { role: "assistant", content: [{ type: "text", text: "live-hello" }] },
     ];
-    const { app, sessions } = await makeAppWithPersistedSession(fixture, reader, liveMessages);
+    const { app, sessions } = await makeAppWithPersistedSession(fixture, conversationStorage, liveMessages);
 
-    // 发消息实例化 runtime，随后把 piSessionFile 写入记录（模拟已持久化的活跃会话）
+    // 发消息实例化 runtime；活跃会话导出只读取内存 runtime，不改写会话引用。
     await app.inject({
       method: "POST",
       url: `/v1/sessions/persisted/messages`,
@@ -244,8 +256,6 @@ describe("HTTP 层：会话导出（GET /v1/sessions/:id/export）", () => {
       payload: JSON.stringify({ requestId: "r1", prompt: "你好" }),
     });
     await flush();
-    await sessions.update("persisted", { piSessionFile: fixture });
-
     const res = await get(app, `/v1/sessions/persisted/export`, TOKEN);
 
     expect(res.statusCode).toBe(200);
@@ -281,10 +291,10 @@ describe("HTTP 层：会话导出（GET /v1/sessions/:id/export）", () => {
   });
 });
 
-/** 直接经 repository 预置持久化会话（piSessionFile 指向真实 JSONL fixture），返回 app/仓储/adapters。 */
+/** 直接经 repository 预置持久化会话（conversationRef 指向真实 JSONL fixture），返回 app/仓储/adapters。 */
 async function makeAppWithPersistedSession(
   fixture: string,
-  reader: SessionHistoryReader | undefined,
+  conversationStorage: ConversationStorageRegistry | undefined,
   liveAdapterData?: unknown[],
 ): Promise<{
   app: FastifyInstance;
@@ -299,7 +309,9 @@ async function makeAppWithPersistedSession(
     title: "持久化",
     createdAt: 1,
     updatedAt: 1,
-    piSessionFile: fixture,
+    agentKind: "pi",
+    conversationFormat: "pi-jsonl-v3",
+    conversationRef: fixture,
     modelProvider: null,
     modelId: null,
     thinkingLevel: null,
@@ -312,7 +324,7 @@ async function makeAppWithPersistedSession(
     projects,
     defaultProjectCwd: "/tmp/default-project",
     ipAccess: makeTestIpAccess(),
-    sessionHistoryReader: reader,
+    conversationStorage,
     createAdapter: async (sessionId) => {
       const adapter = new MockAgentAdapter();
       if (liveAdapterData) adapter.exportData = liveAdapterData;

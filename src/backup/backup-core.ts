@@ -27,6 +27,7 @@ import { StringDecoder } from "node:string_decoder";
 import { homedir } from "node:os";
 import path from "node:path";
 import { runSqliteMigrations } from "../storage/migration-engine.js";
+import { classifyPiJsonlReference } from "../agent/pi-jsonl-reference.js";
 import {
   migrationPrefixForLedger,
   stableSerialize,
@@ -80,9 +81,12 @@ export const ageAdapter: AgeAdapter = {
   },
 };
 
-export interface SessionFileReference {
+export interface ConversationReference {
   readonly sessionId: string;
-  readonly file: string;
+  readonly projectId: string;
+  readonly agentKind: string;
+  readonly conversationFormat: string;
+  readonly conversationRef: string;
 }
 
 export interface BackupFileRecord {
@@ -306,7 +310,7 @@ export interface BackupOptions {
    */
   readonly stagingRoot?: string;
   readonly now?: () => Date;
-  readonly querySessionReferences?: (db: DatabaseSync) => readonly SessionFileReference[];
+  readonly querySessionReferences?: (db: DatabaseSync) => readonly ConversationReference[];
 }
 
 export interface BackupResult {
@@ -663,13 +667,14 @@ export function collectWhitelistedFiles(dataDir: string, agentDir: string): { fi
   return { files: files.sort((a, b) => a.relativePath.localeCompare(b.relativePath)), excluded };
 }
 
-function defaultSessionReferences(db: DatabaseSync): readonly SessionFileReference[] {
+function defaultSessionReferences(db: DatabaseSync): readonly ConversationReference[] {
   const table = db.prepare("SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'sessions'").get();
   if (!table) return [];
-  const rows = db.prepare("SELECT id, pi_session_file FROM sessions WHERE pi_session_file IS NOT NULL").all() as Array<{ id: unknown; pi_session_file: unknown }>;
-  return rows.map((row) => {
-    if (typeof row.id !== "string" || typeof row.pi_session_file !== "string") fail("sessions.pi_session_file contains a malformed value");
-    return { sessionId: row.id, file: row.pi_session_file };
+  const rows = db.prepare("SELECT id, project_id, agent_kind, conversation_format, conversation_ref FROM sessions").all() as Array<{ id: unknown; project_id: unknown; agent_kind: unknown; conversation_format: unknown; conversation_ref: unknown }>;
+  return rows.flatMap((row) => {
+    if (typeof row.id !== "string" || typeof row.project_id !== "string" || typeof row.agent_kind !== "string" || typeof row.conversation_format !== "string" || (row.conversation_ref !== null && typeof row.conversation_ref !== "string")) fail("sessions conversation reference contains a malformed value");
+    if (row.agent_kind !== "pi" || row.conversation_format !== "pi-jsonl-v3") fail("unsupported conversation kind or format");
+    return row.conversation_ref === null ? [] : [{ sessionId: row.id, projectId: row.project_id, agentKind: row.agent_kind, conversationFormat: row.conversation_format, conversationRef: row.conversation_ref }];
   });
 }
 
@@ -677,7 +682,7 @@ function defaultSessionReferences(db: DatabaseSync): readonly SessionFileReferen
  * Official completed-live references must stay inside the whitelisted roots and
  * the payload collection. Missing references are recorded (missing-as-empty)
  * and never fail the backup; they are published in the manifest so the restore
- * can normalize the corresponding sessions.pi_session_file to NULL.
+ * can normalize the corresponding sessions.conversation_ref to NULL.
  */
 /**
  * Bind a session-reference set to a payload plan without another directory walk.
@@ -686,21 +691,26 @@ function defaultSessionReferences(db: DatabaseSync): readonly SessionFileReferen
  * path. This closes the inspect→VACUUM reference gap without introducing a
  * whole-DATA_DIR scanner. Missing files remain explicit missing-as-empty rows.
  */
-export function bindReferencesToPayload(references: readonly SessionFileReference[], dataDir: string, files: readonly PlannedSourceFile[]): { files: PlannedSourceFile[]; missing: MissingSessionReference[] } {
+export function bindReferencesToPayload(references: readonly ConversationReference[], dataDir: string, files: readonly PlannedSourceFile[]): { files: PlannedSourceFile[]; missing: MissingSessionReference[] } {
   const roots = [path.join(dataDir, "sessions"), path.join(dataDir, "projects")];
   const byPath = new Map(files.map((file) => [canonicalForComparison(file.sourcePath), file]));
   const missing: MissingSessionReference[] = [];
   const referenceKeys = new Set<string>();
   for (const reference of references) {
-    if (typeof reference.sessionId !== "string" || reference.sessionId.length === 0 || !path.isAbsolute(reference.file)) fail("sessions.pi_session_file reference is malformed");
-    const referenceKey = `${reference.sessionId}\u0000${reference.file}`;
-    if (referenceKeys.has(referenceKey)) fail("sessions.pi_session_file references are not unique");
+    if (typeof reference.sessionId !== "string" || reference.sessionId.length === 0 || reference.agentKind !== "pi" || reference.conversationFormat !== "pi-jsonl-v3" || !path.isAbsolute(reference.conversationRef)) fail("session conversation reference is malformed");
+    const referenceKey = `${reference.sessionId}\u0000${reference.conversationRef}`;
+    if (referenceKeys.has(referenceKey)) fail("session conversation references are not unique");
     referenceKeys.add(referenceKey);
-    const resolved = canonicalForComparison(reference.file);
-    if (!roots.some((root) => isWithin(root, resolved))) fail("sessions.pi_session_file points outside the whitelisted data roots");
-    if (!resolved.endsWith(".jsonl")) fail("sessions.pi_session_file is not a .jsonl file");
-    const relativePath = path.relative(dataDir, resolved).split(path.sep).join("/");
-    if (!isExpectedSessionLayout(relativePath)) fail("sessions.pi_session_file has an unexpected session layout");
+    const resolved = canonicalForComparison(reference.conversationRef);
+    if (!roots.some((root) => isWithin(root, resolved))) fail("session conversation reference points outside the whitelisted data roots");
+    const classification = classifyPiJsonlReference(dataDir, {
+      ...reference,
+      conversationRef: resolved,
+    });
+    if (classification.kind !== "valid" || !classification.idsMatch) {
+      fail(`session conversation reference does not match its Pi session/project layout (${reference.projectId}/${reference.sessionId}: ${reference.conversationRef})`);
+    }
+    const relativePath = classification.canonical;
     if (!existsSync(resolved)) {
       missing.push({ sessionId: reference.sessionId, path: relativePath, status: "missing" });
       continue;
@@ -711,7 +721,7 @@ export function bindReferencesToPayload(references: readonly SessionFileReferenc
   return { files: [...byPath.values()].sort((a, b) => a.relativePath.localeCompare(b.relativePath)), missing };
 }
 
-export function validateReferences(references: readonly SessionFileReference[], dataDir: string, files: readonly PlannedSourceFile[]): MissingSessionReference[] {
+export function validateReferences(references: readonly ConversationReference[], dataDir: string, files: readonly PlannedSourceFile[]): MissingSessionReference[] {
   return bindReferencesToPayload(references, dataDir, files).missing;
 }
 

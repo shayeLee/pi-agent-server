@@ -37,7 +37,7 @@ function insertProjects(db: DatabaseSync, projects: FixtureState["projects"]): v
 }
 
 function insertSessions(db: DatabaseSync, sessions: FixtureState["sessions"]): void {
-  const insert = db.prepare("INSERT INTO sessions (id, owner_key, project_id, title, created_at, updated_at, pi_session_file, capability_versions) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
+  const insert = db.prepare("INSERT INTO sessions (id, owner_key, project_id, title, created_at, updated_at, conversation_ref, capability_versions) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
   for (const session of sessions) insert.run(session.id, session.ownerKey, session.projectId, "t", 1, 1, null, "{}");
 }
 

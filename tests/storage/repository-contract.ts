@@ -20,6 +20,8 @@ import type { KyselyIdempotencyRepository } from "../../src/storage/kysely-idemp
 import { DEFAULT_PROJECT_ID } from "../../src/application/ports/project-store-port.js";
 import { DuplicateIdError, ProjectForeignKeyError } from "../../src/application/ports/store-errors.js";
 import { identityKey } from "../../src/core/user-identity.js";
+import { artifactDeleteOperationKey } from "../../src/storage/file-operation-policy.js";
+import { FILE_OPERATION_STATES, type FileOperationState } from "../../src/application/ports/file-operation-store-port.js";
 import type { ProjectRecord } from "../../src/application/ports/project-store-port.js";
 import type { SessionRecord } from "../../src/application/ports/session-store-port.js";
 
@@ -66,7 +68,9 @@ function sessionRecord(overrides: Partial<SessionRecord> = {}): SessionRecord {
     title: "测试会话",
     createdAt: 1000,
     updatedAt: 1000,
-    piSessionFile: null,
+    agentKind: "pi",
+    conversationFormat: "pi-jsonl-v3",
+    conversationRef: null,
     modelProvider: null,
     modelId: null,
     thinkingLevel: null,
@@ -354,6 +358,79 @@ export function defineRepositoryContract(
         const rows = await storage.sessions.listByOwner(OWNER_A);
         expect(rows.some((r) => r.systemPrompt === "服务端提示词")).toBe(true);
         expect(rows.some((r) => r.systemPrompt === "历史提示词")).toBe(true);
+      });
+    });
+
+    describe("conversation reservation tombstone（deleted artifact 永久禁止复用）", () => {
+      async function seedSession(): Promise<string> {
+        const id = randomUUID();
+        await storage.sessions.create(sessionRecord({ id }));
+        return id;
+      }
+
+      async function seedTombstone(operationKey: string, state: FileOperationState): Promise<void> {
+        await storage.kysely
+          .insertInto("file_operations")
+          .values({
+            id: randomUUID(),
+            operation_key: operationKey,
+            kind: "delete",
+            relative_path: "sessions/tombstone/history.jsonl",
+            state,
+            attempt_count: 0,
+            available_at: 0,
+            created_at: 0,
+            updated_at: 0,
+          })
+          .execute();
+      }
+
+      it("已存在 pending / processing / completed / failed tombstone 都禁止 reservation（会话 ref 保持 NULL）", async () => {
+        for (const state of FILE_OPERATION_STATES) {
+          const id = await seedSession();
+          const key = `tombstone-${state}`;
+          await seedTombstone(key, state);
+          expect(
+            await storage.sessions.reserveConversation(id, {
+              conversationRef: "/tmp/sessions/blocked.jsonl",
+              tombstoneOperationKey: key,
+            }),
+          ).toBe(false);
+          expect((await storage.sessions.get(id))?.conversationRef).toBeNull();
+        }
+      });
+
+      it("无 tombstone 时可成功 reservation 并写入 ref", async () => {
+        const id = await seedSession();
+        expect(
+          await storage.sessions.reserveConversation(id, {
+            conversationRef: "/tmp/sessions/free.jsonl",
+            tombstoneOperationKey: "no-tombstone",
+          }),
+        ).toBe(true);
+        expect((await storage.sessions.get(id))?.conversationRef).toBe("/tmp/sessions/free.jsonl");
+      });
+
+      it("存在 tombstone 但操作键不同时 reservation 成功（键是 artifact 级维度）", async () => {
+        const id = await seedSession();
+        await seedTombstone("tombstone-a", "pending");
+        expect(
+          await storage.sessions.reserveConversation(id, {
+            conversationRef: "/tmp/sessions/other.jsonl",
+            tombstoneOperationKey: "tombstone-b",
+          }),
+        ).toBe(true);
+        expect((await storage.sessions.get(id))?.conversationRef).toBe("/tmp/sessions/other.jsonl");
+      });
+    });
+
+    describe("artifact delete operationKey：不含 sessionId，同 artifact 恒定", () => {
+      it("同 agent kind/format/相对路径 恒定；改变任一维度生成不同键；不含 sessionId", () => {
+        const key = artifactDeleteOperationKey("pi", "pi-jsonl-v3", "sessions/s1/history.jsonl");
+        expect(key).not.toContain("s1");
+        expect(artifactDeleteOperationKey("pi", "pi-jsonl-v3", "sessions/s1/history.jsonl")).toBe(key);
+        expect(artifactDeleteOperationKey("pi", "pi-jsonl-v3", "sessions/s2/history.jsonl")).not.toBe(key);
+        expect(artifactDeleteOperationKey("pi", "pi-jsonl-v2", "sessions/s1/history.jsonl")).not.toBe(key);
       });
     });
 

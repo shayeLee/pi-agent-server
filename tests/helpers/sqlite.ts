@@ -14,8 +14,9 @@ import { KyselyProjectRepository } from "../../src/storage/kysely-project-reposi
 import { KyselySessionRepository } from "../../src/storage/kysely-session-repository.js";
 import { KyselyIdempotencyRepository } from "../../src/storage/kysely-idempotency-repository.js";
 import { KyselyFileOperationRepository } from "../../src/storage/kysely-file-operation-repository.js";
-import { relativeWhitelistedPath } from "../../src/storage/file-operation-policy.js";
+import { artifactDeleteOperationKey, relativeWhitelistedPath } from "../../src/storage/file-operation-policy.js";
 import { DEFAULT_PROJECT_ID } from "../../src/application/ports/project-store-port.js";
+import type { ConversationDescriptor } from "../../src/application/ports/conversation-port.js";
 import type { DatabaseSchema } from "../../src/storage/db-schema.js";
 import { createIdempotentStorageCloser } from "../../src/server/storage-close.js";
 
@@ -43,7 +44,21 @@ export async function initStorage(
   const root = opts.dataDir ?? opts.cwd ?? DEFAULT_CWD;
   const fileOperationOptions = {
     fileOperations,
-    relativePath: (filePath: string) => relativeWhitelistedPath(root, filePath),
+    cleanupPlan: ({ sessionId, projectId, conversation }: { sessionId: string; projectId: string; conversation: ConversationDescriptor }) => {
+      if (conversation.conversationRef === null) return null;
+      const relativePath = relativeWhitelistedPath(root, conversation.conversationRef);
+      return {
+        operationKey: artifactDeleteOperationKey(
+          conversation.agentKind,
+          conversation.conversationFormat,
+          relativePath,
+        ),
+        kind: "delete" as const,
+        relativePath,
+        sessionId,
+        projectId,
+      };
+    },
   } as const;
   const projects = new KyselyProjectRepository(kysely, sqliteConstraintErrorMapper, fileOperationOptions);
   await projects.ensureDefaultProject({

@@ -1,4 +1,4 @@
-// WP5D-3 P1 runtime session-file boundary: openRuntimeSessionFile strictly
+// WP5D-3 P1 runtime session-file boundary: openPiRuntimeSessionFile strictly
 // rejects non-Pi JSONL v3 (empty, malformed lines, old version, non-Pi) and
 // never hands the replaceable original path to the auto-migrating/writing
 // SessionManager.open.  Instead it reads+validates the content once and builds
@@ -7,7 +7,7 @@
 // no v1/v2→v3, no trailing-newline append).
 //
 // Production path (start.ts createAdapter) calls this for a persisted
-// piSessionFile.  This file exercises that helper directly with the real SDK
+// conversationRef.  This file exercises that helper directly with the real SDK
 // (no model/network) to pin the fail-closed contract and prove that a
 // check→construct race replacement to v1/v2/empty leaves the replaced file
 // bytes untouched.
@@ -17,7 +17,7 @@ import { mkdtempSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
-import { openRuntimeSessionFile } from "../../src/server/start.js";
+import { openPiRuntimeSessionFile } from "../../src/agent/pi-jsonl-conversation-storage.js";
 
 function makeDir(): string {
   return mkdtempSync(path.join(tmpdir(), "pi-runtime-file-"));
@@ -36,13 +36,13 @@ function writeNewlineTerminated(file: string, lines: string[]): void {
   writeFileSync(file, lines.join("\n") + "\n");
 }
 
-describe("openRuntimeSessionFile（WP5D-3 P1 runtime：SessionManager.open 前严格拒绝 + 替换竞态防护）", () => {
+describe("openPiRuntimeSessionFile（WP5D-3 P1 runtime：SessionManager.open 前严格拒绝 + 替换竞态防护）", () => {
   it("接受当前 Pi JSONL v3，且 open 不改动文件（无隐式重写/迁移），历史被正确加载", () => {
     const dir = makeDir();
     const file = path.join(dir, "current.jsonl");
     writeNewlineTerminated(file, [V3_HEADER, MESSAGE_LINE]);
     const before = fingerprint(file);
-    const manager = openRuntimeSessionFile(file);
+    const manager = openPiRuntimeSessionFile(file);
     expect(manager.getSessionFile()).toBe(file);
     expect(manager.getSessionId()).toBe("sess-1");
     expect(manager.getEntries().length).toBe(1);
@@ -53,7 +53,7 @@ describe("openRuntimeSessionFile（WP5D-3 P1 runtime：SessionManager.open 前�
     const dir = makeDir();
     const file = path.join(dir, "persist.jsonl");
     writeNewlineTerminated(file, [V3_HEADER, MESSAGE_LINE]);
-    const manager = openRuntimeSessionFile(file);
+    const manager = openPiRuntimeSessionFile(file);
     // 追加一条 thinking_level_change：应写入被打开的原文件（而非任何安全临时副本）。
     manager.appendThinkingLevelChange("medium");
     const written = readFileSync(file, "utf8");
@@ -67,7 +67,7 @@ describe("openRuntimeSessionFile（WP5D-3 P1 runtime：SessionManager.open 前�
     const file = path.join(dir, "empty.jsonl");
     writeFileSync(file, "");
     const before = fingerprint(file);
-    expect(() => openRuntimeSessionFile(file)).toThrow("session history is empty");
+    expect(() => openPiRuntimeSessionFile(file)).toThrow("session history is empty");
     expect(fingerprint(file)).toBe(before);
   });
 
@@ -76,7 +76,7 @@ describe("openRuntimeSessionFile（WP5D-3 P1 runtime：SessionManager.open 前�
     const file = path.join(dir, "badline.jsonl");
     writeFileSync(file, `${V3_HEADER}\n{"broken":\n${MESSAGE_LINE}\n`);
     const before = fingerprint(file);
-    expect(() => openRuntimeSessionFile(file)).toThrow("session history contains a malformed line");
+    expect(() => openPiRuntimeSessionFile(file)).toThrow("session history contains a malformed line");
     expect(fingerprint(file)).toBe(before);
   });
 
@@ -89,7 +89,7 @@ describe("openRuntimeSessionFile（WP5D-3 P1 runtime：SessionManager.open 前�
       const file = path.join(dir, `${name}.jsonl`);
       writeFileSync(file, `${header}\n${MESSAGE_LINE}\n`);
       const before = fingerprint(file);
-      expect(() => openRuntimeSessionFile(file)).toThrow("session history is not Pi JSONL v3");
+      expect(() => openPiRuntimeSessionFile(file)).toThrow("session history is not Pi JSONL v3");
       expect(fingerprint(file)).toBe(before);
     }
   });
@@ -108,7 +108,7 @@ describe("openRuntimeSessionFile（WP5D-3 P1 runtime：SessionManager.open 前�
       const file = path.join(dir, `${item.name}.jsonl`);
       writeFileSync(file, item.content);
       const before = fingerprint(file);
-      expect(() => openRuntimeSessionFile(file)).toThrow(item.message);
+      expect(() => openPiRuntimeSessionFile(file)).toThrow(item.message);
       expect(fingerprint(file)).toBe(before);
     }
   });
@@ -120,7 +120,7 @@ describe("openRuntimeSessionFile（WP5D-3 P1 runtime：SessionManager.open 前�
     const file = path.join(dir, "no-trailing-newline.jsonl");
     writeFileSync(file, `${V3_HEADER}\n${MESSAGE_LINE}`);
     const before = fingerprint(file);
-    expect(() => openRuntimeSessionFile(file)).toThrow("session history is not Pi JSONL v3");
+    expect(() => openPiRuntimeSessionFile(file)).toThrow("session history is not Pi JSONL v3");
     expect(fingerprint(file)).toBe(before);
   });
 
@@ -138,7 +138,7 @@ describe("openRuntimeSessionFile（WP5D-3 P1 runtime：SessionManager.open 前�
       let swapDone = false;
       // 在「校验通过、SDK 构造前」注入竞态：把原路径替换为 v1/v2/empty。
       expect(() =>
-        openRuntimeSessionFile(file, {
+        openPiRuntimeSessionFile(file, {
           onContentValidated: () => {
             swapDone = true;
             writeFileSync(file, content);

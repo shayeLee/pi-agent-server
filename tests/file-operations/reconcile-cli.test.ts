@@ -2,8 +2,8 @@
 // - SQLite 只读打开：缺失 DB 零创建（无 DB/WAL/SHM）；已有 DB 字节指纹不变；
 // - DATA_DIR 纯字符串契约：显式、绝对、非 root；缺失/相对/root fail-closed；
 //   不存在（未创建）的绝对 DATA_DIR 合法——分析绝不触碰文件系统；
-// - null 引用 = normal unmaterialized（计数非 issue）；词法非法/重复引用 →
-//   固定 issue codes + opaque 引用；
+// - null 引用 = normal unmaterialized（计数非 issue）；词法非法 → 固定 issue codes +
+//   opaque 引用；非空 conversation identity 唯一约束使 canonical 库不可能出现重复引用；
 // - --apply 立即 fail-closed（退出码 2），确认词不可绕过；未知/重复参数拒绝；
 // - stdout JSON 与 stderr 均不泄露路径/URL/session id/prompt 内容；
 // - PG 无显式 URL fail-closed（不发起连接）；URL 严格校验（协议/host/database
@@ -48,10 +48,10 @@ function fixture(): Fixture {
   return { dir, dataDir, dbPath: path.join(dir, "pi-agent-server.db") };
 }
 
-function insertSession(db: DatabaseSync, sessionId: string, projectId: string, piSessionFile: string | null): void {
+function insertSession(db: DatabaseSync, sessionId: string, projectId: string, conversationRef: string | null): void {
   db.prepare(
-    "INSERT INTO sessions (id, owner_key, project_id, title, created_at, updated_at, pi_session_file, model_provider, model_id, thinking_level, system_prompt, capability_versions) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
-  ).run(sessionId, "owner", projectId, "title", 1, 1, piSessionFile, null, null, null, null, null);
+    "INSERT INTO sessions (id, owner_key, project_id, title, created_at, updated_at, conversation_ref, model_provider, model_id, thinking_level, system_prompt, capability_versions) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+  ).run(sessionId, "owner", projectId, "title", 1, 1, conversationRef, null, null, null, null, null);
 }
 
 async function createReconcileDb(f: Fixture): Promise<void> {
@@ -69,7 +69,8 @@ async function createReconcileDb(f: Fixture): Promise<void> {
   }
 }
 
-/** 标准分析场景：valid(default) + valid(other) + null + invalid(traversal) + duplicate。 */
+/** 标准分析场景：valid(default) + valid(other) + null + invalid(traversal) + 空白。
+ *  非空 conversation identity 唯一约束使 canonical 库不可能出现重复引用，故无 duplicate 行。 */
 async function standardFixture(): Promise<Fixture> {
   const f = fixture();
   await createReconcileDb(f);
@@ -78,7 +79,6 @@ async function standardFixture(): Promise<Fixture> {
     insertSession(db, "s1", DEFAULT_PROJECT_ID, path.join(f.dataDir, "sessions", "s1", "2025-01-01T00-00-00_s1.jsonl")); // valid default
     insertSession(db, "s2", OTHER_PROJECT, path.join(f.dataDir, "projects", OTHER_PROJECT, "sessions", "s2", "2025-01-01T00-00-00_s2.jsonl")); // valid other
     insertSession(db, "s3", DEFAULT_PROJECT_ID, null); // unmaterialized（normal）
-    insertSession(db, "s1-dup", DEFAULT_PROJECT_ID, path.join(f.dataDir, "sessions", "s1", "2025-01-01T00-00-00_s1.jsonl")); // duplicate
     insertSession(db, "escape", DEFAULT_PROJECT_ID, path.join(f.dataDir, "..", "escape.jsonl")); // traversal → invalid
     insertSession(db, "s6-null", DEFAULT_PROJECT_ID, "   "); // 空白 → invalid
   } finally {
@@ -112,12 +112,12 @@ describe("WP4C reconcile CLI：默认 dry-run 只读（SQLite）", () => {
     expect(report.executable).toBe(false);
     expect(report.filesystemNotScanned).toBe(true);
     expect(report.cannotDetect).toEqual({ orphanFile: false, lostFile: false, jsonlValidity: false });
-    expect(report.references).toBe(6);
+    expect(report.references).toBe(5);
     expect(report.unmaterialized).toBe(1); // s3 null → normal，不是 issue
     expect(report.valid).toBe(2);
     expect(report.invalidReferences).toBe(2); // escape + 空白
-    expect(report.duplicateReferences).toBe(1); // s1-dup 与 s1 同 canonical
-    expect(report.issues.map((issue) => issue.code).sort()).toEqual(["duplicate_reference", "invalid_reference"]);
+    expect(report.duplicateReferences).toBe(0); // 唯一约束使共享非空引用不可能
+    expect(report.issues.map((issue) => issue.code).sort()).toEqual(["invalid_reference"]);
     for (const issue of report.issues) {
       for (const reference of issue.references) expect(reference).toMatch(/^[0-9a-f]{64}$/);
     }

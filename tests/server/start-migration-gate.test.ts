@@ -36,7 +36,7 @@ async function createLegacyDatabase(dir: string): Promise<string> {
   const dbPath = join(dir, "pi-agent-server.db");
   const db = new DatabaseSync(dbPath);
   db.exec("CREATE TABLE projects (id TEXT PRIMARY KEY NOT NULL, name TEXT NOT NULL, cwd TEXT NOT NULL, owner_key TEXT NOT NULL, created_at INTEGER NOT NULL)");
-  db.exec("CREATE TABLE sessions (id TEXT PRIMARY KEY NOT NULL, owner_key TEXT NOT NULL, project_id TEXT NOT NULL DEFAULT '6f1a2b3c-4d5e-4f6a-8b9c-0d1e2f3a4b5c', title TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, pi_session_file TEXT, model_provider TEXT, model_id TEXT, thinking_level TEXT, system_prompt TEXT, capability_versions TEXT)");
+  db.exec("CREATE TABLE sessions (id TEXT PRIMARY KEY NOT NULL, owner_key TEXT NOT NULL, project_id TEXT NOT NULL DEFAULT '6f1a2b3c-4d5e-4f6a-8b9c-0d1e2f3a4b5c', title TEXT NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, conversation_ref TEXT, model_provider TEXT, model_id TEXT, thinking_level TEXT, system_prompt TEXT, capability_versions TEXT)");
   db.exec("CREATE TABLE idempotency (session_id TEXT NOT NULL, request_id TEXT NOT NULL, result TEXT NOT NULL, created_at INTEGER NOT NULL, PRIMARY KEY (session_id, request_id))");
   db.close();
   return dbPath;

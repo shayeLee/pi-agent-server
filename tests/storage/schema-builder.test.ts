@@ -192,7 +192,9 @@ describe("bootstrapSchemaFromManifest（spy Kysely，PG 类型映射）", () => 
       ["title", "text", true],
       ["created_at", "bigint", true],
       ["updated_at", "bigint", true],
-      ["pi_session_file", "text", false],
+      ["agent_kind", "text", true],
+      ["conversation_format", "text", true],
+      ["conversation_ref", "text", false],
       ["model_provider", "text", false],
       ["model_id", "text", false],
       ["thinking_level", "text", false],
@@ -221,11 +223,12 @@ describe("bootstrapSchemaFromManifest（spy Kysely，PG 类型映射）", () => 
       ["created_at", "bigint"],
     ]);
 
-    // 6 个索引：名称/表/列（含 updated_at DESC）/unique
+    // 7 个索引：名称/表/列（含 updated_at DESC）/unique
     expect(indexes.map((i) => [i.name, i.table, i.columns, i.unique])).toEqual([
       ["idx_projects_owner", "projects", ["owner_key"], false],
       ["idx_sessions_owner_updated", "sessions", ["owner_key", "updated_at desc"], false],
       ["idx_sessions_owner_project", "sessions", ["owner_key", "project_id"], false],
+      ["idx_sessions_conversation", "sessions", ["agent_kind", "conversation_format", "conversation_ref"], true],
       ["idx_idempotency_created_at", "idempotency", ["created_at"], false],
       ["idx_file_operations_key", "file_operations", ["operation_key"], true],
       ["idx_file_operations_claim", "file_operations", ["state", "available_at"], false],
@@ -273,7 +276,7 @@ describe("createTableFromManifest 防御性 PK notNull（schema-builder 方言�
     const { kysely, tables } = createSpyKysely();
     await bootstrapSchemaFromManifest(kysely, POSTGRES_LOGICAL_TYPE);
     const sessions = tables.find((t) => t.name === "sessions")!;
-    expect(sessions.columns.find((c) => c.name === "pi_session_file")!.notNull).toBe(false);
+    expect(sessions.columns.find((c) => c.name === "conversation_ref")!.notNull).toBe(false);
     expect(sessions.columns.find((c) => c.name === "id")!.notNull).toBe(true);
   });
 
@@ -281,6 +284,6 @@ describe("createTableFromManifest 防御性 PK notNull（schema-builder 方言�
     const manifest = schemaManifest.tables;
     expect(manifest).toHaveLength(4);
     const indexCount = manifest.reduce((n, t) => n + (t.indexes?.length ?? 0), 0);
-    expect(indexCount).toBe(6);
+    expect(indexCount).toBe(7);
   });
 });

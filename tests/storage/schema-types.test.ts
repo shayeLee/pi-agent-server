@@ -29,7 +29,9 @@ describe("Schema 类型推导（DatabaseSchema 由 Manifest 推导）", () => {
 
     expectTypeOf<DatabaseSchema["sessions"]["project_id"]>().toEqualTypeOf<string>();
     expectTypeOf<DatabaseSchema["sessions"]["updated_at"]>().toEqualTypeOf<number>();
-    expectTypeOf<DatabaseSchema["sessions"]["pi_session_file"]>().toEqualTypeOf<string | null>();
+    expectTypeOf<DatabaseSchema["sessions"]["agent_kind"]>().toEqualTypeOf<string>();
+    expectTypeOf<DatabaseSchema["sessions"]["conversation_format"]>().toEqualTypeOf<string>();
+    expectTypeOf<DatabaseSchema["sessions"]["conversation_ref"]>().toEqualTypeOf<string | null>();
     expectTypeOf<DatabaseSchema["sessions"]["model_provider"]>().toEqualTypeOf<string | null>();
     expectTypeOf<DatabaseSchema["sessions"]["capability_versions"]>().toEqualTypeOf<string | null>();
 
@@ -47,7 +49,9 @@ describe("Schema 类型推导（DatabaseSchema 由 Manifest 推导）", () => {
       title: string;
       created_at: number;
       updated_at: number;
-      pi_session_file: string | null;
+      agent_kind: string;
+      conversation_format: string;
+      conversation_ref: string | null;
       model_provider: string | null;
       model_id: string | null;
       thinking_level: string | null;
@@ -100,7 +104,9 @@ describe("Schema 类型推导（DatabaseSchema 由 Manifest 推导）", () => {
         title: "t",
         created_at: 1,
         updated_at: 1,
-        pi_session_file: null,
+        agent_kind: "pi",
+        conversation_format: "pi-jsonl-v3",
+        conversation_ref: null,
         model_provider: null,
         model_id: null,
         thinking_level: null,
@@ -120,7 +126,7 @@ describe("Schema 类型推导（DatabaseSchema 由 Manifest 推导）", () => {
     expectTypeOf(row).toEqualTypeOf<DatabaseSchema["sessions"] | undefined>();
     expectTypeOf(row?.id).toEqualTypeOf<string | undefined>();
     expectTypeOf(row?.updated_at).toEqualTypeOf<number | undefined>();
-    expectTypeOf(row?.pi_session_file).toEqualTypeOf<string | null | undefined>();
+    expectTypeOf(row?.conversation_ref).toEqualTypeOf<string | null | undefined>();
     expect(row?.title).toBe("t");
 
     await kysely.destroy();
@@ -176,7 +182,7 @@ function neverCalledCompileTimeNegatives(): void {
 
   // ---------- 派生类型被误用（nullability / 逻辑类型） ----------
   // @ts-expect-error title 是非空列，不能赋 null
-  const badSession: DatabaseSchema["sessions"] = { id: "x", owner_key: "o", project_id: DEFAULT_PROJECT_ID, title: null, created_at: 1, updated_at: 1, pi_session_file: null, model_provider: null, model_id: null, thinking_level: null, system_prompt: null, capability_versions: null };
+  const badSession: DatabaseSchema["sessions"] = { id: "x", owner_key: "o", project_id: DEFAULT_PROJECT_ID, title: null, created_at: 1, updated_at: 1, agent_kind: "pi", conversation_format: "pi-jsonl-v3", conversation_ref: null, model_provider: null, model_id: null, thinking_level: null, system_prompt: null, capability_versions: null };
 
   // @ts-expect-error created_at 是 number，不能赋 string
   const badProject: DatabaseSchema["projects"] = { id: "x", name: "n", cwd: "/c", owner_key: "o", created_at: "not-a-number" };

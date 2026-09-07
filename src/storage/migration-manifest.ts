@@ -6,11 +6,10 @@
 // from the immutable manifest and are the only operations the runner executes.
 //
 // The v0/v1 historical registry was removed with the legacy RC world (the
-// controlled cutover tool is gone). Legacy ledgers and legacy databases
-// without a ledger fail fast in the runner, in bootstrap, and in backup
-// restore, and are never adopted automatically. Backup restore accepts only
-// packages whose manifest carries exactly this canonical single baseline;
-// packages from the removed v0/v1 world are not recoverable.
+// controlled cutover tool is gone). Before first deployment, RC schema changes
+// replace this single canonical descriptor and its golden checksum directly;
+// after publication the descriptor is immutable. Legacy ledgers/databases and
+// packages carrying a different checksum fail fast and are never adopted.
 
 import { createHash } from "node:crypto";
 import type { Kysely } from "kysely";
@@ -135,15 +134,16 @@ const BASELINE_PHYSICAL_TYPE_MAPS = Object.freeze({
   PostgreSQL: POSTGRES_PHYSICAL_TYPES,
 });
 
-/** Fixed golden snapshots for the single immutable baseline. Changing renderer
- * semantics must fail this module/tests. */
+/** Fixed golden snapshots for the current RC canonical baseline. After first
+ * deployment, changing renderer semantics must fail this module/tests. */
 export const MIGRATION_BASELINE_GOLDEN_DDL_SNAPSHOT = Object.freeze({
   SQLite: Object.freeze([
     'CREATE TABLE "projects" ("id" TEXT NOT NULL PRIMARY KEY, "name" TEXT NOT NULL, "cwd" TEXT NOT NULL, "owner_key" TEXT NOT NULL, "created_at" INTEGER NOT NULL)',
     'CREATE INDEX "idx_projects_owner" ON "projects" ("owner_key")',
-    'CREATE TABLE "sessions" ("id" TEXT NOT NULL PRIMARY KEY, "owner_key" TEXT NOT NULL, "project_id" TEXT NOT NULL DEFAULT \'6f1a2b3c-4d5e-4f6a-8b9c-0d1e2f3a4b5c\', "title" TEXT NOT NULL, "created_at" INTEGER NOT NULL, "updated_at" INTEGER NOT NULL, "pi_session_file" TEXT, "model_provider" TEXT, "model_id" TEXT, "thinking_level" TEXT, "system_prompt" TEXT, "capability_versions" TEXT, CONSTRAINT "sessions_project_id_fk" FOREIGN KEY ("project_id") REFERENCES "projects" ("id") ON DELETE CASCADE)',
+    'CREATE TABLE "sessions" ("id" TEXT NOT NULL PRIMARY KEY, "owner_key" TEXT NOT NULL, "project_id" TEXT NOT NULL DEFAULT \'6f1a2b3c-4d5e-4f6a-8b9c-0d1e2f3a4b5c\', "title" TEXT NOT NULL, "created_at" INTEGER NOT NULL, "updated_at" INTEGER NOT NULL, "agent_kind" TEXT NOT NULL DEFAULT \'pi\', "conversation_format" TEXT NOT NULL DEFAULT \'pi-jsonl-v3\', "conversation_ref" TEXT, "model_provider" TEXT, "model_id" TEXT, "thinking_level" TEXT, "system_prompt" TEXT, "capability_versions" TEXT, CONSTRAINT "sessions_project_id_fk" FOREIGN KEY ("project_id") REFERENCES "projects" ("id") ON DELETE CASCADE)',
     'CREATE INDEX "idx_sessions_owner_updated" ON "sessions" ("owner_key", "updated_at" DESC)',
     'CREATE INDEX "idx_sessions_owner_project" ON "sessions" ("owner_key", "project_id")',
+    'CREATE UNIQUE INDEX "idx_sessions_conversation" ON "sessions" ("agent_kind", "conversation_format", "conversation_ref")',
     'CREATE TABLE "idempotency" ("session_id" TEXT NOT NULL, "request_id" TEXT NOT NULL, "result" TEXT NOT NULL, "created_at" INTEGER NOT NULL, CONSTRAINT "idempotency_pk" PRIMARY KEY ("session_id", "request_id"))',
     'CREATE INDEX "idx_idempotency_created_at" ON "idempotency" ("created_at")',
     'CREATE TABLE "file_operations" ("id" TEXT NOT NULL PRIMARY KEY, "operation_key" TEXT NOT NULL, "kind" TEXT NOT NULL, "relative_path" TEXT NOT NULL, "session_id" TEXT, "project_id" TEXT, "state" TEXT NOT NULL, "attempt_count" INTEGER NOT NULL DEFAULT 0, "available_at" INTEGER NOT NULL, "lease_until" INTEGER, "lease_token" TEXT, "last_error" TEXT, "created_at" INTEGER NOT NULL, "updated_at" INTEGER NOT NULL)',
@@ -153,9 +153,10 @@ export const MIGRATION_BASELINE_GOLDEN_DDL_SNAPSHOT = Object.freeze({
   PostgreSQL: Object.freeze([
     'CREATE TABLE "projects" ("id" UUID NOT NULL PRIMARY KEY, "name" TEXT NOT NULL, "cwd" TEXT NOT NULL, "owner_key" TEXT NOT NULL, "created_at" BIGINT NOT NULL)',
     'CREATE INDEX "idx_projects_owner" ON "projects" ("owner_key")',
-    'CREATE TABLE "sessions" ("id" UUID NOT NULL PRIMARY KEY, "owner_key" TEXT NOT NULL, "project_id" UUID NOT NULL DEFAULT \'6f1a2b3c-4d5e-4f6a-8b9c-0d1e2f3a4b5c\', "title" TEXT NOT NULL, "created_at" BIGINT NOT NULL, "updated_at" BIGINT NOT NULL, "pi_session_file" TEXT, "model_provider" TEXT, "model_id" TEXT, "thinking_level" TEXT, "system_prompt" TEXT, "capability_versions" TEXT, CONSTRAINT "sessions_project_id_fk" FOREIGN KEY ("project_id") REFERENCES "projects" ("id") ON DELETE CASCADE)',
+    'CREATE TABLE "sessions" ("id" UUID NOT NULL PRIMARY KEY, "owner_key" TEXT NOT NULL, "project_id" UUID NOT NULL DEFAULT \'6f1a2b3c-4d5e-4f6a-8b9c-0d1e2f3a4b5c\', "title" TEXT NOT NULL, "created_at" BIGINT NOT NULL, "updated_at" BIGINT NOT NULL, "agent_kind" TEXT NOT NULL DEFAULT \'pi\', "conversation_format" TEXT NOT NULL DEFAULT \'pi-jsonl-v3\', "conversation_ref" TEXT, "model_provider" TEXT, "model_id" TEXT, "thinking_level" TEXT, "system_prompt" TEXT, "capability_versions" TEXT, CONSTRAINT "sessions_project_id_fk" FOREIGN KEY ("project_id") REFERENCES "projects" ("id") ON DELETE CASCADE)',
     'CREATE INDEX "idx_sessions_owner_updated" ON "sessions" ("owner_key", "updated_at" DESC)',
     'CREATE INDEX "idx_sessions_owner_project" ON "sessions" ("owner_key", "project_id")',
+    'CREATE UNIQUE INDEX "idx_sessions_conversation" ON "sessions" ("agent_kind", "conversation_format", "conversation_ref")',
     'CREATE TABLE "idempotency" ("session_id" UUID NOT NULL, "request_id" TEXT NOT NULL, "result" TEXT NOT NULL, "created_at" BIGINT NOT NULL, CONSTRAINT "idempotency_pk" PRIMARY KEY ("session_id", "request_id"))',
     'CREATE INDEX "idx_idempotency_created_at" ON "idempotency" ("created_at")',
     'CREATE TABLE "file_operations" ("id" UUID NOT NULL PRIMARY KEY, "operation_key" TEXT NOT NULL, "kind" TEXT NOT NULL, "relative_path" TEXT NOT NULL, "session_id" UUID, "project_id" UUID, "state" TEXT NOT NULL, "attempt_count" BIGINT NOT NULL DEFAULT 0, "available_at" BIGINT NOT NULL, "lease_until" BIGINT, "lease_token" TEXT, "last_error" TEXT, "created_at" BIGINT NOT NULL, "updated_at" BIGINT NOT NULL)',
@@ -163,7 +164,7 @@ export const MIGRATION_BASELINE_GOLDEN_DDL_SNAPSHOT = Object.freeze({
     'CREATE INDEX "idx_file_operations_claim" ON "file_operations" ("state", "available_at")',
   ]),
 });
-export const MIGRATION_BASELINE_GOLDEN_CHECKSUM = "85eb743ebcbe0e04f740ce58e8920218daadab091b6600d1f9f6cbb6b512c05c";
+export const MIGRATION_BASELINE_GOLDEN_CHECKSUM = "8aa7541155a6d773b5eaf7d5346255f316812e7e862e13b8ef742a2cc56ac538";
 
 export const initialSchemaMigration: MigrationDefinition = deepFreeze({
   version: 0,
@@ -229,11 +230,11 @@ validateMigrationDefinitions();
 for (const dialect of ["SQLite", "PostgreSQL"] as const) {
   const actual = initialSchemaMigration.operations[dialect].map((operation) => operation.sql);
   if (stableSerialize(actual) !== stableSerialize(MIGRATION_BASELINE_GOLDEN_DDL_SNAPSHOT[dialect])) {
-    throw new Error(`migration manifest: released baseline ${dialect} DDL snapshot changed; append a migration instead`);
+    throw new Error(`migration manifest: canonical baseline ${dialect} DDL snapshot changed; update the RC baseline intentionally or append a migration after publication`);
   }
 }
 if (migrationChecksum(initialSchemaMigration) !== MIGRATION_BASELINE_GOLDEN_CHECKSUM) {
-  throw new Error("migration manifest: released baseline descriptor checksum changed; update only by appending a new migration");
+  throw new Error("migration manifest: canonical baseline descriptor checksum changed; update the RC baseline intentionally or append a migration after publication");
 }
 
 function deepFreeze<T>(value: T): T {

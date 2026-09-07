@@ -73,11 +73,47 @@ export function assertFileOperationKind(value: string): asserts value is FileOpe
 }
 
 /**
- * Bind a session-delete operation to the exact relative path.  A lazy session
- * can reserve one path and later have the SDK materialize another one; using
- * only the session id would make the second enqueue a no-op against the first
- * row.  The digest keeps the durable key bounded while remaining deterministic
- * for retries and shared by session/project deletion paths.
+ * Bounded, stable path segment for an operation key.  Long segments are hashed
+ * instead of truncated so the same value always maps to the same digest while
+ * the whole key stays within the outbox's 1024-character limit.
+ */
+function boundedKeyPart(value: string, maxLength: number): string {
+  return value.length <= maxLength
+    ? value
+    : createHash("sha256").update(value, "utf8").digest("hex");
+}
+
+/**
+ * Stable, session-independent business key for a delete over a single artifact.
+ * Derived only from agent kind + conversation format + whitelisted relative
+ * path, so the same artifact always maps to the same outbox row no matter which
+ * session row currently references it.  Omitting the session id is what makes
+ * the row a durable tombstone: once a session (or a failed creation) enqueues a
+ * delete for a path, a later reservation that would reuse that path is rejected
+ * by the same key, whatever state the outbox row reached.
+ */
+export function artifactDeleteOperationKey(
+  agentKind: string,
+  conversationFormat: string,
+  relativePath: string,
+): string {
+  if (typeof agentKind !== "string" || agentKind.trim() === "") {
+    throw new Error("file operation artifact agent kind must be non-empty");
+  }
+  if (typeof conversationFormat !== "string" || conversationFormat.trim() === "") {
+    throw new Error("file operation artifact conversation format must be non-empty");
+  }
+  const normalizedPath = assertWhitelistedRelativePath(relativePath);
+  const kindPart = boundedKeyPart(agentKind, 400);
+  const formatPart = boundedKeyPart(conversationFormat, 400);
+  const pathDigest = createHash("sha256").update(normalizedPath, "utf8").digest("hex");
+  return `delete-artifact:${kindPart}:${formatPart}:${pathDigest}`;
+}
+
+/**
+ * Legacy session-scoped delete key.  The Pi cleanup plan now uses the
+ * artifact-based {@link artifactDeleteOperationKey}; this remains exported for
+ * callers that still want a session-scoped idempotency key.
  */
 export function sessionDeleteOperationKey(sessionId: string, relativePath: string): string {
   if (typeof sessionId !== "string" || sessionId.trim() === "") {

@@ -19,8 +19,9 @@ import { KyselySessionRepository } from "../src/storage/kysely-session-repositor
 import { KyselyProjectRepository } from "../src/storage/kysely-project-repository.js";
 import { KyselyIdempotencyRepository } from "../src/storage/kysely-idempotency-repository.js";
 import { KyselyFileOperationRepository } from "../src/storage/kysely-file-operation-repository.js";
-import { relativeWhitelistedPath } from "../src/storage/file-operation-policy.js";
+import { artifactDeleteOperationKey, relativeWhitelistedPath } from "../src/storage/file-operation-policy.js";
 import { DEFAULT_PROJECT_ID } from "../src/application/ports/project-store-port.js";
+import type { ConversationDescriptor } from "../src/application/ports/conversation-port.js";
 import { MockAgentAdapter } from "../src/agent/mock-agent-adapter.js";
 
 const PORT = Number(process.env.PORT ?? 8081);
@@ -48,7 +49,21 @@ try {
   const fileOperations = new KyselyFileOperationRepository(kysely, "sqlite");
   const fileOperationOptions = {
     fileOperations,
-    relativePath: (filePath: string) => relativeWhitelistedPath(MOCK_CWD, filePath),
+    cleanupPlan: ({ sessionId, projectId, conversation }: { sessionId: string; projectId: string; conversation: ConversationDescriptor }) => {
+      if (conversation.conversationRef === null) return null;
+      const relativePath = relativeWhitelistedPath(MOCK_CWD, conversation.conversationRef);
+      return {
+        operationKey: artifactDeleteOperationKey(
+          conversation.agentKind,
+          conversation.conversationFormat,
+          relativePath,
+        ),
+        kind: "delete" as const,
+        relativePath,
+        sessionId,
+        projectId,
+      };
+    },
   } as const;
   const projects = new KyselyProjectRepository(kysely, sqliteConstraintErrorMapper, fileOperationOptions);
   await projects.ensureDefaultProject(MOCK_SEED);

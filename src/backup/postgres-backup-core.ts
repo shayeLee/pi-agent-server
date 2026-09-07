@@ -356,7 +356,7 @@ export interface PostgresBackupOptions {
    * the backup root's parent never needs to be writable.
    */
   readonly stagingRoot?: string;
-  readonly querySessionReferences?: (client: PgBackupClient, schema: string) => Promise<readonly { readonly sessionId: string; readonly file: string }[]>;
+  readonly querySessionReferences?: (client: PgBackupClient, schema: string) => Promise<readonly import("./backup-core.js").ConversationReference[]>;
   /** Stage progress reporter: the gate CLI prints which external step is running. */
   readonly onStage?: StageReporter;
   /** Per-stage bounded budgets; defaults to BACKUP_STAGE_BUDGET_MS. */
@@ -630,19 +630,20 @@ async function readLedger(client: PgBackupClient, schema: string): Promise<Postg
   }
 }
 
-async function defaultSessionReferences(client: PgBackupClient, schema: string): Promise<readonly { sessionId: string; file: string }[]> {
+async function defaultSessionReferences(client: PgBackupClient, schema: string): Promise<readonly import("./backup-core.js").ConversationReference[]> {
   if (!(await hasTable(client, schema, "sessions"))) return [];
   try {
-    const result = await client.query<{ id: unknown; pi_session_file: unknown }>(
-      `SELECT id, pi_session_file FROM ${quoteIdentifier(schema)}."sessions" WHERE pi_session_file IS NOT NULL`,
+    const result = await client.query<{ id: unknown; project_id: unknown; agent_kind: unknown; conversation_format: unknown; conversation_ref: unknown }>(
+      `SELECT id, project_id, agent_kind, conversation_format, conversation_ref FROM ${quoteIdentifier(schema)}."sessions"`,
     );
-    return result.rows.map((row) => {
-      if (typeof row.id !== "string" || typeof row.pi_session_file !== "string") fail("PostgreSQL session reference is malformed");
-      return { sessionId: row.id, file: row.pi_session_file };
+    return result.rows.flatMap((row) => {
+      if (typeof row.id !== "string" || typeof row.project_id !== "string" || typeof row.agent_kind !== "string" || typeof row.conversation_format !== "string" || (row.conversation_ref !== null && typeof row.conversation_ref !== "string")) fail("PostgreSQL session conversation reference is malformed");
+      if (row.agent_kind !== "pi" || row.conversation_format !== "pi-jsonl-v3") fail("unsupported conversation kind or format");
+      return row.conversation_ref === null ? [] : [{ sessionId: row.id, projectId: row.project_id, agentKind: row.agent_kind, conversationFormat: row.conversation_format, conversationRef: row.conversation_ref }];
     });
   } catch (error) {
     if (error instanceof Error && error.message.startsWith("backup:")) throw error;
-    fail("PostgreSQL session reference inspection failed");
+    fail("PostgreSQL session conversation reference inspection failed");
   }
 }
 
@@ -961,7 +962,7 @@ async function runPostgresBackup(options: PostgresBackupOptions, verifySourceSch
   let target!: PgIdentity;
   let serverMajor!: number;
   let clusterIdentity!: PgClusterIdentity;
-  let references!: readonly { sessionId: string; file: string }[];
+  let references!: readonly import("./backup-core.js").ConversationReference[];
   let collected!: ReturnType<typeof collectWhitelistedFiles>;
   let missing!: MissingSessionReference[];
   let ledger!: PostgresBackupManifest["migrationLedger"];

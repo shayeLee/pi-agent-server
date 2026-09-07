@@ -4,13 +4,19 @@ import type {
   ModelDescriptor,
   ProjectRecord,
   ProjectStorePort,
-  SessionHistoryReader,
+  ConversationStorageRegistry,
   SessionRecord,
   SessionRecordPatch,
   SessionStorePort,
   SystemPromptPort,
 } from "./ports/index.js";
-import { DEFAULT_PROJECT_ID, DuplicateIdError, ProjectForeignKeyError } from "./ports/index.js";
+import {
+  DEFAULT_PROJECT_ID,
+  DuplicateIdError,
+  PI_AGENT_KIND,
+  PI_CONVERSATION_FORMAT,
+  ProjectForeignKeyError,
+} from "./ports/index.js";
 import {
   RuntimeRegistry,
   SessionDeletedError,
@@ -25,7 +31,7 @@ export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhig
  */
 export const MAX_ID_RETRIES = 3;
 
-export type SessionDto = Omit<SessionRecord, "piSessionFile">;
+export type SessionDto = Omit<SessionRecord, "agentKind" | "conversationFormat" | "conversationRef">;
 /** 项目 DTO：仅默认项目（id = DEFAULT_PROJECT_ID）为 isDefault: true，其余项目为 false。 */
 export type ProjectDto = { id: string; name: string; cwd: string; isDefault: boolean };
 
@@ -42,17 +48,8 @@ export type SessionServiceDeps = {
   systemPromptResolver?: SystemPromptPort;
   /** 创建会话时冻结的能力版本快照（id→version）。 */
   capabilityVersions?: Readonly<Record<string, number>>;
-  /**
-   * 只读会话历史解析口（WP5D-3 P1）：GET export 命中持久化但未实例化的会话时使用。
-   * 缺省未注入时，导出含 piSessionFile 的未实例化会话失败（failclosed 脱敏错误），
-   * 绝不回退到可写 createAdapter 路径。
-   */
-  sessionHistoryReader?: SessionHistoryReader;
-  /**
-   * @deprecated WP4A 起删除只向持久 file_operations outbox 入队，不再由 application
-   * 直接触碰文件系统；保留可选字段仅兼容旧 composition root/tests。
-   */
-  removeSessionFile?: (path: string) => Promise<void>;
+  /** 按 agent kind/format 分派未实例化会话的只读导出；缺省仅允许空引用返回空历史。 */
+  conversationStorage?: ConversationStorageRegistry;
   /** 由 composition root 提供，便于隔离 ID 生成策略。 */
   createId: () => string;
   /** 由 composition root 提供，便于测试并隔离时钟。 */
@@ -216,7 +213,9 @@ export class SessionService {
       title: input.title ?? "",
       createdAt: now,
       updatedAt: now,
-      piSessionFile: null,
+      agentKind: PI_AGENT_KIND,
+      conversationFormat: PI_CONVERSATION_FORMAT,
+      conversationRef: null,
       modelProvider: input.modelProvider ?? null,
       modelId: input.modelId ?? null,
       thinkingLevel: input.thinkingLevel ?? null,
@@ -337,9 +336,9 @@ export class SessionService {
    * 导出会话快照（WP5D-3 P1：真只读，绝不实例化 runtime）。
    * 顺序：先查 owned 记录（越权/不存在一律 null）；已存在 runtime → 活会话导出
    * （事件游标 + adapter 投影，快照语义「至少一次」不变）；无 runtime 且未持久化
-   * （piSessionFile null）→ 空消息 + 游标 0；无 runtime 但已持久化 → 注入的
-   * SessionHistoryReader 只读解析（与活会话导出同一 role/text 投影），绝不
-   * createAdapter / 写 DB / 写 piSessionFile。
+   * （conversationRef null）→ 空消息 + 游标 0；无 runtime 但已持久化 → 注入的
+   * ConversationStorage 只读解析（与活会话导出同一 role/text 投影），绝不
+   * createAdapter / 写 DB / 改写会话历史。
    */
   async exportSession(ownerKey: string, id: string): Promise<{ messages: unknown; lastEventId: number } | null> {
     const record = await this.findOwned(ownerKey, id);
@@ -352,19 +351,25 @@ export class SessionService {
       return { messages, lastEventId };
     }
     // 无 runtime：从未活跃（或重启后未实例化）的会话——零写入只读路径。
-    if (!record.piSessionFile) {
-      // 未持久化：没有任何历史可读（空消息，游标 0），稳定且零副作用。
-      return { messages: [], lastEventId: 0 };
-    }
-    if (!this.deps.sessionHistoryReader) {
-      // 组合根未注入只读解析口：failclosed，绝不回退到可写的 getOrCreate/createAdapter 路径。
+    const conversation = {
+      agentKind: record.agentKind,
+      conversationFormat: record.conversationFormat,
+      conversationRef: record.conversationRef,
+    };
+    if (!this.deps.conversationStorage) {
+      // 测试/非生产组合未注入存储时，只有未物化会话可以安全返回空历史；
+      // 已有引用不能回退到可写的 getOrCreate/createAdapter 路径。
+      if (conversation.conversationRef === null) return { messages: [], lastEventId: 0 };
       throw new Error("会话历史只读解析不可用（服务配置缺失）");
     }
     try {
-      const messages = await this.deps.sessionHistoryReader.readSessionHistory(record.piSessionFile);
+      const messages = await this.deps.conversationStorage.require(conversation).readExport(conversation, {
+        sessionId: record.id,
+        projectId: record.projectId,
+      });
       return { messages, lastEventId: 0 };
     } catch (error) {
-      // 错误脱敏：只暴露固定文案，不透出文件路径/内容/解析细节（实现层同样脱敏，此处兜底）。
+      // 错误脱敏：只暴露固定文案，不透出文件路径/内容/解析细节（实现层同样兜底）。
       throw new Error("会话历史读取失败", { cause: error });
     }
   }
@@ -475,7 +480,7 @@ export class SessionService {
 }
 
 function toSessionDto(record: SessionRecord): SessionDto {
-  const { piSessionFile: _piSessionFile, ...dto } = record;
+  const { agentKind: _agentKind, conversationFormat: _conversationFormat, conversationRef: _conversationRef, ...dto } = record;
   return dto;
 }
 

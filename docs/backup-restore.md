@@ -19,7 +19,7 @@
 | DB 源 ledger 缺失、旧多行、字段/顺序错误或 checksum 不匹配 | backup（包括 `--dry-run`）在任何 age 加密、`COMPLETE`、发布或成功报告之前 fail-closed；不能推进 freshness |
 | DB 引用的 JSONL 缺失 | 一律按 `missing-as-empty` 记录进加密 manifest 并允许发布；`--require-complete-session-references` 已退役，owner-transfer pre-backup 同样不再 fail |
 | backup 读取已有 JSONL | 仅作 opaque bytes 稳定复制，不检查内容合法性（不逐行 `JSON.parse`） |
-| restore 遇到 manifest 中的 missing | 对应 `sessions.pi_session_file` 写为 `NULL` |
+| restore 遇到 manifest 中的 missing | 对应 `sessions.conversation_ref` 写为 `NULL` |
 | restore 遇到内容无效 JSONL | 丢弃该历史、对应引用写为 `NULL`，报告 `invalidSessionHistories` 数量（degradation）；其他会话照常恢复 |
 | 包/密文/hash 损坏 | 仍整体失败；不得降级为空历史 |
 
