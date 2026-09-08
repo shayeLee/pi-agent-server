@@ -243,6 +243,9 @@ export default function App() {
         onError: () => {
           if (!cancelled) setConnected(false);
         },
+        onNoLiveStream: () => {
+          if (!cancelled) setConnected(false);
+        },
         onEvent: (event) => {
           if ((event.type === "queued" || event.type === "status") && event.requestId) {
             confirmedRequestsRef.current.add(`${activeSessionId}:${event.requestId}`);

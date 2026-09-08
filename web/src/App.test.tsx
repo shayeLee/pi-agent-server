@@ -166,11 +166,19 @@ const mocks = vi.hoisted(() => {
 
   const sse = {
     onEvent: null as null | ((event: SseEvent) => void),
+    onOpen: null as null | (() => void),
+    onNoLiveStream: null as null | (() => void),
     close: vi.fn(),
   };
   const createSseConnection = vi.fn(
-    (options: { onEvent: (event: SseEvent) => void }): { close: () => void } => {
+    (options: {
+      onEvent: (event: SseEvent) => void;
+      onOpen?: () => void;
+      onNoLiveStream?: () => void;
+    }): { close: () => void } => {
       sse.onEvent = options.onEvent;
+      sse.onOpen = options.onOpen ?? null;
+      sse.onNoLiveStream = options.onNoLiveStream ?? null;
       return { close: sse.close };
     },
   );
@@ -215,6 +223,8 @@ beforeEach(() => {
   window.localStorage.clear();
   mocks.instances.length = 0;
   mocks.sse.onEvent = null;
+  mocks.sse.onOpen = null;
+  mocks.sse.onNoLiveStream = null;
   mocks.setProbeFails(false);
   mocks.resetProjects();
   mocks.setProjectListPending(false);
@@ -288,6 +298,17 @@ describe("App（顶层流程）", () => {
     };
     expect(options.headers.authorization).toBe("Bearer sekrit");
     expect(inst.token).toBe("sekrit");
+  });
+
+  it("SSE 204 no-live-stream 后 UI 保持未连接", async () => {
+    await enterChat();
+
+    mocks.sse.onOpen?.();
+    await waitFor(() => expect(screen.getByTestId("connection-badge")).toHaveTextContent("已连接"));
+
+    mocks.sse.onNoLiveStream?.();
+    await waitFor(() => expect(screen.getByTestId("connection-badge")).toHaveTextContent("未连接"));
+    expect(screen.getByTestId("stat-conn")).toHaveTextContent("未连接");
   });
 
   it("选中会话后事件驱动消息上屏（text_delta 流式 + tool_start 工具卡片）", async () => {

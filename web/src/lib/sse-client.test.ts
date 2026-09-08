@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { consumeSse } from "./sse-client.js";
+import { consumeSse, createSseConnection } from "./sse-client.js";
 
 function sseResponse(
   chunks: string[],
@@ -21,6 +21,7 @@ function sseResponse(
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
 
 describe("consumeSse", () => {
@@ -96,10 +97,90 @@ describe("consumeSse", () => {
     expect(epochs).toEqual(["epoch-2"]);
   });
 
+  it("HTTP 204 返回 no-live-stream 正常终态，不触发打开或错误回调", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(null, { status: 204 })));
+    const onOpen = vi.fn();
+    const onError = vi.fn();
+
+    await expect(
+      consumeSse({ url: "http://x/events", onEvent: () => {}, onOpen, onError }),
+    ).resolves.toBe("no-live-stream");
+    expect(onOpen).not.toHaveBeenCalled();
+    expect(onError).not.toHaveBeenCalled();
+  });
+
   it("HTTP 非 200 抛错", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(sseResponse([], 401)));
     await expect(
       consumeSse({ url: "http://x/events", onEvent: () => {} }),
     ).rejects.toThrow(/401/);
+  });
+});
+
+describe("createSseConnection", () => {
+  it("HTTP 204 停止重连并通知 no-live-stream", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const onNoLiveStream = vi.fn();
+
+    createSseConnection({
+      url: "http://x/events",
+      onEvent: () => {},
+      onNoLiveStream,
+      reconnectDelay: 1,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(onNoLiveStream).toHaveBeenCalledTimes(1);
+  });
+
+  it("HTTP 非 2xx 仍按当前策略重试", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 503 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const onError = vi.fn();
+
+    const connection = createSseConnection({
+      url: "http://x/events",
+      onEvent: () => {},
+      onError,
+      reconnectDelay: 100,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(onError).toHaveBeenCalledTimes(1);
+
+    vi.advanceTimersByTime(100);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    connection.close();
+  });
+
+  it("网络断开仍按当前策略重试", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn().mockRejectedValue(new Error("network down"));
+    vi.stubGlobal("fetch", fetchMock);
+    const onError = vi.fn();
+
+    const connection = createSseConnection({
+      url: "http://x/events",
+      onEvent: () => {},
+      onError,
+      reconnectDelay: 100,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(onError).toHaveBeenCalledTimes(1);
+
+    vi.advanceTimersByTime(100);
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    connection.close();
   });
 });

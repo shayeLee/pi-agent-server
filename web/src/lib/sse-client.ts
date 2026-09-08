@@ -21,8 +21,10 @@ export type ConsumeSseOptions = {
   signal?: AbortSignal;
 };
 
+export type ConsumeSseResult = "no-live-stream" | void;
+
 /** 消费一次 SSE 连接直到结束或中断。 */
-export async function consumeSse(options: ConsumeSseOptions): Promise<void> {
+export async function consumeSse(options: ConsumeSseOptions): Promise<ConsumeSseResult> {
   const parser = new SseParser();
   let lastEventId = options.lastEventId ?? 0;
 
@@ -35,6 +37,8 @@ export async function consumeSse(options: ConsumeSseOptions): Promise<void> {
   }
 
   const res = await fetch(options.url, { headers, signal: options.signal });
+  // 204 表示该会话当前没有可用的实时流，是正常终态而不是可重试的断线。
+  if (res.status === 204) return "no-live-stream";
   if (!res.ok || !res.body) {
     throw new Error(`SSE 连接失败：HTTP ${res.status}`);
   }
@@ -80,6 +84,8 @@ export type SseConnectionOptions = {
   lastEventId?: number;
   /** 重连延迟（毫秒），默认 1000。 */
   reconnectDelay?: number;
+  /** 服务端明确表示当前没有实时流（HTTP 204）时触发，不会自动重连。 */
+  onNoLiveStream?: () => void;
 };
 
 /** 建立带自动重连的 SSE 连接；返回 close 函数（幂等）。 */
@@ -94,7 +100,7 @@ export function createSseConnection(options: SseConnectionOptions): { close: () 
   async function loop(): Promise<void> {
     while (!closed) {
       try {
-        await consumeSse({
+        const result = await consumeSse({
           url: options.url,
           headers: options.headers,
           lastEventId,
@@ -114,6 +120,10 @@ export function createSseConnection(options: SseConnectionOptions): { close: () 
             lastEpoch = epoch;
           },
         });
+        if (result === "no-live-stream") {
+          options.onNoLiveStream?.();
+          break;
+        }
       } catch (error) {
         if (closed) break;
         options.onError?.(error instanceof Error ? error : new Error(String(error)));
