@@ -2,7 +2,7 @@
 
 # pi-agent-server
 
-A long-running, session-oriented HTTP/SSE server around the Pi Agent runtime. It provides project and session management, streaming task control, persistence, concurrency limits, IP-based admission, route RBAC, and configurable tool access. The React/Vite app in `web/` is an optional standalone client; Fastify does not serve it.
+A long-running, session-oriented HTTP/SSE server around the Pi Agent runtime, designed for multi-user access. Project and session management provide supporting organization for work and conversations, alongside streaming task control, persistence, concurrency limits, route RBAC, and configurable tool access. The React/Vite app in `web/` is an optional standalone client; Fastify does not serve it.
 
 > **Status: Release Candidate (RC). Not production-ready.**
 
@@ -17,9 +17,10 @@ A long-running, session-oriented HTTP/SSE server around the Pi Agent runtime. It
 
 ## Highlights
 
+- Multi-user access as a first-class capability.
+- Project and session management as supporting capabilities for organizing work and conversations.
 - HTTP/JSON API plus Server-Sent Events.
 - `steer`, `follow-up`, and `abort` controls while a task is running.
-- Project and session ownership isolation by LAN IP.
 - SQLite by default; explicit PostgreSQL opt-in.
 - Conversations are saved as Pi JSONL files, with project, session, and task state kept in the database; repeated requests return the already-recorded result instead of running again.
 - Role-based route access control that denies by default: `viewer`, `user`, `operator`, and `admin`. IPs in the allowed range without an explicit profile default to `user`.

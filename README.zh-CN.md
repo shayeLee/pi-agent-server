@@ -2,7 +2,7 @@
 
 # pi-agent-server
 
-围绕 Pi Agent Runtime 构建的长期运行、会话型 HTTP/SSE 服务。它提供项目与会话管理、流式任务控制、持久化、并发限制、基于 IP 的准入、路由 RBAC 和可配置工具权限。`web/` 中的 React/Vite 应用是可选独立客户端；Fastify 不托管它。
+pi-agent-server 是基于 Pi Agent Runtime 构建的长期运行、会话式 HTTP/SSE 服务，核心支持多用户访问。项目与会话管理用于组织工作和对话，同时提供流式任务控制、持久化、并发限制、路由 RBAC 与可配置工具权限。`web/` 中的 React/Vite 应用为可选独立客户端，Fastify 不托管该前端。
 
 > **状态：Release Candidate（RC），尚非生产就绪。**
 
@@ -17,9 +17,10 @@
 
 ## 特性
 
+- 以多用户支持为首要能力。
+- 项目与会话管理作为组织工作与对话的配套能力。
 - HTTP/JSON API 与 Server-Sent Events。
 - 任务运行期间支持 `steer`、`follow-up` 和 `abort`。
-- 按局域网 IP 隔离项目和会话归属。
 - 默认 SQLite；显式选择 PostgreSQL。
 - 会话以 Pi JSONL 文件保存，项目、会话与任务状态等信息存入数据库；同一请求重复提交会返回已记录的结果，不重复执行。
 - 基于角色的路由访问控制，默认拒绝：`viewer`、`user`、`operator`、`admin`；允许网段内未单独登记的 IP 默认视为 `user`。
