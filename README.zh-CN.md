@@ -11,6 +11,8 @@ pi-agent-server 是基于 Pi Agent Runtime 构建的长期运行、会话式 HTT
 - **当前面向内网：** 公网部署能力将在后续版本完善。
 - **当前为单实例运行：** 后续计划支持多实例部署。
 - **默认 Pi 工具：** `read`、`ls`、`find`、`grep`。通过环境变量 `TOOLS` 配置完整工具列表。
+- **外部插件显式且受信任：** 通过 `PI_PLUGINS` 加载指定的同进程 ESM 插件。它是工程扩展边界，不是沙箱。
+- **参考图片由宿主校验、不压缩：** `POST /v1/sessions/:id/messages` 可携带可选 `images: [{ mediaType, base64 }]`。宿主只接受静态 `image/png`、`image/jpeg`、`image/webp`，重新校验真实魔数与头部尺寸，并执行数量/体积/像素预算；宿主不压缩、不转码，也不新增图片上传路由或图片数据库。压缩由调用方客户端完成。
 - **Pi Session JSONL 暂不自动清理：** 删除项目或会话后，对应的 JSONL 文件仍会保留。
 - **支持本机加密备份：** 备份与恢复工具已经提供，异地容灾仍在规划中。详见[备份与恢复](docs/backup-restore.md)。
 - **首次部署需要初始化数据库：** 先按[运维文档](docs/operations.md)初始化数据库，再启动服务；如果新版本发布说明要求更新数据库结构，也要先按运维文档升级数据库，再启动新版本服务。
@@ -57,7 +59,13 @@ pnpm web:mock
 pnpm dev:real
 ```
 
-`dev:real` 预设了 `DATA_DIR=/tmp/pi-agent-server`、`PI_ALLOWED_CLIENT_CIDRS=127.0.0.0/8,10.0.0.0/8` 以及默认模型与思考级别（见 `package.json`）。`PI_ALLOWED_CLIENT_CIDRS` 必填，并按所有路由的直接 socket 对端 IP 匹配，探针也不例外。
+`dev:real` 通过 tsx 的 `--env-file-if-exists=.env.local` 加载可选且已被 gitignore 的 `.env.local`。先复制已追踪且不含敏感值的模板：
+
+```bash
+cp .env.example .env.local
+```
+
+本地模板包含开发值 `DATA_DIR=/tmp/pi-agent-server`、`PI_ALLOWED_CLIENT_CIDRS=127.0.0.0/8,10.0.0.0/8`、`PI_DEFAULT_MODEL=openai-codex/gpt-5.6-luna` 和 `PI_DEFAULT_THINKING_LEVEL=medium`；使用前请修改机器相关路径。实际环境变量优先于 `.env.local`，文件值优先于应用默认值。`PI_ALLOWED_CLIENT_CIDRS` 必填，并按所有路由的直接 socket 对端 IP 匹配，探针也不例外。禁止提交 `.env.local`、认证信息、API key 或令牌。
 
 `dev:real` 的数据库在 `/tmp/pi-agent-server`，服务启动只验证、不自动初始化。首次运行前（或清空 `/tmp` 后）初始化一次：
 
@@ -102,6 +110,7 @@ export PI_MIGRATION_GATE=verify
 | `GET` | `/health` | 存活检查 |
 | `GET` | `/readyz` | 进程启动与 migration gate 就绪状态 |
 | `GET` | `/metrics` | 固定 Prometheus 进程/readiness 指标 |
+| `GET` | `/v1/access` | 由中央 RBAC 矩阵派生的最小访问能力投影 `{canRead, canWrite}` |
 | `GET` | `/v1/models` | 可用模型与默认值 |
 | `GET` / `POST` | `/v1/projects` | 列出或创建项目 |
 | `DELETE` | `/v1/projects/:id` | 逻辑删除项目 |
@@ -109,13 +118,31 @@ export PI_MIGRATION_GATE=verify
 | `PATCH` / `DELETE` | `/v1/sessions/:id` | 重命名或逻辑删除会话 |
 | `PATCH` | `/v1/sessions/:id/config` | 修改模型/思考配置 |
 | `POST` | `/v1/sessions/:id/messages` | 提交提示词（必须提供 `requestId`） |
-| `GET` | `/v1/sessions/:id/events` | SSE；viewer 对无 live runtime 的会话收到 `204` |
+| `GET` | `/v1/sessions/:id/events` | SSE；viewer 对无 live runtime 的会话收到 `204`。所有与 turn 相关的事件都携带产生它们的 `requestId`（`text_delta`、`thinking_delta`、`tool_start`、`tool_update`、`tool_end`、`status`、`usage`、`queued`、`error`、`completed`、`aborted`） |
 | `POST` | `/v1/sessions/:id/steer` | 引导运行中的任务 |
 | `POST` | `/v1/sessions/:id/follow-ups` | 排队追加 follow-up |
-| `POST` | `/v1/sessions/:id/abort` | 中止任务 |
+| `POST` | `/v1/sessions/:id/abort` | 中止任务。可省略 body 以兼容旧行为；如提供，必须严格为 `{ "requestId": "..." }`，且仅中止该当前请求。`requestId` 不匹配时返回 `409`，不会取消任务。 |
 | `GET` | `/v1/sessions/:id/export` | 只读消息快照；绝不创建 runtime |
 
 RC 期间以 `src/server/app.ts` 的实际 API 为准。
+
+### 访问能力投影
+
+`GET /v1/access` 返回最小固定响应体 `{ canRead, canWrite }`，由中央路由权限矩阵（`ROUTE_PERMISSIONS` + `evaluateRouteAuthorization`）派生，而非硬编码；绝不返回调用方的 `role`、IP 或 token。
+
+- `canRead`：当所有读权限（会话列表/导出/事件流与 `capability:read`）对该角色开放时为 `true`，即 `viewer`、`user`、`admin`；
+- `canWrite`：当所有写/控制权限（`sessions:send-message`、`sessions:control`、`capability:write`）对该角色开放时为 `true`，即 `user`、`admin`；
+- `operator` 在整个 `/v1` 面被拒，因此返回固定 `403`，得不到任何投影。
+
+该端点与其它只读 `GET` 路由使用同一读 RBAC，并受相同的 token 与 CORS 规则约束。若未来矩阵出现分项不一致，布尔值只会更保守（绝不误报可写），因此访问控制 UI 可安全地据此隐藏写操作。
+
+### 消息输入与图片附件
+
+- `POST /v1/sessions/:id/messages` 要求非空 `requestId`；`prompt` 通常必须非空，但至少一张图片通过权威校验时允许为空（仅图片消息）。两者都有长度上限（128 与 32,768 个 UTF-16 code unit），含非法控制字符时同样被拒。
+- 可选 `images: [{ mediaType, base64 }]` 携带参考图片。支持的 `mediaType` 为 `image/png`、`image/jpeg`、`image/webp`。宿主在请求到达会话 runtime 之前，校验 canonical base64、真实魔数、头部尺寸、MIME 一致性与数量/体积/像素预算。非法图片返回 `400` 固定文案，绝不回显内容。
+- 宿主不压缩、不转码图片；客户端应在提交前压缩。PNG/JPEG/WebP 逐字节透传到 Pi SDK 图片内容。
+- 同一 `requestId` 携带不同内容重放返回 `409`，不再静默返回旧结果（`requestId` 是幂等键）。该检查仅限进程内，暂不能跨进程重启识别载荷变化，因为持久化幂等记录只保存终态结果。
+- `GET /v1/sessions/:id/export` 将受支持的 user 消息图片投影为可选 `images: [{ mediaType, base64 }]` 字段，同样经过完整校验并有预算限制；畸形或超预算的图片块被省略而不是使导出失败。活会话与只读 JSONL 导出共用同一投影，逐字节一致。
 
 ## 访问控制
 
@@ -151,6 +178,7 @@ export PI_ALLOWED_CLIENT_CIDRS=127.0.0.0/8,10.0.0.0/8
 | `PI_DEFAULT_MODEL` | 未设置 | `provider/modelId` |
 | `PI_DEFAULT_THINKING_LEVEL` | Pi 默认值 | `off` 至 `max` |
 | `TOOLS` | `read,ls,find,grep` | 逗号分隔的完整工具列表；设置后替换默认列表，例如 `read,ls,find,grep,bash,edit,write` |
+| `PI_PLUGINS` | 未设置 | 逗号分隔的显式加载、受信任同进程 ESM 插件包名；不扫描目录或 `.pi` |
 | `CORS_ORIGINS` | 空 | 允许在浏览器中调用本服务的网页地址；多个地址用逗号分隔，例如 `http://127.0.0.1:5173` |
 | `PI_BACKUP_STAGING_ROOT` | 每用户私有应用目录 | 备份或数据库升级时使用的临时工作目录；通常无需设置 |
 

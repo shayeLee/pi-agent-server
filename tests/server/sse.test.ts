@@ -230,8 +230,8 @@ describe("GET /v1/sessions/:id/events（SSE 订阅与 Last-Event-ID 补发）", 
       { lastEventId: 0 },
     );
     expect(text).toContain('data: {"type":"status","phase":"agent_start","requestId":"r1"}');
-    expect(text).toContain('data: {"type":"text_delta","text":"你好"}');
-    expect(text).toContain('data: {"type":"completed"}');
+    expect(text).toContain('data: {"type":"text_delta","text":"你好","requestId":"r1"}');
+    expect(text).toContain('data: {"type":"completed","requestId":"r1"}');
     // 事件带递增 id
     expect(text).toMatch(/^id: 1\ndata: /);
   });
@@ -261,8 +261,8 @@ describe("GET /v1/sessions/:id/events（SSE 订阅与 Last-Event-ID 补发）", 
       { lastEventId: 999, clientEpoch: "epoch-OLD" },
     );
     expect(text).toMatch(/^id: 1\ndata: /); // 从头补发
-    expect(text).toContain('data: {"type":"text_delta","text":"你好"}');
-    expect(text).toContain('data: {"type":"completed"}');
+    expect(text).toContain('data: {"type":"text_delta","text":"你好","requestId":"r1"}');
+    expect(text).toContain('data: {"type":"completed","requestId":"r1"}');
   });
 
   it("先订阅后实时收到新事件（不补发历史）", async () => {
@@ -296,8 +296,8 @@ describe("GET /v1/sessions/:id/events（SSE 订阅与 Last-Event-ID 补发）", 
     clearTimeout(timer);
     reader.cancel().catch(() => {});
 
-    expect(text).toContain('data: {"type":"text_delta","text":"你好"}');
-    expect(text).toContain('data: {"type":"completed"}');
+    expect(text).toContain('data: {"type":"text_delta","text":"你好","requestId":"r1"}');
+    expect(text).toContain('data: {"type":"completed","requestId":"r1"}');
   });
 
   it("epoch 匹配时按 cursor 续传（不从头）", async () => {
@@ -319,6 +319,60 @@ describe("GET /v1/sessions/:id/events（SSE 订阅与 Last-Event-ID 补发）", 
     );
     expect(text).toMatch(/^id: 2\ndata: /); // 从 id 2 续传
     expect(text).not.toContain('"phase":"agent_start"');
-    expect(text).toContain('data: {"type":"completed"}');
+    // 补发的每个帧都保留 turn 归属（text_delta 与终态均带 requestId）。
+    expect(text).toContain('data: {"type":"text_delta","text":"你好","requestId":"r1"}');
+    expect(text).toContain('data: {"type":"completed","requestId":"r1"}');
+  });
+
+  it("P7b：补发与实时事件都携带 turn requestId，不跨 request 串扰", async () => {
+    const { app, port } = await makeListeningApp();
+    const id = await createSession(app);
+
+    // 第一轮（r1）：先订阅（实时视角），再提交，验证每个 turn 事件都带 requestId=r1。
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 3000);
+    const res = await fetch(`http://127.0.0.1:${port}/v1/sessions/${id}/events`, {
+      headers: { ...authHeader(TOKEN) },
+      signal: controller.signal,
+    });
+    expect(res.status).toBe(200);
+    const reader = res.body!.getReader();
+    const decoder = new TextDecoder();
+
+    await app.inject({
+      method: "POST",
+      url: `/v1/sessions/${id}/messages`,
+      headers: { ...authHeader(TOKEN), ...JSON_HEADERS }, remoteAddress: "127.0.0.1",
+      payload: JSON.stringify({ requestId: "r1", prompt: "你好" }),
+    });
+
+    let text = "";
+    while (!text.includes("completed")) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      text += decoder.decode(value, { stream: true });
+    }
+    clearTimeout(timer);
+    reader.cancel().catch(() => {});
+
+    // 实时帧每个 turn 事件都带 requestId=r1。
+    expect(text).toContain('data: {"type":"status","phase":"agent_start","requestId":"r1"}');
+    expect(text).toContain('data: {"type":"text_delta","text":"你好","requestId":"r1"}');
+    expect(text).toContain('data: {"type":"completed","requestId":"r1"}');
+
+    // 补发视角（lastEventId=0）：所有 turn 帧都只带 r1。
+    const replay = await readSseUntil(
+      `http://127.0.0.1:${port}/v1/sessions/${id}/events`,
+      (t) => t.includes("completed"),
+      { lastEventId: 0 },
+    );
+    const frames = replay
+      .split("\n")
+      .filter((line) => line.startsWith("data: "))
+      .map((line) => JSON.parse(line.slice(6)) as { type: string; requestId?: string });
+    expect(frames.map((f) => f.type)).toEqual(["status", "text_delta", "completed"]);
+    for (const frame of frames) {
+      expect(frame, JSON.stringify(frame)).toMatchObject({ requestId: "r1" });
+    }
   });
 });

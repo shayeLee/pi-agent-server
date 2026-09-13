@@ -7,6 +7,14 @@ import {
 } from "../../src/agent/pi-agent-adapter.js";
 import type { ImageInput } from "../../src/agent/agent-adapter.js";
 import type { AgentSdkEvent } from "../../src/agent/events.js";
+import { normalizeImageInputs } from "../../src/agent/image-input.js";
+import { JPEG_2X2_BASE64, PNG_2X2_BASE64, WEBP_2X2_BASE64 } from "../helpers/image-fixtures.js";
+import type { ImageContent } from "@earendil-works/pi-ai";
+
+// 编译期断言：本地 SdkImageContent 与当前依赖的 ImageContent 逐字段兼容。
+// 依赖升级时此断言先失败（而不是运行期静默传错结构）。
+type AssertCompatible<T extends SdkImageContent> = T;
+type _SdkShapeCheck = AssertCompatible<ImageContent>;
 
 // 图片输入：HTTP/接口层用轻量 ImageInput（{ mediaType, base64 }），
 // 只在 PiAgentAdapter 内转成 SDK PromptOptions.images 的 ImageContent 结构（type:"image" + base64 source）。
@@ -39,8 +47,8 @@ describe("图片输入（ImageInput → SDK ImageContent）", () => {
     it("prompt(text, { images }) 把 images 记入 calls", async () => {
       const adapter = new MockAgentAdapter();
       const images: ImageInput[] = [
-        { mediaType: "image/png", base64: "aGVsbG8=" },
-        { mediaType: "image/jpeg", base64: "d29ybGQ=" },
+        { mediaType: "image/png", base64: PNG_2X2_BASE64 },
+        { mediaType: "image/jpeg", base64: JPEG_2X2_BASE64 },
       ];
 
       await adapter.prompt("图片里的字是什么", { images });
@@ -58,23 +66,54 @@ describe("图片输入（ImageInput → SDK ImageContent）", () => {
   });
 
   describe("PiAgentAdapter 图片转换", () => {
-    it("把 ImageInput[] 转成 SDK ImageContent[] 传给 session.prompt", async () => {
+    it("把 ImageInput[] 转成 SDK ImageContent[] 传给 session.prompt（逐字节透传 base64）", async () => {
       const session = new ImageFakeSession();
       const adapter = new PiAgentAdapter(session);
       const images: ImageInput[] = [
-        { mediaType: "image/png", base64: "YQ==" },
-        { mediaType: "image/jpeg", base64: "Yg==" },
+        { mediaType: "image/png", base64: PNG_2X2_BASE64 },
+        { mediaType: "image/jpeg", base64: JPEG_2X2_BASE64 },
       ];
 
       await adapter.prompt("这张图是什么", { images });
 
+      // 当前 SDK（@earendil-works/pi-ai）的 ImageContent 形状为 { type:"image", data, mimeType }；
+      // data 与输入 base64 逐字节一致（适配层不重新编码）。
       expect(session.promptOptions).toEqual({
         images: [
-          { type: "image", source: { type: "base64", mediaType: "image/png", data: "YQ==" } },
-          { type: "image", source: { type: "base64", mediaType: "image/jpeg", data: "Yg==" } },
+          { type: "image", data: PNG_2X2_BASE64, mimeType: "image/png" },
+          { type: "image", data: JPEG_2X2_BASE64, mimeType: "image/jpeg" },
         ],
       });
       expect(session.promptCalls).toEqual(["这张图是什么"]);
+      const passed = session.promptOptions!.images!;
+      expect(passed[0]!.data).toBe(images[0]!.base64);
+      expect(passed[1]!.data).toBe(images[1]!.base64);
+    });
+
+    it("规范化结果逐字节传入 SDK：与手写 ImageContent 完全相等，且无图消息不受影响", async () => {
+      // HTTP 入口的规范化 → adapter → SDK：端到端验证真实图片形状
+      const normalized = normalizeImageInputs([
+        { mediaType: "image/png", base64: PNG_2X2_BASE64 },
+        { mediaType: "image/webp", base64: WEBP_2X2_BASE64 },
+      ]);
+      expect(normalized.ok).toBe(true);
+      if (!normalized.ok) return;
+
+      const session = new ImageFakeSession();
+      const adapter = new PiAgentAdapter(session);
+      await adapter.prompt("看图", { images: [...normalized.images] });
+
+      // 与手写的 SDK ImageContent 逐字段相等（真实形状）
+      const expected: SdkImageContent[] = [
+        { type: "image", data: PNG_2X2_BASE64, mimeType: "image/png" },
+        { type: "image", data: WEBP_2X2_BASE64, mimeType: "image/webp" },
+      ];
+      expect(session.promptOptions).toEqual({ images: expected });
+      // data 逐字节一致（含 base64 padding）
+      expect(session.promptOptions!.images!.map((image) => image.data)).toEqual([
+        PNG_2X2_BASE64,
+        WEBP_2X2_BASE64,
+      ]);
     });
 
     it("不带 images 时只传 text（不构造 options 对象）", async () => {

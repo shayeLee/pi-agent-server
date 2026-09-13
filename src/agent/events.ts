@@ -99,15 +99,24 @@ export function extractFinalStop(
 
 // --- SSE 事件（needs.md §4.2，9 种） ---
 
+/**
+ * turn 关联字段（P7b）：同一轮对话的所有事件都携带产生它们的 `requestId`，
+ * 客户端据此把“迟到/补发”的旧事件与新请求隔离，不跨 request 串扰。
+ *
+ * 可选仅用于**非 turn 遗留场景**（如宿主合成的无请求上下文事件）；正常 turn 的
+ * 发射路径（`SessionRuntime`）必须携带具体值，且测试断言其存在。
+ */
+export type SseRequestId = { readonly requestId?: string };
+
 export type SseEvent =
-  | { type: "text_delta"; text: string }
-  | { type: "thinking_delta"; text: string }
-  | { type: "tool_start"; toolCallId: string; toolName: string; args: unknown }
-  | { type: "tool_update"; toolCallId: string; toolName: string; partialResult: unknown }
-  | { type: "tool_end"; toolCallId: string; toolName: string; result: unknown; isError: boolean }
-  | { type: "status"; phase: "agent_start" | "turn_start"; requestId?: string }
-  | { type: "queued"; position?: number; requestId?: string }
-  | { type: "usage"; promptTokens: number; completionTokens: number; totalTokens: number; durationMs: number; ttftMs: number }
-  | { type: "error"; message: string }
-  | { type: "completed" }
-  | { type: "aborted" };
+  | ({ type: "text_delta"; text: string } & SseRequestId)
+  | ({ type: "thinking_delta"; text: string } & SseRequestId)
+  | ({ type: "tool_start"; toolCallId: string; toolName: string; args: unknown } & SseRequestId)
+  | ({ type: "tool_update"; toolCallId: string; toolName: string; partialResult: unknown } & SseRequestId)
+  | ({ type: "tool_end"; toolCallId: string; toolName: string; result: unknown; isError: boolean } & SseRequestId)
+  | ({ type: "status"; phase: "agent_start" | "turn_start" } & SseRequestId)
+  | ({ type: "queued"; position?: number } & SseRequestId)
+  | ({ type: "usage"; promptTokens: number; completionTokens: number; totalTokens: number; durationMs: number; ttftMs: number } & SseRequestId)
+  | ({ type: "error"; message: string } & SseRequestId)
+  | ({ type: "completed" } & SseRequestId)
+  | ({ type: "aborted" } & SseRequestId);

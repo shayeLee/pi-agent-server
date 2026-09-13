@@ -13,6 +13,13 @@ import { identityKey, type UserIdentity } from "../core/user-identity.js";
 import type { IpAccessResolveInput } from "../core/ip-access-policy.js";
 import { ConcurrencyController } from "../core/concurrency-control.js";
 import type { AgentAdapter } from "../agent/agent-adapter.js";
+import {
+  IMAGE_INPUT_LIMITS,
+  IMAGE_INPUT_REJECTION_MESSAGES,
+  SUPPORTED_IMAGE_MEDIA_TYPES,
+  normalizeImageInputs,
+} from "../agent/image-input.js";
+import { TURN_TEXT_LIMITS, checkTurnText } from "../core/text-input.js";
 import type {
   IdempotencyStorePort,
   ModelCatalogPort,
@@ -38,6 +45,7 @@ import {
 } from "./ops-status.js";
 import {
   FORBIDDEN_BODY,
+  projectAccessCapabilities,
   requirePermission,
   routeRbacOnRequest,
 } from "./route-rbac.js";
@@ -91,6 +99,10 @@ export type ServerDeps = {
   systemPromptResolver?: SystemPromptPort;
   /** 创建会话时冻结的能力版本快照（id→version）。 */
   capabilityVersions?: Readonly<Record<string, number>>;
+  /** 组装完成的 SessionService 回调；供同进程受信插件宿主复用既有 owner/runtime 语义。 */
+  onSessionServiceReady?: (service: SessionService) => void;
+  /** 宿主 runtime 停止并释放后执行；用于插件与存储的关闭顺序编排。 */
+  onRuntimeClosed?: () => Promise<void>;
   /**
    * WP5A：可注入进程运行状态/readiness（生产组合 startServer 总是注入真实对象并维护
    * ready/gate verified；未注入时缺省为未就绪对象——仅测试/非生产组合使用，恒 503/ready 0，
@@ -116,14 +128,20 @@ const RENAME_BODY_SCHEMA = { ...TITLE_BODY_SCHEMA, required: ["title"] } as cons
 const MESSAGES_BODY_SCHEMA = {
   type: "object",
   properties: {
-    requestId: { type: "string" },
-    prompt: { type: "string" },
+    // requestId/prompt 的长度上限由 core/text-input.ts 的 TURN_TEXT_LIMITS 派生（与插件
+    // runTurn 同一权威值）；schema 只作预检，业务侧仍会重校并给出固定错误文案。
+    requestId: { type: "string", maxLength: TURN_TEXT_LIMITS.maxRequestIdLength },
+    prompt: { type: "string", maxLength: TURN_TEXT_LIMITS.maxPromptLength },
     parentId: { type: "string" },
     images: {
       type: "array",
+      maxItems: IMAGE_INPUT_LIMITS.maxImages,
       items: {
         type: "object",
-        properties: { mediaType: { type: "string" }, base64: { type: "string" } },
+        properties: {
+          mediaType: { type: "string", enum: [...SUPPORTED_IMAGE_MEDIA_TYPES] },
+          base64: { type: "string", maxLength: IMAGE_INPUT_LIMITS.maxImageBase64Length },
+        },
         required: ["mediaType", "base64"],
         additionalProperties: false,
       },
@@ -138,6 +156,21 @@ const TEXT_BODY_SCHEMA = {
   required: ["text"],
   additionalProperties: false,
 } as const;
+/**
+ * Abort body is optional. JSON Schema cannot express an absent (`undefined`) body alongside a
+ * strict object, so validate the supplied body here and leave an absent one untouched.
+ */
+function parseAbortBody(body: unknown):
+  | { ok: true; supplied: false }
+  | { ok: true; supplied: true; expectedRequestId: unknown }
+  | { ok: false } {
+  if (body === undefined) return { ok: true, supplied: false };
+  if (body === null || typeof body !== "object" || Array.isArray(body)) return { ok: false };
+  const record = body as Record<string, unknown>;
+  const keys = Object.keys(record);
+  if (keys.length !== 1 || keys[0] !== "requestId") return { ok: false };
+  return { ok: true, supplied: true, expectedRequestId: record.requestId };
+}
 const CREATE_PROJECT_BODY_SCHEMA = {
   type: "object",
   properties: { name: { type: "string" }, cwd: { type: "string" } },
@@ -274,6 +307,7 @@ export function buildApp(deps: ServerDeps): FastifyInstance {
     createId: randomUUID,
     now: Date.now,
   });
+  deps.onSessionServiceReady?.(sessions);
 
   const sseConnections = new Map<string, number>();
   const maxSseGlobal = deps.maxSseGlobal ?? 100;
@@ -378,6 +412,12 @@ export function buildApp(deps: ServerDeps): FastifyInstance {
   const ownerKeyOf = (request: { user: UserIdentity }) => identityKey(request.user);
 
   app.register(async (api) => {
+    // P7b 宿主访问能力投影：最小固定响应体 `{canRead, canWrite}`，由中央 ROUTE_PERMISSIONS
+    // 矩阵 + evaluateRouteAuthorization 派生（绝不返回 role/IP/token）。纯读 GET，与其它只读
+    // 路由同为 viewer/user/admin；operator 仍由全局 default-deny 403 拒。
+    api.get("/access", { ...requirePermission("access:read") }, async (request) =>
+      projectAccessCapabilities(request.access.role),
+    );
     api.get("/models", { ...requirePermission("models:list") }, async () => sessions.models());
     api.get("/projects", { ...requirePermission("projects:list") }, async (request) => sessions.listProjects(ownerKeyOf(request)));
     api.post<{ Body: { name: string; cwd: string } }>(
@@ -417,6 +457,9 @@ export function buildApp(deps: ServerDeps): FastifyInstance {
             return reply.code(400).send({ statusCode: 400, error: "Bad Request", message: "thinkingLevel 必须是 off/minimal/low/medium/high/xhigh/max 之一" });
           case "model-check-failed":
             return reply.code(503).send({ statusCode: 503, error: "Service Unavailable", message: "模型可用性检查失败" });
+          case "id-conflict":
+            // 预留/指定 sessionId 仅宿主插件预约使用；HTTP 层不接受 sessionId，此分支理论不可达。
+            return reply.code(500).send({ statusCode: 500, error: "Internal Server Error", message: "会话 ID 冲突" });
         }
       },
     );
@@ -455,13 +498,36 @@ export function buildApp(deps: ServerDeps): FastifyInstance {
       "/sessions/:id/messages",
       { schema: { body: MESSAGES_BODY_SCHEMA }, ...requirePermission("sessions:send-message") },
       async (request, reply) => {
-        const result = await sessions.submitMessage(ownerKeyOf(request), request.params.id, request.body);
+        // 业务验证纪律：schema 只是预算（maxLength/maxItems/enum），下面是权威校验，发生在
+        // 进入 session service / runtime / SDK **之前**。任何失败都是固定文案 400，绝不回显内容。
+        const requestIdCheck = checkTurnText(request.body.requestId, TURN_TEXT_LIMITS.maxRequestIdLength);
+        if (!requestIdCheck.ok) {
+          return reply.code(400).send({ statusCode: 400, error: "Bad Request", message: "requestId 非法" });
+        }
+        const images = normalizeImageInputs(request.body.images);
+        if (!images.ok) {
+          return reply
+            .code(400)
+            .send({ statusCode: 400, error: "Bad Request", message: IMAGE_INPUT_REJECTION_MESSAGES[images.reason] });
+        }
+        // 仅图片消息是公开会话通道的合法输入：至少一张图片通过权威校验时允许空 prompt；
+        // 无图消息和插件 runTurn 仍必须包含非空文本。
+        const promptCheck = checkTurnText(request.body.prompt, TURN_TEXT_LIMITS.maxPromptLength, {
+          allowEmpty: images.images.length > 0,
+        });
+        if (!promptCheck.ok) {
+          return reply.code(400).send({ statusCode: 400, error: "Bad Request", message: "prompt 非法" });
+        }
+        const result = await sessions.submitMessage(ownerKeyOf(request), request.params.id, {
+          ...request.body,
+          images: images.images.length > 0 ? [...images.images] : undefined,
+        });
         if (!result.found) return NOT_FOUND(reply);
         switch (result.decision.kind) {
           case "run": return reply.code(202).send({ status: "accepted" });
           case "queued": return reply.code(202).send({ status: "queued", position: result.decision.position });
           case "rejected": return reply.code(429).send({ statusCode: 429, error: "Too Many Requests", message: result.decision.reason === "user-queue-full" ? "用户队列已满" : "服务过载，请稍后重试" });
-          case "conflict": return reply.code(409).send({ statusCode: 409, error: "Conflict", message: result.decision.reason === "poisoned" ? "会话任务异常，请新建会话" : "会话已有活动任务" });
+          case "conflict": return reply.code(409).send({ statusCode: 409, error: "Conflict", message: result.decision.reason === "poisoned" ? "会话任务异常，请新建会话" : result.decision.reason === "payload-mismatch" ? "同一 requestId 不能用于不同内容" : "会话已有活动任务" });
           case "done": return reply.code(200).send(result.decision.result);
         }
       },
@@ -470,19 +536,45 @@ export function buildApp(deps: ServerDeps): FastifyInstance {
       const exported = await sessions.exportSession(ownerKeyOf(request), request.params.id);
       return exported ? reply.code(200).send(exported) : NOT_FOUND(reply);
     });
-    for (const [path, operation, hasText] of [
-      ["/sessions/:id/steer", "steer", true],
-      ["/sessions/:id/follow-ups", "follow-up", true],
-      ["/sessions/:id/abort", "abort", false],
+    for (const [path, operation] of [
+      ["/sessions/:id/steer", "steer"],
+      ["/sessions/:id/follow-ups", "follow-up"],
     ] as const) {
       api.post<{ Params: { id: string }; Body: { text: string } }>(
         path,
-        { ...(hasText ? { schema: { body: TEXT_BODY_SCHEMA } } : {}), ...requirePermission("sessions:control") },
+        { schema: { body: TEXT_BODY_SCHEMA }, ...requirePermission("sessions:control") },
         async (request, reply) => {
-        const result = await sessions.controlSession(ownerKeyOf(request), request.params.id, operation, hasText ? request.body.text : undefined);
-        return result === "not-found" ? NOT_FOUND(reply) : result === "ok" ? reply.code(204).send() : CONFLICT(reply);
-      });
+          const result = await sessions.controlSession(ownerKeyOf(request), request.params.id, operation, request.body.text);
+          return result === "not-found" ? NOT_FOUND(reply) : result === "ok" ? reply.code(204).send() : CONFLICT(reply);
+        },
+      );
     }
+    api.post<{ Params: { id: string }; Body: unknown }>(
+      "/sessions/:id/abort",
+      { ...requirePermission("sessions:control") },
+      async (request, reply) => {
+        const body = parseAbortBody(request.body);
+        if (!body.ok) {
+          return reply.code(400).send({ statusCode: 400, error: "Bad Request", message: "abort body 非法" });
+        }
+        let expectedRequestId: string | undefined;
+        if (body.supplied) {
+          const requestIdCheck = checkTurnText(body.expectedRequestId, TURN_TEXT_LIMITS.maxRequestIdLength);
+          if (!requestIdCheck.ok) {
+            return reply.code(400).send({ statusCode: 400, error: "Bad Request", message: "requestId 非法" });
+          }
+          expectedRequestId = requestIdCheck.value;
+        }
+        const result = await sessions.controlSession(
+          ownerKeyOf(request),
+          request.params.id,
+          "abort",
+          undefined,
+          expectedRequestId,
+        );
+        return result === "not-found" ? NOT_FOUND(reply) : result === "ok" ? reply.code(204).send() : CONFLICT(reply);
+      },
+    );
 
     // SSE is a transport concern: headers, connection limits, heartbeats and byte backpressure stay in HTTP.
     api.get<{ Params: { id: string } }>("/sessions/:id/events", { ...requirePermission("sessions:events") }, async (request, reply) => {
@@ -655,8 +747,12 @@ export function buildApp(deps: ServerDeps): FastifyInstance {
     while (concurrency.activeCount() > 0 && Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, 100));
     }
-    await registry.abortAll();
-    registry.dispose();
+    try {
+      await registry.abortAll();
+    } finally {
+      registry.dispose();
+      await deps.onRuntimeClosed?.();
+    }
   });
   return app;
 }

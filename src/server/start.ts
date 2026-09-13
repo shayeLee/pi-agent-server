@@ -59,6 +59,10 @@ import { KyselyFileOperationRepository } from "../storage/kysely-file-operation-
 import { PiModelRuntimeCatalog } from "../model-adapters/pi-model-runtime-catalog.js";
 import { PiModelRuntimeCredentials } from "../model-adapters/pi-model-runtime-credentials.js";
 import { CapabilityRegistry, collectPromptFragmentSources } from "../application/capabilities/index.js";
+import { PluginLoader } from "../application/plugins/loader.js";
+import { registerPlugins, type PluginHost } from "./plugin-host.js";
+import type { LoadedPlugin, PluginSource } from "../plugin/index.js";
+import { SessionService } from "../application/session-service.js";
 import { ProviderAdapterRegistry } from "../provider-adapters/registry.js";
 import { openAIToolPolicyAdapter } from "../provider-adapters/openai-tool-policy.js";
 import {
@@ -108,6 +112,8 @@ export type StartConfig = {
   defaultThinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
   /** 可选系统提示词覆盖；未设置时使用 Pi SDK 内置默认提示词。 */
   systemPrompt?: string;
+  /** 显式加载的受信外部插件（模块 specifier 或测试内联模块）；未配置时不加载任何插件。 */
+  plugins?: readonly PluginSource[];
   /**
    * 测试注入点（生产不配置，恒定无操作）：存储初始化完成（Kysely + 四个 Repository + 默认项目
    * + backfill）之后、buildApp 之前回调。供测试观测/注入启动中段失败，验证启动失败/成功路径的
@@ -318,10 +324,48 @@ export async function startServer(config: StartConfig) {
     throw new Error(`默认模型未配置凭证：${config.defaultModel?.provider}/${config.defaultModel?.id}`);
   }
 
-  // 能力注册表：注册、启用、会话冻结与审计的唯一来源（阶段 4）。
+  // 能力注册表：注册、启用、会话冻结与审计的唯一来源。外部插件仅按显式配置加载，
+  // 绝不扫描用户目录、项目目录或 .pi；插件为受信同进程代码，加载/校验失败即拒绝启动。
   const capabilityRegistry = new CapabilityRegistry();
-  // TODO(阶段4)：按配置注册已启用能力 manifest；当前无能力，工具清单与提示词片段为空。
+  const pluginLoader = new PluginLoader({ projectCwd: cwd });
+  const loadedPlugins: LoadedPlugin[] = [];
+  for (const source of config.plugins ?? []) {
+    const loaded = await pluginLoader.load(source);
+    for (const mode of loaded.modes) {
+      const modeModel = modelRuntime.getModel(mode.modelProvider, mode.modelId);
+      if (!modeModel) {
+        throw new Error(
+          `插件 mode 模型不可用: ${loaded.manifest.id}/${mode.id} -> ${mode.modelProvider}/${mode.modelId}`,
+        );
+      }
+      if (!credentials.hasConfiguredAuth(modeModel.provider)) {
+        throw new Error(
+          `插件 mode 模型未配置凭证: ${loaded.manifest.id}/${mode.id} -> ${mode.modelProvider}/${mode.modelId}`,
+        );
+      }
+      if (mode.thinkingLevel !== undefined && !THINKING_LEVELS.has(mode.thinkingLevel)) {
+        throw new Error(`插件 mode 思考级别不支持: ${loaded.manifest.id}/${mode.id}`);
+      }
+    }
+    capabilityRegistry.register({
+      id: loaded.manifest.id,
+      version: loaded.manifest.version,
+      ...(loaded.manifest.name !== undefined ? { name: loaded.manifest.name } : {}),
+      ...(loaded.manifest.tools !== undefined
+        ? {
+            tools: loaded.manifest.tools.map((tool) => ({
+              name: tool.name,
+              category: tool.category ?? "read",
+              ...(tool.description !== undefined ? { description: tool.description } : {}),
+            })),
+          }
+        : {}),
+      ...(loaded.promptFragments.length > 0 ? { promptFragments: loaded.promptFragments } : {}),
+    });
+    loadedPlugins.push(loaded);
+  }
   const capabilitySnapshot = capabilityRegistry.snapshot();
+  const pluginTools = loadedPlugins.flatMap((plugin) => plugin.tools);
 
   // 独立 agentDir + 禁用所有自动发现（needs.md §7）：DefaultResourceLoader 默认会隐式扫描
   // 个人 ~/.pi/agent、项目 .pi/、AGENTS.md 等自动加载 extensions/skills/prompts/themes——
@@ -383,6 +427,7 @@ export async function startServer(config: StartConfig) {
     ...(configuredDefaultModel ? { model: configuredDefaultModel } : {}),
     ...(config.defaultThinkingLevel ? { thinkingLevel: config.defaultThinkingLevel } : {}),
     ...agentToolConfig,
+    ...(pluginTools.length > 0 ? { customTools: pluginTools } : {}),
   });
   const resolvedDefaultModel = defaultSession.model;
   const defaultModel = resolvedDefaultModel
@@ -409,6 +454,7 @@ export async function startServer(config: StartConfig) {
         ...(configuredDefaultModel ? { model: configuredDefaultModel } : {}),
         ...(config.defaultThinkingLevel ? { thinkingLevel: config.defaultThinkingLevel } : {}),
         ...agentToolConfig,
+        ...(pluginTools.length > 0 ? { customTools: pluginTools } : {}),
       });
       try {
         return session.systemPrompt;
@@ -438,7 +484,10 @@ export async function startServer(config: StartConfig) {
     if (kysely) await kysely.destroy();
   });
 
-  let app: FastifyInstance;
+  let app: FastifyInstance | undefined;
+  let sessionService: SessionService | null = null;
+  let pluginHost: PluginHost | null = null;
+  let closeResources: (() => Promise<void>) | null = null;
   try {
     // 只在已由离线 migration 建立、并已通过启动只读门禁的 schema 上构造 Repository。
     // 初始化不会创建业务表或 baseline ledger。
@@ -494,11 +543,52 @@ export async function startServer(config: StartConfig) {
     const piStorage = new PiJsonlConversationStorage(dataDir);
     conversationStorage.register(piStorage);
     const agentFactories = new DefaultAgentSessionFactoryRegistry();
+    const modeResourceLoaders = new Map<string, DefaultResourceLoader>();
+    const resourceLoaderForSystemPrompt = async (systemPrompt: string) => {
+      if (systemPrompt === defaultSystemPrompt) return resourceLoader;
+      const cached = modeResourceLoaders.get(systemPrompt);
+      if (cached) return cached;
+      const loader = new DefaultResourceLoader({
+        cwd,
+        agentDir,
+        noExtensions: true,
+        noSkills: true,
+        noPromptTemplates: true,
+        noThemes: true,
+        noContextFiles: true,
+        // systemPrompt 是已冻结会话快照；用 override 按字面量返回，避免 SDK 将恰为
+        // 文件路径的提示词重新读盘；恢复时也绝不能追加当前能力片段。
+        systemPromptOverride: () => systemPrompt,
+        extensionFactories: [
+          {
+            name: "pi-agent-server-provider-adapters",
+            factory: (pi) => {
+              pi.registerProvider("deepseek", {
+                api: "openai-completions",
+                streamSimple: deepSeekV4FlashStreamAdapter,
+              });
+              pi.registerProvider("opencode", {
+                api: "openai-completions",
+                streamSimple: openCodeDeepSeekV4FlashFreeStreamAdapter,
+              });
+              pi.on("before_provider_request", (event, ctx) =>
+                providerAdapters.adaptRequest(event.payload, ctx.model),
+              );
+            },
+          },
+        ],
+      });
+      await loader.reload();
+      modeResourceLoaders.set(systemPrompt, loader);
+      return loader;
+    };
     const piFactory = new PiAgentSessionFactory({
       modelRuntime,
       resourceLoader,
+      resourceLoaderForSystemPrompt,
       defaultModel: configuredDefaultModel,
       defaultThinkingLevel,
+      customTools: pluginTools,
       agentToolConfig,
     });
     agentFactories.register(piFactory);
@@ -556,11 +646,46 @@ export async function startServer(config: StartConfig) {
     systemPromptResolver,
     capabilityVersions: capabilitySnapshot.versions,
     ops,
+    onSessionServiceReady: (service) => {
+      sessionService = service;
+    },
+    onRuntimeClosed: async () => {
+      // runtime 已 abort/dispose，才允许插件停止 Worker 并关闭存储。
+      await closeResources?.();
+    },
   });
 
-  // 关闭流程：destroy Kysely（经 NodeSqliteAdapter 关闭底层 DatabaseSync）与既有 runtime 清理
-  // （buildApp 注册的 preClose/onClose）一起在 app.close() 时执行，不破坏既有 SSE/并发清理。
-  app.addHook("onClose", closeStorage);
+  if (!sessionService) throw new Error("插件宿主初始化失败：SessionService 不可用");
+  if (!app) throw new Error("插件宿主初始化失败：HTTP 应用不可用");
+  // 清理器必须在 registerPlugins **之前**建立：registerPlugins 抛错时 app 已存在，
+  // catch 会走 app.close → onRuntimeClosed → 此清理器；若此时 closeResources 仍为空，
+  // storage 将永远不会关闭。pluginHost 稍后赋值，失败时为 null，只关存储。
+  // 插件必须先于宿主存储释放；listen/register 失败时也复用同一幂等清理器。
+  closeResources = createIdempotentStorageCloser(async () => {
+    let pluginError: unknown;
+    if (pluginHost !== null) {
+      try {
+        await pluginHost.dispose();
+      } catch (error) {
+        pluginError = error;
+      }
+    }
+    try {
+      await closeStorage();
+    } catch (storageError) {
+      if (pluginError !== undefined) {
+        throw new AggregateError([pluginError, storageError], "插件与存储关闭失败");
+      }
+      throw storageError;
+    }
+    if (pluginError !== undefined) throw pluginError;
+  });
+  pluginHost = await registerPlugins(loadedPlugins, {
+    app,
+    projectCwd: cwd,
+    sessions: sessionService,
+  });
+  // runtime 的 onClose 回调会执行此清理器，确保顺序为 runtime → 插件 → 存储。
 
   await app.listen({ port: config.port, host: config.host ?? "127.0.0.1" });
   // WP5A：listen 成功（安全启动完成）才置 ready；listen 抛错走下方 catch，ready 恒 false。
@@ -568,12 +693,14 @@ export async function startServer(config: StartConfig) {
   ops.readyAt = Date.now();
   return app;
   } catch (error) {
-    // 初始化成功后的任一 init 或 listen 失败：在此幂等销毁 Kysely/DatabaseSync，再向上抛原始错误。
-    // 清理本身失败只记录、不掩盖原始错误：cleanupError 绝不覆盖原始 error（throw error 是最终退出路径）。
+    // 插件注册后或 listen 失败时，优先走 Fastify close：它会停止 runtime，随后经
+    // onRuntimeClosed 按 runtime → 插件 → 存储顺序清理。尚未构造 app 时才直接关存储。
+    // 清理失败绝不掩盖原始启动错误。
     try {
-      await closeStorage();
+      if (app) await app.close();
+      else await (closeResources ?? closeStorage)();
     } catch (cleanupError) {
-      console.error("启动失败路径 storage close 失败（原始错误仍会向上抛出）:", cleanupError);
+      console.error("启动失败路径资源关闭失败（原始错误仍会向上抛出）:", cleanupError);
     }
     throw error;
   }

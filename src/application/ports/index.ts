@@ -6,6 +6,8 @@ export type {
   SubmitInput,
   SubmitDecision,
   ControlDecision,
+  RunTurnInput,
+  SessionTurnResult,
 } from "./session-runtime-port.js";
 export type { IdempotencyStorePort } from "./idempotency-store-port.js";
 export {

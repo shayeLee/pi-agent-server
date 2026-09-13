@@ -11,6 +11,8 @@ A long-running, session-oriented HTTP/SSE server around the Pi Agent runtime, de
 - **Intranet-focused today:** support for public deployment is planned for a future release.
 - **Single instance today:** multi-instance deployment is planned for a future release.
 - **Default Pi tools:** `read`, `ls`, `find`, and `grep`. Configure the complete tool list through the `TOOLS` environment variable.
+- **External plugins are explicit and trusted:** set `PI_PLUGINS` to load named in-process ESM plugins. They are an engineering extension boundary, not a sandbox.
+- **Reference images are validated, not compressed, by the host:** `POST /v1/sessions/:id/messages` accepts optional `images: [{ mediaType, base64 }]`. The host only accepts static `image/png`, `image/jpeg`, and `image/webp`, re-checks real magic bytes and header dimensions, and enforces count/size/pixel budgets; it never compresses or transcodes and adds no image upload route or image database. Client-side compression belongs to the calling client.
 - **Pi Session JSONL files are not cleaned up automatically yet:** deleting a project or session leaves the corresponding JSONL files in place.
 - **Local encrypted backups are available:** backup and restore tooling is included; off-site disaster recovery is still planned. See [Backup and restore](docs/backup-restore.md).
 - **Initialize the database on first deployment:** follow [Operations](docs/operations.md) before starting the service. If the release notes require a database schema update, follow [Operations](docs/operations.md) to upgrade the database before starting the new service version.
@@ -57,7 +59,13 @@ Open <http://127.0.0.1:5173>. The mock server uses an in-memory database and a f
 pnpm dev:real
 ```
 
-`dev:real` presets `DATA_DIR=/tmp/pi-agent-server`, `PI_ALLOWED_CLIENT_CIDRS=127.0.0.0/8,10.0.0.0/8`, and a default model and thinking level (see `package.json`). `PI_ALLOWED_CLIENT_CIDRS` is mandatory and matched against the direct socket peer IP for every route, including probes.
+`dev:real` loads the optional, gitignored `.env.local` through tsx's `--env-file-if-exists=.env.local`. Copy the tracked, non-secret template first:
+
+```bash
+cp .env.example .env.local
+```
+
+The local template contains the development values `DATA_DIR=/tmp/pi-agent-server`, `PI_ALLOWED_CLIENT_CIDRS=127.0.0.0/8,10.0.0.0/8`, `PI_DEFAULT_MODEL=openai-codex/gpt-5.6-luna`, and `PI_DEFAULT_THINKING_LEVEL=medium`; edit machine-specific paths before use. Existing environment variables take precedence over `.env.local`; file values take precedence over application defaults. `PI_ALLOWED_CLIENT_CIDRS` is mandatory and matched against the direct socket peer IP for every route, including probes. Do not commit `.env.local`, credentials, API keys, or tokens.
 
 `dev:real` keeps its database under `/tmp/pi-agent-server`; the server verifies but never initializes it. Initialize once before the first run (or after clearing `/tmp`):
 
@@ -102,6 +110,7 @@ All routes first check the source IP. `/health` and `/readyz` do not require a t
 | `GET` | `/health` | Liveness |
 | `GET` | `/readyz` | Process startup and migration-gate readiness |
 | `GET` | `/metrics` | Fixed Prometheus process/readiness surface |
+| `GET` | `/v1/access` | Minimal access-capability projection `{canRead, canWrite}` derived from the central RBAC matrix |
 | `GET` | `/v1/models` | Available models and defaults |
 | `GET` / `POST` | `/v1/projects` | List or create projects |
 | `DELETE` | `/v1/projects/:id` | Logically delete a project |
@@ -109,13 +118,32 @@ All routes first check the source IP. `/health` and `/readyz` do not require a t
 | `PATCH` / `DELETE` | `/v1/sessions/:id` | Rename or logically delete a session |
 | `PATCH` | `/v1/sessions/:id/config` | Change model/thinking configuration |
 | `POST` | `/v1/sessions/:id/messages` | Submit a prompt (`requestId` required) |
-| `GET` | `/v1/sessions/:id/events` | SSE stream; viewer with no live runtime receives `204` |
+| `GET` | `/v1/sessions/:id/events` | SSE stream; viewer with no live runtime receives `204`. Every turn-related event carries the `requestId` that produced it (`text_delta`, `thinking_delta`, `tool_start`, `tool_update`, `tool_end`, `status`, `usage`, `queued`, `error`, `completed`, `aborted`) |
 | `POST` | `/v1/sessions/:id/steer` | Steer a running task |
 | `POST` | `/v1/sessions/:id/follow-ups` | Queue a follow-up |
-| `POST` | `/v1/sessions/:id/abort` | Abort a task |
+| `POST` | `/v1/sessions/:id/abort` | Abort a task. The body may be omitted for legacy behavior; when supplied, it must be exactly `{ "requestId": "..." }` and aborts only that current request. A non-matching requestId returns `409` without cancelling the task. |
 | `GET` | `/v1/sessions/:id/export` | Read-only message snapshot; never creates a runtime |
 
 The running API in `src/server/app.ts` is authoritative during RC.
+
+### Access capability projection
+
+`GET /v1/access` returns the minimal fixed body `{ canRead, canWrite }`, derived from the central route-permission matrix (`ROUTE_PERMISSIONS` + `evaluateRouteAuthorization`) rather than being hardcoded. It never returns the caller's `role`, IP, or token.
+
+- `canRead` is `true` when every read permission (session list/export/events and `capability:read`) is allowed for the role: `viewer`, `user`, and `admin`.
+- `canWrite` is `true` when every write/control permission (`sessions:send-message`, `sessions:control`, `capability:write`) is allowed: `user` and `admin`.
+- `operator` is denied on the whole `/v1` surface, so it receives the fixed `403` and no projection.
+
+The endpoint uses the same read RBAC as the other read-only `GET` routes and is subject to the same token and CORS rules. If the matrix ever diverges, the boolean is derived conservatively (never over-reports write access), so an access-control UI can safely hide write actions.
+
+### Message input and image attachments
+
+- `POST /v1/sessions/:id/messages` requires a non-empty `requestId`. `prompt` is normally non-empty, but may be empty when at least one image passes authoritative validation (image-only messages). Both fields are bounded in length (128 and 32,768 UTF-16 code units) and rejected if they contain illegal control characters.
+- Optional `images: [{ mediaType, base64 }]` carries reference images. Supported `mediaType` values are `image/png`, `image/jpeg`, and `image/webp`. The host validates canonical base64, real magic bytes, header dimensions, MIME consistency, and count/size/pixel budgets before the request reaches the session runtime. Invalid images return `400` with a fixed message that never echoes the payload.
+- The host does not compress or transcode images; clients should compress before submitting. PNG/JPEG/WebP are passed through byte-for-byte to the Pi SDK image content.
+- Reusing the same `requestId` with different content returns `409` instead of silently returning the earlier result (`requestId` is an idempotency key). This in-process check cannot detect a payload change across a process restart yet, because the persisted idempotency record stores only the terminal result.
+- `GET /v1/sessions/:id/export` projects supported user-message images as an optional `images: [{ mediaType, base64 }]` field, subject to the same validation and a bounded budget; malformed or over-budget image blocks are omitted rather than failing the export. Live-session and read-only JSONL exports share the same projection and are byte-for-byte identical.
+
 
 ## Access control
 
@@ -151,6 +179,7 @@ An unregistered IP inside an allowed CIDR receives `role=user` with token disabl
 | `PI_DEFAULT_MODEL` | unset | `provider/modelId` |
 | `PI_DEFAULT_THINKING_LEVEL` | Pi default | `off` through `max` |
 | `TOOLS` | `read,ls,find,grep` | Complete comma-separated tool list; replaces the defaults when set, for example `read,ls,find,grep,bash,edit,write` |
+| `PI_PLUGINS` | unset | Comma-separated ESM package specifiers for explicitly loaded trusted in-process plugins; no directory or `.pi` discovery |
 | `CORS_ORIGINS` | empty | Web page addresses allowed to call this service from a browser; separate multiple addresses with commas, for example `http://127.0.0.1:5173` |
 | `PI_BACKUP_STAGING_ROOT` | per-user private application directory | Temporary working directory for backups or database upgrades; usually does not need to be set |
 

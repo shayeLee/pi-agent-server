@@ -1,6 +1,6 @@
 // 编译型测试：确保 SessionRuntime 显式实现 SessionRuntimePort + RuntimeLifecyclePort，
 // 以及 SessionEntry.runtime 的类型约束（端口而非具体类）。
-import { describe, it, expectTypeOf } from "vitest";
+import { describe, it, expect, expectTypeOf } from "vitest";
 import type { SessionRuntime } from "../../src/runtime/session-runtime.js";
 import type { SessionEntry } from "../../src/runtime/runtime-registry.js";
 import type { KyselySessionRepository } from "../../src/storage/kysely-session-repository.js";
@@ -21,6 +21,9 @@ import type {
   SubmitInput,
   CredentialPort,
 } from "../../src/application/ports/index.js";
+import { PLUGIN_RUN_TURN_LIMITS } from "../../src/plugin/index.js";
+import type { LoadedPlugin, PluginModeProfile } from "../../src/plugin/index.js";
+import { TURN_TEXT_LIMITS } from "../../src/core/text-input.js";
 
 describe("端口类型约束（编译型）", () => {
   it("SessionRuntime 实现 SessionRuntimePort", () => {
@@ -47,6 +50,10 @@ describe("端口类型约束（编译型）", () => {
     expectTypeOf<ControlDecision["kind"]>().toEqualTypeOf<"ok" | "conflict">();
   });
 
+  it("abort 支持可选的 requestId 精确关联参数", () => {
+    expectTypeOf<Parameters<SessionRuntimePort["abort"]>>().toEqualTypeOf<[expectedRequestId?: string]>();
+  });
+
   it("SubmitInput 包含所有必要字段", () => {
     expectTypeOf<SubmitInput>().toHaveProperty("requestId");
     expectTypeOf<SubmitInput>().toHaveProperty("userId");
@@ -58,6 +65,7 @@ describe("端口类型约束（编译型）", () => {
     expectTypeOf<SessionRuntimePort>().toHaveProperty("steer");
     expectTypeOf<SessionRuntimePort>().toHaveProperty("followUp");
     expectTypeOf<SessionRuntimePort>().toHaveProperty("abort");
+    expectTypeOf<SessionRuntimePort>().toHaveProperty("runTurn");
     expectTypeOf<SessionRuntimePort>().toHaveProperty("exportSession");
     expectTypeOf<SessionRuntimePort>().toHaveProperty("setModel");
     expectTypeOf<SessionRuntimePort>().toHaveProperty("setThinkingLevel");
@@ -118,5 +126,47 @@ describe("端口类型约束（编译型）", () => {
     expectTypeOf<typeof DEFAULT_PROJECT_ID>().toEqualTypeOf<
       "6f1a2b3c-4d5e-4f6a-8b9c-0d1e2f3a4b5c"
     >();
+  });
+
+  it("公开 messages 接口与插件 runTurn 共用同一套文本上限（防止常量漂移）", () => {
+    expectTypeOf<typeof TURN_TEXT_LIMITS.maxRequestIdLength>().toEqualTypeOf<
+      typeof PLUGIN_RUN_TURN_LIMITS.maxRequestIdLength
+    >();
+    expect(TURN_TEXT_LIMITS).toEqual({
+      maxRequestIdLength: PLUGIN_RUN_TURN_LIMITS.maxRequestIdLength,
+      maxPromptLength: PLUGIN_RUN_TURN_LIMITS.maxPromptLength,
+    });
+  });
+
+  it("PluginModeProfile 的提示词字段为 appendSystemPrompt/systemPrompt 二选一（均可选了）", () => {
+    // P7c：追加是宿主通用能力（宿主不感知业务含义），整体覆盖作为兼容路径保留；
+    // 两者都是可选字符串，互斥与非空由 loader 与 SessionService 在执行期 fail-closed。
+    expectTypeOf<PluginModeProfile["appendSystemPrompt"]>().toEqualTypeOf<string | undefined>();
+    expectTypeOf<PluginModeProfile["systemPrompt"]>().toEqualTypeOf<string | undefined>();
+    expectTypeOf<keyof PluginModeProfile>().toEqualTypeOf<
+      "id" | "modelProvider" | "modelId" | "appendSystemPrompt" | "systemPrompt" | "thinkingLevel"
+    >();
+  });
+
+  it("空系统提示词覆盖/追加在类型上仍需显式传入字符串（不会被当作已提供）", () => {
+    // 编译型：undefined 是「未提供」的唯一表达，空字符串会被 SessionService 拒绝。
+    const appendOnly: PluginModeProfile = {
+      id: "m",
+      modelProvider: "p",
+      modelId: "i",
+      appendSystemPrompt: "片段",
+    };
+    const overrideOnly: PluginModeProfile = {
+      id: "m",
+      modelProvider: "p",
+      modelId: "i",
+      systemPrompt: "覆盖",
+    };
+    expect(appendOnly.appendSystemPrompt).toBe("片段");
+    expect(overrideOnly.systemPrompt).toBe("覆盖");
+  });
+
+  it("LoadedPlugin.modes 直接复用 PluginModeProfile", () => {
+    expectTypeOf<LoadedPlugin["modes"]>().toEqualTypeOf<readonly PluginModeProfile[]>();
   });
 });

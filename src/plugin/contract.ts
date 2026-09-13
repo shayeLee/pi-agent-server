@@ -1,0 +1,254 @@
+// 公开插件契约（docs/external-capability-plugin-plan.md §插件接入契约）：
+// 受信外部插件只依赖本文件与 Pi SDK 的公开类型，不得引用 pi-agent-server 内部模块。
+// 宿主按显式配置加载插件并校验；插件是工程边界，不是进程级安全隔离。
+//
+// 两阶段启动：
+//   阶段一（加载/校验）由 PluginLoader 完成：只解析并校验插件模块，绝不产生副作用，
+//   也绝不调用 register / dispose；
+//   阶段二（注册）由宿主在准备好 PluginHostContext 后调用 LoadedPlugin.plugin.register，
+//   停止时由宿主调用同一模块的 dispose。插件经上下文注册能力，
+//   不直接修改宿主 Fastify 实例、会话存储或内部数据库。
+
+import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
+
+/**
+ * Pi 内置工具保留名（Pi createAllToolDefinitions 的键）：
+ * 插件工具不得占用这些名称，否则会覆盖宿主内置工具。
+ */
+export const BUILTIN_TOOL_NAMES = [
+  "read",
+  "bash",
+  "powershell",
+  "edit",
+  "write",
+  "grep",
+  "find",
+  "ls",
+] as const;
+
+/** 系统提示词片段：inline 内联文本或 file 资源路径，二者必须且只能选一。 */
+export interface PluginPromptFragment {
+  /** 内联片段文本。 */
+  inline?: string;
+  /** 片段文件的绝对路径；插件应通过 import.meta.url 解析自身资源，宿主不依赖进程 cwd。 */
+  file?: string;
+}
+
+/**
+ * manifest 中声明的 Agent 可见工具（元数据）。
+ * 执行实现由 {@link PluginModule.tools} 提供，名称必须一一对应；
+ * 声明了 description 时须与实现一致。
+ */
+export interface PluginToolDeclaration {
+  /** Agent 可见的稳定工具名。 */
+  name: string;
+  /** 工具类别；未声明时按只读处理。 */
+  category?: "read" | "write" | "execute";
+  /** 工具用途说明（与 ToolDefinition.description 一致时声明）。 */
+  description?: string;
+}
+
+/**
+ * Copilot mode profile：每个 mode 绑定固定模型与系统提示词。
+ * 宿主据此为该 mode 创建、查询、恢复独立 session，模式之间不复制上下文。
+ *
+ * 提示词两种声明方式**必须且只能二选一**（加载器与宿主双重校验）：
+ * - {@link PluginModeProfile.appendSystemPrompt}：追加到宿主解析出的完整系统提示词
+ *   （Pi 默认提示词或服务端整体提示词）之后；这是宿主**通用**能力，不包含任何插件专属逻辑。
+ * - {@link PluginModeProfile.systemPrompt}：旧版整体覆盖，不再是首选，仅为兼容既有插件保留。
+ */
+export interface PluginModeProfile {
+  /** mode 稳定 id（同一插件内唯一）。 */
+  readonly id: string;
+  /** 模型供应商（如 "anthropic"）。 */
+  readonly modelProvider: string;
+  /** 模型 id（如 "claude-sonnet-4"）。 */
+  readonly modelId: string;
+  /**
+   * 追加到系统提示词的片段，与 {@link PluginModeProfile.systemPrompt} 二选一（非空）。
+   * 宿主先用 SystemPromptPort 解析该 mode 所属项目的完整提示词，再安全追加并把结果冻结
+   * 为会话快照；恢复会话时按字面量复用快照，绝不重复追加。
+   */
+  readonly appendSystemPrompt?: string;
+  /**
+   * 该 mode 的系统提示词整体覆盖（旧语义，保持不变的兼容路径）。
+   * 与 {@link PluginModeProfile.appendSystemPrompt} 二选一（非空）；提供时宿主不调用解析器，
+   * 也不追加任何默认提示词。
+   */
+  readonly systemPrompt?: string;
+  /** 可选思考级别；具体合法值由宿主会话配置校验。 */
+  readonly thinkingLevel?: string;
+}
+
+/** 受信外部插件的能力声明：标识、版本、Agent 可见工具、提示词片段与 mode profile。 */
+export interface PluginManifest {
+  /** 稳定唯一 id（小写字母/数字/连字符），如 "onev"。 */
+  id: string;
+  /** manifest 版本号（会话冻结与审计依据）。 */
+  version: number;
+  /** 展示名（可选）。 */
+  name?: string;
+  /** 声明的 Agent 可见工具；省略等价于不声明任何工具。 */
+  tools?: readonly PluginToolDeclaration[];
+  /** 注入系统提示词的片段。 */
+  promptFragments?: readonly PluginPromptFragment[];
+  /** 声明的 Copilot mode profile；也可在 {@link PluginModule.modes} 上声明（后者优先）。 */
+  modes?: readonly PluginModeProfile[];
+}
+
+/** 插件路由访问级别；宿主映射到固定 capability:read / capability:write RBAC。 */
+export type PluginRouteAccess = "read" | "write";
+
+/** 插件 HTTP 方法。 */
+export type PluginHttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+
+/** 受宿主鉴权后的插件路由上下文；ownerKey 只能由宿主从请求身份推导。 */
+export interface PluginRouteRequestContext {
+  /** 宿主从已认证请求身份推导，仅供插件关联自己的业务记录。 */
+  readonly ownerKey: string;
+  /** 已绑定当前认证 owner 的会话 API；插件不能传入或伪造 owner。 */
+  readonly sessions: PluginSessionApi;
+  readonly request: unknown;
+  readonly reply: unknown;
+}
+
+/** 插件路由处理器占位签名；请求/响应载体由宿主实现时注入，不暴露 Fastify 类型。 */
+export type PluginRouteHandler = (
+  context: PluginRouteRequestContext,
+) => unknown | Promise<unknown>;
+
+/** 插件 HTTP 路由声明：只声明 method/path/access/handler，命名空间与挂载由宿主完成。 */
+export interface PluginRoute {
+  readonly method: PluginHttpMethod;
+  readonly path: string;
+  readonly access: PluginRouteAccess;
+  readonly handler: PluginRouteHandler;
+}
+
+/** 挂载插件路由的宿主入口；插件经此声明路由，不直接接触 Fastify。 */
+export type PluginMountRoute = (route: PluginRoute) => void;
+
+/** 宿主会话引用；会话正文与持久化始终归 pi-agent-server。 */
+export interface PluginSessionRef {
+  readonly id: string;
+  readonly projectId: string;
+  readonly title: string;
+  readonly createdAt: number;
+  readonly updatedAt: number;
+}
+
+/**
+ * `runTurn` 的宿主强制上限：requestId / prompt 与返回给插件的助手文本。
+ * 插件无法调整这些上限，也无法指定模型、工具、cwd 或图片。
+ */
+export const PLUGIN_RUN_TURN_LIMITS = {
+  /** requestId 的最大长度（UTF-16 code units）。 */
+  maxRequestIdLength: 128,
+  /** prompt 的最大长度（UTF-16 code units）。 */
+  maxPromptLength: 32_768,
+  /** 单轮返回给插件的 assistant 文本最大长度；超过即中止本轮并返回 error。 */
+  maxAssistantTextLength: 256 * 1024,
+} as const;
+
+/**
+ * `runTurn` 的结果：宿主用 session 创建时冻结的 mode profile 同步执行一轮，
+ * 并绑定到具体 session/requestId；插件不能指定模型、tools、cwd 或图片。
+ */
+export type PluginTurnResult =
+  | { readonly status: "completed"; readonly text: string }
+  | { readonly status: "aborted" }
+  | { readonly status: "error"; readonly message: string }
+  | { readonly status: "busy" };
+
+/**
+ * 宿主预分配的会话预约：会话 id 只能由宿主生成，插件既不能指定也不能伪造。
+ * 预约仅在**同一次插件路由请求**内有效，未消费的预约随请求上下文回收。
+ */
+export interface PluginSessionReservation {
+  /** 宿主生成的会话 id；插件只能原样回传，不能自行构造。 */
+  readonly id: string;
+  /** 预约绑定的 mode；宿主在 create 时据此解析 mode profile。 */
+  readonly modeId: string;
+}
+
+/**
+ * 受信插件可调用的会话 API；mode 到 session 的历史映射由插件自己的数据库保存。
+ *
+ * 会话创建采用两步式预约：插件先 `reserve` 取得宿主生成的安全 id，把 mode↔session
+ * 映射原子写入自身数据库后，再用 `create` 按预约 id 创建宿主会话；这样宿主会话永远
+ * 不会先于插件映射存在，插件也**没有删除任意会话的 API**。
+ */
+export interface PluginSessionApi {
+  /**
+   * 宿主预分配一个安全会话 id（插件不可指定 id）。预约绑定当前认证 owner 与 mode，
+   * 只在本次路由请求内有效；未消费的预约随请求结束回收。
+   */
+  reserve(input: { modeId: string }): Promise<PluginSessionReservation>;
+  /**
+   * 按宿主预约创建会话：只接受本请求 `reserve` 返回且尚未消费的预约（伪造/跨请求/
+   * 重复使用的预约一律拒绝）。成功即消费预约并返回宿主会话；失败时预约作废且绝不
+   * 创建会话。会话 id 严格等于预约 id。
+   */
+  create(input: { reservation: PluginSessionReservation; title?: string }): Promise<PluginSessionRef>;
+  restore(sessionId: string): Promise<PluginSessionRef | null>;
+  /**
+   * 在当前认证 owner 的指定 session 上**同步**执行一轮对话，返回助手最终文本。
+   *
+   * - owner 由宿主从请求身份推导；插件不能传 owner、模型、tools、cwd 或图片；
+   * - `requestId` 与 `prompt` 受 {@link PLUGIN_RUN_TURN_LIMITS} 限制；
+   * - 结果绑定到具体 session 的这一轮：idle 时立即执行，session 正忙返回 `busy`；
+   * - 返回文本受上限约束，覆盖 `completed` / `aborted` / `error` / `busy`；
+   * - 宿主不建立 HTTP 回调或长期订阅，handler 返回后（API 被 revoke）调用会抛错。
+   */
+  runTurn(input: { sessionId: string; requestId: string; prompt: string }): Promise<PluginTurnResult>;
+}
+
+/** 插件 register 时宿主提供的受限上下文（阶段二）。 */
+export interface PluginHostContext {
+  /** 宿主默认项目目录；插件查询命令在此目录执行。 */
+  readonly projectCwd: string;
+  /** 该插件声明并已通过校验的 Copilot mode profile。 */
+  readonly modes: readonly PluginModeProfile[];
+  /** 挂载插件 HTTP 路由。 */
+  readonly mountRoute: PluginMountRoute;
+}
+
+/** 可选注册钩子：阶段二由宿主调用，插件在此注册工具/路由等能力。 */
+export type PluginRegister = (context: PluginHostContext) => void | Promise<void>;
+
+/** 可选关闭钩子：宿主停止插件时调用，由插件自行释放资源。 */
+export type PluginDispose = () => void | Promise<void>;
+
+/**
+ * 插件入口模块：能力声明 + Pi 工具实现 + 可选生命周期钩子。
+ * 加载/校验阶段禁止产生副作用；register / dispose 只由宿主在阶段二与停止时调用。
+ */
+export interface PluginModule {
+  /** 能力声明。 */
+  readonly manifest: PluginManifest;
+  /** 工具定义及其受控执行实现（类型复用 Pi SDK）。 */
+  readonly tools?: readonly ToolDefinition[];
+  /** 覆盖 {@link PluginManifest.modes} 的运行时 mode 声明。 */
+  readonly modes?: readonly PluginModeProfile[];
+  /** 可选注册钩子（阶段二由宿主调用）。 */
+  readonly register?: PluginRegister;
+  /** 可选关闭钩子。 */
+  readonly dispose?: PluginDispose;
+}
+
+/** 显式插件来源：已导入的内联模块或由宿主解析的 ESM package specifier。 */
+export type PluginSource = PluginModule | string;
+
+/** 通过校验、尚未 register 的插件视图。 */
+export interface LoadedPlugin {
+  /** 规范化后的能力声明。 */
+  readonly manifest: PluginManifest;
+  /** 已通过 manifest/实现一致性校验的工具定义。 */
+  readonly tools: readonly ToolDefinition[];
+  /** manifest 声明的提示词片段。 */
+  readonly promptFragments: readonly PluginPromptFragment[];
+  /** 已通过校验的 Copilot mode profile（module.modes 优先，其次 manifest.modes）。 */
+  readonly modes: readonly PluginModeProfile[];
+  /** 原始插件模块；宿主稍后调用其 register / dispose。 */
+  readonly plugin: PluginModule;
+}

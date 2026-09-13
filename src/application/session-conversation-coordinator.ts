@@ -179,6 +179,7 @@ export class SessionConversationCoordinator {
       modelProvider: record.modelProvider,
       modelId: record.modelId,
       thinkingLevel: record.thinkingLevel ?? (record.conversationRef === null ? this.defaultThinkingLevel ?? null : null),
+      systemPrompt: record.systemPrompt,
       isNewSession: record.conversationRef === null,
       agentToolConfig: this.agentToolConfig,
     };

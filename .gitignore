@@ -5,6 +5,11 @@
 node_modules
 dist
 
+# Local dotenv development configuration; keep credentials and tokens untracked.
+.env
+.env.*
+!.env.example
+
 dist-migrate
 dist-backup
 dist-file-ops
@@ -19,3 +24,4 @@ pi-agent-server.db-shm
 pi-agent-server.db-wal
 .pi-agent
 sessions/
+.onev-publication-locks/

@@ -114,10 +114,12 @@ hashes**）注入 `request`；401/403 响应体不含原始 IP/token/path。prof
 | --- | --- | --- | --- | --- |
 | `GET /health`、`GET /readyz` | ✅ 任意 admitted role | ✅ | ✅ | ✅ |
 | `GET /metrics` | ❌ | ❌ | ✅ | ✅ |
-| `GET /v1/models`、`GET /v1/projects`、`GET /v1/sessions`、`GET /v1/sessions/:id/export`、`GET /v1/sessions/:id/events`（SSE） | ✅ 纯读 | ✅ | ❌（/v1 一律 403） | ✅ |
+| `GET /v1/models`、`GET /v1/projects`、`GET /v1/sessions`、`GET /v1/sessions/:id/export`、`GET /v1/sessions/:id/events`（SSE）、`GET /v1/access`（能力投影） | ✅ 纯读 | ✅ | ❌（/v1 一律 403） | ✅ |
 | `POST /v1/projects`、`POST /v1/sessions` | ❌ | ✅ | ❌ | ✅ |
 | `PATCH /v1/sessions/:id`、`PATCH /v1/sessions/:id/config`、`DELETE /v1/projects/:id`、`DELETE /v1/sessions/:id` | ❌ | ✅ | ❌ | ✅ |
 | `POST /v1/sessions/:id/messages`、`POST …/steer`、`POST …/follow-ups`、`POST …/abort` | ❌（写/控制） | ✅ | ❌ | ✅ |
+| 外部插件 `capability:read` 路由 | ✅ | ✅ | ❌ | ✅ |
+| 外部插件 `capability:write` 路由 | ❌ | ✅ | ❌ | ✅ |
 
 - **operator：`/v1` 全部拒绝（403）**，含纯读 GET；仅探针 `/health`/`/readyz`/`/metrics` 可达。
 - **viewer：只读**——允许上述纯读 GET 与 SSE 订阅；一切 POST/PATCH/DELETE（含 messages/steer/
@@ -151,6 +153,8 @@ tokenRequired，不换角色）；未登记 IP 默认 `user`。
   仍 401（`WWW-Authenticate: Bearer`），不因角色允许而跳过。
 - **CORS 预检不做 role/token**：合规预检（`OPTIONS` + `Origin` + `Access-Control-Request-Method`）由
   CORS 插件在 role gate 之前的 onRequest 直接回 204（仍先过 admission）；实际请求才 role gate。
+- **外部插件路由**：受信插件只能声明 `read` 或 `write` 两档，宿主固定映射为 `capability:read` / `capability:write`；不能声明任意 permission，仍保持 default-deny。
+- **访问能力投影 `GET /v1/access`（P7b）**：权限点为中央矩阵的 `access:read`（允许 `admin/user/viewer`，`operator` 仍拒）；响应体为最小固定投影 `{canRead, canWrite}`，由 `ROUTE_PERMISSIONS` + `evaluateRouteAuthorization` 经 `projectAccessCapabilities` 派生，不硬编码、绝不返回 role/IP/token。`canRead` = 读权限全允许（viewer/user/admin）；`canWrite` = `sessions:send-message` + `sessions:control` + `capability:write` 全允许（user/admin）；矩阵分项不一致时布尔值更保守（少报可写）。
 - **owner 隔离不变**：user/admin 跨 owner 访问统一 404（与不存在一致），admin 暂不跨 owner。
 
 ## 7. 边界与明确不做（WP5D 范围内）

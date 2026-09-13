@@ -12,6 +12,8 @@ import type { IpRole } from "../../src/core/ip-access-policy.js";
 import {
   evaluateRouteAuthorization,
   FORBIDDEN_BODY,
+  projectAccessCapabilities,
+  ROUTE_PERMISSIONS,
 } from "../../src/server/route-rbac.js";
 import { createOperationStatus } from "../../src/server/ops-status.js";
 import type { SseSocket } from "../../src/server/sse-socket.js";
@@ -105,6 +107,8 @@ describe("evaluateRouteAuthorization（纯函数：unknown/forged access failclo
     expect(evaluateRouteAuthorization("sessions:list", "viewer")).toEqual({ verdict: "allowed" });
     expect(evaluateRouteAuthorization("sessions:export", "viewer")).toEqual({ verdict: "allowed" });
     expect(evaluateRouteAuthorization("sessions:events", "viewer")).toEqual({ verdict: "allowed" });
+    expect(evaluateRouteAuthorization("capability:read", "viewer")).toEqual({ verdict: "allowed" });
+    expect(evaluateRouteAuthorization("capability:write", "user")).toEqual({ verdict: "allowed" });
     expect(evaluateRouteAuthorization("sessions:create", "user")).toEqual({ verdict: "allowed" });
     expect(evaluateRouteAuthorization("projects:create", "admin")).toEqual({ verdict: "allowed" });
   });
@@ -133,7 +137,38 @@ describe("evaluateRouteAuthorization（纯函数：unknown/forged access failclo
     expect(evaluateRouteAuthorization("sessions:create", "viewer")).toEqual({ verdict: "denied", reason: "role-forbidden" });
     expect(evaluateRouteAuthorization("sessions:send-message", "viewer")).toEqual({ verdict: "denied", reason: "role-forbidden" });
     expect(evaluateRouteAuthorization("sessions:control", "viewer")).toEqual({ verdict: "denied", reason: "role-forbidden" });
+    expect(evaluateRouteAuthorization("capability:write", "viewer")).toEqual({ verdict: "denied", reason: "role-forbidden" });
+    expect(evaluateRouteAuthorization("capability:read", "operator")).toEqual({ verdict: "denied", reason: "role-forbidden" });
     expect(evaluateRouteAuthorization("projects:create", "operator")).toEqual({ verdict: "denied", reason: "role-forbidden" });
+  });
+});
+
+describe("P7b 访问能力投影 projectAccessCapabilities（GET /v1/access）", () => {
+  it("由中央矩阵派生：viewer/user/admin 可读，user/admin 另可写，operator 两者皆 false", () => {
+    expect(projectAccessCapabilities("viewer")).toEqual({ canRead: true, canWrite: false });
+    expect(projectAccessCapabilities("user")).toEqual({ canRead: true, canWrite: true });
+    expect(projectAccessCapabilities("admin")).toEqual({ canRead: true, canWrite: true });
+    // operator：/v1 一律拒绝，两项均 false（不因“operator”名义而误报可读）。
+    expect(projectAccessCapabilities("operator")).toEqual({ canRead: false, canWrite: false });
+  });
+
+  it("role 缺失/未知/伪造 → 两项均 false（failclosed）", () => {
+    for (const role of [undefined, null, "", "superuser", "guest", 42, {}]) {
+      expect(projectAccessCapabilities(role), String(role)).toEqual({ canRead: false, canWrite: false });
+    }
+  });
+
+  it("只返回布尔值：返回值不含 role/IP/token 等任何额外字段", () => {
+    const caps = projectAccessCapabilities("user");
+    expect(Object.keys(caps).sort()).toEqual(["canRead", "canWrite"]);
+    // npm 语义交叉校验：canWrite ⇔ sessions send/control 与 capability write 全允许。
+    const writeMatrix = ["sessions:send-message", "sessions:control", "capability:write"] as const;
+    const readMatrix = ["sessions:list", "sessions:export", "sessions:events", "capability:read"] as const;
+    for (const role of ["viewer", "user", "admin", "operator"] as const) {
+      const canWrite = writeMatrix.every((p) => ROUTE_PERMISSIONS[p].includes(role));
+      const canRead = readMatrix.every((p) => ROUTE_PERMISSIONS[p].includes(role));
+      expect(projectAccessCapabilities(role), role).toEqual({ canRead, canWrite });
+    }
   });
 });
 
@@ -171,7 +206,7 @@ describe("WP5D-3 权限矩阵：/v1 只读列表 GET", () => {
     try {
       for (const role of ROLES) {
         const ip = ROLE_IP[role];
-        for (const url of ["/v1/models", "/v1/projects", "/v1/sessions"]) {
+        for (const url of ["/v1/access", "/v1/models", "/v1/projects", "/v1/sessions"]) {
           const res = await app.inject({ method: "GET", url, remoteAddress: ip });
           if (role === "operator") {
             expect(res.statusCode, `${role} ${url}`).toBe(403);
@@ -183,6 +218,82 @@ describe("WP5D-3 权限矩阵：/v1 只读列表 GET", () => {
           }
         }
       }
+    } finally {
+      await app.close();
+    }
+  });
+});
+
+describe("P7b GET /v1/access：宿主访问能力投影（viewer/user/admin 可读，operator 拒）", () => {
+  it("每角色返回最小固定体 {canRead,canWrite}，viewer/user/admin 200；operator 固定 403 且零投影", async () => {
+    const { app } = await makeRbacApp();
+    try {
+      const expected: Record<IpRole, { canRead: boolean; canWrite: boolean } | null> = {
+        viewer: { canRead: true, canWrite: false },
+        user: { canRead: true, canWrite: true },
+        admin: { canRead: true, canWrite: true },
+        operator: null, // operator：/v1 一律 403
+      };
+      for (const role of ROLES) {
+        const res = await app.inject({ method: "GET", url: "/v1/access", remoteAddress: ROLE_IP[role] });
+        const want = expected[role];
+        if (want === null) {
+          expect(res.statusCode, `${role} access`).toBe(403);
+          expect(res.body).toBe(FIXED_403_BODY);
+          expect(res.body).not.toContain(role);
+          expect(res.body).not.toContain(ROLE_IP[role]);
+          continue;
+        }
+        expect(res.statusCode, `${role} access`).toBe(200);
+        expect(res.json(), `${role} access`).toEqual(want);
+        // 响应体只含两个布尔字段，绝不泄漏 role/IP/token。
+        expect(Object.keys(res.json() as object).sort()).toEqual(["canRead", "canWrite"]);
+        expect(res.body).not.toContain(role);
+        expect(res.body).not.toContain(ROLE_IP[role]);
+        expect(res.body).not.toContain("token");
+      }
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("tokenRequired 语义保持：未带 token 的 viewer → 401（token gate 先于 role gate）；带 token → 200", async () => {
+    const { sessions, projects } = await makeInitializedMemoryDb({ cwd: "/tmp/default-project" });
+    const app = buildApp({
+      sessions,
+      projects,
+      defaultProjectCwd: "/tmp/default-project",
+      ipAccess: makeTestIpAccess({
+        policy: makePolicy([{ ip: ROLE_IP.viewer, role: "viewer", tokenRequired: true, tokens: ["viewer-token"] }]),
+      }),
+      createAdapter: async () => new MockAgentAdapter(),
+    });
+    try {
+      const missing = await app.inject({ method: "GET", url: "/v1/access", remoteAddress: ROLE_IP.viewer });
+      expect(missing.statusCode).toBe(401);
+      expect(missing.headers["www-authenticate"]).toBe("Bearer");
+
+      const ok = await app.inject({
+        method: "GET",
+        url: "/v1/access",
+        remoteAddress: ROLE_IP.viewer,
+        headers: { authorization: "Bearer viewer-token" },
+      });
+      expect(ok.statusCode).toBe(200);
+      expect(ok.json()).toEqual({ canRead: true, canWrite: false });
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("端点可达且零副作用：不创建任何 runtime/adapter、DB 无新增会话", async () => {
+    const { app, sessions, adapters } = await makeRbacApp();
+    try {
+      const before = await sessions.listByOwner(ownerOf(ROLE_IP.user));
+      const res = await app.inject({ method: "GET", url: "/v1/access", remoteAddress: ROLE_IP.user });
+      expect(res.statusCode).toBe(200);
+      expect(adapters.size).toBe(0);
+      expect(await sessions.listByOwner(ownerOf(ROLE_IP.user))).toEqual(before);
     } finally {
       await app.close();
     }

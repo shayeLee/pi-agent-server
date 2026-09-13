@@ -20,6 +20,7 @@ import { startServer, type StartConfig } from "../../src/server/start.js";
 import { runSqliteMigrations } from "../../src/storage/migration-engine.js";
 import { DatabaseSync } from "node:sqlite";
 import { makeTestIpAccess } from "../helpers/ip-access.js";
+import type { PluginModule } from "../../src/plugin/index.js";
 import type { Kysely } from "kysely";
 import type { DatabaseSchema } from "../../src/storage/db-schema.js";
 
@@ -210,6 +211,39 @@ describe("startServer 启动/失败清理（H2：fail-fast 顺序 + 幂等 stora
 
       expect(destroySpy).not.toBeNull();
       // 幂等 closer：恰好一次 destroy（createIdempotentStorageCloser 保证不重复）
+      expect(destroySpy!.mock.calls).toHaveLength(1);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("插件注册失败（registerPlugins 抛错）：closeResources 尚未绑定插件也关闭 storage 恰一次，原始错误保留", async () => {
+    const registerError = new Error("模拟插件 register 失败");
+    const boom: PluginModule = {
+      manifest: { id: "boom", version: 1 },
+      register() {
+        throw registerError;
+      },
+    };
+    let destroySpy: ReturnType<typeof vi.spyOn> | null = null;
+    const dir = makeTempDir();
+    try {
+      await createBaseline(join(dir, "app.db"));
+      await expect(
+        startServer(
+          baseConfig({
+            dataDir: dir,
+            dbPath: join(dir, "app.db"),
+            plugins: [boom],
+            onStorageReady: (kysely: Kysely<DatabaseSchema>) => {
+              destroySpy = vi.spyOn(kysely, "destroy");
+            },
+          }),
+        ),
+      ).rejects.toBe(registerError); // 原始注册错误原样保留
+
+      // registerPlugins 之前就已建立清理器，catch 走 app.close → onRuntimeClosed → 关 storage。
+      expect(destroySpy).not.toBeNull();
       expect(destroySpy!.mock.calls).toHaveLength(1);
     } finally {
       rmSync(dir, { recursive: true, force: true });

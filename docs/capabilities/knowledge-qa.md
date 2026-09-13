@@ -1,201 +1,138 @@
-# 知识库问答与钉钉文档同步
+# 知识库问答与钉钉设计说明同步
 
-> **状态：未来能力需求，尚未实现。** 本文是需求/设计基线，不是已交付能力的说明。以下目标、检索策略、同步流程、HTTP 接口与工具均为规划内容，代码仓库尚未实现知识库检索工具、钉钉同步 Worker 或发布/索引自动化（能力注册表 `src/application/capabilities` 当前未注册本能力）。保留的未来目标：只读知识库问答（见 §1、§5）。平台级约束见[平台需求基线](../../needs.md)。
+> **状态：P1–P7d 已实现。P7a 的图片链路、P7b 的真实 HTTP/SSE dataSource、P7c 的 mode APPEND_SYSTEM 与手动组件上下文，以及 P7d 的全 owner 同步和代码索引编排均已通过跨仓真实验收。Pi 默认系统提示词保持不变，宿主不理解 ONEV 组件上下文。**
+> 知识库能力以外部插件包 `pi-agent-capability-onev` 交付，由 pi-agent-server 加载。平台级约束见[平台需求基线](../../needs.md)。
 
-本文规划作为 pi-agent-server 的能力接入，依托平台提供的会话、控制、SSE、鉴权和工具注册边界，将可见工具限定为只读。
+参考图片的宿主侧契约与已知限制见 [外部能力插件架构与实施计划 §P7a](../external-capability-plugin-plan.md)（宿主只校验与透传，不压缩；压缩由 onev 客户端在提交前完成）。
 
-> 本文是知识库问答能力的需求基线；与平台级需求基线一起更新。
+## 目标
 
-## 1. 目标
+- 为 onev 组件绑定钉钉设计说明，并同步为本地 Markdown 和图片。
+- 问答 Agent 查询组件代码、调用关系和组件设计说明。
+- 设计说明不纳入 Git，避免同步产物与人工提交产生冲突。
 
-- 检索范围同时覆盖源码、仓库文档和钉钉同步文档。
-- 回答必须尽可能给出仓库相对路径和行号证据。
-- 将钉钉文档转换为 Markdown，提交到代码仓库，并在发布后更新知识库网站与问答索引。
+## 项目约定
 
-## 2. 范围与非目标
+知识库项目为 pi-agent-server 默认项目目录；当前开发配置为 `/Users/mz/workspace/onev`。`components.json` 的 key 是组件 `name`。
 
-- 知识库问答 Agent 仅使用本能力将注册的 Pi 自定义只读工具。
-- 不实现钉钉文档协同编辑；协同能力由钉钉负责。
-- 不实现钉钉与 Git Markdown 双向同步。
-- 问答服务只读取已合并、已发布版本，不读取工作区或未完成同步结果。
+| 内容 | 路径 | 事实来源 |
+| --- | --- | --- |
+| 组件源码 | `packages/<name>/` | Git |
+| UI 示例（用例） | `examples/docs/zh-CN/<name>.md` | Git |
+| API 文档 | `examples/docs/zh-CN/<name>_api.md` | Git |
+| 组件设计说明 | `examples/docs/zh-CN/<name>_desc.md` | 钉钉 |
+| 设计说明图片 | `examples/assets/dingtalk/<name>/` | 钉钉 |
 
-## 3. 知识源与事实来源
+- `_desc.md` 和 `examples/assets/dingtalk/` 均加入 `.gitignore`，不纳入 Git。
+- 服务数据库只保存 `name`、`documentId`、`targetPath`、`contentHash`、同步时间等元数据，不保存设计说明全文。
+- 未绑定钉钉文档的组件默认有一份 **0 字节** `<name>_desc.md`。
+- 绑定只能改绑，不能解绑；改绑后等待下一次同步按新 `documentId` 覆写本地内容。
 
-知识库检索范围以仓库根为起点；人工文档目录与钉钉同步目录均可通过能力配置指定，此处为默认约定：
-
-```text
-代码仓库
-├── 源码（src/、packages/ 等）          Git 是事实来源
-├── 人工维护文档（docs/，不含 dingtalk） Git 是事实来源
-└── 钉钉同步文档（docs/dingtalk/）       钉钉是事实来源，只能由同步程序写入
-```
-
-### 3.1 目录约定
-
-知识库检索范围以仓库根为起点；人工文档目录、钉钉同步目录与元数据目录均可通过能力配置指定，以下为默认值：
+## 目标架构
 
 ```text
-<仓库根>                        # 知识库检索范围（源码 + 文档）
-├── src/、packages/ 等          # 源码（Git 是事实来源）
-└── docs/                       # 人工文档目录（可配置，不含 dingtalk）
-    ├── ...                     # 仓库内人工维护文档
-    └── dingtalk/               # 钉钉同步目录（可配置，禁止人工修改）
-        ├── product/
-        │   └── release-process.md
-        ├── assets/             # 图片、附件等本地化资源（按 documentId 隔离）
-        └── .metadata/          # 元数据目录（可配置）
-            └── release-process.json
+onev 组件库文档页面
+  ├─ 绑定/改绑钉钉文档
+  └─ 单组件「同步」按钮
+        │
+        ▼
+pi-agent-server（能力宿主）
+  └─ 加载外部知识库能力插件包
+      ├─ 服务数据库：组件绑定与同步元数据
+      ├─ 同步 Worker：读取钉钉，写本地 _desc.md 和图片
+      ├─ 复用既有内置只读工具：读取本地 _desc.md
+      └─ 注册新增 Pi 只读工具：vue2-index / gitnexus
+
+操作人手动 npm run codegraph
+  ├─ 全量同步全部已绑定组件
+  └─ 重建 gitnexus 调用图和 vue2-index 组件实体（含 docs 关联）
 ```
 
-每个钉钉文档与仓库中的固定文件建立一对一链接关系：`documentId` 与 `targetPath` 各自唯一（双向一对一），同步只更新该路径，不任意生成或移动文件。链接映射由用户在 GUI 手动建立（存服务数据库），见 §6 的能力 HTTP 接口。
+## 核心数据流
 
-每份钉钉同步文档的同步元数据由同步程序生成（存仓库 `.metadata/`），至少包括：
+### 绑定与单组件同步
+
+```text
+用户在组件文档页面绑定/改绑 documentId
+  → 保存 name ↔ documentId
+  → 用户点击「同步」
+  → 同步 Worker 同步该组件的 desc、图片和元数据
+  → 更新该组件的 vue2-index 文档关联
+```
+
+绑定/改绑本身不自动同步。
+
+### 手动全量同步与代码索引构建
+
+```text
+操作人在 onev 目录执行 npm run codegraph
+  → 全量同步所有已绑定组件
+  → gitnexus analyze --index-only
+  → vue2-index build
+```
+
+`npm run codegraph` 由受控 Node 编排器执行：先调用插件 `sync-full`，成功后才依次执行 `gitnexus analyze --index-only` 和 `vue2-index build`。四个运行入口均通过 `.codegraph.env.local` 显式配置并在首个子进程前校验，不扫描 PATH、不使用 shell。任一步非零、信号退出或绑定快照变化都会阻断后续步骤；不会自动迁移或回退旧流程。数据库无绑定时只创建缺失的零字节 placeholder，不伪造绑定或调用 DWS。
+
+同步失败不覆盖最近一次成功的本地设计说明；无变化时由 `contentHash` 跳过写入。
+
+### 问答
+
+```text
+设计说明
+  → vue2-index search/component
+  → 组件实体 docs[].desc
+  → pi-agent-server 既有内置只读工具读取 _desc.md
+
+代码符号/用法 → vue2-index
+调用关系/影响面 → gitnexus
+```
+
+- Copilot 的「用法原理」「样式规范」「交互原型」模式各自维护独立 session 与历史记录；每个模式独立配置绑定模型和系统提示词，模型配置允许相同。侧滑面板提供新建会话、历史记录和恢复历史会话入口；恢复时使用原 mode profile，模式之间不复制上下文。
+- 用法原理和样式规范回复为 Markdown（包含代码块）；交互原型生成持久化 HTML 链接并展示预览，不提供复制代码片段。
+- 每次提问包含模式、文本、可选的手动组件选择和可选参考图片；当前页面组件不会自动带入。三个 mode 的选择分别隔离，网站以严格 `ONEV_CONTEXT_V1` 信封拼装普通 prompt，宿主不解析 ONEV 专属上下文。参考图片支持本地文件上传、屏幕截图和系统剪贴板粘贴，通过 pi-agent-server 既有会话消息图片通道提交，不上传到 onev 或插件数据库。
+
+`vue2-index` 组件实体已关联 `docs[].usage` 与 `docs[].desc`，例如：
 
 ```json
 {
-  "source": "dingtalk",
-  "documentId": "<dingtalk-document-id>",
-  "targetPath": "docs/dingtalk/product/release-process.md",
-  "contentHash": "sha256:<hash>",
-  "syncedAt": "2026-08-16T10:00:00Z",
-  "converterVersion": "1"
+  "usage": "examples/docs/zh-CN/button.md",
+  "desc": "examples/docs/zh-CN/button_desc.md"
 }
 ```
 
-同步程序仅能修改其管理的 Markdown、元数据与资源文件（assets/）。人工文档和源码不可被同步任务覆盖。
+## 工具与接口
 
-## 4. 数据流
+### 问答 Agent 工具
 
-```text
-                         ┌────────────────────┐
-                         │ 钉钉文档            │
-                         │ （协同编辑在此处理）│
-                         └─────────┬──────────┘
-                                   │
-                    ┌──────────────▼──────────────┐
-                    │ 同步 Worker                  │
-                    │ 读取、转换、规范化、校验     │
-                    └──────────────┬──────────────┘
-                                   │
-┌──────────────────────────────────▼─────────────────────────────────┐
-│ Git 仓库：源码 + docs/ + 同步目录（默认 docs/dingtalk/）            │
-└───────────────────────────┬────────────────────────────────────────┘
-                            │ 合并发布版本
-              ┌─────────────┴─────────────┐
-              ▼                           ▼
-┌────────────────────────┐    ┌────────────────────────┐
-│ 知识库网站构建/部署     │    │ 索引构建               │
-└────────────────────────┘    └────────────┬───────────┘
-                                            ▼
-                                 ┌──────────────────────┐
-                                 │ pi-agent-server      │
-                                 │ 已启用的知识库工具    │
-                                 └────────────┬─────────┘
-                                              │ SSE
-                                        ┌─────▼─────┐
-                                        │ 客户端/UI │
-                                        └───────────┘
-```
+- 复用 pi-agent-server 既有内置只读工具读取本地设计说明。
+- 由外部插件注册新增 Pi 自定义只读工具：
+  - `vue2-index`：组件实体、代码符号、用法；组件实体提供 `docs[].desc`。
+  - `gitnexus`：调用关系与影响面。
+- 问答 Agent 不可调用通用 Bash 或写文件。
 
-## 5. 检索与 Agent 工具
-
-### 5.1 检索策略
-
-- 索引分层：默认仅 SQLite FTS（平台内置，源码与文档的关键词检索）；代码符号索引与调用图为可选的项目命令（通过能力配置注入），项目没有时降级为 FTS 搜索 + 精读；必要时再增加向量检索与 rerank。
-- 索引仅包含已发布版本；发布后重建索引——FTS 由平台内置索引构建程序重建（Worker Job：扫描已发布文件 → trigram 分词 → 写入 FTS 表），代码符号索引与调用图由项目命令重建（命令可配置，如 onev 项目的 `yarn codegraph`，即 `gitnexus analyze --index-only && vue2-index build`）；通过版本切换保证失败时可回滚到上个可用索引版本。
-- 索引版本：按发布 commit 建立不可变索引快照（含完整只读文件树：源码/文档/`.metadata`，以及 FTS、代码符号索引、调用图）；问答任务启动时固定 snapshotId/commit，检索命令、文件精读、元数据读取均从该快照目录读取，不读活动仓库根目录。原子指针切换「当前版本」，回滚整体切换，不单独切 FTS。索引可重建，不异地备份，但保留「当前 + 上一个可用」两份快照；任务持有快照引用租约，清理仅删无活跃引用的快照。
-- 检索策略（标准流程、问题类型分类、命令组合）每个项目可能不同，通过能力配置注入。默认示例（仅 FTS）：先 `search_knowledge` 定位候选，再 `read_knowledge_file` 精读；配置了符号查询/调用图命令的项目，再按问题类型（用法/实现/影响面）组合使用。
-
-### 5.2 只读工具
-
-本能力计划注册两类只读能力：
-
-**内置工具**（pi-agent-server 提供，所有项目通用）：
-
-- `search_knowledge(query, scope?)`：FTS 关键词搜索，返回候选文件路径、片段与行号，按相关度排序；无结果如实返回空。
-- `read_knowledge_file(path, offset?, limit?)`：读取已批准根目录内的文件，返回带行号的内容；路径穿越、越界或超大输出一律拒绝或截断。
-- `get_document_metadata(path)`：读取文档来源、钉钉 ID、同步时间和版本信息。
-- `get_git_history(path, ref?)`：可选，查询文件改动历史。
-
-**项目索引命令**（工具名即命令名，通过能力配置注入）：
-
-- 代码符号索引命令（示例：`vue2-index search/component/field/usages`）——查符号定义、成员、字段读写与引用。
-- 调用图命令（示例：`gitnexus context --uid`）——查 callers/callees，支撑影响面分析。
-
-命令不是所有项目都有，且各项目命令不同；缺失时降级为 `search_knowledge` + `read_knowledge_file` 精读。项目命令建模为受控工具：稳定工具名、参数 schema、固定可执行文件与参数模板、受限 cwd/环境、无 shell 执行、超时与输出上限。
-
-工具必须限制仓库根目录、防止路径穿越、截断大输出，并对查询结果保留来源与行号。
-
-## 6. 钉钉同步与发布
-
-### 6.1 同步流程
+### 页面与同步接口
 
 ```text
-读取钉钉文档
-  → 导出/转换 Markdown
-  → 下载并本地化图片、附件
-  → Markdown 规范化
-  → 校验链接、元数据与内容哈希
-  → 写入同步目录（默认 docs/dingtalk/）
-  → 直接 push 到 GitLab 指定分支
-  → push 后调用 pi-agent-server 接口构建网站、重建索引
+POST /v1/capabilities/onev/documents/links              绑定或改绑 name ↔ documentId
+GET  /v1/capabilities/onev/documents/links              查询绑定列表
+POST /v1/capabilities/onev/sync/dingtalk/:name          同步指定组件（页面「同步」按钮）
+GET  /v1/capabilities/onev/jobs/:id                     查询同步任务状态
+GET  /v1/capabilities/onev/documents/links/:id/metadata 查询同步元数据
+GET  /v1/capabilities/onev/prototypes/:id               读取交互原型 HTML
 ```
 
-### 6.2 规则
+组件库文档站点仅向具有写权限的用户显示绑定、改绑和同步按钮；服务端仍以 RBAC 为准。`npm run codegraph` 通过插件 CLI 触发全量同步，不调用页面接口。
 
-- 钉钉是同步目录（默认 `docs/dingtalk/`）内容的唯一事实来源。
-- 钉钉文档读取/导出通过 `dws` CLI（dingtalk-workspace-cli，`dws doc` / `dws wiki`）；认证与权限：OAuth device-flow + 企业管理员授权 + 域名白名单 + 最小权限。
-- `documentId` 采用钉钉文档的规范标识（nodeId），供 `dws doc`/`dws wiki` 调用。
-- 钉钉文档与仓库文件一对一映射：`documentId` 与 `targetPath` 各自唯一，同步只更新该路径。
-- 发布版本：指定分支即发布分支，push 成功后的 commit SHA 即为发布版本；问答服务只读该 commit 对应的已发布索引。发布为持久化状态机：校验 commit 属于发布分支 → 在该 commit 的隔离 worktree 中构建网站与索引快照（产物携带 commit）→ 网站与当前索引联合原子晋级；任一步失败可重试或整体回滚，以 commit 为键幂等。
-- 使用内容哈希跳过没有实际内容变化的同步。
-- 转换失败不得覆盖仓库中上一次成功同步的版本。
-- 同步、构建和部署均为异步 Job，需要记录状态、重试次数、日志摘要和关联提交。
-- 只有 Worker 持有写仓库（直接推指定分支）、构建和部署权限；问答 Agent 保持只读。Worker 外部命令（`dws`、构建、部署）同样在 manifest 声明为受控执行项（固定 argv 模板、参数 schema、受限 cwd/env、无 shell、超时/输出上限）。
-- 删除链接时同步清理该链接的受管文件、元数据与资源（资源按 documentId 隔离，避免误删共用资源），建模为可重试的清理 Job。
-- 同步按 documentId/分支互斥执行；以目标 commit 为键幂等，避免重试重复提交或重复部署。
+## 交付与验收
 
-### 6.3 链接管理接口（能力 HTTP 接口，供 GUI）
+| 阶段 | 内容 | 验收 |
+| --- | --- | --- |
+| 1 | 注册 `vue2-index`、`gitnexus` 为 Pi 只读工具；复用内置只读工具读取设计说明 | Agent 可查询代码与读取关联的 `_desc.md`，无通用 Bash/写权限 |
+| 2 | 页面绑定/改绑与单组件同步；Markdown、图片、空 desc、哈希去重 | 已绑定组件稳定同步；未绑定组件保留空 desc；失败不破坏最近成功内容 |
+| 3 | `npm run codegraph` 全量同步并重建代码索引 | 组件实体的 docs 关联、代码查询和调用关系反映最新内容 |
 
-```text
-POST   /v1/documents/links          建立钉钉文档 ↔ 仓库文件的链接
-GET    /v1/documents/links          查询链接列表
-DELETE /v1/documents/links/:id      删除链接
-```
+## 非目标
 
-`targetPath` 必须位于配置的同步根目录内，拒绝绝对路径、`..`、符号链接逃逸与非允许扩展名；`documentId`/`targetPath` 重复返回冲突。链接管理仅授权用户可操作（资源级授权）；链接映射存服务数据库；建立链接后，同步 Worker 按映射写入固定路径并生成元数据。
-
-### 6.4 同步与发布 API（后续阶段）
-
-```text
-POST /v1/sync/dingtalk/:documentId        创建同步任务
-GET  /v1/jobs/:id                         查询任务状态
-GET  /v1/documents/links/:id/metadata     查询链接对应的同步元数据
-POST /v1/publish                          触发发布（校验 commit 属于配置的发布分支，受服务身份鉴权）
-```
-
-同步仅允许对已建立链接的 documentId；发布仅允许受信服务主体；授权与拒绝均纳入审计。
-
-## 7. 交付与验收
-
-### 阶段 1：可用知识库问答
-
-- 实现源码与仓库 Markdown 的只读检索工具。
-
-**验收：**回答可引用仓库文件与行号；Agent 无法调用通用 Bash 或写文件。
-
-### 阶段 2：钉钉文档同步
-
-- 实现钉钉读取和 Markdown 转换。
-- 实现图片/附件、元数据、哈希去重和 Job 状态。
-- 输出到同步目录（默认 `docs/dingtalk/`）并直接推送到 GitLab 指定分支。
-
-**验收：**指定钉钉文档可稳定同步为 Markdown；无变化不产生提交；失败不破坏最近成功版本。
-
-### 阶段 3：发布与索引自动化
-
-- 推送到分支后调用 pi-agent-server 接口触发网站构建/部署（onev-ui 文档站 `/Users/mz/workspace/onev`：Vue 2 + webpack，`npm run build:docs` 构建，部署到腾讯云 COS）。
-- 重建检索索引并进行版本切换。
-- 问答服务只查询已发布索引。
-
-**验收：**文档合并后网站和问答结果均能反映新内容；发布失败可回滚到上个可用索引版本。
+- 不实现钉钉协同编辑或钉钉与 Git Markdown 双向同步。
+- 不自动监听 Git commit、push 或发布事件。
+- 文档站部署不在本期范围。

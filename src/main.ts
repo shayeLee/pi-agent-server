@@ -22,6 +22,12 @@ const tools = (process.env.TOOLS ?? "")
   .map((s) => s.trim())
   .filter(Boolean);
 
+// 显式插件列表：只加载指定 ESM 包，不扫描本地目录或 .pi。开发期可指向 pnpm link 后的包名。
+const plugins = (process.env.PI_PLUGINS ?? "")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
+
 // PI_DEFAULT_MODEL="provider/modelId"；模型 id 可包含斜杠，仅第一个斜杠分隔 provider。
 function parseDefaultModel(value: string | undefined): { provider: string; id: string } | undefined {
   if (!value) return undefined;
@@ -75,6 +81,7 @@ const app = await startServer({
     | "max"
     | undefined,
   systemPrompt: process.env.PI_SYSTEM_PROMPT,
+  plugins: plugins.length > 0 ? plugins : undefined,
   // PI_DATA_MODE 仅保留为部署分类；它不能放宽 migration gate。服务启动总是 verify，
   // 并且绝不自行 bootstrap/migrate/reset。
   dataMode: process.env.PI_DATA_MODE as DataMode | undefined,

@@ -22,6 +22,8 @@ export type AgentSessionContext = {
   readonly modelProvider: string | null;
   readonly modelId: string | null;
   readonly thinkingLevel: string | null;
+  /** 创建会话时冻结的系统提示词；null/undefined 表示未记录（使用共享资源加载器）。 */
+  readonly systemPrompt?: string | null;
   readonly isNewSession: boolean;
   readonly agentToolConfig: {
     readonly tools?: readonly string[];

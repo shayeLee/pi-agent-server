@@ -1,17 +1,23 @@
 // 与 pi-agent-server 协议对齐的类型（对应 src/agent/events.ts 的 SseEvent 与 src/storage 的 SessionRecord）。
 
+/**
+ * turn 关联字段：同一轮对话的所有 SSE 事件都携带产生它们的 `requestId`，
+ * 前端据此把迟到/补发的旧事件与新请求隔离。可选仅用于非 turn 遗留场景。
+ */
+export type SseRequestId = { readonly requestId?: string };
+
 export type SseEvent =
-  | { type: "text_delta"; text: string }
-  | { type: "thinking_delta"; text: string }
-  | { type: "tool_start"; toolCallId: string; toolName: string; args: unknown }
-  | { type: "tool_update"; toolCallId: string; toolName: string; partialResult: unknown }
-  | { type: "tool_end"; toolCallId: string; toolName: string; result: unknown; isError: boolean }
-  | { type: "status"; phase: "agent_start" | "turn_start"; requestId?: string }
-  | { type: "queued"; position?: number; requestId?: string }
-  | { type: "usage"; promptTokens: number; completionTokens: number; totalTokens: number; durationMs: number; ttftMs: number }
-  | { type: "error"; message: string }
-  | { type: "completed" }
-  | { type: "aborted" };
+  | ({ type: "text_delta"; text: string } & SseRequestId)
+  | ({ type: "thinking_delta"; text: string } & SseRequestId)
+  | ({ type: "tool_start"; toolCallId: string; toolName: string; args: unknown } & SseRequestId)
+  | ({ type: "tool_update"; toolCallId: string; toolName: string; partialResult: unknown } & SseRequestId)
+  | ({ type: "tool_end"; toolCallId: string; toolName: string; result: unknown; isError: boolean } & SseRequestId)
+  | ({ type: "status"; phase: "agent_start" | "turn_start" } & SseRequestId)
+  | ({ type: "queued"; position?: number } & SseRequestId)
+  | ({ type: "usage"; promptTokens: number; completionTokens: number; totalTokens: number; durationMs: number; ttftMs: number } & SseRequestId)
+  | ({ type: "error"; message: string } & SseRequestId)
+  | ({ type: "completed" } & SseRequestId)
+  | ({ type: "aborted" } & SseRequestId);
 
 export type UsageStats = {
   durationMs: number;
@@ -32,6 +38,12 @@ export type SessionRecord = {
   modelId: string | null;
   thinkingLevel: string | null;
   systemPrompt: string | null;
+};
+
+/** 宿主访问能力投影（`GET /v1/access`）：由服务端中央 RBAC 矩阵派生。 */
+export type AccessCapabilities = {
+  canRead: boolean;
+  canWrite: boolean;
 };
 
 /** 项目（多项目：默认项目 + 额外项目）。 */

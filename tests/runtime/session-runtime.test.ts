@@ -5,8 +5,10 @@ import {
   type ConcurrencyConfig,
 } from "../../src/core/concurrency-control.js";
 import { MockAgentAdapter } from "../../src/agent/mock-agent-adapter.js";
+import type { ImageInput } from "../../src/agent/agent-adapter.js";
 import type { SseEvent } from "../../src/agent/events.js";
 import type { ObservabilityEvent, ObservabilityPort } from "../../src/application/ports/index.js";
+import { JPEG_2X2_BASE64, PNG_2X2_BASE64 } from "../helpers/image-fixtures.js";
 
 const baseConfig: ConcurrencyConfig = {
   globalLimit: 2,
@@ -19,12 +21,13 @@ const baseConfig: ConcurrencyConfig = {
 /** 等待后台流式任务完成（submitMessage 立即返回决策后，runStreamingTask 在微任务中继续）。 */
 const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
-/** 可控 adapter：prompt 挂起直到 finishStream() 释放（模拟真实异步流式结束，便于观察 streaming 中间态）。 */
+/** 可控 adapter：prompt 先按基线行为发射预设事件（重置丢弃标记），再挂起直到 finishStream() 释放
+ * （模拟真实异步流式结束，便于观察 streaming 中间态；也让 abort 后可直接 enqueue 下一轮事件）。 */
 class ManualAdapter extends MockAgentAdapter {
   private release?: () => void;
 
-  override async prompt(text: string): Promise<void> {
-    this.calls.push({ method: "prompt", text });
+  override async prompt(text: string, options?: { images?: ImageInput[] }): Promise<void> {
+    await super.prompt(text, options);
     await new Promise<void>((resolve) => {
       this.release = resolve;
     });
@@ -48,6 +51,22 @@ class AbortThrowingAdapter extends ManualAdapter {
   override async abort(): Promise<void> {
     this.calls.push({ method: "abort" });
     throw new Error("abort 失败");
+  }
+}
+
+/** abort 挂起，便于验证 aborting 窗口中的 requestId 精确关联。 */
+class AbortPendingAdapter extends ManualAdapter {
+  private releaseAbort?: () => void;
+
+  override async abort(): Promise<void> {
+    this.calls.push({ method: "abort" });
+    await new Promise<void>((resolve) => {
+      this.releaseAbort = resolve;
+    });
+  }
+
+  finishAbort(): void {
+    this.releaseAbort?.();
   }
 }
 
@@ -106,8 +125,8 @@ describe("SessionRuntime（needs.md §4.2 会话任务编排）", () => {
       expect(d).toEqual({ kind: "run" });
       expect(events).toEqual([
         { type: "status", phase: "agent_start", requestId: "r1" },
-        { type: "text_delta", text: "hi" },
-        { type: "completed" },
+        { type: "text_delta", text: "hi", requestId: "r1" },
+        { type: "completed", requestId: "r1" },
       ]);
       expect(runtime.state).toBe("idle"); // 流式结束 → release 回 idle
       expect(concurrency.activeCount()).toBe(0); // 槽位已释放
@@ -159,16 +178,16 @@ describe("SessionRuntime（needs.md §4.2 会话任务编排）", () => {
       expect(events).toEqual([
         { type: "status", phase: "agent_start", requestId: "r1" },
         { type: "status", phase: "turn_start", requestId: "r1" },
-        { type: "tool_start", toolCallId: "c1", toolName: "read", args: { path: "a.txt" } },
-        { type: "tool_update", toolCallId: "c1", toolName: "read", partialResult: { lines: ["a"] } },
-        { type: "tool_end", toolCallId: "c1", toolName: "read", result: { text: "内容" }, isError: false },
-        { type: "text_delta", text: "你好" },
-        { type: "thinking_delta", text: "思考中" },
-        { type: "completed" }, // agent_end 由编排层合成，不重复转发
+        { type: "tool_start", toolCallId: "c1", toolName: "read", args: { path: "a.txt" }, requestId: "r1" },
+        { type: "tool_update", toolCallId: "c1", toolName: "read", partialResult: { lines: ["a"] }, requestId: "r1" },
+        { type: "tool_end", toolCallId: "c1", toolName: "read", result: { text: "内容" }, isError: false, requestId: "r1" },
+        { type: "text_delta", text: "你好", requestId: "r1" },
+        { type: "thinking_delta", text: "思考中", requestId: "r1" },
+        { type: "completed", requestId: "r1" }, // agent_end 由编排层合成，不重复转发
       ]);
     });
 
-    it("重复 requestId 返回 done，不重复执行", async () => {
+    it("重复 requestId 且载荷相同返回 done，不重复执行", async () => {
       const adapter = new MockAgentAdapter([
         { type: "agent_end", messages: [], willRetry: false },
       ]);
@@ -181,16 +200,53 @@ describe("SessionRuntime（needs.md §4.2 会话任务编排）", () => {
       });
       await flush();
       expect(d1).toEqual({ kind: "run" });
-      expect(events).toEqual([{ type: "completed" }]);
+      expect(events).toEqual([{ type: "completed", requestId: "r1" }]);
 
       const d2 = await runtime.submitMessage({
         requestId: "r1",
         userId: "user-1",
-        prompt: "重复",
+        prompt: "首次",
       });
       expect(d2).toEqual({ kind: "done", result: { status: "completed" } });
       expect(adapter.calls).toEqual([{ method: "prompt", text: "首次" }]); // 未重复执行
-      expect(events).toEqual([{ type: "completed" }]); // 未新增事件
+      expect(events).toEqual([{ type: "completed", requestId: "r1" }]); // 未新增事件
+    });
+
+    it("重复 requestId 但载荷不同：payload-mismatch，不返回旧结果也不执行", async () => {
+      const adapter = new MockAgentAdapter([
+        { type: "agent_end", messages: [], willRetry: false },
+      ]);
+      const { runtime } = makeRuntime({ adapter });
+
+      await runtime.submitMessage({ requestId: "r1", userId: "user-1", prompt: "首次" });
+      await flush();
+
+      const differentPrompt = await runtime.submitMessage({ requestId: "r1", userId: "user-1", prompt: "不同" });
+      expect(differentPrompt).toEqual({ kind: "conflict", reason: "payload-mismatch" });
+      // 载荷指纹不同（包括图片）同样识别
+      await runtime.submitMessage({ requestId: "r1", userId: "user-1", prompt: "首次" });
+      const differentImages = await runtime.submitMessage({
+        requestId: "r1",
+        userId: "user-1",
+        prompt: "首次",
+        images: [{ mediaType: "image/png", base64: PNG_2X2_BASE64 }],
+      });
+      expect(differentImages).toEqual({ kind: "conflict", reason: "payload-mismatch" });
+      expect(adapter.calls).toEqual([{ method: "prompt", text: "首次" }]); // 只有首次执行
+    });
+
+    it("运行期同 requestId 不同载荷并发提交：不共享 in-flight，返回 payload-mismatch", async () => {
+      const adapter = new ManualAdapter();
+      const { runtime } = makeRuntime({ adapter });
+
+      await runtime.submitMessage({ requestId: "r1", userId: "user-1", prompt: "q" });
+      expect(runtime.state).toBe("streaming");
+
+      const d = await runtime.submitMessage({ requestId: "r1", userId: "user-1", prompt: "不同" });
+      expect(d).toEqual({ kind: "conflict", reason: "payload-mismatch" });
+      expect(adapter.calls.filter((c) => c.method === "prompt")).toHaveLength(1);
+
+      await runtime.abort();
     });
 
     it("运行期同 requestId 重试（processing）：streaming 时返回 run（已接受，不重复执行）", async () => {
@@ -359,7 +415,7 @@ describe("SessionRuntime（needs.md §4.2 会话任务编排）", () => {
 
       expect(runtime.state).toBe("idle");
       expect(concurrency.queuedCount()).toBe(0);
-      expect(events).toContainEqual({ type: "error", message: "排队超时" });
+      expect(events).toContainEqual({ type: "error", message: "排队超时", requestId: "r1" });
     });
   });
 
@@ -418,7 +474,57 @@ describe("SessionRuntime（needs.md §4.2 会话任务编排）", () => {
       expect(runtime.state).toBe("idle");
       expect(concurrency.queuedCount()).toBe(0); // 排队任务已从队列移除
       expect(adapter.calls).toEqual([]);
-      expect(events).toEqual([{ type: "queued", position: 1, requestId: "r1" }, { type: "aborted" }]);
+      expect(events).toEqual([{ type: "queued", position: 1, requestId: "r1" }, { type: "aborted", requestId: "r1" }]);
+    });
+
+    it("指定不匹配 requestId 的 abort 不取消 queued/streaming 任务，且零 adapter.abort/aborted 事件", async () => {
+      const queuedConcurrency = new ConcurrencyController({ ...baseConfig, perUserLimit: 1 });
+      queuedConcurrency.submit("other:task", "user-1", 0);
+      const { runtime: queuedRuntime, events: queuedEvents, adapter: queuedAdapter } = makeRuntime({ concurrency: queuedConcurrency });
+      await queuedRuntime.submitMessage({ requestId: "r1", userId: "user-1", prompt: "p" });
+
+      expect(await queuedRuntime.abort("other-request")).toEqual({ kind: "conflict" });
+      expect(queuedRuntime.state).toBe("queued");
+      expect(queuedAdapter.calls).toEqual([]);
+      expect(queuedEvents).toEqual([{ type: "queued", position: 1, requestId: "r1" }]);
+      await queuedRuntime.abort("r1");
+
+      const streamingAdapter = new ManualAdapter();
+      const { runtime: streamingRuntime, events: streamingEvents } = makeRuntime({ adapter: streamingAdapter });
+      const run = streamingRuntime.submitMessage({ requestId: "r1", userId: "user-1", prompt: "p" });
+
+      expect(await streamingRuntime.abort("other-request")).toEqual({ kind: "conflict" });
+      expect(streamingRuntime.state).toBe("streaming");
+      expect(streamingAdapter.calls).toEqual([{ method: "prompt", text: "p" }]);
+      expect(streamingEvents).toEqual([]);
+      await streamingRuntime.abort("r1");
+      streamingAdapter.finishStream();
+      await run;
+    });
+
+    it("aborting 中不匹配 requestId 不重复调用 adapter.abort 或发射 aborted", async () => {
+      const adapter = new AbortPendingAdapter();
+      const { runtime, events } = makeRuntime({ adapter });
+      const run = runtime.submitMessage({ requestId: "r1", userId: "user-1", prompt: "p" });
+
+      const firstAbort = runtime.abort("r1");
+      expect(adapter.calls).toEqual([
+        { method: "prompt", text: "p" },
+        { method: "abort" },
+      ]);
+      expect(await runtime.abort("other-request")).toEqual({ kind: "conflict" });
+      expect(adapter.calls).toEqual([
+        { method: "prompt", text: "p" },
+        { method: "abort" },
+      ]);
+      expect(events).toEqual([]);
+
+      adapter.finishAbort();
+      await firstAbort;
+      await flush();
+      expect(events).toEqual([{ type: "aborted", requestId: "r1" }]);
+      adapter.finishStream();
+      await run;
     });
 
     it("abort streaming：adapter.abort、terminal→release 回 idle、合成 aborted、释放槽位", async () => {
@@ -433,7 +539,7 @@ describe("SessionRuntime（needs.md §4.2 会话任务编排）", () => {
       expect(adapter.aborted).toBe(true);
       await flush(); // 等待 fire-and-forget settle 完成
       expect(runtime.state).toBe("idle");
-      expect(events).toEqual([{ type: "aborted" }]);
+      expect(events).toEqual([{ type: "aborted", requestId: "r1" }]);
       expect(concurrency.activeCount()).toBe(0);
 
       adapter.finishStream();
@@ -461,7 +567,7 @@ describe("SessionRuntime（needs.md §4.2 会话任务编排）", () => {
       await flush(); // 等待预算触发 abort + settle 完成
       expect(adapter.aborted).toBe(true);
       expect(runtime.state).toBe("idle");
-      expect(events).toContainEqual({ type: "error", message: "连续工具调用失败次数超限" });
+      expect(events).toContainEqual({ type: "error", message: "连续工具调用失败次数超限", requestId: "r1" });
       expect(events).not.toContainEqual({ type: "aborted" });
       expect(concurrency.activeCount()).toBe(0);
 
@@ -538,14 +644,14 @@ describe("SessionRuntime（needs.md §4.2 会话任务编排）", () => {
       await runA;
       await flush();
       expect(rtA.state).toBe("idle");
-      expect(eventsA).toEqual([{ type: "completed" }]);
+      expect(eventsA).toEqual([{ type: "completed", requestId: "a1" }]);
 
       expect(adapterB.calls).toEqual([{ method: "prompt", text: "B的问题" }]);
       expect(rtB.state).toBe("idle");
       expect(eventsB).toEqual([
         { type: "queued", position: 1, requestId: "b1" },
         { type: "status", phase: "agent_start", requestId: "b1" },
-        { type: "completed" },
+        { type: "completed", requestId: "b1" },
       ]);
       expect(concurrency.activeCount()).toBe(0); // 槽位已全部释放
       expect(concurrency.queuedCount()).toBe(0);
@@ -565,7 +671,7 @@ describe("SessionRuntime（needs.md §4.2 会话任务编排）", () => {
       await flush();
 
       expect(d).toEqual({ kind: "run" });
-      expect(events).toEqual([{ type: "error", message: "模型挂了" }]);
+      expect(events).toEqual([{ type: "error", message: "模型挂了", requestId: "r1" }]);
       expect(runtime.state).toBe("idle");
       expect(concurrency.activeCount()).toBe(0);
       expect(used.calls).toEqual([{ method: "prompt", text: "q" }]);
@@ -586,7 +692,7 @@ describe("SessionRuntime（needs.md §4.2 会话任务编排）", () => {
       await flush();
 
       expect(d).toEqual({ kind: "run" });
-      expect(events).toEqual([{ type: "error", message: "API 错误" }]);
+      expect(events).toEqual([{ type: "error", message: "API 错误", requestId: "r1" }]);
       expect(runtime.state).toBe("idle");
       expect(concurrency.activeCount()).toBe(0);
     });
@@ -604,7 +710,7 @@ describe("SessionRuntime（needs.md §4.2 会话任务编排）", () => {
       await runtime.submitMessage({ requestId: "r1", userId: "user-1", prompt: "q" });
       await flush();
 
-      expect(events).toEqual([{ type: "aborted" }]);
+      expect(events).toEqual([{ type: "aborted", requestId: "r1" }]);
       expect(runtime.state).toBe("idle");
     });
 
@@ -621,7 +727,7 @@ describe("SessionRuntime（needs.md §4.2 会话任务编排）", () => {
       await runtime.submitMessage({ requestId: "r1", userId: "user-1", prompt: "q" });
       await flush();
 
-      expect(events).toEqual([{ type: "completed" }]);
+      expect(events).toEqual([{ type: "completed", requestId: "r1" }]);
       expect(runtime.state).toBe("idle");
     });
 
@@ -638,7 +744,7 @@ describe("SessionRuntime（needs.md §4.2 会话任务编排）", () => {
       await runtime.submitMessage({ requestId: "r1", userId: "user-1", prompt: "q" });
       await flush();
 
-      expect(events).toEqual([{ type: "error", message: "回答被 token 上限截断" }]);
+      expect(events).toEqual([{ type: "error", message: "回答被 token 上限截断", requestId: "r1" }]);
       expect(runtime.state).toBe("idle");
     });
 
@@ -654,14 +760,14 @@ describe("SessionRuntime（needs.md §4.2 会话任务编排）", () => {
       });
       await runtime.submitMessage({ requestId: "r1", userId: "user-1", prompt: "q1" });
       await flush();
-      expect(events).toEqual([{ type: "error", message: "首任务失败" }]);
+      expect(events).toEqual([{ type: "error", message: "首任务失败", requestId: "r1" }]);
 
       // 次任务（同一 runtime）：无 agent_end，终态应已清空 → completed，而非沿用 error
       await runtime.submitMessage({ requestId: "r2", userId: "user-1", prompt: "q2" });
       await flush();
       expect(events).toEqual([
-        { type: "error", message: "首任务失败" },
-        { type: "completed" },
+        { type: "error", message: "首任务失败", requestId: "r1" },
+        { type: "completed", requestId: "r2" },
       ]);
       expect(runtime.state).toBe("idle");
     });
@@ -672,8 +778,8 @@ describe("SessionRuntime（needs.md §4.2 会话任务编排）", () => {
       const adapter = new MockAgentAdapter();
       const { runtime } = makeRuntime({ adapter });
       const images = [
-        { mediaType: "image/png", base64: "aGVsbG8=" },
-        { mediaType: "image/jpeg", base64: "d29ybGQ=" },
+        { mediaType: "image/png", base64: PNG_2X2_BASE64 },
+        { mediaType: "image/jpeg", base64: JPEG_2X2_BASE64 },
       ];
 
       const d = await runtime.submitMessage({
@@ -727,7 +833,7 @@ describe("SessionRuntime（needs.md §4.2 会话任务编排）", () => {
       const runA = rtA.submitMessage({ requestId: "a1", userId: "user-1", prompt: "A的问题" });
       expect(rtA.state).toBe("streaming");
 
-      const images = [{ mediaType: "image/png", base64: "YQ==" }];
+      const images = [{ mediaType: "image/png", base64: PNG_2X2_BASE64 }];
       const dB = await rtB.submitMessage({
         requestId: "b1",
         userId: "user-1",
@@ -743,6 +849,270 @@ describe("SessionRuntime（needs.md §4.2 会话任务编排）", () => {
 
       expect(adapterB.calls).toEqual([{ method: "prompt", text: "B看图", images }]);
       expect(rtB.state).toBe("idle");
+    });
+  });
+
+  describe("runTurn：requestId 专属结果与 per-turn 取消", () => {
+    it("只返回本 requestId 的助手文本，不依赖 session 级事件流", async () => {
+      const adapter = new ManualAdapter();
+      const { runtime } = makeRuntime({ adapter });
+
+      const pending = runtime.runTurn({ requestId: "r1", prompt: "生成" });
+      await flush();
+      adapter.emit({
+        type: "message_update",
+        message: {},
+        assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "你好" },
+      });
+      adapter.emit({ type: "agent_end", messages: [{ role: "assistant", stopReason: "stop" }] });
+      adapter.finishStream();
+
+      await expect(pending).resolves.toEqual({ status: "completed", text: "你好" });
+      expect(runtime.state).toBe("idle");
+    });
+
+    it("session 正忙时返回 busy，且不启动新任务", async () => {
+      const adapter = new ManualAdapter();
+      const { runtime } = makeRuntime({ adapter });
+
+      const first = runtime.runTurn({ requestId: "r1", prompt: "第一次" });
+      await flush();
+      await expect(runtime.runTurn({ requestId: "r2", prompt: "第二次" })).resolves.toEqual({
+        status: "busy",
+      });
+      // 第一个任务仍在 streaming，绝不被误杀、也未被第二次覆盖。
+      expect(runtime.state).toBe("streaming");
+      expect(adapter.calls.filter((call) => call.method === "prompt")).toEqual([
+        { method: "prompt", text: "第一次" },
+      ]);
+      expect(adapter.aborted).toBe(false);
+
+      adapter.emit({ type: "agent_end", messages: [{ role: "assistant", stopReason: "stop" }] });
+      adapter.finishStream();
+      await expect(first).resolves.toEqual({ status: "completed", text: "" });
+    });
+
+    it("signal abort 只终止本 requestId 的 task", async () => {
+      const adapter = new ManualAdapter();
+      const { runtime } = makeRuntime({ adapter });
+      const controller = new AbortController();
+
+      const pending = runtime.runTurn({ requestId: "r1", prompt: "本轮", signal: controller.signal });
+      await flush();
+      expect(runtime.state).toBe("streaming");
+      controller.abort();
+
+      await expect(pending).resolves.toEqual({ status: "aborted" });
+      expect(adapter.aborted).toBe(true);
+      expect(runtime.state).toBe("idle");
+    });
+
+    it("其他 requestId 的 signal abort 不误杀当前 streaming 任务", async () => {
+      const adapter = new ManualAdapter();
+      const { runtime } = makeRuntime({ adapter });
+
+      const holder = runtime.runTurn({ requestId: "holder", prompt: "占用" });
+      await flush();
+      const controller = new AbortController();
+      // 第二次 runTurn 因 session 正忙返回 busy，其 signal 与本 session 的当前 task 无关。
+      await expect(
+        runtime.runTurn({ requestId: "other", prompt: "其他", signal: controller.signal }),
+      ).resolves.toEqual({ status: "busy" });
+      controller.abort();
+      await flush();
+
+      expect(runtime.state).toBe("streaming");
+      expect(adapter.aborted).toBe(false);
+
+      adapter.emit({ type: "agent_end", messages: [{ role: "assistant", stopReason: "stop" }] });
+      adapter.finishStream();
+      await expect(holder).resolves.toEqual({ status: "completed", text: "" });
+    });
+
+    it("进入时 signal 已 aborted：不提交、不触发模型", async () => {
+      const adapter = new ManualAdapter();
+      const { runtime } = makeRuntime({ adapter });
+      const controller = new AbortController();
+      controller.abort();
+
+      await expect(
+        runtime.runTurn({ requestId: "r1", prompt: "不应执行", signal: controller.signal }),
+      ).resolves.toEqual({ status: "aborted" });
+      expect(adapter.calls.filter((call) => call.method === "prompt")).toHaveLength(0);
+    });
+
+    it("超过 maxAssistantTextLength 时中止本轮并返回 error", async () => {
+      const adapter = new ManualAdapter();
+      const { runtime } = makeRuntime({ adapter });
+
+      const pending = runtime.runTurn({ requestId: "r1", prompt: "p", maxAssistantTextLength: 5 });
+      await flush();
+      adapter.emit({
+        type: "message_update",
+        message: {},
+        assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "123456" },
+      });
+
+      await expect(pending).resolves.toEqual({
+        status: "error",
+        message: "助手输出超过宿主上限",
+      });
+      expect(adapter.aborted).toBe(true);
+    });
+  });
+
+  describe("P7b turn 事件 requestId 关联与跨请求隔离", () => {
+    it("所有 turn 相关事件（含 usage）都携带当前 requestId", async () => {
+      const adapter = new MockAgentAdapter([
+        { type: "agent_start" },
+        {
+          type: "message_update",
+          message: {},
+          assistantMessageEvent: { type: "thinking_delta", contentIndex: 0, delta: "想" },
+        },
+        {
+          type: "message_update",
+          message: {},
+          assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "答" },
+        },
+        {
+          type: "tool_execution_start",
+          toolCallId: "c1",
+          toolName: "read",
+          args: {},
+        },
+        {
+          type: "tool_execution_end",
+          toolCallId: "c1",
+          toolName: "read",
+          result: {},
+          isError: false,
+        },
+        { type: "agent_end", messages: [{ role: "assistant", stopReason: "stop" }], willRetry: false },
+      ]);
+      adapter.lastUsage = { promptTokens: 1, completionTokens: 2, totalTokens: 3 };
+      const { runtime, events } = makeRuntime({ adapter });
+
+      await runtime.submitMessage({ requestId: "r1", userId: "user-1", prompt: "q" });
+      await flush();
+
+      // 每一个事件都必须带 requestId=r1（正常 turn 断言存在）。
+      expect(events.length).toBeGreaterThan(0);
+      for (const event of events) {
+        expect(event, JSON.stringify(event)).toMatchObject({ requestId: "r1" });
+      }
+      expect(events.map((e) => e.type)).toEqual([
+        "status",
+        "thinking_delta",
+        "text_delta",
+        "tool_start",
+        "tool_end",
+        "usage",
+        "completed",
+      ]);
+    });
+
+    it("abort streaming 的 aborted 终态绑定被中止请求，且不归属后继请求", async () => {
+      const adapter = new ManualAdapter();
+      const { runtime, events } = makeRuntime({ adapter });
+
+      const run1 = runtime.submitMessage({ requestId: "r1", userId: "user-1", prompt: "q1" });
+      expect(runtime.state).toBe("streaming");
+      await runtime.abort();
+      await flush();
+      adapter.finishStream();
+      await run1;
+      expect(events).toEqual([{ type: "aborted", requestId: "r1" }]);
+
+      // 后继请求：其事件只能带 r2，旧轮 aborted 不会重绑到新请求。
+      adapter.enqueue({ type: "agent_start" }, { type: "agent_end", messages: [], willRetry: false });
+      const run2 = runtime.submitMessage({ requestId: "r2", userId: "user-1", prompt: "q2" });
+      await flush(); // 等 prompt 开始（预设事件已在本轮发射）
+      adapter.finishStream();
+      await run2;
+      await flush();
+      expect(events.slice(1)).toEqual([
+        { type: "status", phase: "agent_start", requestId: "r2" },
+        { type: "completed", requestId: "r2" },
+      ]);
+      expect(events.filter((e) => e.requestId === "r2")).toHaveLength(2);
+    });
+
+    it("排队超时 error 绑定被超时任务自己的 requestId", async () => {
+      const concurrency = new ConcurrencyController({
+        globalLimit: 1,
+        perUserLimit: 1,
+        perUserQueueLimit: 2,
+        globalQueueLimit: 4,
+        queueTimeoutMs: 1000,
+      });
+      const { runtime, events, sessionId } = makeRuntime({ concurrency });
+      concurrency.submit("holder:task", "user-1", 0);
+      await runtime.submitMessage({ requestId: "r1", userId: "user-1", prompt: "排队" });
+      expect(runtime.state).toBe("queued");
+
+      const taskId = `${sessionId}:r1`;
+      expect(concurrency.expireQueued(1000)).toContain(taskId);
+      getExpireHandler(taskId)?.();
+
+      expect(runtime.state).toBe("idle");
+      expect(events).toEqual([
+        { type: "queued", position: 1, requestId: "r1" },
+        { type: "error", message: "排队超时", requestId: "r1" },
+      ]);
+    });
+
+    it("settle 后（idle）到达的 stray SDK 事件被忽略，不绑定任何 requestId", async () => {
+      const adapter = new MockAgentAdapter([{ type: "agent_end", messages: [], willRetry: false }]);
+      const { runtime, events } = makeRuntime({ adapter });
+
+      await runtime.submitMessage({ requestId: "r1", userId: "user-1", prompt: "q" });
+      await flush();
+      expect(runtime.state).toBe("idle");
+      const settled = events.length;
+
+      // 旧流迟到事件（idle 期）：不得被处理，也不得归属为任何 request。
+      adapter.emit({
+        type: "message_update",
+        message: {},
+        assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "迟到" },
+      });
+      expect(events.length).toBe(settled);
+      expect(events.some((e) => e.type === "text_delta")).toBe(false);
+    });
+
+    it("同一 runtime 连续两轮：每轮事件只带自己的 requestId（无跨 request 串扰）", async () => {
+      const adapter = new MockAgentAdapter();
+      const { runtime, events } = makeRuntime({ adapter });
+
+      adapter.enqueue(
+        {
+          type: "message_update",
+          message: {},
+          assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "A" },
+        },
+        { type: "agent_end", messages: [], willRetry: false },
+      );
+      await runtime.submitMessage({ requestId: "r1", userId: "user-1", prompt: "q1" });
+      await flush();
+
+      adapter.enqueue(
+        {
+          type: "message_update",
+          message: {},
+          assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "B" },
+        },
+        { type: "agent_end", messages: [], willRetry: false },
+      );
+      await runtime.submitMessage({ requestId: "r2", userId: "user-1", prompt: "q2" });
+      await flush();
+
+      expect(events).toEqual([
+        { type: "text_delta", text: "A", requestId: "r1" },
+        { type: "completed", requestId: "r1" },
+        { type: "text_delta", text: "B", requestId: "r2" },
+        { type: "completed", requestId: "r2" },
+      ]);
     });
   });
 

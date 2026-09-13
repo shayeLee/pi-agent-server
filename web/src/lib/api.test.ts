@@ -63,4 +63,16 @@ describe("ApiClient", () => {
     const api = new ApiClient("", "t");
     await expect(api.deleteSession("nope")).rejects.toThrow(/404/);
   });
+
+  it("getAccess GET /v1/access 返回 {canRead,canWrite}", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ canRead: true, canWrite: false }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const api = new ApiClient("", "t");
+    await expect(api.getAccess()).resolves.toEqual({ canRead: true, canWrite: false });
+
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("/v1/access");
+    expect(init.method).toBe("GET");
+  });
 });

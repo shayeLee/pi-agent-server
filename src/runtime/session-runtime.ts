@@ -6,6 +6,7 @@
 import { transition, type TaskState, type TaskEvent } from "../core/task-state-machine.js";
 import type { ConcurrencyController } from "../core/concurrency-control.js";
 import { IdempotencyStore } from "../core/idempotency.js";
+import { payloadFingerprint } from "../core/payload-fingerprint.js";
 import type { AgentAdapter, ImageInput } from "../agent/agent-adapter.js";
 import type { AgentSdkEvent, SseEvent } from "../agent/events.js";
 import { translateSdkEvent } from "../agent/translate.js";
@@ -15,10 +16,18 @@ import type {
   ManagedSessionRuntimePort,
   ObservabilityEvent,
   ObservabilityPort,
+  RunTurnInput,
+  SessionTurnResult,
   SubmitDecision,
   ControlDecision,
   SubmitInput,
 } from "../application/ports/index.js";
+
+/** 单一 requestId 的同步轮次等待者：settle 时按该 key 专属结果一次性 resolve。 */
+type TurnWaiter = { resolve: (result: SessionTurnResult) => void };
+
+/** 单一 requestId 的轮次累计（按运行时实际 currentKey 归属，隔离跨请求事件）。 */
+type TurnState = { text: string; maxText: number; overflow: boolean };
 
 /** 会话已删除：disposed runtime 上调用方法时抛出，HTTP 层转 404。 */
 export class SessionDeletedError extends Error {
@@ -48,6 +57,7 @@ type PendingTask = {
   parentId?: string;
   images?: ImageInput[];
   key: string;
+  fingerprint: string;
 };
 
 // 排队中任务的接续执行注册表（taskId → 拥有该排队任务的 runtime 的启动函数）。
@@ -95,14 +105,24 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
   /** 当前 turn 的工具错误（isError）计数：达到上限后中止，避免无限工具循环。 */
   private toolErrorCount = 0;
   private toolErrorLimitReached = false;
-  /** 同 requestId 的并发提交去重：共享同一 in-flight promise（避免 processing 占位与状态机竞态）。 */
-  private readonly inFlightSubmits = new Map<string, Promise<SubmitDecision>>();
+  /** 同 requestId 的并发提交去重：共享同一 in-flight promise（避免 processing 占位与状态机竞态）。
+   * 同时记录载荷指纹：不同载荷重用同一 requestId 时拒绝，绝不把旧执行结果返回给新输入。 */
+  private readonly inFlightSubmits = new Map<string, { fingerprint: string; promise: Promise<SubmitDecision> }>();
 
   private taskState: TaskState = "idle";
   private currentTaskId: string | null = null;
   private currentKey: string | null = null;
   private currentRequestId: string | null = null;
+  /** 当前任务的载荷指纹（settle 时随终态一并落账，供进程内载荷冲突识别）。 */
+  private currentFingerprint: string | null = null;
   private readonly pending = new Map<string, PendingTask>();
+  /**
+   * 同步轮次（runTurn）的 per-request 等待者与文本累计，键为 `${sessionId}:${requestId}`。
+   * 文本只在当前 task 的 key 命中该表时累计，settle 只结算同 key 的等待者：旧请求的事件
+   * 绝不会串入新请求，且 submit 异步窗口期间到达的旧事件也不会被误归属。
+   */
+  private readonly turnWaiters = new Map<string, TurnWaiter[]>();
+  private readonly turnStates = new Map<string, TurnState>();
 
   constructor(options: SessionRuntimeOptions) {
     this.sessionId = options.sessionId;
@@ -128,6 +148,7 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
     }
     this.currentKey = null;
     this.currentRequestId = null;
+    this.currentFingerprint = null;
     // 清理排队任务：取消占位、释放幂等重试资格、清注册表
     for (const [taskId, task] of this.pending) {
       this.idempotency.fail(task.key);
@@ -136,6 +157,10 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
       EXPIRY_REGISTRY.delete(taskId);
     }
     this.pending.clear();
+    // 资源释放时同步终结未结算的同步轮次（如尚未 settle 的 runTurn），避免插件请求永久挂起。
+    for (const key of [...this.turnWaiters.keys()]) {
+      this.resolveTurnWaiters(key, { status: "aborted" });
+    }
     this.adapter.dispose();
   }
 
@@ -153,15 +178,120 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
       return { kind: "conflict", reason: "poisoned" };
     }
     const key = `${this.sessionId}:${input.requestId}`;
-    // 同 requestId 并发提交：共享同一 in-flight promise，得到相同结果（不重复执行、无占位竞态）
+    const fingerprint = payloadFingerprint(input);
+    // 同 requestId 并发提交：共享同一 in-flight promise，得到相同结果（不重复执行、无占位竞态）；
+    // 但载荷不同的并发重放是冲突，不共享 promise。
     const inFlight = this.inFlightSubmits.get(key);
-    if (inFlight) return inFlight;
-    const promise = this.doSubmit(input);
-    this.inFlightSubmits.set(key, promise);
+    if (inFlight) {
+      return inFlight.fingerprint === fingerprint
+        ? inFlight.promise
+        : { kind: "conflict", reason: "payload-mismatch" };
+    }
+    const promise = this.doSubmit(input, fingerprint);
+    this.inFlightSubmits.set(key, { fingerprint, promise });
     try {
       return await promise;
     } finally {
       this.inFlightSubmits.delete(key);
+    }
+  }
+
+  /**
+   * 同步执行一轮并返回该 requestId 专属结果（插件宿主专用）。
+   *
+   * 与 submitMessage 不同，它不使用 session 级事件流，而是在 runtime 内部按
+   * 当前 task 的 key（即本 requestId）累计助手文本并在 settle 时结算，因此
+   * submit 异步窗口内到达的旧请求事件绝不会串入本请求，也不需要靠“微小窗口”去猜。
+   *
+   * - session 正忙 / 排队 / 限流 → busy，并撤销本轮排队，不留后台任务；
+   * - 同一 requestId 以不同 prompt 重放（进程内可识别）→ busy（不返回旧结果）；
+   * - signal 触发只终止本 key 对应的 task（currentKey 不匹配则绝不误杀其他 task）；
+   * - 助手文本超过 maxAssistantTextLength 时中止本轮并返回 error。
+   *
+   * 已知限制：跨进程重启后，持久化幂等表不保存载荷指纹（见 src/core/payload-fingerprint.ts），
+   * 因此同一 requestId 以不同 prompt 重放会命中旧终态并返回 busy/旧结果；本任务不引入 schema 变更。
+   */
+  async runTurn(input: RunTurnInput): Promise<SessionTurnResult> {
+    if (this.disposed) throw new SessionDeletedError(this.sessionId);
+    const key = `${this.sessionId}:${input.requestId}`;
+    const signal = input.signal;
+    // 已 aborted：不提交、不产生任何任务。
+    if (signal?.aborted) return { status: "aborted" };
+
+    let resolveWaiter: (result: SessionTurnResult) => void = () => {};
+    const settled = new Promise<SessionTurnResult>((resolve) => {
+      resolveWaiter = resolve;
+    });
+    const waiter: TurnWaiter = { resolve: resolveWaiter };
+    const waiters = this.turnWaiters.get(key);
+    if (waiters) waiters.push(waiter);
+    else this.turnWaiters.set(key, [waiter]);
+    const maxText = input.maxAssistantTextLength ?? Number.POSITIVE_INFINITY;
+    const existingState = this.turnStates.get(key);
+    if (existingState) existingState.maxText = Math.min(existingState.maxText, maxText);
+    else this.turnStates.set(key, { text: "", maxText, overflow: false });
+
+    // 只终止本 requestId 对应的 task：先校验 currentKey，再 abort；否则绝不误杀其他 task。
+    const abortOwnTask = () => {
+      if (this.currentKey !== key) return;
+      if (this.taskState !== "streaming") return;
+      void this.abort().catch(() => {});
+    };
+    const onSignalAbort = () => abortOwnTask();
+    if (signal) signal.addEventListener("abort", onSignalAbort, { once: true });
+
+    try {
+      const decision = await this.submitMessage({
+        requestId: input.requestId,
+        userId: this.ownerKey,
+        prompt: input.prompt,
+      });
+      if (decision.kind === "conflict" || decision.kind === "rejected") return { status: "busy" };
+      if (decision.kind === "queued") {
+        // 全局/用户队列繁忙：撤销本轮排队，不留后台任务；abort 在 queued 时取消排队。
+        await this.abort().catch(() => {});
+        return { status: "busy" };
+      }
+      if (decision.kind === "done") {
+        // 同一 requestId 已处理：返回值只保存状态，没有可重放的助手文本。
+        const previous = decision.result as { status?: unknown; message?: unknown } | null;
+        if (previous !== null && typeof previous === "object" && previous.status === "aborted") {
+          return { status: "aborted" };
+        }
+        if (previous !== null && typeof previous === "object" && previous.status === "error") {
+          const message = typeof previous.message === "string" ? previous.message : "任务失败";
+          return { status: "error", message };
+        }
+        return { status: "error", message: "本轮已完成，助手文本不可重放" };
+      }
+      // decision.kind === "run"：等待本 key 的 settle。
+      // signal 可能在 submit 异步窗口内已触发（当时 task 尚未成为 current）：补查一次。
+      if (signal?.aborted) abortOwnTask();
+      return await settled;
+    } finally {
+      if (signal) signal.removeEventListener("abort", onSignalAbort);
+      this.removeTurnWaiter(key, waiter);
+    }
+  }
+
+  /** 结算某 key 的全部同步轮次等待者；清空该 key 的等待者与文本累计。 */
+  private resolveTurnWaiters(key: string, result: SessionTurnResult): void {
+    const waiters = this.turnWaiters.get(key);
+    this.turnWaiters.delete(key);
+    this.turnStates.delete(key);
+    if (!waiters) return;
+    for (const waiter of waiters) waiter.resolve(result);
+  }
+
+  /** 移除尚未结算的等待者；若该 key 已无等待者则同时清理文本累计。 */
+  private removeTurnWaiter(key: string, waiter: TurnWaiter): void {
+    const waiters = this.turnWaiters.get(key);
+    if (!waiters) return;
+    const index = waiters.indexOf(waiter);
+    if (index >= 0) waiters.splice(index, 1);
+    if (waiters.length === 0) {
+      this.turnWaiters.delete(key);
+      this.turnStates.delete(key);
     }
   }
 
@@ -171,9 +301,13 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
     prompt: string;
     parentId?: string;
     images?: ImageInput[];
-  }): Promise<SubmitDecision> {
+  }, fingerprint: string): Promise<SubmitDecision> {
     const key = `${this.sessionId}:${input.requestId}`;
-    const idem = this.idempotency.check(key);
+    const idem = this.idempotency.check(key, fingerprint);
+    if (idem.status === "payload-conflict") {
+      // 同 requestId 不同载荷（进程内可识别）：拒绝，不返回旧结果，也不重复执行。
+      return { kind: "conflict", reason: "payload-mismatch" };
+    }
     if (idem.status === "done") {
       // 已处理过：返回原结果，不重复执行
       return { kind: "done", result: idem.result };
@@ -184,7 +318,7 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
         const persisted = await this.idempotencyRepo.get(this.sessionId, input.requestId);
         if (this.disposed) throw new SessionDeletedError(this.sessionId); // 查库期间被删除
         if (persisted !== null) {
-          this.idempotency.complete(key, persisted);
+          this.idempotency.complete(key, persisted, fingerprint);
           return { kind: "done", result: persisted };
         }
       } catch (error) {
@@ -217,6 +351,7 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
       this.currentTaskId = taskId;
       this.currentKey = key;
       this.currentRequestId = input.requestId;
+      this.currentFingerprint = fingerprint;
       // 清空上一任务的终态，避免旧 error/aborted 污染本任务
       this.lastStopReason = null;
       this.lastErrorMessage = null;
@@ -230,6 +365,7 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
         parentId: input.parentId,
         images: input.images,
         key,
+        fingerprint,
       });
       return { kind: "run" };
     }
@@ -241,6 +377,7 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
         parentId: input.parentId,
         images: input.images,
         key,
+        fingerprint,
       };
       this.pending.set(taskId, task);
       RESUME_REGISTRY.set(taskId, (id) => this.startQueuedTask(id));
@@ -307,11 +444,24 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
     return { kind: "ok" };
   }
 
-  /** POST /v1/sessions/:id/abort：queued 取消排队；streaming 中止并释放槽位；其余 409。 */
-  async abort(): Promise<ControlDecision> {
+  /**
+   * POST /v1/sessions/:id/abort：queued 取消排队；streaming 中止并释放槽位；其余 409。
+   * 提供 expectedRequestId 时，必须匹配 queued/streaming/aborting 中的当前任务；不匹配时
+   * 在任何状态变更、adapter.abort 或 aborted 事件之前返回 conflict。
+   */
+  async abort(expectedRequestId?: string): Promise<ControlDecision> {
     if (this.disposed) throw new SessionDeletedError(this.sessionId);
+    const queuedTaskId = this.taskState === "queued" ? this.firstPendingTaskId() : null;
+    const activeRequestId = queuedTaskId === null
+      ? this.currentRequestId
+      : this.pending.get(queuedTaskId)?.requestId ?? null;
+    if (expectedRequestId !== undefined && expectedRequestId !== activeRequestId) {
+      return { kind: "conflict" };
+    }
     if (this.taskState === "queued") {
-      const taskId = this.firstPendingTaskId();
+      const taskId = queuedTaskId;
+      // 排队取消也要绑定被取消任务的 requestId（从 pending 取出，可能与后续任务不同）。
+      let canceledRequestId: string | undefined;
       if (taskId !== null) {
         const canceled = this.concurrency.cancelQueued(taskId);
         if (!canceled) {
@@ -319,13 +469,16 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
           this.continuePromoted(this.concurrency.finish(taskId));
         }
         const task = this.pending.get(taskId);
-        if (task) this.idempotency.fail(task.key);
+        if (task) {
+          canceledRequestId = task.requestId;
+          this.idempotency.fail(task.key);
+        }
         this.pending.delete(taskId);
         RESUME_REGISTRY.delete(taskId);
         EXPIRY_REGISTRY.delete(taskId);
       }
       this.taskState = transition("queued", "abort")!; // → idle
-      this.emitEvent({ type: "aborted" });
+      this.emitEvent({ type: "aborted", requestId: canceledRequestId });
       return { kind: "ok" };
     }
     if (this.taskState === "streaming") {
@@ -386,12 +539,23 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
         this.turnFirstTokenTime = this.now();
       }
     }
-    // status（agent_start/turn_start）附加当前 requestId，作为直跑路径的服务端确认信号
-    if (translated.type === "status") {
-      this.emitEvent({ ...translated, requestId: this.currentRequestId ?? undefined });
-    } else {
-      this.emitEvent(translated);
+    // 同步轮次（runTurn）文本累计：只累计当前 task（currentKey）对应的 requestId 状态；
+    // 旧请求的事件绝不会写入新请求的状态，从而隔离 session 级事件流。
+    if (translated.type === "text_delta" && this.currentKey !== null) {
+      const turnState = this.turnStates.get(this.currentKey);
+      if (turnState !== undefined) {
+        turnState.text += translated.text;
+        if (!turnState.overflow && turnState.text.length > turnState.maxText) {
+          turnState.overflow = true;
+          // 超限：中止本轮，避免继续消耗模型资源；settle 时按 overflow 返回 error。
+          void this.abort().catch(() => {});
+        }
+      }
     }
+    // 所有 turn 相关事件都携带当前 requestId（P7b）：客户端据此把同轮事件归组，
+    // 并把迟到/补发的旧事件与新请求隔离。仅在活动窗口（streaming/aborting）处理，
+    // 因此 stray 事件与 settle 遗落事件绝不会绑到下一个 request。
+    this.emitEvent({ ...translated, requestId: this.currentRequestId ?? undefined });
     // 当前事件先发出再调度自动中止：避免 abort 同步触发的事件在本次 tool_end 之前进入 SSE（顺序倒置）
     if (budgetAbort) {
       void this.abort().catch(() => {
@@ -461,6 +625,7 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
     this.currentTaskId = taskId;
     this.currentKey = task.key;
     this.currentRequestId = task.requestId;
+    this.currentFingerprint = task.fingerprint;
     // 清空上一任务的终态，避免旧 error/aborted 污染本任务
     this.lastStopReason = null;
     this.lastErrorMessage = null;
@@ -479,7 +644,8 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
     EXPIRY_REGISTRY.delete(taskId);
     this.idempotency.fail(task.key);
     this.taskState = transition("queued", "abort")!; // → idle
-    this.emitEvent({ type: "error", message: "排队超时" });
+    // 排队超时用**该排队任务自己的** requestId（而非当前/下一个任务）。
+    this.emitEvent({ type: "error", message: "排队超时", requestId: task.requestId });
     this.observe({
       type: "queue_expired",
       sessionId: this.sessionId,
@@ -506,9 +672,23 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
     const taskId = this.currentTaskId;
     const key = this.currentKey;
     const requestId = this.currentRequestId;
+    const fingerprint = this.currentFingerprint;
+    // 在清空 currentKey 前捕获本 key 专属的同步轮次文本/超限状态。
+    const turnState = key !== null ? this.turnStates.get(key) : undefined;
+    const turnText = turnState?.text ?? "";
+    const turnOverflow = turnState?.overflow ?? false;
     this.currentTaskId = null;
     this.currentKey = null;
     this.currentRequestId = null;
+    this.currentFingerprint = null;
+    // 终态结果先用参数确定，保证即使后续 usage/事件异常也会在 finally 中结算等待者。
+    const turnResult: SessionTurnResult = turnOverflow
+      ? { status: "error", message: "助手输出超过宿主上限" }
+      : outcome === "completed"
+        ? { status: "completed", text: turnText }
+        : outcome === "aborted"
+          ? { status: "aborted" }
+          : { status: "error", message: message ?? "任务失败" };
 
     try {
       // 读取 usage 并发送 timing 统计（仅当存在有效数据时才推送，避免测试/空跑时产生无意义事件）
@@ -527,6 +707,8 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
             totalTokens: usage?.totalTokens ?? 0,
             durationMs,
             ttftMs,
+            // requestId 已在清空 currentRequestId 之前捕获：终态系列永远归属本请求。
+            requestId: requestId ?? undefined,
           });
         }
         // 观测埋点：调用耗时 + usage（脱敏，独立于 SSE 事件流）
@@ -572,7 +754,7 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
         } else {
           result = { status: "error", message: message ?? "任务失败" };
         }
-        this.idempotency.complete(key, result);
+        this.idempotency.complete(key, result, fingerprint ?? undefined);
         // 持久化终态（fire-and-forget 但捕获拒绝），重启后重复 requestId 返回同一结果不重复执行
         if (this.idempotencyRepo && requestId) {
           void this.idempotencyRepo
@@ -583,9 +765,11 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
         }
       }
 
-      if (outcome === "completed") this.emitEvent({ type: "completed" });
-      else if (outcome === "error") this.emitEvent({ type: "error", message: message ?? "任务失败" });
-      else this.emitEvent({ type: "aborted" });
+      // 终态事件使用清空 currentRequestId 之前捕获的 requestId，绝不归属后继请求。
+      if (outcome === "completed") this.emitEvent({ type: "completed", requestId: requestId ?? undefined });
+      else if (outcome === "error") {
+        this.emitEvent({ type: "error", message: message ?? "任务失败", requestId: requestId ?? undefined });
+      } else this.emitEvent({ type: "aborted", requestId: requestId ?? undefined });
     } finally {
       // 释放并发槽位必须在 finally：即使统计/事件/观测异常也不泄漏；
       // 返回的出队 taskId 依次接续执行（dequeue）
@@ -596,6 +780,8 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
       if (this.taskState === "terminal") {
         this.taskState = transition("terminal", "release")!; // → idle
       }
+      // 只结算该 key 的同步轮次等待者；其他请求的等待者不受影响。
+      if (key !== null) this.resolveTurnWaiters(key, turnResult);
     }
   }
 

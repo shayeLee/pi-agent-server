@@ -105,8 +105,8 @@ describe("RuntimeRegistry（会话 ↔ runtime/事件总线绑定管理）", () 
       expect(replayed.map((s) => s.id)).toEqual([1, 2, 3]);
       expect(replayed.map((s) => s.event)).toEqual([
         { type: "status", phase: "agent_start", requestId: "r1" },
-        { type: "text_delta", text: "hi" },
-        { type: "completed" },
+        { type: "text_delta", text: "hi", requestId: "r1" },
+        { type: "completed", requestId: "r1" },
       ]);
     });
 

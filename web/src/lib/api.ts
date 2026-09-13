@@ -1,7 +1,7 @@
 // pi-agent-server HTTP API 客户端（对应 needs.md §4.2 与知识库能力接口）。
 // token 只保存在内存（needs.md §7：不 localStorage 存凭证）。
 
-import type { ModelInfo, Project, SessionRecord } from "../types.js";
+import type { AccessCapabilities, ModelInfo, Project, SessionRecord } from "../types.js";
 
 export type SendMessageInput = {
   requestId: string;
@@ -79,6 +79,11 @@ export class ApiClient {
     defaultThinkingLevel: string;
   }> {
     return this.request("GET", "/v1/models");
+  }
+
+  /** 宿主访问能力投影：由服务端中央矩阵派生；用于隐藏无写权限的操作入口。 */
+  getAccess(): Promise<AccessCapabilities> {
+    return this.request("GET", "/v1/access");
   }
 
   updateSessionConfig(

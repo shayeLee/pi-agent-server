@@ -8,6 +8,16 @@ import type { AgentAdapter } from "../../src/agent/agent-adapter.js";
 import { ConcurrencyController } from "../../src/core/concurrency-control.js";
 import type { IdempotencyStorePort } from "../../src/application/ports/index.js";
 import { makeTestIpAccess } from "../helpers/ip-access.js";
+import {
+  GIF_2X2_BASE64,
+  JPEG_2X2_BASE64,
+  PNG_2X2_BASE64,
+  PNG_DIM_100000X10_BASE64,
+  PNG_TRUNCATED_BASE64,
+  SVG_PRETENDING_PNG_BASE64,
+} from "../helpers/image-fixtures.js";
+import { IMAGE_INPUT_LIMITS } from "../../src/agent/image-input.js";
+import { TURN_TEXT_LIMITS } from "../../src/core/text-input.js";
 
 // WP5D-2：身份 = 直接 socket IP（一个 IP = 一个用户）
 const TOKEN = "10.0.0.1";
@@ -123,7 +133,7 @@ describe("HTTP 层：messages / steer / follow-ups / abort（needs.md §4.2）",
       expect((exported.json() as { lastEventId: number }).lastEventId).toBeGreaterThan(0);
     });
 
-    it("重复 requestId（任务完成后）返回 200 done 不重复执行", async () => {
+    it("重复 requestId（任务完成后、载荷相同）返回 200 done 不重复执行", async () => {
       const { app, adapters } = await makeApp(async () => new MockAgentAdapter([
         { type: "agent_end", messages: [], willRetry: false },
       ]));
@@ -138,11 +148,28 @@ describe("HTTP 层：messages / steer / follow-ups / abort（needs.md §4.2）",
 
       const second = await post(app, `/v1/sessions/${id}/messages`, TOKEN, {
         requestId: "r1",
-        prompt: "重复",
+        prompt: "首次",
       });
       expect(second.statusCode).toBe(200);
       expect(second.body).toEqual({ status: "completed" });
       // 未重复执行：prompt 只调用一次
+      const adapter = adapters.get(id) as MockAgentAdapter;
+      expect(adapter.calls.filter((c) => c.method === "prompt")).toHaveLength(1);
+    });
+
+    it("同一 requestId 不同载荷：409 固定文案且不返回旧结果", async () => {
+      const { app, adapters } = await makeApp(async () => new MockAgentAdapter([
+        { type: "agent_end", messages: [], willRetry: false },
+      ]));
+      const id = await createSession(app, TOKEN);
+
+      await post(app, `/v1/sessions/${id}/messages`, TOKEN, { requestId: "r1", prompt: "首次" });
+      await flush();
+
+      const res = await post(app, `/v1/sessions/${id}/messages`, TOKEN, { requestId: "r1", prompt: "SECRET-REPLAY-PAYLOAD" });
+      expect(res.statusCode).toBe(409);
+      // 响应只含固定文案，不回显重放载荷
+      expect(JSON.stringify(res.body)).not.toContain("SECRET-REPLAY-PAYLOAD");
       const adapter = adapters.get(id) as MockAgentAdapter;
       expect(adapter.calls.filter((c) => c.method === "prompt")).toHaveLength(1);
     });
@@ -158,8 +185,8 @@ describe("HTTP 层：messages / steer / follow-ups / abort（needs.md §4.2）",
       const { app, adapters } = await makeApp(async () => new MockAgentAdapter());
       const id = await createSession(app, TOKEN);
       const images = [
-        { mediaType: "image/png", base64: "aGVsbG8=" },
-        { mediaType: "image/jpeg", base64: "d29ybGQ=" },
+        { mediaType: "image/png", base64: PNG_2X2_BASE64 },
+        { mediaType: "image/jpeg", base64: JPEG_2X2_BASE64 },
       ];
 
       const res = await post(app, `/v1/sessions/${id}/messages`, TOKEN, {
@@ -173,6 +200,104 @@ describe("HTTP 层：messages / steer / follow-ups / abort（needs.md §4.2）",
       await flush(); // 等待后台进入 adapter 后再断言调用
       const adapter = adapters.get(id) as MockAgentAdapter;
       expect(adapter.calls).toEqual([{ method: "prompt", text: "看图", images }]);
+    });
+
+    it("仅图片消息允许空 prompt，并把原始空文本与已验证图片传给 adapter", async () => {
+      const { app, adapters } = await makeApp(async () => new MockAgentAdapter());
+      const id = await createSession(app, TOKEN);
+      const images = [{ mediaType: "image/png", base64: PNG_2X2_BASE64 }];
+
+      const res = await post(app, `/v1/sessions/${id}/messages`, TOKEN, {
+        requestId: "image-only",
+        prompt: "",
+        images,
+      });
+      expect(res.statusCode).toBe(202);
+      await flush();
+      const adapter = adapters.get(id) as MockAgentAdapter;
+      expect(adapter.calls).toEqual([{ method: "prompt", text: "", images }]);
+    });
+
+    it("空 prompt 且没有图片仍返回 400，不创建 runtime", async () => {
+      const { app, adapters } = await makeApp(async () => new MockAgentAdapter());
+      const id = await createSession(app, TOKEN);
+      const res = await post(app, `/v1/sessions/${id}/messages`, TOKEN, {
+        requestId: "empty",
+        prompt: "",
+      });
+      expect(res.statusCode).toBe(400);
+      expect(adapters.size).toBe(0);
+    });
+
+    it("图片验证失败：400 固定文案且 adapter 完全未被调用（不创建 runtime）", async () => {
+      const { app, adapters } = await makeApp(async () => new MockAgentAdapter());
+      const id = await createSession(app, TOKEN);
+
+      const cases: Array<{ body: unknown }> = [
+        { body: { requestId: "r1", prompt: "p", images: [{ mediaType: "image/png", base64: "aGVsbG8=" }] } },
+        { body: { requestId: "r1", prompt: "p", images: [{ mediaType: "image/png", base64: SVG_PRETENDING_PNG_BASE64 }] } },
+        { body: { requestId: "r1", prompt: "p", images: [{ mediaType: "image/png", base64: JPEG_2X2_BASE64 }] } },
+        { body: { requestId: "r1", prompt: "p", images: [{ mediaType: "image/gif", base64: GIF_2X2_BASE64 }] } },
+        { body: { requestId: "r1", prompt: "p", images: [{ mediaType: "image/png", base64: PNG_TRUNCATED_BASE64 }] } },
+        { body: { requestId: "r1", prompt: "p", images: [{ mediaType: "image/png", base64: PNG_DIM_100000X10_BASE64 }] } },
+        { body: { requestId: "r1", prompt: "p", images: "not-an-array" } },
+      ];
+      for (const { body } of cases) {
+        const res = await post(app, `/v1/sessions/${id}/messages`, TOKEN, body);
+        expect(res.statusCode).toBe(400);
+        // 400 响应绝不回显图片内容/prompt/SVG；只允许出现固定字段路径文案
+        const serialized = JSON.stringify(res.body);
+        expect(serialized).not.toContain("aGVsbG8=" );
+        expect(serialized).not.toContain(SVG_PRETENDING_PNG_BASE64);
+        expect(serialized).not.toContain("<svg");
+        expect(serialized).not.toContain("\"p\"");
+      }
+      // 所有失败都在 runtime/SDK 之前拦截：无 adapter、无运行时分派
+      await flush();
+      expect(adapters.size).toBe(0);
+      expect(adapters.get(id)).toBeUndefined();
+    });
+
+    it("图片数量超预检预算：400 且 adapter 未调用", async () => {
+      const { app, adapters } = await makeApp(async () => new MockAgentAdapter());
+      const id = await createSession(app, TOKEN);
+      const images = Array.from({ length: IMAGE_INPUT_LIMITS.maxImages + 1 }, () => ({
+        mediaType: "image/png",
+        base64: PNG_2X2_BASE64,
+      }));
+
+      const res = await post(app, `/v1/sessions/${id}/messages`, TOKEN, { requestId: "r1", prompt: "p", images });
+      expect(res.statusCode).toBe(400);
+      await flush();
+      expect(adapters.size).toBe(0);
+    });
+
+    it("requestId/prompt 长度与控制字符：400 不泄漏内容", async () => {
+      const { app, adapters } = await makeApp(async () => new MockAgentAdapter());
+      const id = await createSession(app, TOKEN);
+
+      const oversizedRequestId = await post(app, `/v1/sessions/${id}/messages`, TOKEN, {
+        requestId: "r".repeat(TURN_TEXT_LIMITS.maxRequestIdLength + 1),
+        prompt: "p",
+      });
+      expect(oversizedRequestId.statusCode).toBe(400);
+      expect(JSON.stringify(oversizedRequestId.body)).not.toContain("rrrr");
+
+      const oversizedPrompt = await post(app, `/v1/sessions/${id}/messages`, TOKEN, {
+        requestId: "r",
+        prompt: "p".repeat(TURN_TEXT_LIMITS.maxPromptLength + 1),
+      });
+      expect(oversizedPrompt.statusCode).toBe(400);
+
+      const controlChars = await post(app, `/v1/sessions/${id}/messages`, TOKEN, {
+        requestId: "r",
+        prompt: "bad\u0000prompt",
+      });
+      expect(controlChars.statusCode).toBe(400);
+      expect(JSON.stringify(controlChars.body)).not.toContain("bad");
+
+      await flush();
+      expect(adapters.size).toBe(0);
     });
 
     it("不存在的会话返回 404", async () => {
@@ -327,6 +452,49 @@ describe("HTTP 层：messages / steer / follow-ups / abort（needs.md §4.2）",
       const abort = await post(app, `/v1/sessions/${id}/abort`, TOKEN);
       expect(abort.statusCode).toBe(204);
 
+      const adapter = adapters.get(id) as ManualAdapter;
+      expect(adapter.aborted).toBe(true);
+      adapter.finishStream();
+      await flush();
+    });
+
+    it("abort body 的 requestId 精确关联：匹配中止，不匹配不调用 adapter.abort", async () => {
+      const { app, adapters } = await makeApp(async () => new ManualAdapter());
+      const id = await createSession(app, TOKEN);
+
+      await post(app, `/v1/sessions/${id}/messages`, TOKEN, { requestId: "r1", prompt: "问题" });
+      const mismatch = await post(app, `/v1/sessions/${id}/abort`, TOKEN, { requestId: "other-request" });
+      expect(mismatch.statusCode).toBe(409);
+      const adapter = adapters.get(id) as ManualAdapter;
+      expect(adapter.calls).toEqual([{ method: "prompt", text: "问题" }]);
+
+      const match = await post(app, `/v1/sessions/${id}/abort`, TOKEN, { requestId: "r1" });
+      expect(match.statusCode).toBe(204);
+      expect(adapter.aborted).toBe(true);
+      adapter.finishStream();
+      await flush();
+    });
+
+    it("abort body 省略兼容；提供时必须严格为合法 {requestId}", async () => {
+      const { app, adapters } = await makeApp(async () => new ManualAdapter());
+      const id = await createSession(app, TOKEN);
+      const invalidBodies: unknown[] = [
+        {},
+        null,
+        { requestId: "" },
+        { requestId: 1 },
+        { requestId: "r\u0000" },
+        { requestId: "r".repeat(TURN_TEXT_LIMITS.maxRequestIdLength + 1) },
+        { requestId: "r1", extra: true },
+      ];
+      for (const body of invalidBodies) {
+        expect((await post(app, `/v1/sessions/${id}/abort`, TOKEN, body)).statusCode).toBe(400);
+      }
+      expect(adapters.size).toBe(0);
+
+      await post(app, `/v1/sessions/${id}/messages`, TOKEN, { requestId: "r1", prompt: "问题" });
+      // 无 body 是旧接口语义：不指定 selector，仍可中止当前任务。
+      expect((await post(app, `/v1/sessions/${id}/abort`, TOKEN)).statusCode).toBe(204);
       const adapter = adapters.get(id) as ManualAdapter;
       expect(adapter.aborted).toBe(true);
       adapter.finishStream();

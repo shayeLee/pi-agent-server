@@ -11,6 +11,11 @@ import { readFileSync, statSync, writeFileSync } from "node:fs";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { readPiJsonlExport } from "../../src/agent/pi-jsonl-conversation-storage.js";
 import { PiAgentAdapter, type AgentSessionLike } from "../../src/agent/pi-agent-adapter.js";
+import {
+  JPEG_2X2_BASE64,
+  PNG_2X2_BASE64,
+  PNG_TRUNCATED_BASE64,
+} from "../helpers/image-fixtures.js";
 
 function makeSessionDir(): string {
   return mkdtempSync(path.join(tmpdir(), "pi-history-reader-"));
@@ -57,6 +62,96 @@ describe("PiJsonlConversationStorage（只读导出解析）", () => {
       messages: manager.buildSessionContext().messages as unknown[],
     } as unknown as AgentSessionLike);
     expect(await live.exportSession()).toEqual(exported);
+  });
+
+  it("含图片的 JSONL：只读投影与活会话导出逐字节一致（user images，assistant 纯文本）", async () => {
+    const dir = makeSessionDir();
+    const file = path.join(dir, "with-images.jsonl");
+    writeFileSync(
+      file,
+      [
+        '{"type":"session","version":3,"id":"sess-img","timestamp":"2026-01-01T00:00:00.000Z","cwd":"/tmp/project"}',
+        `{"type":"message","id":"m1","parentId":null,"timestamp":"2026-01-01T00:00:01.000Z","message":{"role":"user","content":[{"type":"text","text":"看图"},{"type":"image","data":"${PNG_2X2_BASE64}","mimeType":"image/png"},{"type":"image","data":"${JPEG_2X2_BASE64}","mimeType":"image/jpeg"}],"timestamp":1}}`,
+        '{"type":"message","id":"m2","parentId":"m1","timestamp":"2026-01-01T00:00:02.000Z","message":{"role":"assistant","content":[{"type":"text","text":"看到了"}],"timestamp":2}}',
+        "",
+      ].join("\n"),
+    );
+    const before = fingerprint(file);
+    const exported = (await readPiJsonlExport(file)) as unknown;
+
+    expect(exported).toEqual([
+      {
+        role: "user",
+        text: "看图",
+        images: [
+          { mediaType: "image/png", base64: PNG_2X2_BASE64 },
+          { mediaType: "image/jpeg", base64: JPEG_2X2_BASE64 },
+        ],
+      },
+      { role: "assistant", text: "看到了" },
+    ]);
+
+    // 与活会话导出（同一投影函数）逐字节一致
+    const live = new PiAgentAdapter({
+      messages: [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "看图" },
+            { type: "image", data: PNG_2X2_BASE64, mimeType: "image/png" },
+            { type: "image", data: JPEG_2X2_BASE64, mimeType: "image/jpeg" },
+          ],
+        },
+        { role: "assistant", content: [{ type: "text", text: "看到了" }] },
+      ],
+    } as unknown as AgentSessionLike);
+    expect(JSON.stringify(await live.exportSession())).toBe(JSON.stringify(exported));
+    // 只读解析零写：文件指纹不变
+    expect(fingerprint(file)).toBe(before);
+  });
+
+  it("含畸形图片块的 JSONL：只读导出 fail-closed 省略该块且不报错", async () => {
+    const dir = makeSessionDir();
+    const file = path.join(dir, "bad-image.jsonl");
+    writeFileSync(
+      file,
+      [
+        '{"type":"session","version":3,"id":"sess-bad-img","timestamp":"2026-01-01T00:00:00.000Z","cwd":"/tmp/project"}',
+        `{"type":"message","id":"m1","parentId":null,"timestamp":"2026-01-01T00:00:01.000Z","message":{"role":"user","content":[{"type":"text","text":"看图"},{"type":"image","data":"${PNG_TRUNCATED_BASE64}","mimeType":"image/png"},{"type":"image","data":"%%%","mimeType":"image/png"},{"type":"image","data":"${PNG_2X2_BASE64}","mimeType":"image/png"},{"type":"image","data":"not-an-image","mimeType":"application/octet-stream"}],"timestamp":1}}`,
+        "",
+      ].join("\n"),
+    );
+
+    const exported = (await readPiJsonlExport(file)) as Array<{ images?: unknown[] }>;
+    expect(exported).toEqual([
+      { role: "user", text: "看图", images: [{ mediaType: "image/png", base64: PNG_2X2_BASE64 }] },
+    ]);
+  });
+
+  it("用真实 SDK 写入含图片的 JSONL，并验证持久化结构可被导出投影识别", async () => {
+    const dir = makeSessionDir();
+    const manager = SessionManager.create("/tmp/project", dir);
+    type AppendArg = Parameters<SessionManager["appendMessage"]>[0];
+    // 按 SDK ImageContent 的真实形状写入（{type,data,mimeType}），确认持久化结构而非猜测。
+    manager.appendMessage({
+      role: "user",
+      content: [
+        { type: "text", text: "看图" },
+        { type: "image", data: PNG_2X2_BASE64, mimeType: "image/png" },
+      ],
+    } as unknown as AppendArg);
+    manager.appendMessage({ role: "assistant", content: [{ type: "text", text: "ok" }] } as unknown as AppendArg);
+    const file = manager.getSessionFile();
+    if (!file) throw new Error("fixture session file missing");
+
+    // 原始 JSONL 确实存的是 {type,data,mimeType}（不是 source.base64）
+    const raw = readFileSync(file, "utf8");
+    expect(raw).toContain('"type":"image","data":"' + PNG_2X2_BASE64 + '","mimeType":"image/png"');
+
+    expect(await readPiJsonlExport(file)).toEqual([
+      { role: "user", text: "看图", images: [{ mediaType: "image/png", base64: PNG_2X2_BASE64 }] },
+      { role: "assistant", text: "ok" },
+    ]);
   });
 
   it("零写：读取后文件 stat + sha256 指纹逐字节不变", async () => {

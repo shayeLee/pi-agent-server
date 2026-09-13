@@ -5,6 +5,7 @@ import { DuplicateIdError, ProjectForeignKeyError } from "../../src/application/
 import { ConversationStorageRegistry } from "../../src/application/ports/index.js";
 import type {
   ConversationReservationInput,
+  IdempotencyStorePort,
   ModelCatalogPort,
   ProjectRecord,
   ProjectStorePort,
@@ -14,6 +15,7 @@ import type {
 } from "../../src/application/ports/index.js";
 import { ConcurrencyController } from "../../src/core/concurrency-control.js";
 import { MockAgentAdapter } from "../../src/agent/mock-agent-adapter.js";
+import type { AgentSdkEvent } from "../../src/agent/events.js";
 import { RuntimeRegistry } from "../../src/runtime/runtime-registry.js";
 
 class MemorySessions implements SessionStorePort {
@@ -189,6 +191,64 @@ class HangingAdapter extends MockAgentAdapter {
   }
 }
 
+/** prompt 挂起直到 finishStream() 释放的可控 adapter；事件由测试手动 emit。 */
+class ManualPromptAdapter extends MockAgentAdapter {
+  private release: (() => void) | undefined;
+
+  override async prompt(text: string): Promise<void> {
+    this.calls.push({ method: "prompt", text });
+    await new Promise<void>((resolve) => {
+      this.release = resolve;
+    });
+  }
+
+  finishStream(): void {
+    const release = this.release;
+    this.release = undefined;
+    release?.();
+  }
+}
+
+/**
+ * 可暂停 `get` 的幂等仓储：用它在 runTurn 的 submit 异步窗口内制造旧请求终态，
+ * 从而稳定复现“旧 event 串 request”的竞态。
+ */
+class DeferredIdempotencyRepo implements IdempotencyStorePort {
+  private readonly records = new Map<string, unknown>();
+  private readonly held = new Map<string, { promise: Promise<unknown | null>; resolve: (value: unknown | null) => void }>();
+
+  hold(sessionId: string, requestId: string): void {
+    const key = `${sessionId}:${requestId}`;
+    let resolve!: (value: unknown | null) => void;
+    const promise = new Promise<unknown | null>((r) => {
+      resolve = r;
+    });
+    this.held.set(key, { promise, resolve });
+  }
+
+  release(sessionId: string, requestId: string, value: unknown | null = null): void {
+    const key = `${sessionId}:${requestId}`;
+    const entry = this.held.get(key);
+    this.held.delete(key);
+    entry?.resolve(value);
+  }
+
+  async get(sessionId: string, requestId: string): Promise<unknown | null> {
+    const key = `${sessionId}:${requestId}`;
+    const entry = this.held.get(key);
+    if (entry) return entry.promise;
+    return this.records.get(key) ?? null;
+  }
+
+  async put(sessionId: string, requestId: string, result: unknown): Promise<void> {
+    this.records.set(`${sessionId}:${requestId}`, result);
+  }
+
+  async prune(): Promise<number> {
+    return 0;
+  }
+}
+
 const registries: RuntimeRegistry[] = [];
 afterEach(() => registries.splice(0).forEach((registry) => registry.dispose()));
 
@@ -204,6 +264,7 @@ function makeService(
   now: () => number = () => 1234,
   systemPromptResolver?: (cwd: string) => Promise<string>,
   conversationStorage?: ConversationStorageRegistry,
+  idempotencyRepo?: IdempotencyStorePort,
 ) {
   const projects = projectsOverride ?? new MemoryProjects(sessions);
   // 默认项目落库（与真实 SQLite 实现的 ensureDefaultProject 对齐）：resolveProject 现按查库判定。
@@ -218,6 +279,7 @@ function makeService(
       adapters.set(id, adapter);
       return adapter;
     },
+    ...(idempotencyRepo !== undefined ? { idempotencyRepo } : {}),
   });
   registries.push(registry);
   const removed: string[] = [];
@@ -312,6 +374,31 @@ describe("SessionService", () => {
     expect(await sessions.get("id-2")).toMatchObject({ ownerKey: "owner-a", title: "会话T" });
   });
 
+  it("指定/预约 sessionId：严格使用该 id 创建，不消耗 createId", async () => {
+    const { service, sessions } = makeService();
+    const created = createdSession(
+      await service.createSession("owner-a", { sessionId: "resv-1", title: "预约会话" }),
+    );
+    expect(created.id).toBe("resv-1");
+    expect(sessions.createAttempts).toEqual(["resv-1"]);
+    expect(await sessions.get("resv-1")).toMatchObject({ ownerKey: "owner-a", title: "预约会话" });
+  });
+
+  it("指定/预约 sessionId 撞库返回 id-conflict，绝不换 id 重试（预约语义不可破坏）", async () => {
+    const { service, sessions } = makeService(undefined, undefined, undefined, new AlwaysConflictSessions());
+    const result = await service.createSession("owner-a", { sessionId: "resv-2" });
+    expect(result).toEqual({ kind: "id-conflict" });
+    expect(sessions.createAttempts).toEqual(["resv-2"]);
+  });
+
+  it("指定/预约 sessionId 非法时拒绝，且不触达存储", async () => {
+    const { service, sessions } = makeService();
+    for (const bad of ["", " ", "a b", "a/b", "..", "-leading", "x".repeat(201)]) {
+      await expect(service.createSession("owner-a", { sessionId: bad })).rejects.toThrow(/预留会话 id 非法/);
+    }
+    expect(sessions.createAttempts).toEqual([]);
+  });
+
   it("会话连续 DuplicateIdError 达到重试上限时明确失败且不无限循环；cause 是最后一次 DuplicateIdError", async () => {
     const { service, sessions } = makeService(undefined, undefined, undefined, new AlwaysConflictSessions());
 
@@ -333,6 +420,154 @@ describe("SessionService", () => {
       .then(() => null, (e: unknown) => e);
     expect((err as Error).message).toBe("存储层未知异常");
     expect(sessions.createAttempts).toEqual(["id-1"]); // 普通错误不重试
+  });
+
+  it("createSession 使用非空 systemPromptOverride 冻结提示词且不调用 resolver", async () => {
+    let resolveCalls = 0;
+    const resolver = async () => {
+      resolveCalls += 1;
+      return "resolver 提示词";
+    };
+    const { service, sessions } = makeService(
+      undefined, undefined, undefined, undefined, undefined,
+      undefined, undefined, resolver,
+    );
+
+    const created = createdSession(await service.createSession("owner-a", {
+      systemPromptOverride: "内部 profile 提示词",
+    }));
+
+    expect(created.systemPrompt).toBe("内部 profile 提示词");
+    expect((await sessions.get(created.id))?.systemPrompt).toBe("内部 profile 提示词");
+    expect(resolveCalls).toBe(0);
+  });
+
+  it("createSession 拒绝空字符串 systemPromptOverride", async () => {
+    const { service } = makeService();
+
+    await expect(service.createSession("owner-a", {
+      systemPromptOverride: "",
+    })).rejects.toThrow("会话系统提示词覆盖不能为空");
+  });
+
+  it("createSession 追加 systemPromptAppend：先取 resolver 的完整提示词，再以空行分隔安全追加并冻结", async () => {
+    const resolverCwds: string[] = [];
+    const resolver = async (cwd: string) => {
+      resolverCwds.push(cwd);
+      return "Pi 默认完整提示词";
+    };
+    const { service, sessions } = makeService(
+      undefined, undefined, undefined, undefined, undefined,
+      undefined, undefined, resolver,
+    );
+
+    const created = createdSession(await service.createSession("owner-a", {
+      systemPromptAppend: "仅只读查询。",
+    }));
+
+    // 追加语义：默认提示词完整保留在最前，片段附在其后（与 Pi 原生 append 一致的空行分隔）。
+    expect(created.systemPrompt).toBe("Pi 默认完整提示词\n\n仅只读查询。");
+    expect((await sessions.get(created.id))?.systemPrompt).toBe("Pi 默认完整提示词\n\n仅只读查询。");
+    expect(resolverCwds).toEqual(["/workspace/default"]);
+  });
+
+  it("createSession 追加 systemPromptAppend 时不修改服务端默认提示词配置（Pi 默认 prompt 不变）", async () => {
+    const { service, sessions } = makeService(
+      undefined, undefined, undefined, undefined, undefined,
+      undefined, undefined, async () => "Pi 默认完整提示词",
+    );
+
+    const plain = createdSession(await service.createSession("owner-a", {}));
+    const appended = createdSession(await service.createSession("owner-a", {
+      systemPromptAppend: "插件片段",
+    }));
+
+    expect((await sessions.get(plain.id))?.systemPrompt).toBe("Pi 默认完整提示词");
+    expect((await sessions.get(appended.id))?.systemPrompt).toBe("Pi 默认完整提示词\n\n插件片段");
+  });
+
+  it("createSession 在无解析器且无服务端提示词时对 systemPromptAppend fail-closed（不静默退化为只留片段）", async () => {
+    const { service, sessions } = makeService();
+
+    await expect(service.createSession("owner-a", { systemPromptAppend: "插件片段" }))
+      .rejects.toThrow("无法解析系统提示词，不能执行会话系统提示词追加");
+    expect(sessions.createAttempts).toEqual([]); // 未写入任何会话
+  });
+
+  it("createSession 无解析器但注入了服务端整体提示词时，systemPromptAppend 追加到它之后", async () => {
+    // 直接组装 SessionService：makeService 不暴露 systemPrompt 配置入口，而这条路径
+    // 正是 `PI_SYSTEM_PROMPT` 与追加来源共存时的行为。
+    const sessions = new MemorySessions();
+    const projects = new MemoryProjects(sessions);
+    await projects.ensureDefaultProject({
+      id: DEFAULT_PROJECT_ID, name: "默认项目", cwd: "/workspace/default", ownerKey: "", createdAt: 0,
+    });
+    const registry = new RuntimeRegistry({
+      concurrency: new ConcurrencyController({
+        globalLimit: 20, perUserLimit: 2, perUserQueueLimit: 10, globalQueueLimit: 100, queueTimeoutMs: 300_000,
+      }),
+      createAdapter: async () => new MockAgentAdapter(),
+    });
+    registries.push(registry);
+    const service = new SessionService({
+      sessions,
+      projects,
+      registry,
+      defaultProjectCwd: "/workspace/default",
+      systemPrompt: "服务端整体提示词",
+      createId: () => "id-1",
+      now: () => 1234,
+    });
+
+    const created = createdSession(await service.createSession("owner-a", { systemPromptAppend: "插件片段" }));
+
+    expect((await sessions.get(created.id))?.systemPrompt).toBe("服务端整体提示词\n\n插件片段");
+  });
+
+  it("createSession 拒绝空白 systemPromptAppend", async () => {
+    const { service } = makeService();
+
+    await expect(service.createSession("owner-a", { systemPromptAppend: "  " }))
+      .rejects.toThrow("会话系统提示词追加不能为空");
+  });
+
+  it("createSession 拒绝同时提供 systemPromptOverride 与 systemPromptAppend（二者互斥）", async () => {
+    let resolveCalls = 0;
+    const resolver = async () => {
+      resolveCalls += 1;
+      return "解析结果";
+    };
+    const { service, sessions } = makeService(
+      undefined, undefined, undefined, undefined, undefined,
+      undefined, undefined, resolver,
+    );
+
+    await expect(service.createSession("owner-a", {
+      systemPromptOverride: "覆盖",
+      systemPromptAppend: "追加",
+    })).rejects.toThrow("会话系统提示词覆盖与追加不能同时提供");
+    expect(resolveCalls).toBe(0);
+    expect(sessions.createAttempts).toEqual([]); // 互斥校验先于任何写入
+  });
+
+  it("createSession 追加 systemPromptAppend 撞库重试时 resolver 只调用一次（快照冻结于首次）", async () => {
+    let resolveCalls = 0;
+    const resolver = async () => {
+      resolveCalls += 1;
+      return "冻结的默认提示词";
+    };
+    const { service, sessions } = makeService(
+      undefined, undefined, undefined,
+      new ConflictOnceSessions(),
+      undefined, undefined, undefined, resolver,
+    );
+
+    const created = createdSession(await service.createSession("owner-a", { systemPromptAppend: "片段" }));
+
+    expect(created.id).toBe("id-2");
+    expect(resolveCalls).toBe(1);
+    expect((await sessions.get("id-2"))?.systemPrompt).toBe("冻结的默认提示词\n\n片段");
+    expect(sessions.createAttempts).toEqual(["id-1", "id-2"]);
   });
 
   it("createSession 撞库重试时 now / systemPromptResolver / 能力快照只计算一次（重试循环外冻结）", async () => {
@@ -528,5 +763,163 @@ describe("SessionService", () => {
     expect(await sessions.get(second.id)).toBeNull();
     // WP4A：服务层不得直接 unlink；文件副作用由持久 file_operations outbox 处理。
     expect(removed).toEqual([]);
+  });
+
+  describe("runTurn", () => {
+    function events(text: string, stopReason = "stop"): AgentSdkEvent[] {
+      return [
+        { type: "agent_start" },
+        {
+          type: "message_update",
+          message: {},
+          assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: text },
+        },
+        { type: "agent_end", messages: [{ role: "assistant", stopReason }] },
+      ];
+    }
+
+    it("完成一轮并返回助手文本，且绑定 owner/session/requestId", async () => {
+      const adapter = new MockAgentAdapter(events("你好"));
+      const { service } = makeService(async () => adapter);
+      const session = createdSession(await service.createSession("owner-a", { title: "t" }));
+
+      const result = await service.runTurn("owner-a", {
+        sessionId: session.id,
+        requestId: "req-1",
+        prompt: "生成原型",
+      });
+      expect(result).toEqual({ status: "completed", text: "你好" });
+      expect(adapter.calls).toEqual([{ method: "prompt", text: "生成原型" }]);
+
+      // 越权/未知 owner 返回 null，绝不触达 adapter。
+      expect(
+        await service.runTurn("owner-b", { sessionId: session.id, requestId: "req-2", prompt: "x" }),
+      ).toBeNull();
+      expect(await service.runTurn("owner-a", { sessionId: "missing", requestId: "req-3", prompt: "x" })).toBeNull();
+    });
+
+    it("错误终态返回 error，abort 返回 aborted", async () => {
+      const errorAdapter = new MockAgentAdapter([
+        { type: "agent_start" },
+        { type: "agent_end", messages: [{ role: "assistant", stopReason: "error", errorMessage: "模型失败" }] },
+      ]);
+      const { service: errorService } = makeService(async () => errorAdapter);
+      const errorSession = createdSession(await errorService.createSession("owner-a", {}));
+      expect(
+        await errorService.runTurn("owner-a", { sessionId: errorSession.id, requestId: "e", prompt: "p" }),
+      ).toEqual({ status: "error", message: "模型失败" });
+
+      const abortAdapter = new MockAgentAdapter([
+        { type: "agent_start" },
+        { type: "agent_end", messages: [{ role: "assistant", stopReason: "aborted" }] },
+      ]);
+      const { service: abortService } = makeService(async () => abortAdapter);
+      const abortSession = createdSession(await abortService.createSession("owner-a", {}));
+      expect(
+        await abortService.runTurn("owner-a", { sessionId: abortSession.id, requestId: "a", prompt: "p" }),
+      ).toEqual({ status: "aborted" });
+    });
+
+    it("session 正忙时返回 busy 且不触发模型", async () => {
+      const hanging = new HangingAdapter();
+      const { service } = makeService(async () => hanging);
+      const session = createdSession(await service.createSession("owner-a", {}));
+      // 先占用会话（流式任务不结束）。
+      const submitted = await service.submitMessage("owner-a", session.id, {
+        requestId: "hold",
+        prompt: "占用",
+      });
+      expect(submitted).toMatchObject({ found: true, decision: { kind: "run" } });
+
+      const result = await service.runTurn("owner-a", {
+        sessionId: session.id,
+        requestId: "busy-probe",
+        prompt: "不应执行",
+      });
+      expect(result).toEqual({ status: "busy" });
+      expect(hanging.calls.filter((call) => call.method === "prompt")).toHaveLength(1);
+    });
+
+    it("同一 requestId 重放不再执行模型（无文本可重放）", async () => {
+      let prompts = 0;
+      const adapter = new MockAgentAdapter(events("结果"));
+      const { service } = makeService(async () => {
+        prompts += 1;
+        return adapter;
+      });
+      const session = createdSession(await service.createSession("owner-a", {}));
+      const first = await service.runTurn("owner-a", { sessionId: session.id, requestId: "same", prompt: "p" });
+      expect(first).toEqual({ status: "completed", text: "结果" });
+      const replay = await service.runTurn("owner-a", { sessionId: session.id, requestId: "same", prompt: "p" });
+      expect(replay).toMatchObject({ status: "error" });
+      expect(prompts).toBe(1);
+    });
+
+    it("竞态：submit 异步窗口内旧请求的 text/终态绝不串入新 requestId 的 runTurn", async () => {
+      // 旧实现订阅 session 级事件总线：在 submit 的 async 前，旧请求的 text_delta/completed
+      // 会被误归属为新 runTurn 的结果。新实现按 requestId（currentKey）专属累计与结算。
+      const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+      const repo = new DeferredIdempotencyRepo();
+      const adapter = new ManualPromptAdapter();
+      const { service } = makeService(
+        async () => adapter,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        repo,
+      );
+      const session = createdSession(await service.createSession("owner-a", {}));
+
+      // 旧任务进入 streaming（prompt 挂起）。
+      await service.submitMessage("owner-a", session.id, { requestId: "old", prompt: "旧" });
+
+      // 新 runTurn 的 submit 在幂等查询处暂停，制造稳定、可观测的异步窗口。
+      repo.hold(session.id, "new");
+      const pending = service.runTurn("owner-a", { sessionId: session.id, requestId: "new", prompt: "新" });
+      await tick();
+
+      // 窗口内到达旧请求的文本与终态（session 级事件）。
+      adapter.emit({
+        type: "message_update",
+        message: {},
+        assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "OLD" },
+      });
+      adapter.emit({ type: "agent_end", messages: [{ role: "assistant", stopReason: "stop" }] });
+      adapter.finishStream(); // 旧任务 settle → 合成 session 级 completed
+      await tick();
+
+      // 放行新请求的幂等查询：session 已空闲，新任务启动。
+      repo.release(session.id, "new");
+      await tick();
+      adapter.emit({
+        type: "message_update",
+        message: {},
+        assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "NEW" },
+      });
+      adapter.emit({ type: "agent_end", messages: [{ role: "assistant", stopReason: "stop" }] });
+      adapter.finishStream();
+
+      const result = await pending;
+      expect(result).toEqual({ status: "completed", text: "NEW" });
+      expect(adapter.calls.filter((call) => call.method === "prompt")).toEqual([
+        { method: "prompt", text: "旧" },
+        { method: "prompt", text: "新" },
+      ]);
+    });
+
+    it("助手文本超过上限时中止本轮并返回 error", async () => {
+      const huge = "x".repeat(256 * 1024 + 1);
+      const adapter = new MockAgentAdapter(events(huge));
+      const { service } = makeService(async () => adapter);
+      const session = createdSession(await service.createSession("owner-a", {}));
+      const result = await service.runTurn("owner-a", { sessionId: session.id, requestId: "big", prompt: "p" });
+      expect(result).toEqual({ status: "error", message: "助手输出超过宿主上限" });
+      expect(adapter.aborted).toBe(true);
+    });
   });
 });

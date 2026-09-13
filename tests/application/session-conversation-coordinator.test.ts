@@ -4,6 +4,7 @@ import {
   ConversationStorageRegistry,
   PI_AGENT_KIND,
   PI_CONVERSATION_FORMAT,
+  type AgentSessionContext,
   type AgentSessionFactory,
   type ConversationDescriptor,
 } from "../../src/application/ports/index.js";
@@ -86,14 +87,19 @@ function setup(sessions: MemorySessions, refs: string[], actualRefs: string[] = 
   prepared: () => number;
   opened: () => number;
   restored: () => number;
+  prepareContexts: () => readonly AgentSessionContext[];
+  restoreContexts: () => readonly AgentSessionContext[];
 } {
   let prepareCount = 0;
   let openCount = 0;
   let restoreCount = 0;
+  const prepareContexts: AgentSessionContext[] = [];
+  const restoreContexts: AgentSessionContext[] = [];
   const factory: AgentSessionFactory = {
     agentKind: PI_AGENT_KIND,
     conversationFormat: PI_CONVERSATION_FORMAT,
-    async prepareNew() {
+    async prepareNew(context) {
+      prepareContexts.push(context);
       const ref = refs[prepareCount++] ?? `opaque-${prepareCount}`;
       const conversation = { agentKind: PI_AGENT_KIND, conversationFormat: PI_CONVERSATION_FORMAT, conversationRef: ref } satisfies ConversationDescriptor & { conversationRef: string };
       return {
@@ -108,7 +114,8 @@ function setup(sessions: MemorySessions, refs: string[], actualRefs: string[] = 
         },
       };
     },
-    async restore() {
+    async restore(context) {
+      restoreContexts.push(context);
       restoreCount++;
       return new MockAgentAdapter();
     },
@@ -148,6 +155,8 @@ function setup(sessions: MemorySessions, refs: string[], actualRefs: string[] = 
     prepared: () => prepareCount,
     opened: () => openCount,
     restored: () => restoreCount,
+    prepareContexts: () => prepareContexts,
+    restoreContexts: () => restoreContexts,
   };
 }
 
@@ -192,6 +201,33 @@ describe("SessionConversationCoordinator", () => {
     expect(first.opened()).toBe(1);
     expect(second.opened()).toBe(0);
     expect(second.restored()).toBe(1);
+  });
+
+  it("contextOf 把 SessionRecord.systemPrompt 透传给创建与恢复上下文", async () => {
+    const sessions = new MemorySessions();
+    await sessions.create({ ...record("create"), systemPrompt: "创建提示词" });
+    await sessions.create({ ...record("restore"), conversationRef: "existing-ref", systemPrompt: "恢复提示词" });
+    const state = setup(sessions, ["opaque-create"]);
+
+    await state.coordinator.createAdapter("create");
+    await state.coordinator.createAdapter("restore");
+
+    expect(state.prepareContexts()[0]?.systemPrompt).toBe("创建提示词");
+    expect(state.restoreContexts()[0]?.systemPrompt).toBe("恢复提示词");
+  });
+
+  it("已冻结的追加快照在恢复时按字面量透传，绝不重新解析或重复追加", async () => {
+    const frozen = "Pi 默认完整提示词\n\n插件追加片段";
+    const sessions = new MemorySessions();
+    await sessions.create({ ...record("restore"), conversationRef: "existing-ref", systemPrompt: frozen });
+    const state = setup(sessions, ["opaque-restore"]);
+
+    await state.coordinator.createAdapter("restore");
+
+    // 协调层只搬运快照：不拼接、不再追加，也不清空默认提示词。
+    expect(state.restoreContexts()[0]?.systemPrompt).toBe(frozen);
+    expect(state.restoreContexts()[0]?.isNewSession).toBe(false);
+    expect(state.prepared()).toBe(0);
   });
 });
 

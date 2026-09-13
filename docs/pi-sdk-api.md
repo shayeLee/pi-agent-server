@@ -56,10 +56,13 @@ volta run node --input-type=module -e \
 - `defineTool` + TypeBox `Type` 声明 name/label/description/parameters/execute，注册进 `customTools`，并把工具名列入 `tools` 白名单（needs.md §4.3「工具注册表」的读/写/执行映射）。
 - 内置工具名：`read`、`bash`、`edit`、`write`、`grep`、`find`、`ls`；默认内置 `read`/`bash`/`edit`/`write`。`noTools: "all"` 全禁、`noTools: "builtin"` 只禁默认内置、`excludeTools` 在 `tools` 白名单之后按名补禁。
 - needs.md §4.3「默认只读」实现：未配置时 `tools: ["read", "ls", "find", "grep"]`，并显式列出能力声明的 `customTools`。
+- 显式加载的受信外部插件工具同样经 `customTools` 注册，并同时进入 `tools` 白名单；仅把工具名写入白名单不会注册执行实现。
 
 ### 3.5 资源加载与系统提示词（安全边界）
 
-⚠️ `DefaultResourceLoader` 默认自动发现 `<cwd>/.pi/extensions`、skills、prompts、`AGENTS.md`、themes 及 `agentDir` 下全局资源——直接使用会加载未声明扩展与上下文。needs.md §7 要求只从 manifest 注入受控资源：使用不自动发现的自定义 `ResourceLoader`，或清空各类 override 与 append-system-prompt。系统提示词经 `systemPromptOverride` 按已启用能力组合生成并冻结，固定不变。
+⚠️ `DefaultResourceLoader` 默认自动发现 `<cwd>/.pi/extensions`、skills、prompts、`AGENTS.md`、themes 及 `agentDir` 下全局资源——直接使用会加载未声明扩展与上下文。needs.md §7 要求只从 manifest 注入受控资源：使用不自动发现的自定义 `ResourceLoader`，或清空各类 override 与 append-system-prompt。会话创建时冻结系统提示词；带 mode profile 的会话创建和恢复均使用该冻结提示词对应的受控 ResourceLoader。
+
+外部插件 mode 的**追加**提示词（P7c）不经过资源加载器的 append 通道：宿主先经 `SystemPromptPort` 取得该项目在 Pi 侧的完整提示词，再以与 `buildSystemPrompt` 相同的空行分隔追加片段，把合并结果作为会话快照冻结进 `sessions.system_prompt`；恢复时按该字面量 override 复用，不重新解析、不重复追加。旧的 `systemPrompt` 整体覆盖语义保持不变，二者互斥。
 
 ### 3.6 SettingsManager
 
@@ -72,12 +75,27 @@ volta run node --input-type=module -e \
 | SDK 事件 | SSE 事件 |
 |---|---|
 | `message_update`（`text_delta`） | `text_delta` |
+| `message_update`（`thinking_delta`） | `thinking_delta` |
 | `tool_execution_start` / `tool_execution_update` / `tool_execution_end` | `tool_start` / `tool_update` / `tool_end` |
 | `agent_start` / `turn_start` | `status` |
 | `agent_end`（成功） | `completed` |
 | `abort()` 调用或异常 | `aborted` / `error` |
 
 `queued` 由服务层在任务进入模型队列时产生；`completed`/`aborted`/`error` 无直接 SDK 事件，由服务层根据 `agent_end`、异常与 `abort()` 合成。
+
+**turn 事件携带 `requestId`（P7b）**：`translateSdkEvent` 只做 SDK→SSE 的纯映射，不填 `requestId`；`SessionRuntime` 在发射每个 turn 相关事件时统一附加当前任务的 `requestId`（`text_delta`/`thinking_delta`/`tool_start`/`tool_update`/`tool_end`/`status`/`usage`/`queued`/`error`/`completed`/`aborted`）。关键语义：
+
+- 事件仅在活动窗口（`streaming` 或 `aborting`）处理，stray 事件与已结算后的迟到事件一律忽略，绝不绑定到下一个 `requestId`；
+- 队列超时（`handleExpired`）用**被超时任务自己的** `requestId`，而非当前/下一个任务；
+- `settle` 在清空 `currentRequestId` **之前**捕获该值，终态与 `usage` 一律归属本请求；
+- 类型上 `requestId` 仍为可选（`SseRequestId`），仅用于非 turn 遗留场景；正常 turn 的发射路径总是携带具体值并有测试断言。
+
+### 3.8 图片输入（P7a 核对结论）
+
+- `PromptOptions.images` / `steer(text, images)` / `followUp(text, images)` 的图片元素类型是 `@earendil-works/pi-ai` 的 `ImageContent`，**当前 0.85.1 的真实形状为 `{ type: "image", data: string (base64), mimeType: string }`**；并不存在 `source.base64` 包裹层（该形状是早期误判，已在 P7a 修正）。`src/agent/pi-agent-adapter.ts` 的 `SdkImageContent` 与之逐字段对齐，并有编译期兼容断言（tests/agent/image-input.test.ts）。
+- `AgentSession.prompt` 直接把这些图片块 push 进 user content，并在 JSONL 中以同形状持久化（`{"type":"image","data":...,"mimeType":...}`）；因此只读导出（`buildSessionContext`）与活会话导出（`session.messages`）看到的是同一结构。
+- `detectSupportedImageMimeType`（`utils/mime`）能嗅探 png/jpeg/gif/webp/bmp，但会在 `isAnimatedPng` 命中时返回 `null`；宿主 P7a 策略更严：只接受静态 `image/png`、`image/jpeg`、`image/webp`，由 `src/agent/image-input.ts` 以真实魔数+头部尺寸重新验证，不依赖上游嗅探。
+- SDK 自带的图片处理（`utils/image-process`、`image-resize`）面向工具结果与终端显示，依赖可选的原生 Photon；宿主 P7a **不**调用它们，也不引入任何原生图像依赖：压缩由客户端完成，宿主只做校验与透传。
 
 ## 4. 签名明细（不在本文维护）
 

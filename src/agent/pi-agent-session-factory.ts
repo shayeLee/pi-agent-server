@@ -8,6 +8,7 @@ import {
   SessionManager,
   SettingsManager,
   type ResourceLoader,
+  type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { PiAgentAdapter, type AgentSessionLike } from "./pi-agent-adapter.js";
 import type { AgentAdapter } from "./agent-adapter.js";
@@ -27,8 +28,14 @@ import { classifyPiJsonlReference } from "./pi-jsonl-reference.js";
 export type PiAgentSessionFactoryOptions = {
   readonly modelRuntime: ModelRuntime;
   readonly resourceLoader: ResourceLoader;
+  /**
+   * 可选的会话级资源加载器解析器：当 context.systemPrompt 存在时，用它解析
+   * 该会话专属的 ResourceLoader；未提供或会话无提示词时回退到共享 resourceLoader。
+   */
+  readonly resourceLoaderForSystemPrompt?: (systemPrompt: string) => Promise<ResourceLoader>;
   readonly defaultModel?: ReturnType<ModelRuntime["getModel"]>;
   readonly defaultThinkingLevel?: string;
+  readonly customTools?: readonly ToolDefinition[];
   readonly agentToolConfig: {
     readonly tools?: readonly string[];
     readonly noTools?: "all" | "builtin";
@@ -44,15 +51,19 @@ export class PiAgentSessionFactory implements AgentSessionFactory {
   readonly conversationFormat = PI_CONVERSATION_FORMAT;
   private readonly modelRuntime: ModelRuntime;
   private readonly resourceLoader: ResourceLoader;
+  private readonly resourceLoaderForSystemPrompt: PiAgentSessionFactoryOptions["resourceLoaderForSystemPrompt"];
   private readonly defaultModel: ReturnType<ModelRuntime["getModel"]> | undefined;
   private readonly defaultThinkingLevel: string | undefined;
+  private readonly customTools: readonly ToolDefinition[] | undefined;
   private readonly agentToolConfig: PiAgentSessionFactoryOptions["agentToolConfig"];
 
   constructor(options: PiAgentSessionFactoryOptions) {
     this.modelRuntime = options.modelRuntime;
     this.resourceLoader = options.resourceLoader;
+    this.resourceLoaderForSystemPrompt = options.resourceLoaderForSystemPrompt;
     this.defaultModel = options.defaultModel;
     this.defaultThinkingLevel = options.defaultThinkingLevel;
+    this.customTools = options.customTools;
     this.agentToolConfig = options.agentToolConfig;
   }
 
@@ -120,12 +131,13 @@ export class PiAgentSessionFactory implements AgentSessionFactory {
     const options: PiCreateOptions = {
       sessionManager,
       modelRuntime: this.modelRuntime,
-      resourceLoader: this.resourceLoader,
+      resourceLoader: await this.resolveResourceLoader(context),
       settingsManager: SettingsManager.inMemory(),
       cwd: context.projectCwd,
       ...(model ? { model } : {}),
       ...(thinkingLevel ? { thinkingLevel: thinkingLevel as NonNullable<PiCreateOptions["thinkingLevel"]> } : {}),
       ...toolConfig,
+      ...(this.customTools !== undefined ? { customTools: [...this.customTools] } : {}),
     };
     const { session } = await createAgentSession(options);
     return {
@@ -134,6 +146,12 @@ export class PiAgentSessionFactory implements AgentSessionFactory {
       ),
       sessionFile: session.sessionFile ?? null,
     };
+  }
+
+  private async resolveResourceLoader(context: AgentSessionContext): Promise<ResourceLoader> {
+    if (context.systemPrompt === null || context.systemPrompt === undefined) return this.resourceLoader;
+    if (!this.resourceLoaderForSystemPrompt) return this.resourceLoader;
+    return this.resourceLoaderForSystemPrompt(context.systemPrompt);
   }
 
   private sessionDirectory(context: AgentSessionContext): string {

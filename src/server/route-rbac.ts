@@ -3,8 +3,8 @@
 // 冻结矩阵（每路由显式声明 permission，未声明 → default-deny 403）：
 // - /health、/readyz：任意 admitted role；
 // - /metrics：仅 admin/operator；
-// - /v1：viewer 允许纯读 GET（models/projects/sessions 列表、session export、SSE events），
-//   拒绝全部 POST/PATCH/DELETE（含 messages/steer/follow-up/abort）与其余 /v1 路由；
+// - /v1：viewer 允许纯读 GET（models/projects/sessions 列表、session export、SSE events、
+//   access 能力投影），拒绝全部 POST/PATCH/DELETE（含 messages/steer/follow-up/abort）与其余 /v1 路由；
 // - operator：/v1 全部拒绝（403）；user/admin：现有 own-resource 行为（仍 owner 隔离，
 //   admin 暂不跨 owner）。
 //
@@ -44,7 +44,10 @@ export type RoutePermission =
   | "sessions:send-message"
   | "sessions:control"
   | "sessions:export"
-  | "sessions:events";
+  | "sessions:events"
+  | "capability:read"
+  | "capability:write"
+  | "access:read";
 
 /** 中央权限定义：permission → 允许角色集合（default-deny：不在集合内 → 403）。 */
 export const ROUTE_PERMISSIONS: Record<RoutePermission, readonly IpRole[]> = {
@@ -58,6 +61,11 @@ export const ROUTE_PERMISSIONS: Record<RoutePermission, readonly IpRole[]> = {
   "sessions:list": ["admin", "user", "viewer"],
   "sessions:export": ["admin", "user", "viewer"],
   "sessions:events": ["admin", "user", "viewer"],
+  // 外部能力插件：查询允许 viewer/user/admin；变更允许 user/admin。
+  "capability:read": ["admin", "user", "viewer"],
+  "capability:write": ["admin", "user"],
+  // P7b 宿主访问能力投影端点：与其它纯读 GET 同为 viewer/user/admin；operator 仍拒。
+  "access:read": ["admin", "user", "viewer"],
   // 写/变更：user/admin（仍 owner 隔离；admin 暂不跨 owner）。
   "projects:create": ["admin", "user"],
   "projects:delete": ["admin", "user"],
@@ -68,6 +76,45 @@ export const ROUTE_PERMISSIONS: Record<RoutePermission, readonly IpRole[]> = {
   "sessions:send-message": ["admin", "user"],
   "sessions:control": ["admin", "user"], // steer / follow-up / abort
 };
+
+/**
+ * P7b 宿主访问能力投影（`GET /v1/access` 的最小固定响应体）：`{canRead, canWrite}`。
+ *
+ * 只返回布尔值，绝不携带 role/IP/token；由中央矩阵 `ROUTE_PERMISSIONS` +
+ * `evaluateRouteAuthorization` 派生，端点与授权矩阵不会漂移。
+ *
+ * - `canRead`：读类权限（会话列表/导出/事件流 + 能力查询）是否**全部**对 role 开放
+ *   （当前 viewer/user/admin）；
+ * - `canWrite`：写/控制类权限（`sessions:send-message`、`sessions:control`、
+ *   `capability:write`）是否**全部**对 role 开放（当前 user/admin）。
+ *
+ * 采用「全部允许」的交集语义：当前矩阵中这三项与读写两极完全一致；未来若矩阵出现分项
+ * 不一致，布尔值只会更保守（少报可写），前端可据此隐藏写操作，绝不误放行。
+ */
+export type AccessCapabilities = { readonly canRead: boolean; readonly canWrite: boolean };
+
+const READ_CAPABILITY_PERMISSIONS: readonly RoutePermission[] = [
+  "sessions:list",
+  "sessions:export",
+  "sessions:events",
+  "capability:read",
+];
+
+const WRITE_CAPABILITY_PERMISSIONS: readonly RoutePermission[] = [
+  "sessions:send-message",
+  "sessions:control",
+  "capability:write",
+];
+
+/** 从中央矩阵推导访问能力投影；role 缺失/未知/伪造 → 两项均为 false（failclosed）。 */
+export function projectAccessCapabilities(role: unknown): AccessCapabilities {
+  const allows = (permission: RoutePermission): boolean =>
+    evaluateRouteAuthorization(permission, role).verdict === "allowed";
+  return {
+    canRead: READ_CAPABILITY_PERMISSIONS.every(allows),
+    canWrite: WRITE_CAPABILITY_PERMISSIONS.every(allows),
+  };
+}
 
 export function isRoutePermission(value: unknown): value is RoutePermission {
   return typeof value === "string" && Object.hasOwn(ROUTE_PERMISSIONS, value);

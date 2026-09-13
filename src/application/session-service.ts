@@ -8,8 +8,11 @@ import type {
   SessionRecord,
   SessionRecordPatch,
   SessionStorePort,
+  SessionTurnResult,
   SystemPromptPort,
 } from "./ports/index.js";
+import { PLUGIN_RUN_TURN_LIMITS } from "../plugin/contract.js";
+import type { ImageInput } from "../agent/agent-adapter.js";
 import {
   DEFAULT_PROJECT_ID,
   DuplicateIdError,
@@ -24,6 +27,12 @@ import {
 } from "../runtime/runtime-registry.js";
 
 export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+
+/**
+ * 系统提示词追加分隔符：与 Pi SDK `buildSystemPrompt` 的 append 段一致（空行分隔），
+ * 保证宿主追加的片段在形态上与 Pi 原生 appendSystemPrompt 无差异。
+ */
+const SYSTEM_PROMPT_APPEND_SEPARATOR = "\n\n";
 
 /**
  * 主键/唯一 ID 冲突的有界重试上限：INSERT 撞库后用新 ID 最多再重试 MAX_ID_RETRIES 次
@@ -69,7 +78,9 @@ export type CreateSessionResult =
   | { kind: "project-not-found" }
   | { kind: "invalid-model" }
   | { kind: "invalid-thinking-level" }
-  | { kind: "model-check-failed" };
+  | { kind: "model-check-failed" }
+  /** 仅指定/预约 id 的创建路径：id 已存在，绝不换 id 重试（重试会破坏预约语义）。 */
+  | { kind: "id-conflict" };
 
 export type SubmitResult =
   | { found: false }
@@ -77,6 +88,12 @@ export type SubmitResult =
       found: true;
       decision: Awaited<ReturnType<SessionEntry["runtime"]["submitMessage"]>>;
     };
+
+/**
+ * 插件同步轮次结果（宿主内部）：与公开 `PluginTurnResult` 一致；
+ * `runTurn` 额外可用 `null` 表示会话不存在/不属于当前 owner。
+ */
+export type RunTurnResult = SessionTurnResult;
 
 export class SessionService {
   /** 删除进行中的项目墓碑：拒绝并发创建会话到正在删除的项目（避免留下孤儿会话）。 */
@@ -175,8 +192,38 @@ export class SessionService {
       modelProvider?: string;
       modelId?: string;
       thinkingLevel?: string;
+      /**
+       * 系统提示词**整体覆盖**（旧语义，保持不变，仅为兼容既有插件保留）。
+       * 与 {@link systemPromptAppend} 二选一且非空；提供时不调用解析器。
+       */
+      systemPromptOverride?: string;
+      /**
+       * 系统提示词**追加**（宿主通用能力，不含任何插件专属逻辑）：宿主先用
+       * {@link SessionServiceDeps.systemPromptResolver} 解析项目的完整提示词（Pi 默认
+       * 提示词或服务端整体提示词），再把该片段安全追加到末尾并冻结为会话快照。
+       * 与 {@link systemPromptOverride} 二选一且非空；恢复会话时按快照字面量复用，绝不重复追加。
+       */
+      systemPromptAppend?: string;
+      /**
+       * 宿主预约的会话 id（仅插件宿主内部使用，HTTP 层不暴露）。提供时必须为合法
+       * 且未占用的 id；撞库返回 id-conflict 而**不**换 id 重试，保证预约 id 语义。
+       */
+      sessionId?: string;
     },
   ): Promise<CreateSessionResult> {
+    if (input.systemPromptOverride !== undefined && input.systemPromptOverride.trim() === "") {
+      throw new Error("会话系统提示词覆盖不能为空");
+    }
+    if (input.systemPromptAppend !== undefined && input.systemPromptAppend.trim() === "") {
+      throw new Error("会话系统提示词追加不能为空");
+    }
+    // 覆盖（旧语义）与追加（通用新能力）互斥：二者同时提供会让「Pi 默认提示词是否保留」
+    // 变得不确定，因此在这里 fail-fast，绝不静默选择其一。
+    if (input.systemPromptOverride !== undefined && input.systemPromptAppend !== undefined) {
+      throw new Error("会话系统提示词覆盖与追加不能同时提供");
+    }
+    const reservedId = input.sessionId;
+    if (reservedId !== undefined) assertReservedSessionId(reservedId);
     const projectId = input.projectId ?? DEFAULT_PROJECT_ID;
     // 项目删除进行中：拒绝创建会话，避免留下孤儿会话
     if (this.deletingProjects.has(projectId)) return { kind: "project-not-found" };
@@ -219,9 +266,7 @@ export class SessionService {
       modelProvider: input.modelProvider ?? null,
       modelId: input.modelId ?? null,
       thinkingLevel: input.thinkingLevel ?? null,
-      systemPrompt: this.deps.systemPromptResolver
-        ? await this.deps.systemPromptResolver.resolve(project.cwd)
-        : (this.deps.systemPrompt ?? null),
+      systemPrompt: await this.resolveSystemPrompt(project.cwd, input),
       capabilityVersions: this.deps.capabilityVersions
         ? JSON.stringify(this.deps.capabilityVersions)
         : null,
@@ -231,9 +276,10 @@ export class SessionService {
       return { kind: "project-not-found" };
     }
     // 撞库是极低概率事件；仅对存储无关的 DuplicateIdError（仓库层已转换）用新 ID 有界重试，
-    // 其余错误原样抛出。
+    // 其余错误原样抛出。指定/预约 id 的路径不重试：换 id 会破坏预约映射，撞库直接返回
+    // id-conflict。
     for (let attempt = 0; ; attempt++) {
-      const record: SessionRecord = { ...base, id: this.deps.createId() };
+      const record: SessionRecord = { ...base, id: reservedId ?? this.deps.createId() };
       try {
         await this.deps.sessions.create(record);
         return { kind: "created", session: toSessionDto(record) };
@@ -243,6 +289,7 @@ export class SessionService {
         // 外键错误属「非重复 ID」错误，不做重试/转换，仍按既有语义处理。
         if (error instanceof ProjectForeignKeyError) return { kind: "project-not-found" };
         if (!(error instanceof DuplicateIdError)) throw error;
+        if (reservedId !== undefined) return { kind: "id-conflict" };
         if (attempt >= MAX_ID_RETRIES) {
           throw new Error(
             `创建会话失败：主键/唯一 ID 冲突超过重试上限（共 ${MAX_ID_RETRIES + 1} 次尝试）`,
@@ -322,7 +369,7 @@ export class SessionService {
   async submitMessage(
     ownerKey: string,
     id: string,
-    input: { requestId: string; prompt: string; parentId?: string; images?: { mediaType: string; base64: string }[] },
+    input: { requestId: string; prompt: string; parentId?: string; images?: ImageInput[] },
   ): Promise<SubmitResult> {
     const entry = await this.findEntry(ownerKey, id);
     if (!entry) return { found: false };
@@ -330,6 +377,33 @@ export class SessionService {
       found: true,
       decision: await entry.runtime.submitMessage({ ...input, userId: ownerKey }),
     };
+  }
+
+  /**
+   * 在指定 session 上同步执行一轮并返回助手文本（插件宿主专用，HTTP 层不暴露）。
+   *
+   * - owner 必须拥有会话；不存在/越权返回 null。
+   * - 宿主只用 session 创建时冻结的 mode profile，不接受模型/tools/cwd/图片参数。
+   * - 文本/终态由 runtime 按 requestId 专属累计与结算，绝不订阅 session 级事件流，
+   *   因此旧请求在 submit 异步窗口内到达的事件不会串入本请求。
+   * - 仅 idle 时提交并等待 completed/aborted/error；session 忙（active 冲突、限流或
+   *   全局排队）返回 busy 并撤销排队，绝不留下后台任务。
+   * - signal 触发只终止本 requestId 对应的 task，不误杀其他 task，也不因脱离 client
+   *   的请求拖住撤销/优雅停机。
+   * - 助手文本超过 {@link PLUGIN_RUN_TURN_LIMITS.maxAssistantTextLength} 时中止本轮并返回 error。
+   */
+  async runTurn(
+    ownerKey: string,
+    input: { sessionId: string; requestId: string; prompt: string; signal?: AbortSignal },
+  ): Promise<RunTurnResult | null> {
+    const entry = await this.findEntry(ownerKey, input.sessionId);
+    if (!entry) return null;
+    return entry.runtime.runTurn({
+      requestId: input.requestId,
+      prompt: input.prompt,
+      maxAssistantTextLength: PLUGIN_RUN_TURN_LIMITS.maxAssistantTextLength,
+      ...(input.signal !== undefined ? { signal: input.signal } : {}),
+    });
   }
 
   /**
@@ -379,6 +453,7 @@ export class SessionService {
     id: string,
     operation: "steer" | "follow-up" | "abort",
     text?: string,
+    expectedRequestId?: string,
   ): Promise<"not-found" | "ok" | "conflict"> {
     const entry = await this.findEntry(ownerKey, id);
     if (!entry) return "not-found";
@@ -386,7 +461,7 @@ export class SessionService {
       ? await entry.runtime.steer(text!)
       : operation === "follow-up"
         ? await entry.runtime.followUp(text!)
-        : await entry.runtime.abort();
+        : await entry.runtime.abort(expectedRequestId);
     return decision.kind;
   }
 
@@ -437,6 +512,33 @@ export class SessionService {
     };
   }
 
+  /**
+   * 解析会话创建时要冻结的系统提示词：
+   * - 覆盖（旧语义）：直接用字面量，绝不调用解析器、绝不追加默认提示词；
+   * - 追加（宿主通用能力）：先用 SystemPromptPort 取项目完整提示词（Pi 默认或服务端整体
+   *   提示词），再以固定分隔符追加插件片段；
+   * - 均未提供：现有行为不变（解析器或服务端提示词，可能为 null）。
+   *
+   * 追加必须建立在「已知完整提示词」之上：解析器缺失且没有服务端提示词时 fail-closed，
+   * 绝不静默退化为「只保留片段」（那等于丢掉整个 Pi 默认提示词）。
+   * 二者互斥与非空已在 createSession 入口校验；结果整体冻结进 SessionRecord.systemPrompt，
+   * 恢复会话（SessionConversationCoordinator）按快照字面量复用，不再重新解析或重复追加。
+   */
+  private async resolveSystemPrompt(
+    projectCwd: string,
+    input: { systemPromptOverride?: string; systemPromptAppend?: string },
+  ): Promise<string | null> {
+    if (input.systemPromptOverride !== undefined) return input.systemPromptOverride;
+    const base = this.deps.systemPromptResolver
+      ? await this.deps.systemPromptResolver.resolve(projectCwd)
+      : (this.deps.systemPrompt ?? null);
+    if (input.systemPromptAppend === undefined) return base;
+    if (base === null || base === "") {
+      throw new Error("无法解析系统提示词，不能执行会话系统提示词追加");
+    }
+    return `${base}${SYSTEM_PROMPT_APPEND_SEPARATOR}${input.systemPromptAppend}`;
+  }
+
   private async resolveProject(ownerKey: string, projectId: string): Promise<ProjectDto | null> {
     const project = await this.deps.projects.get(projectId);
     if (!project) return null;
@@ -476,6 +578,23 @@ export class SessionService {
 
   private async cleanupRuntimeById(sessionId: string): Promise<void> {
     await this.deps.registry.delete(sessionId);
+  }
+}
+
+const RESERVED_SESSION_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
+const MAX_RESERVED_SESSION_ID_LENGTH = 200;
+
+/**
+ * 校验宿主预约的会话 id：仅允许保守字符集与有限长度，避免把任意字符串写进主键
+ * 或后续会话文件名。插件不能指定 id，此校验只作为宿主实现层的防御。
+ */
+function assertReservedSessionId(id: string): void {
+  if (
+    id.length === 0 ||
+    id.length > MAX_RESERVED_SESSION_ID_LENGTH ||
+    !RESERVED_SESSION_ID_PATTERN.test(id)
+  ) {
+    throw new Error("预留会话 id 非法（仅宿主可生成）");
   }
 }
 

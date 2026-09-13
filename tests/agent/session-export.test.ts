@@ -6,6 +6,13 @@ import {
   type SdkImageContent,
 } from "../../src/agent/pi-agent-adapter.js";
 import type { AgentSdkEvent } from "../../src/agent/events.js";
+import {
+  JPEG_2X2_BASE64,
+  PNG_2X2_BASE64,
+  PNG_TRUNCATED_BASE64,
+  SVG_PRETENDING_PNG_BASE64,
+  WEBP_2X2_BASE64,
+} from "../helpers/image-fixtures.js";
 
 // 会话导出：AgentAdapter.exportSession() 返回会话消息列表（可序列化数据），
 // HTTP GET /v1/sessions/:id/export 直接透传给客户端（needs.md §4.2）。
@@ -74,6 +81,63 @@ describe("会话导出（AgentAdapter.exportSession）", () => {
       expect(await adapter.exportSession()).toEqual([
         { role: "user", text: "hi" },
         { role: "assistant", text: "hello" },
+      ]);
+    });
+
+    it("user 消息的受支持 image 块投影为 images:[{mediaType,base64}]，assistant 保持纯文本", async () => {
+      const messages = [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "看图" },
+            { type: "image", data: PNG_2X2_BASE64, mimeType: "image/png" },
+            { type: "image", data: JPEG_2X2_BASE64, mimeType: "image/jpeg" },
+          ],
+        },
+        {
+          role: "assistant",
+          content: [
+            { type: "text", text: "看到了" },
+            // assistant 内容里即使混入 image 块也不导出（assistant 只保留文本）
+            { type: "image", data: WEBP_2X2_BASE64, mimeType: "image/webp" },
+          ],
+        },
+      ];
+      const session = new ExportFakeSession();
+      session.messages = messages;
+      const adapter = new PiAgentAdapter(session);
+
+      expect(await adapter.exportSession()).toEqual([
+        {
+          role: "user",
+          text: "看图",
+          images: [
+            { mediaType: "image/png", base64: PNG_2X2_BASE64 },
+            { mediaType: "image/jpeg", base64: JPEG_2X2_BASE64 },
+          ],
+        },
+        { role: "assistant", text: "看到了" },
+      ]);
+    });
+
+    it("畸形图片块被静默省略（fail-closed），文本投影不变", async () => {
+      const messages = [
+        {
+          role: "user",
+          content: [
+            { type: "text", text: "看图" },
+            { type: "image", data: SVG_PRETENDING_PNG_BASE64, mimeType: "image/png" },
+            { type: "image", data: PNG_TRUNCATED_BASE64, mimeType: "image/png" },
+            { type: "image", data: PNG_2X2_BASE64, mimeType: "image/png" },
+          ],
+        },
+      ];
+      const session = new ExportFakeSession();
+      session.messages = messages;
+      const adapter = new PiAgentAdapter(session);
+
+      expect(await adapter.exportSession()).toEqual([
+        { role: "user", text: "看图", images: [{ mediaType: "image/png", base64: PNG_2X2_BASE64 }] },
       ]);
     });
   });
