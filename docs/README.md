@@ -18,6 +18,7 @@
 - [database-design.md](database-design.md) —— 数据库设计、Schema Manifest 单一来源、双库方言与迁移约束（canonical baseline；不支持受控 cutover）。
 - [pi-sdk-api.md](pi-sdk-api.md) —— Pi SDK 使用索引（HTTP 接口形态以 `src/server/app.ts` 为准）。
 - [external-capability-plugin-plan.md](external-capability-plugin-plan.md) —— 外部能力插件架构与实施计划（`pi-agent-capability-onev`）。
+- [p8-host-integration-drill.md](p8-host-integration-drill.md) —— P8 宿主侧通用 fixture/fake 插件隔离演练证据。
 - [postgres-podman-test.md](postgres-podman-test.md) —— 本地 PostgreSQL（Podman）测试流程。
 
 ### 决策、数据保留、备份与运维

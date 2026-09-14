@@ -1,13 +1,38 @@
-// 跨包集成：宿主按公开 ESM specifier 加载真实 `pi-agent-capability-onev` 包
-// （node_modules 中的本地链接 → 插件包默认 dist）。此测试直接验证宿主加载器能消费
-// 包默认入口（而非相对路径或内联模块），确保发布出去的 dist 契约真实可用。
+// 跨包集成（正向覆盖）：宿主按公开 ESM specifier 加载真实 `pi-agent-capability-onev` 包，
+// 而不是相对路径、内联模块或测试 fake。先经 createRequire 从仓库根解析包 specifier：
+// 解析不到时显式 skip 并打印原因（绝不静默通过，也不回退到绝对路径或任何插件专属环境变量）；
+// 解析到时才正向 load，并断言宿主加载器真正消费了包默认入口（而非本仓源码）。
+import { createRequire } from "node:module";
 import { describe, expect, it } from "vitest";
 import { PluginLoader } from "../../../src/application/plugins/loader.js";
 
+const PACKAGE_SPECIFIER = "pi-agent-capability-onev";
+// 从仓库根 package.json 解析：与运行时 `import(specifier)` 的 node_modules 解析基准一致，
+// 不使用本文件相对位置，也不读取任何插件环境变量。
+const requireFromProject = createRequire(new URL("../../../package.json", import.meta.url));
+
+let resolvedEntry: string | null = null;
+let resolutionError: string | null = null;
+try {
+  resolvedEntry = requireFromProject.resolve(PACKAGE_SPECIFIER);
+} catch (error) {
+  resolutionError = error instanceof Error ? error.message : String(error);
+}
+
 describe("外部插件包集成（package specifier → 默认 dist）", () => {
-  it("PluginLoader 按 specifier 加载 onev 包并校验 manifest/tools/modes", async () => {
+  it("PluginLoader 按 specifier 加载 onev 包并校验 manifest/tools/modes", async (context) => {
+    if (resolvedEntry === null) {
+      // 依赖缺失是环境状态，不是通过：显式 skip 并给出可复现原因。
+      console.info(
+        `[skip] 未解析到 ${PACKAGE_SPECIFIER}：${resolutionError}。` +
+          "在仓库根 `pnpm install`（或 `pnpm link` 插件包）后重跑以启用该正向覆盖。",
+      );
+      context.skip(`${PACKAGE_SPECIFIER} 未安装，无法验证真实包加载`);
+      return;
+    }
+
     const loader = new PluginLoader({ projectCwd: process.cwd() });
-    const loaded = await loader.load("pi-agent-capability-onev");
+    const loaded = await loader.load(PACKAGE_SPECIFIER);
 
     expect(loaded.manifest.id).toBe("onev");
     expect(loaded.manifest.version).toBe(1);
@@ -21,5 +46,7 @@ describe("外部插件包集成（package specifier → 默认 dist）", () => {
     // 阶段一不产生副作用：加载只是解析与校验，register/dispose 不会被调用。
     expect(typeof loaded.plugin.register).toBe("function");
     expect(typeof loaded.plugin.dispose).toBe("function");
+    // 反向证明：加载的是解析到的包默认入口，而非仓内源码。
+    expect(resolvedEntry).toContain(PACKAGE_SPECIFIER);
   });
 });

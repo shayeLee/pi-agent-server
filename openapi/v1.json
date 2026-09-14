@@ -1,0 +1,2808 @@
+{
+  "openapi": "3.1.1",
+  "info": {
+    "title": "pi-agent-server host API",
+    "version": "1.0.0",
+    "description": "Fixed host API contract v1. Dynamic plugin routes are not part of this document.\nRequest validation semantics: Request bodies use Fastify's AJV baseline: declared types are coerced (`coerceTypes: 'array'`,\nso numbers, booleans, and single-element arrays are accepted where a string is declared) and\nundeclared fields are silently stripped (`removeAdditional: true` combined with\n`additionalProperties: false`) instead of returning 400. A 400 therefore reports a missing\nrequired field or a value that cannot be coerced/constrained, never a wrong scalar type or an\nunknown field."
+  },
+  "x-pi-request-validation": {
+    "coerceTypes": true,
+    "removeAdditional": "silent-strip"
+  },
+  "security": [
+    {
+      "IpAdmission": []
+    },
+    {
+      "IpAdmission": [],
+      "BearerAuth": []
+    }
+  ],
+  "paths": {
+    "/health": {
+      "get": {
+        "operationId": "health",
+        "security": [
+          {
+            "IpAdmission": []
+          }
+        ],
+        "x-pi-rbac": {
+          "permission": "probe:health",
+          "roles": [
+            "admin",
+            "user",
+            "viewer",
+            "operator"
+          ]
+        },
+        "responses": {
+          "200": {
+            "description": "Live.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Health"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "IP admission or RBAC denied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "head": {
+        "operationId": "healthHead",
+        "security": [
+          {
+            "IpAdmission": []
+          }
+        ],
+        "x-pi-rbac": {
+          "permission": "probe:health",
+          "roles": [
+            "admin",
+            "user",
+            "viewer",
+            "operator"
+          ]
+        },
+        "responses": {
+          "200": {
+            "description": "Live; the GET response body is suppressed.",
+            "headers": {
+              "Content-Type": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "const": "application/json; charset=utf-8"
+                }
+              },
+              "Content-Length": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "pattern": "^[0-9]+$"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "IP admission or RBAC denied.",
+            "headers": {
+              "Content-Type": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "const": "application/json; charset=utf-8"
+                }
+              },
+              "Content-Length": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "pattern": "^[0-9]+$"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/readyz": {
+      "get": {
+        "operationId": "readyz",
+        "security": [
+          {
+            "IpAdmission": []
+          }
+        ],
+        "x-pi-rbac": {
+          "permission": "probe:readyz",
+          "roles": [
+            "admin",
+            "user",
+            "viewer",
+            "operator"
+          ]
+        },
+        "responses": {
+          "200": {
+            "description": "Ready.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ready"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "IP admission or RBAC denied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Not ready.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Ready"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/metrics": {
+      "get": {
+        "operationId": "metrics",
+        "security": [
+          {
+            "IpAdmission": []
+          },
+          {
+            "IpAdmission": [],
+            "BearerAuth": []
+          }
+        ],
+        "x-pi-rbac": {
+          "permission": "probe:metrics",
+          "roles": [
+            "admin",
+            "operator"
+          ]
+        },
+        "responses": {
+          "200": {
+            "description": "Prometheus text exposition.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer token required for this admitted IP profile.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "IP admission or RBAC denied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Metrics unavailable.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/access": {
+      "get": {
+        "operationId": "getAccess",
+        "security": [
+          {
+            "IpAdmission": []
+          },
+          {
+            "IpAdmission": [],
+            "BearerAuth": []
+          }
+        ],
+        "x-pi-rbac": {
+          "permission": "access:read",
+          "roles": [
+            "admin",
+            "user",
+            "viewer"
+          ]
+        },
+        "responses": {
+          "200": {
+            "description": "Access projection.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Access"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer token required for this admitted IP profile.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "IP admission or RBAC denied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "head": {
+        "operationId": "getAccessHead",
+        "security": [
+          {
+            "IpAdmission": []
+          },
+          {
+            "IpAdmission": [],
+            "BearerAuth": []
+          }
+        ],
+        "x-pi-rbac": {
+          "permission": "access:read",
+          "roles": [
+            "admin",
+            "user",
+            "viewer"
+          ]
+        },
+        "responses": {
+          "200": {
+            "description": "Access projection; the GET response body is suppressed.",
+            "headers": {
+              "Content-Type": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "const": "application/json; charset=utf-8"
+                }
+              },
+              "Content-Length": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "pattern": "^[0-9]+$"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer token required for this admitted IP profile.",
+            "headers": {
+              "Content-Type": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "const": "application/json; charset=utf-8"
+                }
+              },
+              "Content-Length": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "pattern": "^[0-9]+$"
+                }
+              },
+              "WWW-Authenticate": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "const": "Bearer"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "IP admission or RBAC denied.",
+            "headers": {
+              "Content-Type": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "const": "application/json; charset=utf-8"
+                }
+              },
+              "Content-Length": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "pattern": "^[0-9]+$"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/models": {
+      "get": {
+        "operationId": "listModels",
+        "security": [
+          {
+            "IpAdmission": []
+          },
+          {
+            "IpAdmission": [],
+            "BearerAuth": []
+          }
+        ],
+        "x-pi-rbac": {
+          "permission": "models:list",
+          "roles": [
+            "admin",
+            "user",
+            "viewer"
+          ]
+        },
+        "responses": {
+          "200": {
+            "description": "Available models.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ModelList"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer token required for this admitted IP profile.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "IP admission or RBAC denied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "head": {
+        "operationId": "listModelsHead",
+        "security": [
+          {
+            "IpAdmission": []
+          },
+          {
+            "IpAdmission": [],
+            "BearerAuth": []
+          }
+        ],
+        "x-pi-rbac": {
+          "permission": "models:list",
+          "roles": [
+            "admin",
+            "user",
+            "viewer"
+          ]
+        },
+        "responses": {
+          "200": {
+            "description": "Available models; the GET response body is suppressed.",
+            "headers": {
+              "Content-Type": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "const": "application/json; charset=utf-8"
+                }
+              },
+              "Content-Length": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "pattern": "^[0-9]+$"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer token required for this admitted IP profile.",
+            "headers": {
+              "Content-Type": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "const": "application/json; charset=utf-8"
+                }
+              },
+              "Content-Length": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "pattern": "^[0-9]+$"
+                }
+              },
+              "WWW-Authenticate": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "const": "Bearer"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "IP admission or RBAC denied.",
+            "headers": {
+              "Content-Type": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "const": "application/json; charset=utf-8"
+                }
+              },
+              "Content-Length": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "pattern": "^[0-9]+$"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/projects": {
+      "get": {
+        "operationId": "listProjects",
+        "security": [
+          {
+            "IpAdmission": []
+          },
+          {
+            "IpAdmission": [],
+            "BearerAuth": []
+          }
+        ],
+        "x-pi-rbac": {
+          "permission": "projects:list",
+          "roles": [
+            "admin",
+            "user",
+            "viewer"
+          ]
+        },
+        "responses": {
+          "200": {
+            "description": "Projects.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Project"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer token required for this admitted IP profile.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "IP admission or RBAC denied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "head": {
+        "operationId": "listProjectsHead",
+        "security": [
+          {
+            "IpAdmission": []
+          },
+          {
+            "IpAdmission": [],
+            "BearerAuth": []
+          }
+        ],
+        "x-pi-rbac": {
+          "permission": "projects:list",
+          "roles": [
+            "admin",
+            "user",
+            "viewer"
+          ]
+        },
+        "responses": {
+          "200": {
+            "description": "Projects; the GET response body is suppressed.",
+            "headers": {
+              "Content-Type": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "const": "application/json; charset=utf-8"
+                }
+              },
+              "Content-Length": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "pattern": "^[0-9]+$"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer token required for this admitted IP profile.",
+            "headers": {
+              "Content-Type": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "const": "application/json; charset=utf-8"
+                }
+              },
+              "Content-Length": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "pattern": "^[0-9]+$"
+                }
+              },
+              "WWW-Authenticate": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "const": "Bearer"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "IP admission or RBAC denied.",
+            "headers": {
+              "Content-Type": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "const": "application/json; charset=utf-8"
+                }
+              },
+              "Content-Length": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "pattern": "^[0-9]+$"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "createProject",
+        "security": [
+          {
+            "IpAdmission": []
+          },
+          {
+            "IpAdmission": [],
+            "BearerAuth": []
+          }
+        ],
+        "x-pi-rbac": {
+          "permission": "projects:create",
+          "roles": [
+            "admin",
+            "user"
+          ]
+        },
+        "responses": {
+          "201": {
+            "description": "Created.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Project"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid project input.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer token required for this admitted IP profile.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "IP admission or RBAC denied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateProject"
+              }
+            }
+          }
+        },
+        "x-pi-request-validation": {
+          "coerceTypes": true,
+          "removeAdditional": "silent-strip"
+        },
+        "description": "Request bodies use Fastify's AJV baseline: declared types are coerced (`coerceTypes: 'array'`,\nso numbers, booleans, and single-element arrays are accepted where a string is declared) and\nundeclared fields are silently stripped (`removeAdditional: true` combined with\n`additionalProperties: false`) instead of returning 400. A 400 therefore reports a missing\nrequired field or a value that cannot be coerced/constrained, never a wrong scalar type or an\nunknown field."
+      }
+    },
+    "/v1/projects/{id}": {
+      "delete": {
+        "operationId": "deleteProject",
+        "security": [
+          {
+            "IpAdmission": []
+          },
+          {
+            "IpAdmission": [],
+            "BearerAuth": []
+          }
+        ],
+        "x-pi-rbac": {
+          "permission": "projects:delete",
+          "roles": [
+            "admin",
+            "user"
+          ]
+        },
+        "responses": {
+          "204": {
+            "description": "Completed without a response body."
+          },
+          "400": {
+            "description": "The default project cannot be deleted.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer token required for this admitted IP profile.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "IP admission or RBAC denied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Project not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/v1/sessions": {
+      "get": {
+        "operationId": "listSessions",
+        "security": [
+          {
+            "IpAdmission": []
+          },
+          {
+            "IpAdmission": [],
+            "BearerAuth": []
+          }
+        ],
+        "x-pi-rbac": {
+          "permission": "sessions:list",
+          "roles": [
+            "admin",
+            "user",
+            "viewer"
+          ]
+        },
+        "responses": {
+          "200": {
+            "description": "Sessions.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Session"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer token required for this admitted IP profile.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "IP admission or RBAC denied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "projectId",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      },
+      "head": {
+        "operationId": "listSessionsHead",
+        "security": [
+          {
+            "IpAdmission": []
+          },
+          {
+            "IpAdmission": [],
+            "BearerAuth": []
+          }
+        ],
+        "x-pi-rbac": {
+          "permission": "sessions:list",
+          "roles": [
+            "admin",
+            "user",
+            "viewer"
+          ]
+        },
+        "responses": {
+          "200": {
+            "description": "Sessions; the GET response body is suppressed.",
+            "headers": {
+              "Content-Type": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "const": "application/json; charset=utf-8"
+                }
+              },
+              "Content-Length": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "pattern": "^[0-9]+$"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer token required for this admitted IP profile.",
+            "headers": {
+              "Content-Type": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "const": "application/json; charset=utf-8"
+                }
+              },
+              "Content-Length": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "pattern": "^[0-9]+$"
+                }
+              },
+              "WWW-Authenticate": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "const": "Bearer"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "IP admission or RBAC denied.",
+            "headers": {
+              "Content-Type": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "const": "application/json; charset=utf-8"
+                }
+              },
+              "Content-Length": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "pattern": "^[0-9]+$"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "projectId",
+            "in": "query",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      },
+      "post": {
+        "operationId": "createSession",
+        "security": [
+          {
+            "IpAdmission": []
+          },
+          {
+            "IpAdmission": [],
+            "BearerAuth": []
+          }
+        ],
+        "x-pi-rbac": {
+          "permission": "sessions:create",
+          "roles": [
+            "admin",
+            "user"
+          ]
+        },
+        "responses": {
+          "201": {
+            "description": "Created.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Session"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid model or thinking level.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer token required for this admitted IP profile.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "IP admission or RBAC denied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Project not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Model availability check failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateSession"
+              }
+            }
+          }
+        },
+        "x-pi-request-validation": {
+          "coerceTypes": true,
+          "removeAdditional": "silent-strip"
+        },
+        "description": "Request bodies use Fastify's AJV baseline: declared types are coerced (`coerceTypes: 'array'`,\nso numbers, booleans, and single-element arrays are accepted where a string is declared) and\nundeclared fields are silently stripped (`removeAdditional: true` combined with\n`additionalProperties: false`) instead of returning 400. A 400 therefore reports a missing\nrequired field or a value that cannot be coerced/constrained, never a wrong scalar type or an\nunknown field."
+      }
+    },
+    "/v1/sessions/{id}": {
+      "delete": {
+        "operationId": "deleteSession",
+        "security": [
+          {
+            "IpAdmission": []
+          },
+          {
+            "IpAdmission": [],
+            "BearerAuth": []
+          }
+        ],
+        "x-pi-rbac": {
+          "permission": "sessions:delete",
+          "roles": [
+            "admin",
+            "user"
+          ]
+        },
+        "responses": {
+          "204": {
+            "description": "Completed without a response body."
+          },
+          "401": {
+            "description": "Bearer token required for this admitted IP profile.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "IP admission or RBAC denied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Session not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      },
+      "patch": {
+        "operationId": "renameSession",
+        "security": [
+          {
+            "IpAdmission": []
+          },
+          {
+            "IpAdmission": [],
+            "BearerAuth": []
+          }
+        ],
+        "x-pi-rbac": {
+          "permission": "sessions:update",
+          "roles": [
+            "admin",
+            "user"
+          ]
+        },
+        "responses": {
+          "200": {
+            "description": "Updated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Session"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer token required for this admitted IP profile.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "IP admission or RBAC denied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Session not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RenameSession"
+              }
+            }
+          }
+        },
+        "x-pi-request-validation": {
+          "coerceTypes": true,
+          "removeAdditional": "silent-strip"
+        },
+        "description": "Request bodies use Fastify's AJV baseline: declared types are coerced (`coerceTypes: 'array'`,\nso numbers, booleans, and single-element arrays are accepted where a string is declared) and\nundeclared fields are silently stripped (`removeAdditional: true` combined with\n`additionalProperties: false`) instead of returning 400. A 400 therefore reports a missing\nrequired field or a value that cannot be coerced/constrained, never a wrong scalar type or an\nunknown field."
+      }
+    },
+    "/v1/sessions/{id}/config": {
+      "patch": {
+        "operationId": "configureSession",
+        "security": [
+          {
+            "IpAdmission": []
+          },
+          {
+            "IpAdmission": [],
+            "BearerAuth": []
+          }
+        ],
+        "x-pi-rbac": {
+          "permission": "sessions:update-config",
+          "roles": [
+            "admin",
+            "user"
+          ]
+        },
+        "responses": {
+          "200": {
+            "description": "Updated.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Session"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid configuration.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer token required for this admitted IP profile.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "IP admission or RBAC denied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Session not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Model availability check failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SessionConfig"
+              }
+            }
+          }
+        },
+        "x-pi-request-validation": {
+          "coerceTypes": true,
+          "removeAdditional": "silent-strip"
+        },
+        "description": "Request bodies use Fastify's AJV baseline: declared types are coerced (`coerceTypes: 'array'`,\nso numbers, booleans, and single-element arrays are accepted where a string is declared) and\nundeclared fields are silently stripped (`removeAdditional: true` combined with\n`additionalProperties: false`) instead of returning 400. A 400 therefore reports a missing\nrequired field or a value that cannot be coerced/constrained, never a wrong scalar type or an\nunknown field."
+      }
+    },
+    "/v1/sessions/{id}/messages": {
+      "post": {
+        "operationId": "submitMessage",
+        "security": [
+          {
+            "IpAdmission": []
+          },
+          {
+            "IpAdmission": [],
+            "BearerAuth": []
+          }
+        ],
+        "x-pi-rbac": {
+          "permission": "sessions:send-message",
+          "roles": [
+            "admin",
+            "user"
+          ]
+        },
+        "responses": {
+          "200": {
+            "description": "Idempotent terminal result.",
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            }
+          },
+          "202": {
+            "description": "Accepted or queued.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubmitResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid message input.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer token required for this admitted IP profile.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "IP admission or RBAC denied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Session not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Session conflict or requestId payload mismatch.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Queue limit reached.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/MessageInput"
+              }
+            }
+          }
+        },
+        "x-pi-request-validation": {
+          "coerceTypes": true,
+          "removeAdditional": "silent-strip"
+        },
+        "description": "Request bodies use Fastify's AJV baseline: declared types are coerced (`coerceTypes: 'array'`,\nso numbers, booleans, and single-element arrays are accepted where a string is declared) and\nundeclared fields are silently stripped (`removeAdditional: true` combined with\n`additionalProperties: false`) instead of returning 400. A 400 therefore reports a missing\nrequired field or a value that cannot be coerced/constrained, never a wrong scalar type or an\nunknown field."
+      }
+    },
+    "/v1/sessions/{id}/export": {
+      "get": {
+        "operationId": "exportSession",
+        "security": [
+          {
+            "IpAdmission": []
+          },
+          {
+            "IpAdmission": [],
+            "BearerAuth": []
+          }
+        ],
+        "x-pi-rbac": {
+          "permission": "sessions:export",
+          "roles": [
+            "admin",
+            "user",
+            "viewer"
+          ]
+        },
+        "responses": {
+          "200": {
+            "description": "Read-only snapshot.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Export"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer token required for this admitted IP profile.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "IP admission or RBAC denied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Session not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Session export could not be read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      },
+      "head": {
+        "operationId": "exportSessionHead",
+        "security": [
+          {
+            "IpAdmission": []
+          },
+          {
+            "IpAdmission": [],
+            "BearerAuth": []
+          }
+        ],
+        "x-pi-rbac": {
+          "permission": "sessions:export",
+          "roles": [
+            "admin",
+            "user",
+            "viewer"
+          ]
+        },
+        "responses": {
+          "200": {
+            "description": "Read-only snapshot; the GET response body is suppressed.",
+            "headers": {
+              "Content-Type": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "const": "application/json; charset=utf-8"
+                }
+              },
+              "Content-Length": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "pattern": "^[0-9]+$"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer token required for this admitted IP profile.",
+            "headers": {
+              "Content-Type": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "const": "application/json; charset=utf-8"
+                }
+              },
+              "Content-Length": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "pattern": "^[0-9]+$"
+                }
+              },
+              "WWW-Authenticate": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "const": "Bearer"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "IP admission or RBAC denied.",
+            "headers": {
+              "Content-Type": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "const": "application/json; charset=utf-8"
+                }
+              },
+              "Content-Length": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "pattern": "^[0-9]+$"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Session not found; the GET response body is suppressed.",
+            "headers": {
+              "Content-Type": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "const": "application/json; charset=utf-8"
+                }
+              },
+              "Content-Length": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "pattern": "^[0-9]+$"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Session export could not be read; the GET response body is suppressed.",
+            "headers": {
+              "Content-Type": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "const": "application/json; charset=utf-8"
+                }
+              },
+              "Content-Length": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "pattern": "^[0-9]+$"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/v1/sessions/{id}/steer": {
+      "post": {
+        "operationId": "steerSession",
+        "security": [
+          {
+            "IpAdmission": []
+          },
+          {
+            "IpAdmission": [],
+            "BearerAuth": []
+          }
+        ],
+        "x-pi-rbac": {
+          "permission": "sessions:control",
+          "roles": [
+            "admin",
+            "user"
+          ]
+        },
+        "responses": {
+          "204": {
+            "description": "Completed without a response body."
+          },
+          "401": {
+            "description": "Bearer token required for this admitted IP profile.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "IP admission or RBAC denied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Session not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "No active task.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TextInput"
+              }
+            }
+          }
+        },
+        "x-pi-request-validation": {
+          "coerceTypes": true,
+          "removeAdditional": "silent-strip"
+        },
+        "description": "Request bodies use Fastify's AJV baseline: declared types are coerced (`coerceTypes: 'array'`,\nso numbers, booleans, and single-element arrays are accepted where a string is declared) and\nundeclared fields are silently stripped (`removeAdditional: true` combined with\n`additionalProperties: false`) instead of returning 400. A 400 therefore reports a missing\nrequired field or a value that cannot be coerced/constrained, never a wrong scalar type or an\nunknown field."
+      }
+    },
+    "/v1/sessions/{id}/follow-ups": {
+      "post": {
+        "operationId": "followUpSession",
+        "security": [
+          {
+            "IpAdmission": []
+          },
+          {
+            "IpAdmission": [],
+            "BearerAuth": []
+          }
+        ],
+        "x-pi-rbac": {
+          "permission": "sessions:control",
+          "roles": [
+            "admin",
+            "user"
+          ]
+        },
+        "responses": {
+          "204": {
+            "description": "Completed without a response body."
+          },
+          "401": {
+            "description": "Bearer token required for this admitted IP profile.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "IP admission or RBAC denied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Session not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "No active task.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TextInput"
+              }
+            }
+          }
+        },
+        "x-pi-request-validation": {
+          "coerceTypes": true,
+          "removeAdditional": "silent-strip"
+        },
+        "description": "Request bodies use Fastify's AJV baseline: declared types are coerced (`coerceTypes: 'array'`,\nso numbers, booleans, and single-element arrays are accepted where a string is declared) and\nundeclared fields are silently stripped (`removeAdditional: true` combined with\n`additionalProperties: false`) instead of returning 400. A 400 therefore reports a missing\nrequired field or a value that cannot be coerced/constrained, never a wrong scalar type or an\nunknown field."
+      }
+    },
+    "/v1/sessions/{id}/abort": {
+      "post": {
+        "operationId": "abortSession",
+        "security": [
+          {
+            "IpAdmission": []
+          },
+          {
+            "IpAdmission": [],
+            "BearerAuth": []
+          }
+        ],
+        "x-pi-rbac": {
+          "permission": "sessions:control",
+          "roles": [
+            "admin",
+            "user"
+          ]
+        },
+        "responses": {
+          "204": {
+            "description": "Completed without a response body."
+          },
+          "400": {
+            "description": "Invalid abort input.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer token required for this admitted IP profile.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "IP admission or RBAC denied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Session not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "No active task or requestId mismatch.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AbortInput"
+              }
+            }
+          }
+        },
+        "description": "The abort body is parsed by a hand-written strict validator, not by AJV: an absent body is\naccepted, but a supplied body must contain exactly the `requestId` field with a string value.\nUnknown fields and non-string values are rejected with 400 (no type coercion, no silent\nstripping)."
+      }
+    },
+    "/v1/sessions/{id}/events": {
+      "get": {
+        "operationId": "sessionEvents",
+        "security": [
+          {
+            "IpAdmission": []
+          },
+          {
+            "IpAdmission": [],
+            "BearerAuth": []
+          }
+        ],
+        "x-pi-rbac": {
+          "permission": "sessions:events",
+          "roles": [
+            "admin",
+            "user",
+            "viewer"
+          ]
+        },
+        "responses": {
+          "200": {
+            "description": "SSE stream. Each `data:` line is a SseEvent JSON value.",
+            "headers": {
+              "Content-Type": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "const": "text/event-stream"
+                }
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-cache"
+                }
+              },
+              "Connection": {
+                "schema": {
+                  "type": "string",
+                  "const": "keep-alive"
+                }
+              },
+              "X-Server-Epoch": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Present when the server epoch is configured."
+              }
+            },
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/SseEvent"
+                }
+              }
+            }
+          },
+          "204": {
+            "description": "Viewer may receive this when the owned session has no live runtime; no stream is created."
+          },
+          "401": {
+            "description": "Bearer token required for this admitted IP profile.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "IP admission or RBAC denied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Session not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "SSE connection limit reached.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Session events could not be started.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Server is closing.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "Last-Event-ID",
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "X-Client-Epoch",
+            "in": "header",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "IpAdmission": {
+        "type": "http",
+        "scheme": "ip-admission",
+        "description": "Mandatory direct-peer CIDR/IP admission. This is evaluated by the host, not supplied by a client.",
+        "x-pi-ip-admission": true
+      },
+      "BearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "opaque",
+        "description": "Required only when the admitted IP profile has tokenRequired=true."
+      }
+    },
+    "schemas": {
+      "ApiError": {
+        "type": "object",
+        "required": [
+          "statusCode",
+          "error",
+          "message"
+        ],
+        "properties": {
+          "statusCode": {
+            "type": "integer"
+          },
+          "code": {
+            "type": "string",
+            "description": "Fastify validation error code when applicable."
+          },
+          "error": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "Health": {
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "const": "ok"
+          }
+        },
+        "additionalProperties": false
+      },
+      "Ready": {
+        "type": "object",
+        "required": [
+          "ready",
+          "migrationGate",
+          "schema"
+        ],
+        "properties": {
+          "ready": {
+            "type": "boolean"
+          },
+          "migrationGate": {
+            "type": "string",
+            "enum": [
+              "off",
+              "verify"
+            ]
+          },
+          "schema": {
+            "type": "string",
+            "enum": [
+              "rc-bootstrap",
+              "migration-head",
+              "not-verified",
+              "unknown"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "Access": {
+        "type": "object",
+        "required": [
+          "canRead",
+          "canWrite"
+        ],
+        "properties": {
+          "canRead": {
+            "type": "boolean"
+          },
+          "canWrite": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      },
+      "Model": {
+        "type": "object",
+        "required": [
+          "provider",
+          "id",
+          "name"
+        ],
+        "properties": {
+          "provider": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ModelList": {
+        "type": "object",
+        "required": [
+          "models",
+          "thinkingLevels",
+          "defaultModel",
+          "defaultThinkingLevel"
+        ],
+        "properties": {
+          "models": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Model"
+            }
+          },
+          "thinkingLevels": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "defaultModel": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Model"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "defaultThinkingLevel": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "Project": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "cwd",
+          "isDefault"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "cwd": {
+            "type": "string"
+          },
+          "isDefault": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      },
+      "Session": {
+        "type": "object",
+        "required": [
+          "id",
+          "ownerKey",
+          "projectId",
+          "title",
+          "createdAt",
+          "updatedAt",
+          "modelProvider",
+          "modelId",
+          "thinkingLevel",
+          "systemPrompt",
+          "capabilityVersions"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "ownerKey": {
+            "type": "string"
+          },
+          "projectId": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "number"
+          },
+          "updatedAt": {
+            "type": "number"
+          },
+          "modelProvider": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "modelId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "thinkingLevel": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "systemPrompt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "capabilityVersions": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "CreateProject": {
+        "type": "object",
+        "required": [
+          "name",
+          "cwd"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "cwd": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "CreateSession": {
+        "type": "object",
+        "properties": {
+          "title": {
+            "type": "string"
+          },
+          "projectId": {
+            "type": "string"
+          },
+          "modelProvider": {
+            "type": "string",
+            "minLength": 1
+          },
+          "modelId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "thinkingLevel": {
+            "type": "string",
+            "enum": [
+              "off",
+              "minimal",
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          }
+        },
+        "dependentRequired": {
+          "modelProvider": [
+            "modelId"
+          ],
+          "modelId": [
+            "modelProvider"
+          ]
+        },
+        "additionalProperties": false
+      },
+      "RenameSession": {
+        "type": "object",
+        "required": [
+          "title"
+        ],
+        "properties": {
+          "title": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "SessionConfig": {
+        "type": "object",
+        "properties": {
+          "modelProvider": {
+            "type": "string",
+            "minLength": 1
+          },
+          "modelId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "thinkingLevel": {
+            "type": "string",
+            "enum": [
+              "off",
+              "minimal",
+              "low",
+              "medium",
+              "high",
+              "xhigh",
+              "max"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "ImageInput": {
+        "type": "object",
+        "required": [
+          "mediaType",
+          "base64"
+        ],
+        "properties": {
+          "mediaType": {
+            "type": "string",
+            "enum": [
+              "image/png",
+              "image/jpeg",
+              "image/webp"
+            ]
+          },
+          "base64": {
+            "type": "string",
+            "maxLength": 5592408
+          }
+        },
+        "additionalProperties": false
+      },
+      "MessageInput": {
+        "type": "object",
+        "required": [
+          "requestId",
+          "prompt"
+        ],
+        "properties": {
+          "requestId": {
+            "type": "string",
+            "maxLength": 128
+          },
+          "prompt": {
+            "type": "string",
+            "maxLength": 32768
+          },
+          "parentId": {
+            "type": "string"
+          },
+          "images": {
+            "type": "array",
+            "maxItems": 4,
+            "items": {
+              "$ref": "#/components/schemas/ImageInput"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "SubmitResult": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "const": "accepted"
+              }
+            },
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "const": "queued"
+              },
+              "position": {
+                "type": "integer"
+              }
+            },
+            "additionalProperties": false
+          }
+        ]
+      },
+      "Export": {
+        "type": "object",
+        "required": [
+          "messages",
+          "lastEventId"
+        ],
+        "properties": {
+          "messages": {},
+          "lastEventId": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "TextInput": {
+        "type": "object",
+        "required": [
+          "text"
+        ],
+        "properties": {
+          "text": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "AbortInput": {
+        "type": "object",
+        "required": [
+          "requestId"
+        ],
+        "properties": {
+          "requestId": {
+            "type": "string",
+            "maxLength": 128
+          }
+        },
+        "additionalProperties": false
+      },
+      "SseEvent": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "type",
+              "text"
+            ],
+            "properties": {
+              "type": {
+                "const": "text_delta"
+              },
+              "text": {
+                "type": "string"
+              },
+              "requestId": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "required": [
+              "type",
+              "text"
+            ],
+            "properties": {
+              "type": {
+                "const": "thinking_delta"
+              },
+              "text": {
+                "type": "string"
+              },
+              "requestId": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "required": [
+              "type",
+              "toolCallId",
+              "toolName",
+              "args"
+            ],
+            "properties": {
+              "type": {
+                "const": "tool_start"
+              },
+              "toolCallId": {
+                "type": "string"
+              },
+              "toolName": {
+                "type": "string"
+              },
+              "args": {},
+              "requestId": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "required": [
+              "type",
+              "toolCallId",
+              "toolName",
+              "partialResult"
+            ],
+            "properties": {
+              "type": {
+                "const": "tool_update"
+              },
+              "toolCallId": {
+                "type": "string"
+              },
+              "toolName": {
+                "type": "string"
+              },
+              "partialResult": {},
+              "requestId": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "required": [
+              "type",
+              "toolCallId",
+              "toolName",
+              "result",
+              "isError"
+            ],
+            "properties": {
+              "type": {
+                "const": "tool_end"
+              },
+              "toolCallId": {
+                "type": "string"
+              },
+              "toolName": {
+                "type": "string"
+              },
+              "result": {},
+              "isError": {
+                "type": "boolean"
+              },
+              "requestId": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "required": [
+              "type",
+              "phase"
+            ],
+            "properties": {
+              "type": {
+                "const": "status"
+              },
+              "phase": {
+                "type": "string",
+                "enum": [
+                  "agent_start",
+                  "turn_start"
+                ]
+              },
+              "requestId": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "required": [
+              "type"
+            ],
+            "properties": {
+              "type": {
+                "const": "queued"
+              },
+              "position": {
+                "type": "integer"
+              },
+              "requestId": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "required": [
+              "type",
+              "promptTokens",
+              "completionTokens",
+              "totalTokens",
+              "durationMs",
+              "ttftMs"
+            ],
+            "properties": {
+              "type": {
+                "const": "usage"
+              },
+              "promptTokens": {
+                "type": "number"
+              },
+              "completionTokens": {
+                "type": "number"
+              },
+              "totalTokens": {
+                "type": "number"
+              },
+              "durationMs": {
+                "type": "number"
+              },
+              "ttftMs": {
+                "type": "number"
+              },
+              "requestId": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "required": [
+              "type",
+              "message"
+            ],
+            "properties": {
+              "type": {
+                "const": "error"
+              },
+              "message": {
+                "type": "string"
+              },
+              "requestId": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "required": [
+              "type"
+            ],
+            "properties": {
+              "type": {
+                "const": "completed"
+              },
+              "requestId": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "required": [
+              "type"
+            ],
+            "properties": {
+              "type": {
+                "const": "aborted"
+              },
+              "requestId": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          }
+        ]
+      }
+    }
+  }
+}

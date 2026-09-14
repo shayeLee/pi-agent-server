@@ -124,7 +124,15 @@ All routes first check the source IP. `/health` and `/readyz` do not require a t
 | `POST` | `/v1/sessions/:id/abort` | Abort a task. The body may be omitted for legacy behavior; when supplied, it must be exactly `{ "requestId": "..." }` and aborts only that current request. A non-matching requestId returns `409` without cancelling the task. |
 | `GET` | `/v1/sessions/:id/export` | Read-only message snapshot; never creates a runtime |
 
-The running API in `src/server/app.ts` is authoritative during RC.
+### Public API contract v1
+
+The host publishes the v1 contract artifacts; it does not claim to be the single source of truth for consumers. Consumers should import request/response/SSE types from `pi-agent-server/contract`. The fixed OpenAPI document is available at `pi-agent-server/openapi/v1.json`; its checked-in source is `openapi/v1.json` and `npm run generate:openapi` deterministically regenerates it. Dynamic trusted-plugin routes are intentionally outside this host contract.
+
+Consumers pin the published version they depend on and compare it in their own local tests. Cross-repository comparison of the artifacts is a manual/release-process step; this host cannot verify it.
+
+Request validation semantics: Fastify validates bodies and params with its AJV baseline, not the strict `additionalProperties: false` reading of the schemas. Declared types are coerced (`coerceTypes: 'array'`, so a numeric or single-element-array `title` is accepted and becomes a string) and undeclared fields are silently stripped (`removeAdditional: true`) instead of returning `400`. A `400` therefore reports a missing required field or an uncoercible/out-of-range value, never a wrong scalar type or an unknown field. `POST /v1/sessions/:id/abort` is the one exception: it has no AJV schema and its hand-written parser rejects unknown fields and non-string values with `400`. The document level and every AJV-validated operation with a request body carry `x-pi-request-validation: { coerceTypes: true, removeAdditional: "silent-strip" }` stating this.
+
+Within v1, existing operations, fields, status meanings, and SSE event data remain compatible; additive optional fields or operations may be introduced. A breaking change requires a new versioned contract/path rather than changing v1. The running API in `src/server/app.ts` remains the implementation authority during RC.
 
 ### Access capability projection
 

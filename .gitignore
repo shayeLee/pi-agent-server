@@ -1,6 +1,7 @@
 .pi
 .codex
 .opencode
+.pnpm-store
 
 node_modules
 dist

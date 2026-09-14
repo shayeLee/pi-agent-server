@@ -25,6 +25,11 @@
   "exports": {
     "./server": "./dist/server/start.js",
     "./plugin": "./dist/plugin/index.js",
+    "./contract": {
+      "types": "./dist/public-api/contract.d.ts",
+      "default": "./dist/public-api/contract.js"
+    },
+    "./openapi/v1.json": "./dist/openapi/v1.json",
     "./package.json": "./package.json"
   },
   "files": [
@@ -41,7 +46,8 @@
     "node": ">=22.19.0"
   },
   "scripts": {
-    "build": "node scripts/dist-hygiene.mjs clean dist && tsc -p tsconfig.build.json && node scripts/dist-hygiene.mjs check dist && npm run build:drill",
+    "build": "node scripts/dist-hygiene.mjs clean dist && tsc -p tsconfig.build.json && node scripts/generate-openapi.mjs && node scripts/dist-hygiene.mjs check dist && npm run build:drill",
+    "generate:openapi": "tsc -p tsconfig.build.json && node scripts/generate-openapi.mjs",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run",
     "test:watch": "vitest",

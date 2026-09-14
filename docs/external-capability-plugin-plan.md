@@ -1,6 +1,6 @@
 # 外部能力插件架构与实施计划
 
-> **状态：规划，尚未实现。** 本文定义 `pi-agent-capability-onev` 作为 `pi-agent-server` 外部插件包的工程边界。onev 业务需求见 [capabilities/knowledge-qa.md](capabilities/knowledge-qa.md)。
+> **状态：P1–P7d 已实现并通过跨仓验收；P8 自动化隔离演练已完成，真实迁移、真实 DWS/工具和人工浏览器验收仍待受控环境执行。** 本文定义 `pi-agent-capability-onev` 作为 `pi-agent-server` 外部插件包的工程边界。onev 业务需求见 [capabilities/knowledge-qa.md](capabilities/knowledge-qa.md)。
 
 ## 决策
 
@@ -176,7 +176,7 @@ pi-agent-server 进程
 | P7b | 实现 onev UI 的真实数据适配器并在组合层注入 | 已完成（跨仓真实验收通过） | P4–P7a |
 | P7c | 实现 mode APPEND_SYSTEM Markdown、版本化组件上下文信封和三个 mode 的手动组件选择；宿主仅提供通用 `appendSystemPrompt`，不理解 ONEV 上下文 | 已完成（跨仓真实验收通过） | P1, P7b, A10 |
 | P7d | 改造 `npm run codegraph`：调用插件 CLI 全 owner 同步后重建索引 | 已完成（跨仓真实验收通过） | P2, P3, P5, A16 |
-| P8 | 完成插件加载、迁移、备份恢复、同步、工具访问、UI 数据流及停止流程的集成测试与演练 | 待&#8288;开&#8288;始 | P4–P7d |
+| P8 | 完成插件加载、迁移、备份恢复、同步、工具访问、UI 数据流及停止流程的集成测试与演练 | 宿主通用插件契约的隔离演练已完成（证据：宿主 `docs/p8-host-integration-drill.md`）；真实插件兼容、迁移、备份恢复、同步与工具证据归插件仓 `docs/p8-integration-evidence.md`；ONEV UI 验收证据保留于 `docs/p8-copilot-evidence.md` | P4–P7d |
 
 ## P7c mode APPEND_SYSTEM 与手动组件上下文（已完成）
 

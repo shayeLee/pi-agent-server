@@ -370,7 +370,14 @@ describe("GET /v1/sessions/:id/events（SSE 订阅与 Last-Event-ID 补发）", 
       .split("\n")
       .filter((line) => line.startsWith("data: "))
       .map((line) => JSON.parse(line.slice(6)) as { type: string; requestId?: string });
-    expect(frames.map((f) => f.type)).toEqual(["status", "text_delta", "completed"]);
+    // usage 是否落在 completed 之前取决于 usage 事件与终态的完成时序（两者都在运行时结算路径上），
+    // 因此只固定“核心事件顺序”与“全部帧同属 r1”，不把可选 usage 当成必需帧。
+    const types = frames.map((f) => f.type);
+    expect(types.filter((t) => t === "usage").length).toBeLessThanOrEqual(1);
+    expect(types.filter((t) => t !== "usage")).toEqual(["status", "text_delta", "completed"]);
+    expect(types.indexOf("status")).toBeLessThan(types.indexOf("text_delta"));
+    expect(types.indexOf("text_delta")).toBeLessThan(types.indexOf("completed"));
+    if (types.includes("usage")) expect(types.indexOf("usage")).toBeLessThan(types.indexOf("completed"));
     for (const frame of frames) {
       expect(frame, JSON.stringify(frame)).toMatchObject({ requestId: "r1" });
     }

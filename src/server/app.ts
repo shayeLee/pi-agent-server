@@ -577,7 +577,9 @@ export function buildApp(deps: ServerDeps): FastifyInstance {
     );
 
     // SSE is a transport concern: headers, connection limits, heartbeats and byte backpressure stay in HTTP.
-    api.get<{ Params: { id: string } }>("/sessions/:id/events", { ...requirePermission("sessions:events") }, async (request, reply) => {
+    // SSE GET-only：显式禁用 Fastify 自动 HEAD，避免 HEAD 执行下方配额/runtime/DB 路径。
+    // 其它 /v1 GET 的默认 HEAD 兼容行为保持不变。
+    api.get<{ Params: { id: string } }>("/sessions/:id/events", { exposeHeadRoute: false, ...requirePermission("sessions:events") }, async (request, reply) => {
       // WP5D-3 P2 顺序红线：关闭检查与配额检查+占位必须在任何 runtime 创建/查询**之前**同步完成
       // ——429/503 及后续所有拒绝路径零 adapter/DB/conversation_ref 副作用。
       // 关闭中：拒绝建立新 SSE 连接，避免 preClose 之后晚建立的连接阻塞 close。
@@ -630,9 +632,10 @@ export function buildApp(deps: ServerDeps): FastifyInstance {
           found = entry;
         }
       } catch (error) {
-        // getExisting/getOrCreate 异常：释放占位后交给框架 500（不吞异常；占位不残留）
+        // getExisting/getOrCreate 异常：释放占位后返回固定 500 文案（不吞异常原因；占位不残留）。
+        // 与 export 一致：底层存储/SQL/路径细节绝不进入响应体，只保留 cause 供日志排查。
         releaseSlot();
-        throw error;
+        throw new Error("会话事件启动失败", { cause: error });
       }
       const { events } = found;
       const lastEventId = parseLastEventId(request.headers["last-event-id"]);

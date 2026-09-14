@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { EventEmitter } from "node:events";
-import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
+import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from "fastify";
 import { SessionService } from "../../src/application/session-service.js";
 import { identityKey } from "../../src/core/user-identity.js";
 import {
@@ -20,6 +20,8 @@ type CapturedRoute = {
   method: PluginHttpMethod;
   url: string;
   config: { permission?: string };
+  /** Fastify route-level HEAD 派生开关；宿主只对插件 GET 路由显式置 false。 */
+  exposeHeadRoute?: boolean;
   handler: (request: FastifyRequest, reply: FastifyReply) => Promise<unknown>;
 };
 
@@ -168,6 +170,8 @@ describe("plugin host", () => {
       "capability:read",
       "capability:write",
     ]);
+    // 宿主只对 GET 显式禁用 Fastify 自动 HEAD；POST 不携带该选项（不带无关字段）。
+    expect(routes.map((route) => route.exposeHeadRoute)).toEqual([false, undefined]);
 
     const request = { user: { kind: "ip", ip: "192.0.2.10" } } as const;
     const reply = {} as FastifyReply;
@@ -239,6 +243,129 @@ describe("plugin host", () => {
     await expect(routeContext!.sessions.reserve({ modeId: "copilot" })).rejects.toThrow("会话 API 已失效");
     await expect(routeContext!.sessions.create({ reservation })).rejects.toThrow("会话 API 已失效");
     await expect(routeContext!.sessions.restore(created.id)).rejects.toThrow("会话 API 已失效");
+  });
+
+  it("插件 GET 路由禁用自动 HEAD：HEAD 404 且 handler/session API 零调用，同路径 POST 不受影响", async () => {
+    // 真实 Fastify：只有真实路由注册才可能派生 HEAD，mock app 无法证明 404 语义。
+    const app = Fastify();
+    app.addHook("onRequest", async (request) => {
+      request.user = { kind: "ip", ip: "192.0.2.90" };
+    });
+    const fake = fakeSessions();
+    let getHandlerCalls = 0;
+    let postHandlerCalls = 0;
+    const plugin = loadedPlugin("acme", {
+      modes: [mode()],
+      register: (received) => {
+        received.mountRoute({
+          method: "GET",
+          path: "/status",
+          access: "read",
+          handler: async (context) => {
+            getHandlerCalls++;
+            return { restored: (await context.sessions.restore("session-1")) !== null };
+          },
+        });
+        received.mountRoute({
+          method: "POST",
+          path: "/status",
+          access: "write",
+          handler: async (context) => {
+            postHandlerCalls++;
+            await context.sessions.reserve({ modeId: "copilot" });
+            return { ok: true };
+          },
+        });
+      },
+    });
+    await registerPlugins([plugin], { app, projectCwd: "/tmp/project", sessions: fake.sessions });
+    try {
+      // 插件未声明 HEAD：契约显式声明的方法之外不存在路由（route-level 禁用自动 HEAD）。
+      expect(app.hasRoute({ method: "GET", url: "/v1/capabilities/acme/status" })).toBe(true);
+      expect(app.hasRoute({ method: "POST", url: "/v1/capabilities/acme/status" })).toBe(true);
+      expect(app.hasRoute({ method: "HEAD", url: "/v1/capabilities/acme/status" })).toBe(false);
+
+      const head = await app.inject({ method: "HEAD", url: "/v1/capabilities/acme/status" });
+      expect(head.statusCode).toBe(404);
+      // HEAD（及 404 回退）绝不执行 handler，也绝不触达宿主 session API。
+      expect(getHandlerCalls).toBe(0);
+      expect(fake.listCalls).toEqual([]);
+      expect(fake.entryCalls).toEqual([]);
+      expect(fake.createCalls).toEqual([]);
+      expect(fake.runTurnCalls).toEqual([]);
+
+      // 显式声明的 GET/POST 语义不变。
+      const get = await app.inject({ method: "GET", url: "/v1/capabilities/acme/status" });
+      expect(get.statusCode).toBe(200);
+      expect(get.json()).toEqual({ restored: true });
+      expect(getHandlerCalls).toBe(1);
+      const post = await app.inject({ method: "POST", url: "/v1/capabilities/acme/status" });
+      expect(post.statusCode).toBe(200);
+      expect(post.json()).toEqual({ ok: true });
+      expect(postHandlerCalls).toBe(1);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("插件只能暴露契约显式声明的方法：每条 GET 无隐式 HEAD，非 GET 方法不受该选项影响", async () => {
+    // 真实 Fastify + 全量插件方法声明：逐个证明「声明即全量」——存在的路由集合与声明集合
+    // 完全一致（仅 GET 多出被显式禁用的 HEAD），HEAD 对任意路径 404。
+    const app = Fastify();
+    app.addHook("onRequest", async (request) => {
+      request.user = { kind: "ip", ip: "192.0.2.91" };
+    });
+    const fake = fakeSessions();
+    const calls: string[] = [];
+    const declared = [
+      ["GET", "/read-only"],
+      ["POST", "/mutate"],
+      ["PUT", "/replace"],
+      ["PATCH", "/patch"],
+      ["DELETE", "/remove"],
+    ] as const;
+    const plugin = loadedPlugin("matrix", {
+      modes: [mode()],
+      register: (received) => {
+        for (const [method, path] of declared) {
+          received.mountRoute({
+            method,
+            path,
+            access: method === "GET" ? "read" : "write",
+            handler: async (context) => {
+              calls.push(`${method} ${path}`);
+              await context.sessions.reserve({ modeId: "copilot" });
+              return { ok: true };
+            },
+          });
+        }
+      },
+    });
+    await registerPlugins([plugin], { app, projectCwd: "/tmp/project", sessions: fake.sessions });
+    try {
+      // HEAD 派生只适用于 GET：非 GET 方法即便带该选项也无效，故宿主不给它们加。
+      for (const [method, path] of declared) {
+        const url = `/v1/capabilities/matrix${path}`;
+        expect(app.hasRoute({ method, url })).toBe(true);
+        expect(app.hasRoute({ method: "HEAD", url })).toBe(false);
+        const head = await app.inject({ method: "HEAD", url });
+        expect([method, head.statusCode]).toEqual([method, 404]);
+      }
+      // 所有 HEAD 探测（含 404 回退）都不得执行任何插件 handler 或触达 session API。
+      expect(calls).toEqual([]);
+      expect(fake.listCalls).toEqual([]);
+      expect(fake.entryCalls).toEqual([]);
+      expect(fake.createCalls).toEqual([]);
+      expect(fake.runTurnCalls).toEqual([]);
+      // 声明的方法本身全部可用。
+      for (const [method, path] of declared) {
+        const response = await app.inject({ method, url: `/v1/capabilities/matrix${path}` });
+        expect([method, response.statusCode]).toEqual([method, 200]);
+      }
+      expect(calls).toEqual(declared.map(([method, path]) => `${method} ${path}`));
+    } finally {
+      await app.close();
+    }
   });
 
   it("mode 用旧版 systemPrompt 时仍以 systemPromptOverride 创建（兼容路径语义不变）", async () => {
@@ -425,6 +552,14 @@ describe("plugin host", () => {
     }],
     ["double slash", 0, (mountRoute: PluginHostContext["mountRoute"]) => {
       mountRoute({ method: "GET", path: "/status//detail", access: "read", handler: async () => null });
+    }],
+    // 运行时插件是 JS：小写/未知 method 必须 fail-fast。否则 "get" 会绕过 GET 的
+    // exposeHeadRoute 收口，让 Fastify 派生出未在契约声明的 HEAD 路由。
+    ["lowercase method", 0, (mountRoute: PluginHostContext["mountRoute"]) => {
+      mountRoute({ method: "get" as unknown as "GET", path: "/status", access: "read", handler: async () => null });
+    }],
+    ["unknown method", 0, (mountRoute: PluginHostContext["mountRoute"]) => {
+      mountRoute({ method: "OPTIONS" as unknown as "GET", path: "/status", access: "read", handler: async () => null });
     }],
   ] as const)("对 %s fail-fast", async (_name, expectedRouteCount, declareRoutes) => {
     const { app, routes } = fakeApp();

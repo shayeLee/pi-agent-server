@@ -124,7 +124,15 @@ export PI_MIGRATION_GATE=verify
 | `POST` | `/v1/sessions/:id/abort` | 中止任务。可省略 body 以兼容旧行为；如提供，必须严格为 `{ "requestId": "..." }`，且仅中止该当前请求。`requestId` 不匹配时返回 `409`，不会取消任务。 |
 | `GET` | `/v1/sessions/:id/export` | 只读消息快照；绝不创建 runtime |
 
-RC 期间以 `src/server/app.ts` 的实际 API 为准。
+### 宿主公共 API 契约 v1
+
+宿主只发布 v1 契约产物，不宣称自己是消费方的单一事实源。UI 与其它宿主消费者应从 `pi-agent-server/contract` 导入请求、响应和 SSE 类型。固定 OpenAPI 文档可通过 `pi-agent-server/openapi/v1.json` 获取；其检入源文件为 `openapi/v1.json`，`npm run generate:openapi` 会确定性地重新生成它。动态受信插件路由有意不属于此宿主契约。
+
+消费方各自 pin 所依赖的已发布版本，并在本地测试中与之比对；跨仓产物比对属于人工/发布流程，宿主无法自行验证。
+
+请求校验语义：Fastify 用其 AJV 基线校验 body 与 params，而非按 schema 中 `additionalProperties: false` 的严格读法。已声明类型会被强转（`coerceTypes: 'array'`，因此数字或单元素数组形式的 `title` 会被接受并转成字符串），未声明字段会被静默剔除（`removeAdditional: true`），而不是返回 `400`。因此 `400` 只表示缺少必填字段或值无法强转/越界，绝不表示标量类型错误或出现未知字段。`POST /v1/sessions/:id/abort` 是唯一例外：它没有 AJV schema，其手写解析器会对未知字段和非字符串值返回 `400`。文档级与每个经 AJV 校验且带 request body 的 operation 都带有 `x-pi-request-validation: { coerceTypes: true, removeAdditional: "silent-strip" }` 如实声明这一点。
+
+在 v1 内，既有 operation、字段、状态语义和 SSE 事件 data 保持兼容；可以新增可选字段或 operation。破坏性变更必须提供新的版本化契约/path，而不能修改 v1。RC 期间，`src/server/app.ts` 的实际 API 仍是实现权威。
 
 ### 访问能力投影
 

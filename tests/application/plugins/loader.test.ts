@@ -59,44 +59,44 @@ function pluginModule(
 
 describe("显式插件加载器（公开插件契约）", () => {
   it("加载内联插件并规范化 manifest、工具、提示词片段与 mode profile", async () => {
-    const promptFile = path.join(tempRoot(), "onev.md");
+    const promptFile = path.join(tempRoot(), "sample.md");
     writeFileSync(promptFile, "仅只读查询。", "utf8");
-    const loader = new PluginLoader({ projectCwd: "/srv/onev" });
+    const loader = new PluginLoader({ projectCwd: "/srv/sample-project/catalog-query" });
     const expectedModes = [mode("chat"), mode("explain", { thinkingLevel: "high" })];
     const module: PluginModule = {
       manifest: {
-        id: "onev",
+        id: "sample-plugin",
         version: 2,
-        name: "onev 知识库",
-        tools: [{ name: "vue2-index", description: "组件索引查询" }],
+        name: "sample-plugin 知识库",
+        tools: [{ name: "catalog-query", description: "组件索引查询" }],
         promptFragments: [{ inline: "仅只读查询。" }, { file: promptFile }],
         modes: expectedModes,
       },
-      tools: [tool("vue2-index", "组件索引查询")],
+      tools: [tool("catalog-query", "组件索引查询")],
     };
 
     const loaded = await loader.load(module);
 
     expect(loaded.manifest).toEqual({
-      id: "onev",
+      id: "sample-plugin",
       version: 2,
-      name: "onev 知识库",
-      tools: [{ name: "vue2-index", description: "组件索引查询" }],
+      name: "sample-plugin 知识库",
+      tools: [{ name: "catalog-query", description: "组件索引查询" }],
       promptFragments: [{ inline: "仅只读查询。" }, { file: promptFile }],
       modes: expectedModes,
     });
-    expect(loaded.tools.map((entry) => entry.name)).toEqual(["vue2-index"]);
+    expect(loaded.tools.map((entry) => entry.name)).toEqual(["catalog-query"]);
     expect(loaded.promptFragments).toEqual([
       { inline: "仅只读查询。" },
       { file: promptFile },
     ]);
     expect(loaded.modes).toEqual(expectedModes);
     expect(loaded.plugin).toBe(module);
-    expect(loader.loadedIds()).toEqual(["onev"]);
+    expect(loader.loadedIds()).toEqual(["sample-plugin"]);
   });
 
   it("loader 只加载/校验，绝不调用 register / dispose，并保留原始插件模块", async () => {
-    const loader = new PluginLoader({ projectCwd: "/srv/onev" });
+    const loader = new PluginLoader({ projectCwd: "/srv/sample-project/catalog-query" });
     const register = vi.fn<PluginRegister>();
     const dispose = vi.fn<PluginDispose>();
     const module = pluginModule("p", { register, dispose });
@@ -111,7 +111,7 @@ describe("显式插件加载器（公开插件契约）", () => {
   });
 
   it("module.modes 覆盖 manifest.modes", async () => {
-    const loader = new PluginLoader({ projectCwd: "/srv/onev" });
+    const loader = new PluginLoader({ projectCwd: "/srv/sample-project/catalog-query" });
     const module = pluginModule("p", {
       manifest: { modes: [mode("manifest-mode")] },
       modes: [mode("module-mode")],
@@ -123,7 +123,7 @@ describe("显式插件加载器（公开插件契约）", () => {
   });
 
   it("校验 mode id 非空且唯一", async () => {
-    const loader = new PluginLoader({ projectCwd: "/srv/onev" });
+    const loader = new PluginLoader({ projectCwd: "/srv/sample-project/catalog-query" });
 
     const duplicate = pluginModule("p", { manifest: { modes: [mode("chat"), mode("chat")] } });
     await expect(loader.load(duplicate)).rejects.toThrow(/插件 mode id 重复: p -> chat/);
@@ -138,7 +138,7 @@ describe("显式插件加载器（公开插件契约）", () => {
   });
 
   it("校验 mode 的模型与提示词非空", async () => {
-    const loader = new PluginLoader({ projectCwd: "/srv/onev" });
+    const loader = new PluginLoader({ projectCwd: "/srv/sample-project/catalog-query" });
 
     const noProvider = pluginModule("p", {
       manifest: { modes: [mode("chat", { modelProvider: "  " })] },
@@ -158,7 +158,7 @@ describe("显式插件加载器（公开插件契约）", () => {
   });
 
   it("mode 提示词 appendSystemPrompt / systemPrompt 必须二选一", async () => {
-    const loader = new PluginLoader({ projectCwd: "/srv/onev" });
+    const loader = new PluginLoader({ projectCwd: "/srv/sample-project/catalog-query" });
 
     // 两者都缺失：提示词来源不确定。
     const neither = pluginModule("p", {
@@ -202,28 +202,28 @@ describe("显式插件加载器（公开插件契约）", () => {
   });
 
   it("拒绝重复插件 id", async () => {
-    const loader = new PluginLoader({ projectCwd: "/srv/onev" });
-    await loader.load(pluginModule("onev"));
+    const loader = new PluginLoader({ projectCwd: "/srv/sample-project/catalog-query" });
+    await loader.load(pluginModule("sample-plugin"));
 
-    await expect(loader.load(pluginModule("onev"))).rejects.toThrow(/插件 id 重复: onev/);
+    await expect(loader.load(pluginModule("sample-plugin"))).rejects.toThrow(/插件 id 重复: sample-plugin/);
   });
 
   it("拒绝 manifest 声明缺少工具实现", async () => {
-    const loader = new PluginLoader({ projectCwd: "/srv/onev" });
+    const loader = new PluginLoader({ projectCwd: "/srv/sample-project/catalog-query" });
     const module = pluginModule("p", { manifest: { tools: [{ name: "missing" }] } });
 
     await expect(loader.load(module)).rejects.toThrow(/工具声明缺少实现: p -> missing/);
   });
 
   it("拒绝未在 manifest 声明的工具实现", async () => {
-    const loader = new PluginLoader({ projectCwd: "/srv/onev" });
+    const loader = new PluginLoader({ projectCwd: "/srv/sample-project/catalog-query" });
     const module = pluginModule("p", { tools: [tool("extra")] });
 
     await expect(loader.load(module)).rejects.toThrow(/工具实现缺少 manifest 声明: p -> extra/);
   });
 
   it("拒绝工具声明与实现描述不一致", async () => {
-    const loader = new PluginLoader({ projectCwd: "/srv/onev" });
+    const loader = new PluginLoader({ projectCwd: "/srv/sample-project/catalog-query" });
     const module = pluginModule("p", {
       manifest: { tools: [{ name: "t", description: "声明描述" }] },
       tools: [tool("t", "实现描述")],
@@ -233,7 +233,7 @@ describe("显式插件加载器（公开插件契约）", () => {
   });
 
   it("拒绝插件内工具声明重复与实现重名", async () => {
-    const loader = new PluginLoader({ projectCwd: "/srv/onev" });
+    const loader = new PluginLoader({ projectCwd: "/srv/sample-project/catalog-query" });
     const duplicateDeclaration = pluginModule("p", {
       manifest: { tools: [{ name: "t" }, { name: "t" }] },
       tools: [tool("t")],
@@ -248,7 +248,7 @@ describe("显式插件加载器（公开插件契约）", () => {
   });
 
   it("拒绝跨插件工具名冲突并指出占用者", async () => {
-    const loader = new PluginLoader({ projectCwd: "/srv/onev" });
+    const loader = new PluginLoader({ projectCwd: "/srv/sample-project/catalog-query" });
     const makeShared = (id: string) =>
       pluginModule(id, { manifest: { tools: [{ name: "shared" }] }, tools: [tool("shared")] });
 
@@ -259,7 +259,7 @@ describe("显式插件加载器（公开插件契约）", () => {
   });
 
   it("拒绝与 Pi 内置工具保留名冲突", async () => {
-    const loader = new PluginLoader({ projectCwd: "/srv/onev" });
+    const loader = new PluginLoader({ projectCwd: "/srv/sample-project/catalog-query" });
     const module = pluginModule("p", {
       manifest: { tools: [{ name: "read" }] },
       tools: [tool("read")],
@@ -271,7 +271,7 @@ describe("显式插件加载器（公开插件契约）", () => {
   });
 
   it("校验插件标识与版本", async () => {
-    const loader = new PluginLoader({ projectCwd: "/srv/onev" });
+    const loader = new PluginLoader({ projectCwd: "/srv/sample-project/catalog-query" });
 
     await expect(loader.load(pluginModule("Bad_Id"))).rejects.toThrow(/插件 id 无效/);
     await expect(loader.load(pluginModule("p", { manifest: { version: 0 } }))).rejects.toThrow(
@@ -280,7 +280,7 @@ describe("显式插件加载器（公开插件契约）", () => {
   });
 
   it("提示词片段的 inline/file 必须二选一且非空", async () => {
-    const loader = new PluginLoader({ projectCwd: "/srv/onev" });
+    const loader = new PluginLoader({ projectCwd: "/srv/sample-project/catalog-query" });
 
     const both = pluginModule("p", {
       manifest: { promptFragments: [{ inline: "文本", file: "a.md" }] },
@@ -290,15 +290,15 @@ describe("显式插件加载器（公开插件契约）", () => {
     const neither = pluginModule("q", { manifest: { promptFragments: [{}] } });
     await expect(loader.load(neither)).rejects.toThrow(/插件提示词片段无效/);
 
-    const relative = pluginModule("r", { manifest: { promptFragments: [{ file: "prompts/onev.md" }] } });
+    const relative = pluginModule("r", { manifest: { promptFragments: [{ file: "prompts/sample.md" }] } });
     await expect(loader.load(relative)).rejects.toThrow(/插件提示词文件必须为存在的绝对路径/);
 
-    const missing = pluginModule("s", { manifest: { promptFragments: [{ file: "/missing/onev.md" }] } });
+    const missing = pluginModule("s", { manifest: { promptFragments: [{ file: "/missing/sample.md" }] } });
     await expect(loader.load(missing)).rejects.toThrow(/插件提示词文件必须为存在的绝对路径/);
   });
 
   it("校验失败时插件不注册，可重新加载", async () => {
-    const loader = new PluginLoader({ projectCwd: "/srv/onev" });
+    const loader = new PluginLoader({ projectCwd: "/srv/sample-project/catalog-query" });
     const invalid = pluginModule("p", { manifest: { modes: [mode("chat", { modelId: "" })] } });
 
     await expect(loader.load(invalid)).rejects.toThrow(/插件 mode 缺少模型 id/);
@@ -308,7 +308,9 @@ describe("显式插件加载器（公开插件契约）", () => {
 
   it("加载器要求非空默认项目目录并对外暴露 projectCwd", () => {
     expect(() => new PluginLoader({ projectCwd: "  " })).toThrow(/缺少默认项目目录/);
-    expect(new PluginLoader({ projectCwd: "/srv/onev" }).projectCwd).toBe("/srv/onev");
+    expect(new PluginLoader({ projectCwd: "/srv/sample-project/catalog-query" }).projectCwd).toBe(
+      "/srv/sample-project/catalog-query",
+    );
   });
 
   it("按 ESM specifier 加载默认导出插件", async () => {
@@ -331,7 +333,7 @@ describe("显式插件加载器（公开插件契约）", () => {
       "utf8",
     );
 
-    const loader = new PluginLoader({ projectCwd: "/srv/onev" });
+    const loader = new PluginLoader({ projectCwd: "/srv/sample-project/catalog-query" });
     const loaded = await loader.load(pathToFileURL(file).href);
 
     expect(loaded.manifest.id).toBe("esm-plugin");
@@ -353,7 +355,7 @@ describe("显式插件加载器（公开插件契约）", () => {
       "utf8",
     );
 
-    const loader = new PluginLoader({ projectCwd: "/srv/onev" });
+    const loader = new PluginLoader({ projectCwd: "/srv/sample-project/catalog-query" });
     const loaded = await loader.load(pathToFileURL(file).href);
 
     expect(loaded.manifest).toEqual({ id: "named-plugin", version: 3 });
@@ -366,7 +368,7 @@ describe("显式插件加载器（公开插件契约）", () => {
     const file = path.join(tempRoot(), "not-a-plugin.mjs");
     writeFileSync(file, "export const notAPlugin = 1;\n", "utf8");
 
-    const loader = new PluginLoader({ projectCwd: "/srv/onev" });
+    const loader = new PluginLoader({ projectCwd: "/srv/sample-project/catalog-query" });
     await expect(loader.load(pathToFileURL(file).href)).rejects.toThrow(/插件模块缺少 manifest 导出/);
     await expect(loader.load("./pi-plugin-loader-missing.mjs")).rejects.toThrow(/插件加载失败/);
     await expect(loader.load("   ")).rejects.toThrow(/插件 specifier 不能为空/);

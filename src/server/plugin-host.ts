@@ -222,9 +222,16 @@ function requireTurnText(value: unknown, label: string, maxLength: number): stri
   return result.value;
 }
 
+const PLUGIN_HTTP_METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE"] as const;
+
 function assertRoute(route: PluginRoute, pluginId: string): void {
   if (!route.path.startsWith("/") || route.path.includes("..") || route.path.includes("//")) {
     throw new Error(`插件路由路径无效: ${pluginId} -> ${route.path}`);
+  }
+  // method 是运行时 JS 值（插件包不是 TypeScript），必须显式收口为规范大写集合。
+  // 否则 "get" 之类变体会绕过下文的 HEAD opt-out，让 Fastify 派生出未声明的 HEAD 路由。
+  if (typeof route.method !== "string" || !(PLUGIN_HTTP_METHODS as readonly string[]).includes(route.method)) {
+    throw new Error(`插件路由方法无效: ${pluginId} -> ${route.path}`);
   }
   if (typeof route.handler !== "function") {
     throw new Error(`插件路由处理器无效: ${pluginId} -> ${route.path}`);
@@ -285,6 +292,10 @@ function registerRoute(
   app.route({
     method: route.method,
     url: `/v1/capabilities/${pluginId}${route.path}`,
+    // 插件只能暴露契约显式声明的方法：GET 默认会被 Fastify 派生一条自动 HEAD 路由执行同一
+    // handler，插件从未声明 HEAD，宿主显式禁用。HEAD 因此 404（未匹配真实路由，不进 RBAC/
+    // handler/session API）。非 GET 方法不受该选项影响。
+    ...(route.method === "GET" ? { exposeHeadRoute: false } : {}),
     ...requirePermission(permission),
     handler: async (request: FastifyRequest, reply: FastifyReply) => {
       const ownerKey = identityKey(request.user);
