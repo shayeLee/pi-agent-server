@@ -1,6 +1,6 @@
 # 外部能力插件架构与实施计划
 
-> **状态：P1–P7d 已实现并通过跨仓验收；P8 自动化隔离演练已完成，真实迁移、真实 DWS/工具和人工浏览器验收仍待受控环境执行。** 本文定义 `pi-agent-capability-onev` 作为 `pi-agent-server` 外部插件包的工程边界。onev 业务需求见 [capabilities/knowledge-qa.md](capabilities/knowledge-qa.md)。
+> **状态：P1–P7d 已实现并通过跨仓验收；P8 自动化隔离演练与人工浏览器验收均已完成；真实 DWS/钉钉同步、真实生产数据变更仍待受控环境执行。** 本文定义 `pi-agent-capability-onev` 作为 `pi-agent-server` 外部插件包的工程边界。onev 业务需求见 [capabilities/knowledge-qa.md](capabilities/knowledge-qa.md)。
 
 ## 决策
 
