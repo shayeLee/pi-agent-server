@@ -28,6 +28,7 @@
 - [decisions/0002-canonical-baseline-and-migration-gate.md](decisions/0002-canonical-baseline-and-migration-gate.md) —— ADR 0002：canonical baseline bootstrap 与 migration 启动门禁（当前决策）。
 - [backup-restore.md](backup-restore.md) —— SQLite/PostgreSQL 备份、恢复与 migration 操作契约（RPO/RTO/保留期/密钥与存储边界/drill）。
 - [operations.md](operations.md) —— 首次数据库初始化、离线运维、启动门禁与 Podman 正式部署计划。
+- [onev-bare-metal-deployment.md](onev-bare-metal-deployment.md) —— pi-agent-server、ONEV 插件与前端的裸机首次部署流程（不使用 Docker/Podman）。
 - [backup-freshness-exporter.md](backup-freshness-exporter.md) —— 单实例本机备份新鲜度部署契约（Prometheus 指标 + inventory + Alertmanager）。
 - [backup-freshness-drill-sop.md](backup-freshness-drill-sop.md) —— 备份新鲜度演练 SOP（一键演习 runner + 安全边界 + 故障矩阵）。
 

@@ -226,4 +226,5 @@ pnpm e2e
 - [ADR 0002：canonical baseline 与 migration 启动门禁](docs/decisions/0002-canonical-baseline-and-migration-gate.md)
 - [备份与恢复](docs/backup-restore.md)
 - [运维索引](docs/operations.md)
+- [ONEV 裸机部署](docs/onev-bare-metal-deployment.md)
 - [未来公网 IAM 规划](docs/identity-access-plan.md)

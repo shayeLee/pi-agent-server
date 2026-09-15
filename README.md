@@ -227,4 +227,5 @@ Start with the [documentation index](docs/README.md). Key references:
 - [ADR 0002: canonical baseline and migration gate](docs/decisions/0002-canonical-baseline-and-migration-gate.md)
 - [Backup and restore](docs/backup-restore.md)
 - [Operations index](docs/operations.md)
+- [ONEV bare-metal deployment](docs/onev-bare-metal-deployment.md)
 - [Future public IAM plan](docs/identity-access-plan.md)
