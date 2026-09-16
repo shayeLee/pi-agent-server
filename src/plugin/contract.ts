@@ -192,6 +192,11 @@ export interface PluginSessionApi {
   create(input: { reservation: PluginSessionReservation; title?: string }): Promise<PluginSessionRef>;
   restore(sessionId: string): Promise<PluginSessionRef | null>;
   /**
+   * 读取当前认证 owner 指定 session 在创建时冻结的系统提示词；会话不存在、无权访问或
+   * 未记录提示词时均返回 null，插件不能借此读取其他 owner 的会话。
+   */
+  getSystemPrompt(sessionId: string): Promise<string | null>;
+  /**
    * 在当前认证 owner 的指定 session 上**同步**执行一轮对话，返回助手最终文本。
    *
    * - owner 由宿主从请求身份推导；插件不能传 owner、模型、tools、cwd 或图片；

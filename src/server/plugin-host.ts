@@ -148,6 +148,12 @@ function createSessionApi(
         const entry = await sessions.getEntry(ownerKey, sessionId);
         return entry ? sessionRef(record) : null;
       },
+      async getSystemPrompt(sessionId) {
+        assertActive();
+        // owner 固定为路由认证身份；SessionService 将越权/不存在统一折叠为 null，插件
+        // 无法通过此 API 读取或探测其他 owner 的冻结提示词。
+        return sessions.getSystemPrompt(ownerKey, sessionId);
+      },
       async runTurn(input): Promise<PluginTurnResult> {
         assertActive();
         const sessionId = requireTurnText(input?.sessionId, "sessionId", 200);

@@ -82,7 +82,12 @@ function record(id = "s1"): SessionRecord {
   };
 }
 
-function setup(sessions: MemorySessions, refs: string[], actualRefs: string[] = refs): {
+function setup(
+  sessions: MemorySessions,
+  refs: string[],
+  actualRefs: string[] = refs,
+  createAdapter: () => MockAgentAdapter = () => new MockAgentAdapter(),
+): {
   coordinator: SessionConversationCoordinator;
   prepared: () => number;
   opened: () => number;
@@ -108,7 +113,7 @@ function setup(sessions: MemorySessions, refs: string[], actualRefs: string[] = 
           openCount++;
           const actualRef = actualRefs[openCount - 1] ?? ref;
           return {
-            adapter: new MockAgentAdapter(),
+            adapter: createAdapter(),
             conversation: { agentKind: PI_AGENT_KIND, conversationFormat: PI_CONVERSATION_FORMAT, conversationRef: actualRef },
           };
         },
@@ -117,7 +122,7 @@ function setup(sessions: MemorySessions, refs: string[], actualRefs: string[] = 
     async restore(context) {
       restoreContexts.push(context);
       restoreCount++;
-      return new MockAgentAdapter();
+      return createAdapter();
     },
   };
   const factories = {
@@ -201,6 +206,26 @@ describe("SessionConversationCoordinator", () => {
     expect(first.opened()).toBe(1);
     expect(second.opened()).toBe(0);
     expect(second.restored()).toBe(1);
+  });
+
+  it("将 SDK 实际 fallback 配置快照同步到 DB，并在恢复时继续以 JSONL/SDK 为准", async () => {
+    class SnapshotAdapter extends MockAgentAdapter {
+      snapshot = { modelProvider: "B", modelId: "b", thinkingLevel: "high" };
+      listener?: () => void;
+      getConfigurationSnapshot() { return this.snapshot; }
+      subscribeConfigurationSnapshot(listener: () => void) { this.listener = listener; return () => {}; }
+      change() { this.snapshot = { modelProvider: "B", modelId: "b2", thinkingLevel: "max" }; this.listener?.(); }
+    }
+    const sessions = new MemorySessions();
+    await sessions.create({ ...record(), conversationRef: "existing-ref", modelProvider: "A", modelId: "a", thinkingLevel: "low" });
+    const adapter = new SnapshotAdapter();
+    const state = setup(sessions, [], [], () => adapter);
+
+    await state.coordinator.createAdapter("s1");
+    expect(await sessions.get("s1")).toMatchObject({ modelProvider: "B", modelId: "b", thinkingLevel: "high" });
+    adapter.change();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(await sessions.get("s1")).toMatchObject({ modelProvider: "B", modelId: "b2", thinkingLevel: "max" });
   });
 
   it("contextOf 把 SessionRecord.systemPrompt 透传给创建与恢复上下文", async () => {

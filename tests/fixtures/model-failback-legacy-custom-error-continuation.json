@@ -1,0 +1,42 @@
+[
+  {
+    "type": "custom",
+    "id": "failback-marker",
+    "parentId": "model-change",
+    "timestamp": "2026-01-01T00:00:01.000Z",
+    "customType": "model-failback",
+    "data": {
+      "from": "source-provider/source-model",
+      "to": "backup-provider/backup-model",
+      "reason": "quota_exhausted",
+      "banRecorded": true,
+      "at": 0
+    }
+  },
+  {
+    "type": "message",
+    "id": "terminal-error",
+    "parentId": "failback-marker",
+    "timestamp": "2026-01-01T00:00:02.000Z",
+    "message": {
+      "role": "assistant",
+      "stopReason": "error",
+      "content": []
+    }
+  },
+  {
+    "type": "message",
+    "id": "internal-continuation",
+    "parentId": "terminal-error",
+    "timestamp": "2026-01-01T00:00:03.000Z",
+    "message": {
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "[model-failback] 之前的模型(source-provider/source-model)发生终态错误(脱敏的终态说明)。已切换到备用模型(backup-provider/backup-model),请继续完成之前的任务,不要重复已完成的步骤。"
+        }
+      ]
+    }
+  }
+]

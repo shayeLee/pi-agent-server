@@ -1,7 +1,7 @@
 // Agent 事件类型（needs.md §4.2 / docs/pi-sdk-api.md §9）
 // SDK 事件：Pi AgentSession.subscribe 产生的 AgentSessionEvent 相关子集，结构定义、不依赖真实 SDK 类型，
 // 便于 mock 与纯逻辑单测（docs/architecture.md §2）。
-// SSE 事件：服务层协议（11 种）。queued / aborted / error 无直接 SDK 事件，由服务层合成；
+// SSE 事件：服务层协议（12 种）。queued / aborted / error 无直接 SDK 事件，由服务层合成；
 // translate 只产出由 SDK 事件映射得到的部分。
 
 // --- SDK 事件（相关子集） ---
@@ -117,6 +117,7 @@ export type SseEvent =
   | ({ type: "status"; phase: "agent_start" | "turn_start" } & SseRequestId)
   | ({ type: "queued"; position?: number } & SseRequestId)
   | ({ type: "usage"; promptTokens: number; completionTokens: number; totalTokens: number; durationMs: number; ttftMs: number } & SseRequestId)
+  | ({ type: "model_failback"; phase: "start" | "end"; attemptId: string; outcome?: "switched" | "no-target" | "failed" | "cancelled"; from?: string; to?: string; reason?: string } & SseRequestId)
   | ({ type: "error"; message: string } & SseRequestId)
   | ({ type: "completed" } & SseRequestId)
   | ({ type: "aborted" } & SseRequestId);

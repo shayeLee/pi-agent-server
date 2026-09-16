@@ -52,6 +52,7 @@ import {
 import { formatSseEvent } from "./sse-format.js";
 import { nextBackpressureState, SSE_BACKPRESSURE_THRESHOLD } from "./sse-backpressure.js";
 import { defaultSseSocket, type SseReplyRaw, type SseRequestRaw, type SseSocket } from "./sse-socket.js";
+import { FilePreviewError, previewProjectFile } from "./session-file-preview.js";
 
 export type ServerDeps = {
   sessions: SessionStorePort;
@@ -213,8 +214,13 @@ function parseLastEventId(value: string | string[] | undefined): number | undefi
 
 const NOT_FOUND = (reply: FastifyReply) =>
   reply.code(404).send({ statusCode: 404, error: "Not Found", message: "会话不存在" });
-const CONFLICT = (reply: FastifyReply) =>
-  reply.code(409).send({ statusCode: 409, error: "Conflict", message: "会话无活动任务或状态不允许" });
+const CONFLICT = (reply: FastifyReply, code?: "MODEL_FAILBACK_IN_PROGRESS") =>
+  reply.code(409).send({
+    statusCode: 409,
+    error: "Conflict",
+    ...(code ? { code } : {}),
+    message: code ? "模型切换接续中，暂不能取消" : "会话无活动任务或状态不允许",
+  });
 
 function hashIdentity(identity: UserIdentity): string {
   return createHash("sha256").update(identityKey(identity)).digest("hex").slice(0, 16);
@@ -536,6 +542,24 @@ export function buildApp(deps: ServerDeps): FastifyInstance {
       const exported = await sessions.exportSession(ownerKeyOf(request), request.params.id);
       return exported ? reply.code(200).send(exported) : NOT_FOUND(reply);
     });
+    // A session-owned, read-only project preview. Its root is resolved only from the owned
+    // session's project record; there is deliberately no root/cwd parameter in this public API.
+    api.get<{ Params: { id: string }; Querystring: { path?: unknown; line?: unknown } }>(
+      "/sessions/:id/file-preview",
+      { exposeHeadRoute: false, ...requirePermission("sessions:file-preview") },
+      async (request, reply) => {
+        const projectCwd = await sessions.sessionProjectCwd(ownerKeyOf(request), request.params.id);
+        if (!projectCwd) return NOT_FOUND(reply);
+        try {
+          return reply.code(200).send(previewProjectFile(projectCwd, request.query.path, request.query.line));
+        } catch (error) {
+          if (error instanceof FilePreviewError) {
+            return reply.code(400).send({ statusCode: 400, error: "Bad Request", code: error.code, message: "文件预览请求不可用" });
+          }
+          throw error;
+        }
+      },
+    );
     for (const [path, operation] of [
       ["/sessions/:id/steer", "steer"],
       ["/sessions/:id/follow-ups", "follow-up"],
@@ -545,7 +569,7 @@ export function buildApp(deps: ServerDeps): FastifyInstance {
         { schema: { body: TEXT_BODY_SCHEMA }, ...requirePermission("sessions:control") },
         async (request, reply) => {
           const result = await sessions.controlSession(ownerKeyOf(request), request.params.id, operation, request.body.text);
-          return result === "not-found" ? NOT_FOUND(reply) : result === "ok" ? reply.code(204).send() : CONFLICT(reply);
+          return result === "not-found" ? NOT_FOUND(reply) : result.kind === "ok" ? reply.code(204).send() : CONFLICT(reply);
         },
       );
     }
@@ -572,7 +596,11 @@ export function buildApp(deps: ServerDeps): FastifyInstance {
           undefined,
           expectedRequestId,
         );
-        return result === "not-found" ? NOT_FOUND(reply) : result === "ok" ? reply.code(204).send() : CONFLICT(reply);
+        return result === "not-found"
+          ? NOT_FOUND(reply)
+          : result.kind === "ok"
+            ? reply.code(204).send()
+            : CONFLICT(reply, result.reason === "failback-in-progress" ? "MODEL_FAILBACK_IN_PROGRESS" : undefined);
       },
     );
 

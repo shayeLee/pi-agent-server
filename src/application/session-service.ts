@@ -12,6 +12,7 @@ import type {
   SystemPromptPort,
 } from "./ports/index.js";
 import { PLUGIN_RUN_TURN_LIMITS } from "../plugin/contract.js";
+import { readPiSessionCwdIdentity } from "../agent/pi-jsonl-conversation-storage.js";
 import type { ImageInput } from "../agent/agent-adapter.js";
 import {
   DEFAULT_PROJECT_ID,
@@ -27,6 +28,15 @@ import {
 } from "../runtime/runtime-registry.js";
 
 export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
+
+/** Accept legacy adapters/readers while exposing the additive timeline field on every HTTP export. */
+function normalizeExportSnapshot(value: unknown): { messages: unknown; timeline: unknown[] } {
+  if (typeof value === "object" && value !== null && !Array.isArray(value)) {
+    const record = value as { messages?: unknown; timeline?: unknown };
+    if ("messages" in record) return { messages: record.messages, timeline: Array.isArray(record.timeline) ? record.timeline : [] };
+  }
+  return { messages: value, timeline: [] };
+}
 
 /**
  * 系统提示词追加分隔符：与 Pi SDK `buildSystemPrompt` 的 append 段一致（空行分隔），
@@ -307,6 +317,14 @@ export class SessionService {
     return records.map(toSessionDto);
   }
 
+  /**
+   * 返回 owner 自己的会话在创建时冻结的系统提示词。不存在、越权及未记录提示词统一为
+   * null，避免将其他 owner 的会话存在性或内容暴露给调用方。
+   */
+  async getSystemPrompt(ownerKey: string, id: string): Promise<string | null> {
+    return (await this.findOwned(ownerKey, id))?.systemPrompt ?? null;
+  }
+
   async deleteSession(ownerKey: string, id: string): Promise<boolean> {
     const record = await this.findOwned(ownerKey, id);
     if (!record) return false;
@@ -414,15 +432,15 @@ export class SessionService {
    * ConversationStorage 只读解析（与活会话导出同一 role/text 投影），绝不
    * createAdapter / 写 DB / 改写会话历史。
    */
-  async exportSession(ownerKey: string, id: string): Promise<{ messages: unknown; lastEventId: number } | null> {
+  async exportSession(ownerKey: string, id: string): Promise<{ messages: unknown; timeline: unknown[]; lastEventId: number } | null> {
     const record = await this.findOwned(ownerKey, id);
     if (!record) return null;
     // 已实例化 runtime：活会话导出（registry.get 仅读取，绝不因导出触发创建）。
     const existing = this.deps.registry.get(id);
     if (existing) {
       const lastEventId = existing.events.lastEventId;
-      const messages = await existing.runtime.exportSession();
-      return { messages, lastEventId };
+      const exported = normalizeExportSnapshot(await existing.runtime.exportSession());
+      return { ...exported, lastEventId };
     }
     // 无 runtime：从未活跃（或重启后未实例化）的会话——零写入只读路径。
     const conversation = {
@@ -433,19 +451,26 @@ export class SessionService {
     if (!this.deps.conversationStorage) {
       // 测试/非生产组合未注入存储时，只有未物化会话可以安全返回空历史；
       // 已有引用不能回退到可写的 getOrCreate/createAdapter 路径。
-      if (conversation.conversationRef === null) return { messages: [], lastEventId: 0 };
+      if (conversation.conversationRef === null) return { messages: [], timeline: [], lastEventId: 0 };
       throw new Error("会话历史只读解析不可用（服务配置缺失）");
     }
     try {
-      const messages = await this.deps.conversationStorage.require(conversation).readExport(conversation, {
+      const exported = normalizeExportSnapshot(await this.deps.conversationStorage.require(conversation).readExport(conversation, {
         sessionId: record.id,
         projectId: record.projectId,
-      });
-      return { messages, lastEventId: 0 };
+      }));
+      return { ...exported, lastEventId: 0 };
     } catch (error) {
       // 错误脱敏：只暴露固定文案，不透出文件路径/内容/解析细节（实现层同样兜底）。
       throw new Error("会话历史读取失败", { cause: error });
     }
+  }
+
+  /** Resolve only the creation-time JSONL root identity; mutable project/AGENT_CWD is never a preview fallback. */
+  async sessionProjectCwd(ownerKey: string, id: string): Promise<{ cwd: string; dev: number; ino: number } | null> {
+    const record = await this.findOwned(ownerKey, id);
+    if (!record || record.conversationRef === null || record.agentKind !== PI_AGENT_KIND || record.conversationFormat !== PI_CONVERSATION_FORMAT) return null;
+    return readPiSessionCwdIdentity(record.conversationRef);
   }
 
   async controlSession(
@@ -454,7 +479,7 @@ export class SessionService {
     operation: "steer" | "follow-up" | "abort",
     text?: string,
     expectedRequestId?: string,
-  ): Promise<"not-found" | "ok" | "conflict"> {
+  ): Promise<"not-found" | import("./ports/index.js").ControlDecision> {
     const entry = await this.findEntry(ownerKey, id);
     if (!entry) return "not-found";
     const decision = operation === "steer"
@@ -462,7 +487,7 @@ export class SessionService {
       : operation === "follow-up"
         ? await entry.runtime.followUp(text!)
         : await entry.runtime.abort(expectedRequestId);
-    return decision.kind;
+    return decision;
   }
 
   /** SSE transport uses the event bus, but ownership/runtime lookup remains application logic. */

@@ -12,6 +12,7 @@ pi-agent-server 是基于 Pi Agent Runtime 构建的长期运行、会话式 HTT
 - **当前为单实例运行：** 后续计划支持多实例部署。
 - **默认 Pi 工具：** `read`、`ls`、`find`、`grep`。通过环境变量 `TOOLS` 配置完整工具列表。
 - **外部插件显式且受信任：** 通过 `PI_PLUGINS` 加载指定的同进程 ESM 插件。它是工程扩展边界，不是沙箱。
+- **外部 provider 扩展显式且受信任：** 通过 `PI_PROVIDER_EXTENSION_PATHS` 显式列出注册模型 provider 的 Pi 扩展路径。自动发现始终关闭（`noExtensions: true`）；路径为绝对路径或 `~/…`，逗号分隔，已配置但加载失败即拒绝启动。扩展代码以宿主权限同进程运行，是工程扩展边界，不是沙箱。受信扩展施加的**进程级副作用**（例如包装 `globalThis.fetch`）属于进程生命周期：宿主无法卸载，启动失败退出也不保证能回滚任意全局副作用。
 - **参考图片由宿主校验、不压缩：** `POST /v1/sessions/:id/messages` 可携带可选 `images: [{ mediaType, base64 }]`。宿主只接受静态 `image/png`、`image/jpeg`、`image/webp`，重新校验真实魔数与头部尺寸，并执行数量/体积/像素预算；宿主不压缩、不转码，也不新增图片上传路由或图片数据库。压缩由调用方客户端完成。
 - **Pi Session JSONL 暂不自动清理：** 删除项目或会话后，对应的 JSONL 文件仍会保留。
 - **支持本机加密备份：** 备份与恢复工具已经提供，异地容灾仍在规划中。详见[备份与恢复](docs/backup-restore.md)。
@@ -77,6 +78,27 @@ pnpm dev:real:init
 
 默认凭证来源是 `~/.pi/agent/auth.json`。部署时应通过 `PI_AUTH_PATH` 指向服务专用凭证文件；也可以用 `PI_MODEL_PROVIDER` 和 `PI_MODEL_API_KEY` 注入默认 provider 的运行时 API key。
 
+### 外部 provider 扩展
+
+只注册模型 provider（`pi.registerProvider`）的已安装 Pi 扩展可以在不抄写 provider 实现的前提下接入服务：
+
+```bash
+# 绝对路径或 ~/...；多个路径用逗号分隔
+export PI_PROVIDER_EXTENSION_PATHS=~/.pi/packages/pi-workbuddy-connect
+```
+
+语义：
+
+- **仅显式：** 宿主保持 `noExtensions: true`，只经 Pi 的 `additionalExtensionPaths` 加载配置的路径；绝不扫描 `~/.pi/agent`、项目 `.pi/` 或 `settings.json`。变量未设置时不加载任何外部扩展。
+- **provider 注册在首次使用前进入宿主运行时：** 扩展工厂排队的 `registerProvider` 调用在加载后立即由宿主刷入唯一的 `ModelRuntime`，因此 `PI_DEFAULT_MODEL`、插件 mode 模型与 `GET /v1/models` 都能解析它们。
+- **每个活动会话一个资源加载器：** 每个活动会话（新建或恢复）都持有自己的 Pi `ResourceLoader` 与扩展 runtime，并在该会话的多轮中复用。启动探针与按项目解析提示词的探针使用各自的一次性 loader，因此探针会话的 dispose 绝不会让真实会话的扩展 runtime 失效；冻结系统提示词按字面量 override 恢复，不重新解析、不重复追加提示词片段。受信扩展因此按「每个活动会话」加载，而该会话的 provider 与 provider hook 在其整个生命周期内可用。
+- **扩展加载 cwd 固定，模块级副作用整进程只发生一次：** 所有 loader 都用服务 cwd 创建，项目 cwd 只传给 `createAgentSession({ cwd })`。Pi 的扩展模块缓存以 loader cwd 为键，混用服务/项目 cwd 会在每次切换时重新求值扩展模块、无界重放模块级副作用（例如重复包装 `globalThis.fetch`）。固定 loader cwd 后每个扩展模块整进程只求值一次，工厂函数仍按活动会话/探针重跑，项目提示词解析也不受影响（提示词的 `Current working directory` 行取会话 cwd）。
+- **提示词追加源恒为显式：** 宿主对每个 loader 都显式传 `appendSystemPrompt`（无能力片段时为空列表），从而关掉 Pi 对 `agentDir/APPEND_SYSTEM.md` 与 `<cwd>/.pi/APPEND_SYSTEM.md` 的自动发现。冻结字面量会话因此即使这两个文件在恢复前被改动，恢复后仍逐字节不变。
+- **宿主化 model-failback：** 真实会话在安装会话专属 bridge 后只绑定一次扩展。兼容的 `model-failback` 扩展经 EventBus 同步取得该 transport，经公开 SDK `session.steer()` 排队续跑，绝不 await 返回 `void` 的 `ExtensionAPI.sendUserMessage()`。abort 在取消前后都清理 SDK queue；bridge 报告 failback 尝试期间，`POST /abort` 返回精确错误码 `MODEL_FAILBACK_IN_PROGRESS` 的 `409`，前端必须与普通「无活动任务」冲突区分。扩展若无法持久化 continuation marker，会保留 Pi 已持久化的模型切换投影，但采用 fail-closed：报告 `failed`，且不排队不可识别的续跑消息。
+- **fail-fast：** 已配置路径不存在、无法导入、未导出工厂函数，或**没有任何扩展入口**（空目录、manifest 的 `pi.extensions` 入口缺失、空的 `extensions/` 子目录）即拒绝启动；Pi 运行时拒绝的注册同样拒绝启动。错误只报告宿主自己配置的路径与 provider 标识，绝不回显扩展或 Pi 运行时的原始错误文本，也不附带 `cause`。
+- **仅绝对路径：** 相对路径在任何资源创建前即被拒绝；`~/…` 按服务账号 home 展开。
+- **受信边界：** 扩展代码以宿主权限同进程运行，并可订阅 `before_provider_request` 等 provider hook。它不是沙箱，必须按插件同等标准审查。
+
 需要自定义配置时，手动设置环境变量再运行 `pnpm dev`：
 
 ```bash
@@ -123,6 +145,7 @@ export PI_MIGRATION_GATE=verify
 | `POST` | `/v1/sessions/:id/follow-ups` | 排队追加 follow-up |
 | `POST` | `/v1/sessions/:id/abort` | 中止任务。可省略 body 以兼容旧行为；如提供，必须严格为 `{ "requestId": "..." }`，且仅中止该当前请求。`requestId` 不匹配时返回 `409`，不会取消任务。 |
 | `GET` | `/v1/sessions/:id/export` | 只读消息快照；绝不创建 runtime |
+| `GET` | `/v1/sessions/:id/file-preview?path=<relative>&line=<optional>` | 按 owner 隔离、受限的 UTF-8 项目文本预览，位于会话冻结的 canonical 根内；调用方不能提供根目录 |
 
 ### 宿主公共 API 契约 v1
 
@@ -151,6 +174,8 @@ export PI_MIGRATION_GATE=verify
 - 宿主不压缩、不转码图片；客户端应在提交前压缩。PNG/JPEG/WebP 逐字节透传到 Pi SDK 图片内容。
 - 同一 `requestId` 携带不同内容重放返回 `409`，不再静默返回旧结果（`requestId` 是幂等键）。该检查仅限进程内，暂不能跨进程重启识别载荷变化，因为持久化幂等记录只保存终态结果。
 - `GET /v1/sessions/:id/export` 将受支持的 user 消息图片投影为可选 `images: [{ mediaType, base64 }]` 字段，同样经过完整校验并有预算限制；畸形或超预算的图片块被省略而不是使导出失败。活会话与只读 JSONL 导出共用同一投影，逐字节一致。
+- `GET /v1/sessions/:id/file-preview?path=<relative>&line=<optional>` 对 viewer/user/admin 为只读且按 owner 隔离。根目录是会话创建时冻结在该 owner 的 JSONL 中的 canonical 路径及 device/inode identity；绝不回退到可变的 project/default cwd。没有此 snapshot 的旧会话返回普通的固定「不可用/不存在」响应；请新建会话后使用预览。它拒绝绝对路径/穿越、静态 root/ancestor/leaf symlink 或 identity 变化、敏感凭据名称（`.env*`、`auth.json`、`.npmrc`、`key`、credential/secret 名称以及对应 Unicode 名称）、非普通文件、二进制、非 UTF-8 及超过 262,144 bytes 的文件。它只打开 `O_NOFOLLOW|O_NONBLOCK` 的普通文件 descriptor，最多读取 262,145 bytes；返回 `{ path, content, lineCount, requestedLine? }`，`line` 必须是范围内的正整数（从 1 开始），供客户端滚动。所有预览失败使用固定 code，绝不泄露文件系统路径。
+- 这是面向 **受信任、由服务维护的本地项目目录** 的兼容性加固，适用于 macOS 与 Linux。Node 没有可移植的 descriptor-relative `openat` walk，因此它不是针对恶意并发进程的严格 TOCTOU/ABA 隔离，也不声称 Linux `/proc` 级别的安全保证。它不把「可信本地目录」变成读取任意用户文件或绕过文件系统 owner/permission 的权限。
 
 ## 访问控制
 
@@ -187,6 +212,7 @@ export PI_ALLOWED_CLIENT_CIDRS=127.0.0.0/8,10.0.0.0/8
 | `PI_DEFAULT_THINKING_LEVEL` | Pi 默认值 | `off` 至 `max` |
 | `TOOLS` | `read,ls,find,grep` | 逗号分隔的完整工具列表；设置后替换默认列表，例如 `read,ls,find,grep,bash,edit,write` |
 | `PI_PLUGINS` | 未设置 | 逗号分隔的显式加载、受信任同进程 ESM 插件包名；不扫描目录或 `.pi` |
+| `PI_PROVIDER_EXTENSION_PATHS` | 未设置 | 逗号分隔的、显式加载的注册模型 provider 的受信任 Pi 扩展路径（绝对路径或 `~/…`）；不自动发现，已配置但加载失败即拒绝启动 |
 | `CORS_ORIGINS` | 空 | 允许在浏览器中调用本服务的网页地址；多个地址用逗号分隔，例如 `http://127.0.0.1:5173` |
 | `PI_BACKUP_STAGING_ROOT` | 每用户私有应用目录 | 备份或数据库升级时使用的临时工作目录；通常无需设置 |
 

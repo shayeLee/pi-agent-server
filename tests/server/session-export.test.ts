@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import type { FastifyInstance } from "fastify";
 import { buildApp } from "../../src/server/app.js";
 import { MockAgentAdapter } from "../../src/agent/mock-agent-adapter.js";
+import { projectExportSnapshot } from "../../src/agent/session-export.js";
 import type { AgentAdapter } from "../../src/agent/agent-adapter.js";
 import { ConversationStorageRegistry } from "../../src/application/ports/index.js";
 import { makeInitializedMemoryDb } from "../helpers/sqlite.js";
@@ -126,6 +127,27 @@ describe("HTTP 层：会话导出（GET /v1/sessions/:id/export）", () => {
     expect((res.body as { lastEventId: number }).lastEventId).toBeGreaterThan(0);
   });
 
+  it("deep tool JSON is actually serialized through app.inject without breaking the export", async () => {
+    let deep: unknown = { credential: "must-not-leak" };
+    for (let index = 0; index < 10_000; index += 1) deep = { child: deep };
+    const { app } = await makeApp({
+      createAdapter: async () => {
+        const adapter = new MockAgentAdapter();
+        adapter.exportData = projectExportSnapshot([], [
+          { type: "message", id: "deep-assistant", parentId: null, timestamp: "2026-01-01T00:00:00.000Z", message: { role: "assistant", content: [{ type: "toolCall", id: "deep-call", name: "inspect", arguments: deep }] } },
+        ] as any);
+        return adapter;
+      },
+    });
+    const id = await createSession(app, TOKEN);
+    await app.inject({ method: "POST", url: `/v1/sessions/${id}/messages`, headers: JSON_HEADERS, remoteAddress: TOKEN, payload: JSON.stringify({ requestId: "deep", prompt: "go" }) });
+    await flush();
+    const res = await get(app, `/v1/sessions/${id}/export`, TOKEN);
+    expect(res.statusCode).toBe(200);
+    expect(JSON.stringify(res.body)).toContain("nesting_too_deep");
+    expect(JSON.stringify(res.body)).not.toContain("must-not-leak");
+  });
+
   it("未发送过消息的会话导出默认返回空消息列表", async () => {
     const { app } = await makeApp();
     const id = await createSession(app, TOKEN);
@@ -133,7 +155,7 @@ describe("HTTP 层：会话导出（GET /v1/sessions/:id/export）", () => {
     const res = await get(app, `/v1/sessions/${id}/export`, TOKEN);
 
     expect(res.statusCode).toBe(200);
-    expect(res.body).toEqual({ messages: [], lastEventId: 0 });
+    expect(res.body).toEqual({ messages: [], timeline: [], lastEventId: 0 });
   });
 
   it("发消息后导出：lastEventId 非零（事件游标随事件写入递增）", async () => {
@@ -187,6 +209,7 @@ describe("HTTP 层：会话导出（GET /v1/sessions/:id/export）", () => {
         { role: "user", text: "hi" },
         { role: "assistant", text: "hello" },
       ],
+      timeline: [],
       lastEventId: 0, // 未实例化：无事件游标
     });
     expect(calls).toEqual([fixture]); // 只读解析口被精确调用

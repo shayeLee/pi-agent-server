@@ -115,7 +115,7 @@ HTTP 路由     插件接口
 
 宿主向插件提供受限上下文，用于注册上述内容；生命周期钩子为可选项，插件不直接修改宿主的 Fastify 实例、会话存储或内部数据库。
 
-宿主向插件路由提供按请求认证身份绑定的受限会话 API：`reserve`（宿主预分配安全 session id，插件不可指定 id；预约仅在同一次请求内有效）、`create`（按预约 id 与声明的 mode profile 创建会话）、`restore`（恢复当前 owner 的既有会话）与 `runTurn`（在指定 session 上同步执行一轮并返回助手文本）。会话创建顺序为 reservation → 插件原子写入自身 mode↔session 映射 → 宿主按预约 id 创建会话；宿主创建失败时插件删除该映射，此时不存在孤儿宿主会话。owner 由宿主在路由层绑定，签名不接受 owner 参数，插件无法伪造跨 owner 操作；该 API 不提供任何删除任意用户会话的能力。`runTurn` 同样由宿主绑定 owner、会话与 mode profile：插件不能指定模型/tools/cwd/图片，宿主限制 requestId/prompt 与返回助手文本长度，覆盖 completed/abort/error/busy，且 handler 结束（API revoke）后不可调用；它不建立 HTTP 回调或长期订阅。宿主为每一轮绑定请求取消信号：客户端在响应写出前断开或 handler 返回（revoke）时，只中止该请求对应的 task，不误杀其他 task。
+宿主向插件路由提供按请求认证身份绑定的受限会话 API：`reserve`（宿主预分配安全 session id，插件不可指定 id；预约仅在同一次请求内有效）、`create`（按预约 id 与声明的 mode profile 创建会话）、`restore`（恢复当前 owner 的既有会话）、`getSystemPrompt`（只读当前 owner 会话创建时冻结的完整系统提示词，不存在/越权统一为 `null`）与 `runTurn`（在指定 session 上同步执行一轮并返回助手文本）。会话创建顺序为 reservation → 插件原子写入自身 mode↔session 映射 → 宿主按预约 id 创建会话；宿主创建失败时插件删除该映射，此时不存在孤儿宿主会话。owner 由宿主在路由层绑定，签名不接受 owner 参数，插件无法伪造跨 owner 操作；该 API 不提供任何删除任意用户会话的能力。`runTurn` 同样由宿主绑定 owner、会话与 mode profile：插件不能指定模型/tools/cwd/图片，宿主限制 requestId/prompt 与返回助手文本长度，覆盖 completed/abort/error/busy，且 handler 结束（API revoke）后不可调用；它不建立 HTTP 回调或长期订阅。宿主为每一轮绑定请求取消信号：客户端在响应写出前断开或 handler 返回（revoke）时，只中止该请求对应的 task，不误杀其他 task。
 
 插件路由应使用能力命名空间，避免与宿主或其他插件冲突；统一前缀为 `/v1/capabilities/<plugin-id>`，onev 为 `/v1/capabilities/onev`。
 
@@ -190,7 +190,7 @@ pi-agent-server 进程
 4. **会话服务（`src/application/session-service.ts`）**：新增 `systemPromptAppend`，与 `systemPromptOverride` 互斥且非空（空串/空白 fail-fast，互斥校验先于任何写入）。追加路径先用既有 `SystemPromptPort`（`systemPromptResolver`）取得该会话所属项目在 Pi 侧的**完整提示词**（Pi 默认提示词或服务端整体提示词，未设置 `PI_SYSTEM_PROMPT` 时为 Pi 默认），再以与 Pi SDK `buildSystemPrompt` 一致的空行分隔追加片段，结果整体冻结进现有 `SessionRecord.systemPrompt`。解析器缺失且无服务端提示词时 **fail-closed**（拒绝创建，绝不静默退化为「只留片段」而丢掉 Pi 默认提示词）。
 5. **Pi 默认提示词不变**：追加只作用于**新会话快照**；`DefaultResourceLoader` 的 `systemPrompt` override、`appendSystemPrompt`（能力片段）与默认会话解析路径均不改动，服务端默认提示词与共享资源加载器行为逐字节不变。
 6. **恢复继续冻结快照**：`SessionConversationCoordinator.contextOf` 仍只透传 `SessionRecord.systemPrompt`；`PiAgentSessionFactory` 仍用字面量 override 的会话专属 `ResourceLoader`，因此恢复时按快照原文生效，绝不重新解析、绝不重复追加片段。
-7. **插件 mode Markdown**：`pi-agent-capability-onev` 的三个 mode 均改用 `appendSystemPrompt`，默认内容位于 `src/prompts/<mode>.md`；三个显式环境变量可分别覆盖为绝对 Markdown 文件。文件必须是非空 UTF-8 普通文件，拒绝 symlink 与超过 64 KiB 的内容；读取失败在插件导入时 fail-closed。固定的 `ONEV_CONTEXT_V1` 解释规则永远追加在自定义内容之后，不可被覆盖文件删除。
+7. **插件 mode Markdown**：`pi-agent-capability-onev` 的三个 mode 均改用 `appendSystemPrompt`，默认内容位于 `src/prompts/<mode>.md`；三个显式环境变量可分别覆盖为绝对 Markdown 文件。文件必须是非空 UTF-8 普通文件，拒绝 symlink 与超过 64 KiB 的内容；读取失败在插件导入时 fail-closed。固定的 `ONEV_CONTEXT_V1` 解释规则永远位于内置或自定义 mode 内容之前（两者间隔两个换行），不可被覆盖文件删除；宿主最终快照顺序为 Pi 默认提示词 → Envelope → mode 规则。
 8. **网站手动组件上下文**：ONEV 不再从路由或当前文档自动选择组件。三个 mode 默认选择为空并在各自草稿中隔离；用户可手动搜索、选择、移除或清空。Working 期间 UI 与方法双重禁止修改。网站对组件名做严格数量、长度、类型、控制字符及保留标记校验，有选择时生成精确 V1 信封，无选择时发送用户原文。
 9. **信封与历史**：普通问答把网站生成的完整 prompt 作为宿主既有 `prompt` 发送，宿主不解析；ONEV export 仅对 user 消息剥离完整、规范且位于开头的 V1 信封，assistant/畸形/未知版本保持原文。用户正文自身不得以保留 V1 前缀开头，避免来源歧义。
 10. **交互原型**：`prototypes/generate` 接收 `{requestId,prompt,title?}`，网站向 `prompt` 传入同一 V1 信封；插件不解析 `componentNames`，只在需求后追加不可变 Prototype DSL 契约。`title` 只作元数据，原有严格 JSON、CSP、hash 和 sandbox 边界不变。

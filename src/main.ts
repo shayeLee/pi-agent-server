@@ -28,6 +28,13 @@ const plugins = (process.env.PI_PLUGINS ?? "")
   .map((s) => s.trim())
   .filter(Boolean);
 
+// 显式 provider 扩展路径（绝对路径或 ~/…，逗号分隔）：只加载显式配置的路径，
+// 绝不自动发现；none 时为空。相对路径/空项处理与校验在 startServer 内 fail-fast。
+const providerExtensionPaths = (process.env.PI_PROVIDER_EXTENSION_PATHS ?? "")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
+
 // PI_DEFAULT_MODEL="provider/modelId"；模型 id 可包含斜杠，仅第一个斜杠分隔 provider。
 function parseDefaultModel(value: string | undefined): { provider: string; id: string } | undefined {
   if (!value) return undefined;
@@ -82,6 +89,7 @@ const app = await startServer({
     | undefined,
   systemPrompt: process.env.PI_SYSTEM_PROMPT,
   plugins: plugins.length > 0 ? plugins : undefined,
+  providerExtensionPaths: providerExtensionPaths.length > 0 ? providerExtensionPaths : undefined,
   // PI_DATA_MODE 仅保留为部署分类；它不能放宽 migration gate。服务启动总是 verify，
   // 并且绝不自行 bootstrap/migrate/reset。
   dataMode: process.env.PI_DATA_MODE as DataMode | undefined,

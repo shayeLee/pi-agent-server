@@ -25,7 +25,7 @@ export type SubmitDecision =
   | { kind: "done"; result: unknown };
 
 /** 控制操作（steer/followUp/abort）的返回决策：ok（已执行）/ conflict（状态或 requestId 不允许）。 */
-export type ControlDecision = { kind: "ok" } | { kind: "conflict" };
+export type ControlDecision = { kind: "ok" } | { kind: "conflict"; reason?: "failback-in-progress" };
 
 /**
  * runTurn 的入参：requestId 专属的同步轮次。

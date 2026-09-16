@@ -169,7 +169,7 @@ export class RuntimeRegistry {
     const entry = this.sessions.get(sessionId);
     if (entry) {
       try {
-        await entry.runtime.abort().catch(() => {}); // idle 时 abort 返回 conflict，无害
+        await entry.runtime.abortForLifecycle().catch(() => {}); // 强制删除不得受 failback 用户 abort 锁影响
       } finally {
         // 关闭 SSE 连接、释放 adapter/订阅、清理 registry，每一步都兜底，保证 sessions.delete 一定执行
         try {
@@ -200,7 +200,7 @@ export class RuntimeRegistry {
       ]);
       if (timer) clearTimeout(timer); // 提前完成时清理超时定时器
       if (created) {
-        await created.runtime.abort().catch(() => {});
+        await created.runtime.abortForLifecycle().catch(() => {});
         created.runtime.dispose();
       }
       this.sessions.delete(sessionId);
@@ -212,7 +212,7 @@ export class RuntimeRegistry {
     // 并行 abort：每个卡住的 abort 最多 5 秒，避免串行等待累积超出优雅关闭时限
     await Promise.allSettled(
       [...this.sessions.values()].map(async ({ runtime }) => {
-        await runtime.abort().catch(() => {});
+        await runtime.abortForLifecycle().catch(() => {});
         runtime.dispose();
       }),
     );

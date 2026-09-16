@@ -24,8 +24,18 @@ export type SubmitResult =
   | { status: "accepted" }
   | { status: "queued"; position?: number };
 
-/** Read-only session snapshot returned by `GET /v1/sessions/:id/export`. */
-export type Export = { messages: unknown; lastEventId: number };
+/** Legacy message projection. `id`, when supplied by another host, is preserved; Pi transcripts add `sourceId` as the JSONL entry id used by `timeline.messageId`. */
+export type ExportMessage = { role: string; text: string; sourceId?: string; id?: string; images?: Array<{ mediaType: string; base64: string }> };
+/** Block-ordered timeline item returned by `GET /v1/sessions/:id/export`. */
+export type ExportTimelineItem =
+  | { id: string; type: "message"; role: "user" | "assistant"; messageId: string; turnId: string | null; text: string; order: number; timestamp?: string }
+  | { id: string; type: "tool_call"; messageId: string; turnId: string | null; callId: string; toolCallId: string; toolName: string; args: unknown; status: "completed" | "error" | "no_result"; order: number; timestamp?: string }
+  | { id: string; type: "tool_result"; messageId: string | null; turnId: string | null; callId: string; toolCallId: string; toolName: string; result: unknown; isError: boolean; order: number; timestamp?: string }
+  | { id: string; type: "system_event"; event: "model_failback"; from: string; to: string; reason: string; order: number; timestamp?: string };
+/** Read-only session snapshot returned by `GET /v1/sessions/:id/export`. `timeline` is additive; Pi `messages[].sourceId` exactly joins `timeline[].messageId`. */
+export type Export = { messages: ExportMessage[]; timeline: ExportTimelineItem[]; lastEventId: number };
+/** Owner/session-scoped UTF-8 text preview. `path` is always project-relative; no root is client supplied. */
+export type FilePreview = { path: string; content: string; lineCount: number; requestedLine?: number };
 
 /** Stable error envelope used by HTTP error responses. */
 export type ApiError = { statusCode: number; error: string; message: string; code?: string };
@@ -33,7 +43,7 @@ export type ApiError = { statusCode: number; error: string; message: string; cod
 /** JSON `data:` payload carried by the session SSE stream. */
 export type SseEvent = InternalSseEvent;
 
-/** The eleven event discriminants supported by SSE v1. */
+/** The twelve event discriminants supported by SSE v1. */
 export const SSE_EVENT_TYPES = [
   "text_delta",
   "thinking_delta",
@@ -43,6 +53,7 @@ export const SSE_EVENT_TYPES = [
   "status",
   "queued",
   "usage",
+  "model_failback",
   "error",
   "completed",
   "aborted",

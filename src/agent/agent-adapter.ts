@@ -3,6 +3,7 @@
 // 单元测试一律用 MockAgentAdapter，绝不碰真实 Pi SDK。
 
 import type { AgentSdkEvent } from "./events.js";
+import type { FailbackLifecycleEvent } from "./failback-lifecycle.js";
 
 /** HTTP/接口层的图片输入（轻量结构，mediaType + base64；SDK ImageContent 只在 pi-agent-adapter 内转换）。 */
 export type ImageInput = { mediaType: string; base64: string };
@@ -12,6 +13,13 @@ export type UsageInfo = {
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
+};
+
+/** SDK 当前实际生效的配置快照；用于把扩展自动切换同步回会话索引。 */
+export type AgentConfigurationSnapshot = {
+  modelProvider: string | null;
+  modelId: string | null;
+  thinkingLevel: string | null;
 };
 
 export interface AgentAdapter {
@@ -38,6 +46,13 @@ export interface AgentAdapter {
 
   /** 订阅 SDK 事件流；返回退订函数（SSE 事件源，needs.md §4.2）。 */
   subscribe(listener: (event: AgentSdkEvent) => void): () => void;
+
+  /** 订阅同一 session ResourceLoader 的 model-failback 生命周期（可选扩展能力）。 */
+  subscribeFailbackLifecycle?(listener: (event: FailbackLifecycleEvent) => void): () => void;
+
+  /** SDK 配置改变（包括扩展自动 fallback）时发出实际快照。 */
+  subscribeConfigurationSnapshot?(listener: (snapshot: AgentConfigurationSnapshot) => void): () => void;
+  getConfigurationSnapshot?(): AgentConfigurationSnapshot;
 
   /** 导出会话消息列表或可序列化数据（GET /v1/sessions/:id/export）。 */
   exportSession(): Promise<unknown>;

@@ -8,6 +8,7 @@ import type { ConcurrencyController } from "../core/concurrency-control.js";
 import { IdempotencyStore } from "../core/idempotency.js";
 import { payloadFingerprint } from "../core/payload-fingerprint.js";
 import type { AgentAdapter, ImageInput } from "../agent/agent-adapter.js";
+import type { FailbackLifecycleEvent } from "../agent/failback-lifecycle.js";
 import type { AgentSdkEvent, SseEvent } from "../agent/events.js";
 import { translateSdkEvent } from "../agent/translate.js";
 import { extractFinalStop } from "../agent/events.js";
@@ -91,7 +92,10 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
   private readonly idempotencyRepo?: IdempotencyStorePort;
   private readonly observability?: ObservabilityPort;
   private readonly unsubscribe: () => void;
+  private readonly unsubscribeFailbackLifecycle: () => void;
   private disposed = false;
+  /** 当前 failback 尝试锁：只拦用户 abort；关闭/删除/断连走强制路径。 */
+  private failbackAttemptId: string | null = null;
   /** abort 超时/失败后标记：底层可能仍在运行，拒绝复用（避免旧事件混入新任务）。 */
   private poisoned = false;
   /** abort 进行中：adapter.abort() 等待期间到达的事件仍可见（abort 前的部分输出）。 */
@@ -134,6 +138,9 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
     this.idempotencyRepo = options.idempotencyRepo;
     this.observability = options.observability;
     this.unsubscribe = this.adapter.subscribe((event) => this.handleSdkEvent(event));
+    this.unsubscribeFailbackLifecycle = this.adapter.subscribeFailbackLifecycle?.((event) =>
+      this.handleFailbackLifecycle(event),
+    ) ?? (() => {});
   }
 
   /** 释放资源：退订事件 + 释放并发槽位/清理排队 + dispose 底层 adapter（幂等，重复调用安全）。 */
@@ -141,6 +148,8 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
     if (this.disposed) return;
     this.disposed = true;
     this.unsubscribe();
+    this.unsubscribeFailbackLifecycle();
+    this.failbackAttemptId = null;
     // 释放 active 任务占用的并发槽位（触发 drain 接续其他会话）；不依赖调用方先 abort
     if (this.currentTaskId !== null) {
       this.continuePromoted(this.concurrency.finish(this.currentTaskId));
@@ -235,7 +244,7 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
     const abortOwnTask = () => {
       if (this.currentKey !== key) return;
       if (this.taskState !== "streaming") return;
-      void this.abort().catch(() => {});
+      void this.abortInternal(undefined, true).catch(() => {});
     };
     const onSignalAbort = () => abortOwnTask();
     if (signal) signal.addEventListener("abort", onSignalAbort, { once: true });
@@ -450,7 +459,17 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
    * 在任何状态变更、adapter.abort 或 aborted 事件之前返回 conflict。
    */
   async abort(expectedRequestId?: string): Promise<ControlDecision> {
+    return this.abortInternal(expectedRequestId, false);
+  }
+
+  /** 删除/关闭/连接撤销的强制中止入口：永不被 failback 用户控制锁拦截。 */
+  async abortForLifecycle(): Promise<void> {
+    await this.abortInternal(undefined, true).catch(() => {});
+  }
+
+  private async abortInternal(expectedRequestId: string | undefined, force: boolean): Promise<ControlDecision> {
     if (this.disposed) throw new SessionDeletedError(this.sessionId);
+    if (!force && this.failbackAttemptId !== null) return { kind: "conflict", reason: "failback-in-progress" };
     const queuedTaskId = this.taskState === "queued" ? this.firstPendingTaskId() : null;
     const activeRequestId = queuedTaskId === null
       ? this.currentRequestId
@@ -511,6 +530,33 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
 
   // --- 内部实现 ---
 
+  /**
+   * 同一 adapter/loader 的扩展 EventBus 事件才会到这里；再以 active currentRequestId 与
+   * attemptId 成对校验，拒绝 idle、迟到、跨尝试事件，避免把状态串到其它 session/request。
+   */
+  private handleFailbackLifecycle(event: FailbackLifecycleEvent): void {
+    if (this.disposed || this.currentRequestId === null || this.taskState !== "streaming") return;
+    if (event.phase === "start") {
+      if (this.failbackAttemptId !== null) return;
+      this.failbackAttemptId = event.attemptId;
+      this.emitEvent({ type: "model_failback", phase: "start", attemptId: event.attemptId, requestId: this.currentRequestId });
+      return;
+    }
+    if (this.failbackAttemptId !== event.attemptId) return;
+    this.emitEvent({
+      type: "model_failback",
+      phase: "end",
+      attemptId: event.attemptId,
+      ...(event.outcome !== undefined ? { outcome: event.outcome } : {}),
+      ...(event.from !== undefined ? { from: event.from } : {}),
+      ...(event.to !== undefined ? { to: event.to } : {}),
+      ...(event.reason !== undefined ? { reason: event.reason } : {}),
+      requestId: this.currentRequestId,
+    });
+    // extension 已在 emit end 前完成/拒绝 continuation；此处才允许用户 abort。
+    this.failbackAttemptId = null;
+  }
+
   /** SDK 事件翻译后输出；agent_end 缓存终态，prompt resolve 后按 stopReason 判定 completed/error/aborted。 */
   private handleSdkEvent(event: AgentSdkEvent): void {
     // 仅在活动期处理：streaming（正常）或 aborting（abort 等待期间的部分输出仍可见）
@@ -548,7 +594,7 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
         if (!turnState.overflow && turnState.text.length > turnState.maxText) {
           turnState.overflow = true;
           // 超限：中止本轮，避免继续消耗模型资源；settle 时按 overflow 返回 error。
-          void this.abort().catch(() => {});
+          void this.abortInternal(undefined, true).catch(() => {});
         }
       }
     }
@@ -558,7 +604,7 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
     this.emitEvent({ ...translated, requestId: this.currentRequestId ?? undefined });
     // 当前事件先发出再调度自动中止：避免 abort 同步触发的事件在本次 tool_end 之前进入 SSE（顺序倒置）
     if (budgetAbort) {
-      void this.abort().catch(() => {
+      void this.abortInternal(undefined, true).catch(() => {
         // 预算中止失败不阻断事件流（abort 内部已做超时/poison 处理）
       });
     }
@@ -681,6 +727,8 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
     this.currentKey = null;
     this.currentRequestId = null;
     this.currentFingerprint = null;
+    // 无论 extension 是否漏发 end，终态都释放锁，避免异常路径永久 409。
+    this.failbackAttemptId = null;
     // 终态结果先用参数确定，保证即使后续 usage/事件异常也会在 finally 中结算等待者。
     const turnResult: SessionTurnResult = turnOverflow
       ? { status: "error", message: "助手输出超过宿主上限" }

@@ -36,7 +36,7 @@ function matchesExportSchema(value: unknown): boolean {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
   const body = value as Record<string, unknown>;
   if (exportSchema.required.some((name) => !(name in body))) return false;
-  if (exportSchema.additionalProperties === false && Object.keys(body).some((name) => name !== "messages" && name !== "lastEventId")) return false;
+  if (exportSchema.additionalProperties === false && Object.keys(body).some((name) => name !== "messages" && name !== "timeline" && name !== "lastEventId")) return false;
   return typeof body.lastEventId === "number" && Number.isInteger(body.lastEventId) && body.lastEventId >= exportSchema.properties.lastEventId.minimum;
 }
 

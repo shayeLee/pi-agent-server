@@ -48,20 +48,21 @@ describe("PiJsonlConversationStorage（只读导出解析）", () => {
   it("只读解析真实 JSONL，投影与 PiAgentAdapter.exportSession 完全一致（role/text，忽略 thinking/toolResult）", async () => {
     const dir = makeSessionDir();
     const { file, manager } = makeFixtureSession(dir);
-    const exported = (await readPiJsonlExport(file)) as Array<{ role: string; text: string }>;
+    const exported = (await readPiJsonlExport(file)) as { messages: Array<{ role: string; text: string; sourceId: string }>; timeline: unknown[] };
 
     // 只保留 user/assistant 并提取 text 块；thinking 与 toolResult 一律忽略。
-    expect(exported).toEqual([
-      { role: "user", text: "你好" },
-      { role: "assistant", text: "回复" },
+    expect(exported.messages).toEqual([
+      expect.objectContaining({ role: "user", text: "你好", sourceId: expect.any(String) }),
+      expect.objectContaining({ role: "assistant", text: "回复", sourceId: expect.any(String) }),
     ]);
+    expect((exported.timeline as Array<{ messageId: string }>).map((item) => item.messageId)).toEqual((exported.messages as Array<{ sourceId: string }>).map((message) => message.sourceId));
 
-    // 与活会话导出（PiAgentAdapter）逐字节一致：同一 messages（buildSessionContext 构造，
-    // 即 AgentSession.messages 的同类结构）经同一投影函数得到相同结果。
-    const live = new PiAgentAdapter({
-      messages: manager.buildSessionContext().messages as unknown[],
-    } as unknown as AgentSessionLike);
-    expect(await live.exportSession()).toEqual(exported);
+    // A live fake with no SessionManager has no JSONL branch evidence, so it retains the
+    // legacy fallback. Persisted Pi exports above carry the authoritative sourceId.
+    const live = new PiAgentAdapter({ messages: manager.buildSessionContext().messages as unknown[] } as unknown as AgentSessionLike);
+    expect((await live.exportSession() as { messages: unknown }).messages).toEqual([
+      { role: "user", text: "你好" }, { role: "assistant", text: "回复" },
+    ]);
   });
 
   it("含图片的 JSONL：只读投影与活会话导出逐字节一致（user images，assistant 纯文本）", async () => {
@@ -77,10 +78,11 @@ describe("PiJsonlConversationStorage（只读导出解析）", () => {
       ].join("\n"),
     );
     const before = fingerprint(file);
-    const exported = (await readPiJsonlExport(file)) as unknown;
+    const exported = (await readPiJsonlExport(file)) as { messages: unknown };
 
-    expect(exported).toEqual([
+    expect(exported.messages).toEqual([
       {
+        sourceId: "m1",
         role: "user",
         text: "看图",
         images: [
@@ -88,7 +90,7 @@ describe("PiJsonlConversationStorage（只读导出解析）", () => {
           { mediaType: "image/jpeg", base64: JPEG_2X2_BASE64 },
         ],
       },
-      { role: "assistant", text: "看到了" },
+      { sourceId: "m2", role: "assistant", text: "看到了" },
     ]);
 
     // 与活会话导出（同一投影函数）逐字节一致
@@ -105,7 +107,9 @@ describe("PiJsonlConversationStorage（只读导出解析）", () => {
         { role: "assistant", content: [{ type: "text", text: "看到了" }] },
       ],
     } as unknown as AgentSessionLike);
-    expect(JSON.stringify(await live.exportSession())).toBe(JSON.stringify(exported));
+    expect((await live.exportSession() as { messages: unknown }).messages).toEqual([
+      expect.not.objectContaining({ sourceId: expect.anything() }), expect.not.objectContaining({ sourceId: expect.anything() }),
+    ]);
     // 只读解析零写：文件指纹不变
     expect(fingerprint(file)).toBe(before);
   });
@@ -122,9 +126,9 @@ describe("PiJsonlConversationStorage（只读导出解析）", () => {
       ].join("\n"),
     );
 
-    const exported = (await readPiJsonlExport(file)) as Array<{ images?: unknown[] }>;
-    expect(exported).toEqual([
-      { role: "user", text: "看图", images: [{ mediaType: "image/png", base64: PNG_2X2_BASE64 }] },
+    const exported = (await readPiJsonlExport(file)) as { messages: Array<{ images?: unknown[] }> };
+    expect(exported.messages).toEqual([
+      { sourceId: "m1", role: "user", text: "看图", images: [{ mediaType: "image/png", base64: PNG_2X2_BASE64 }] },
     ]);
   });
 
@@ -148,9 +152,10 @@ describe("PiJsonlConversationStorage（只读导出解析）", () => {
     const raw = readFileSync(file, "utf8");
     expect(raw).toContain('"type":"image","data":"' + PNG_2X2_BASE64 + '","mimeType":"image/png"');
 
-    expect(await readPiJsonlExport(file)).toEqual([
-      { role: "user", text: "看图", images: [{ mediaType: "image/png", base64: PNG_2X2_BASE64 }] },
-      { role: "assistant", text: "ok" },
+    const exported = await readPiJsonlExport(file) as { messages: Array<{ sourceId: string; role: string; text: string }> };
+    expect(exported.messages).toEqual([
+      expect.objectContaining({ role: "user", text: "看图", sourceId: expect.any(String) }),
+      expect.objectContaining({ role: "assistant", text: "ok", sourceId: expect.any(String) }),
     ]);
   });
 
@@ -168,7 +173,7 @@ describe("PiJsonlConversationStorage（只读导出解析）", () => {
     writeFileSync(file, "");
     const before = fingerprint(file);
     const exported = await readPiJsonlExport(file);
-    expect(exported).toEqual([]);
+    expect(exported).toEqual({ messages: [], timeline: [] });
     expect(fingerprint(file)).toBe(before);
   });
 

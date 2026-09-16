@@ -44,6 +44,7 @@ export type RoutePermission =
   | "sessions:send-message"
   | "sessions:control"
   | "sessions:export"
+  | "sessions:file-preview"
   | "sessions:events"
   | "capability:read"
   | "capability:write"
@@ -60,6 +61,7 @@ export const ROUTE_PERMISSIONS: Record<RoutePermission, readonly IpRole[]> = {
   "projects:list": ["admin", "user", "viewer"],
   "sessions:list": ["admin", "user", "viewer"],
   "sessions:export": ["admin", "user", "viewer"],
+  "sessions:file-preview": ["admin", "user", "viewer"],
   "sessions:events": ["admin", "user", "viewer"],
   // 外部能力插件：查询允许 viewer/user/admin；变更允许 user/admin。
   "capability:read": ["admin", "user", "viewer"],
@@ -96,6 +98,7 @@ export type AccessCapabilities = { readonly canRead: boolean; readonly canWrite:
 const READ_CAPABILITY_PERMISSIONS: readonly RoutePermission[] = [
   "sessions:list",
   "sessions:export",
+  "sessions:file-preview",
   "sessions:events",
   "capability:read",
 ];

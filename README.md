@@ -12,6 +12,7 @@ A long-running, session-oriented HTTP/SSE server around the Pi Agent runtime, de
 - **Single instance today:** multi-instance deployment is planned for a future release.
 - **Default Pi tools:** `read`, `ls`, `find`, and `grep`. Configure the complete tool list through the `TOOLS` environment variable.
 - **External plugins are explicit and trusted:** set `PI_PLUGINS` to load named in-process ESM plugins. They are an engineering extension boundary, not a sandbox.
+- **External provider extensions are explicit and trusted:** set `PI_PROVIDER_EXTENSION_PATHS` to load explicitly listed Pi extension paths that register model providers. Automatic discovery stays disabled (`noExtensions: true`); paths are absolute or `~/…`, comma-separated, and a configured path that fails to load rejects startup. Extension code runs in-process with host permissions — it is an engineering extension boundary, not a sandbox. A trusted extension's process-wide side effects (for example wrapping `globalThis.fetch`) last for the lifetime of the process; the host cannot unload them, and a failed startup exit does not guarantee that arbitrary global side effects are rolled back.
 - **Reference images are validated, not compressed, by the host:** `POST /v1/sessions/:id/messages` accepts optional `images: [{ mediaType, base64 }]`. The host only accepts static `image/png`, `image/jpeg`, and `image/webp`, re-checks real magic bytes and header dimensions, and enforces count/size/pixel budgets; it never compresses or transcodes and adds no image upload route or image database. Client-side compression belongs to the calling client.
 - **Pi Session JSONL files are not cleaned up automatically yet:** deleting a project or session leaves the corresponding JSONL files in place.
 - **Local encrypted backups are available:** backup and restore tooling is included; off-site disaster recovery is still planned. See [Backup and restore](docs/backup-restore.md).
@@ -77,6 +78,27 @@ This runs the offline bootstrap and verifies it back; re-running it is rejected 
 
 The default credential source is `~/.pi/agent/auth.json`. For a deployment, point `PI_AUTH_PATH` at a dedicated service credential file. A runtime default API key may instead be injected with `PI_MODEL_PROVIDER` and `PI_MODEL_API_KEY`.
 
+### External provider extensions
+
+An installed Pi extension that only registers a model provider (via `pi.registerProvider`) can be wired into the service without copying its provider implementation:
+
+```bash
+# absolute path, or ~/...; several paths are comma-separated
+export PI_PROVIDER_EXTENSION_PATHS=~/.pi/packages/pi-workbuddy-connect
+```
+
+Semantics:
+
+- **Explicit only:** the host keeps `noExtensions: true` and loads exactly the configured paths through Pi's `additionalExtensionPaths`; it never scans `~/.pi/agent`, the project `.pi/`, or `settings.json`. With the variable unset, no external extension is loaded.
+- **Provider registrations reach the host runtime before first use:** extension factories queue `registerProvider` calls, and the host flushes them into its single `ModelRuntime` right after load, so `PI_DEFAULT_MODEL`, plugin mode models, and `GET /v1/models` can resolve them.
+- **One resource loader per active session:** each active session (new or restored) gets its own Pi `ResourceLoader` and extension runtime, and keeps it across that session's turns. Startup and per-project system-prompt probes use their own throwaway loaders, so a probe session's dispose can never invalidate a real session's extension runtime; a frozen system prompt is restored by literal override, without re-resolving or appending prompt fragments again. Trusted extension code is therefore loaded once per active session, while a session's provider and provider hooks stay available for its whole lifetime.
+- **Extension loading cwd is fixed, so module-level side effects happen once per process:** every loader is created with the service cwd, while the project cwd is passed only to `createAgentSession({ cwd })`. Pi's extension module cache is keyed by the loader cwd, so mixing service and project cwds would re-evaluate extension modules on every switch and replay module-level side effects (for example wrapping `globalThis.fetch`) without bound. Keeping the loader cwd stable evaluates each extension module once per process, still reruns the factory once per active session/probe, and leaves per-project prompt resolution untouched (the prompt's `Current working directory` line comes from the session cwd).
+- **Prompt append sources are explicit:** the host always passes an `appendSystemPrompt` to every loader (an empty list when there are no capability fragments), which turns off Pi's automatic discovery of `agentDir/APPEND_SYSTEM.md` and `<cwd>/.pi/APPEND_SYSTEM.md`. A frozen-literal session therefore stays byte-identical after restore, even if those files change on disk in between.
+- **Hosted model-failback:** a real session binds extensions once after its session-local bridge is installed. A compatible `model-failback` extension synchronously obtains that EventBus transport, queues continuation through the public SDK `session.steer()` API, and never awaits `ExtensionAPI.sendUserMessage()` (which is void). Abort clears the SDK queue before and after cancellation; while the bridge reports a failback attempt, `POST /abort` returns `409` with exact error code `MODEL_FAILBACK_IN_PROGRESS`, which clients must distinguish from an ordinary inactive-task conflict. If the extension cannot persist its continuation marker, it keeps Pi's model-change projection but fails closed: it reports `failed` and does not queue an unidentifiable continuation.
+- **Fail-fast:** a configured path that does not exist, cannot be imported, does not export a factory, or yields **no extension entry point at all** (an empty directory, a manifest whose `pi.extensions` entries are missing, an empty `extensions/` subdirectory) rejects startup, as does a registration that the Pi runtime rejects. Errors report the host-configured path and the provider name only; they never echo the extension's or the Pi runtime's original error text, and they add no `cause`.
+- **Absolute paths only:** relative entries are rejected before any resource is created; `~/…` is expanded against the service account home.
+- **Trusted boundary:** extension code runs in-process with host permissions and can subscribe to provider hooks such as `before_provider_request`. It is not a sandbox and must be reviewed like a plugin.
+
 For a custom setup, set the variables and run `pnpm dev`:
 
 ```bash
@@ -123,6 +145,7 @@ All routes first check the source IP. `/health` and `/readyz` do not require a t
 | `POST` | `/v1/sessions/:id/follow-ups` | Queue a follow-up |
 | `POST` | `/v1/sessions/:id/abort` | Abort a task. The body may be omitted for legacy behavior; when supplied, it must be exactly `{ "requestId": "..." }` and aborts only that current request. A non-matching requestId returns `409` without cancelling the task. |
 | `GET` | `/v1/sessions/:id/export` | Read-only message snapshot; never creates a runtime |
+| `GET` | `/v1/sessions/:id/file-preview?path=<relative>&line=<optional>` | Owner-scoped, bounded UTF-8 project-text preview under the session's frozen canonical root; caller never supplies a root |
 
 ### Public API contract v1
 
@@ -151,6 +174,8 @@ The endpoint uses the same read RBAC as the other read-only `GET` routes and is 
 - The host does not compress or transcode images; clients should compress before submitting. PNG/JPEG/WebP are passed through byte-for-byte to the Pi SDK image content.
 - Reusing the same `requestId` with different content returns `409` instead of silently returning the earlier result (`requestId` is an idempotency key). This in-process check cannot detect a payload change across a process restart yet, because the persisted idempotency record stores only the terminal result.
 - `GET /v1/sessions/:id/export` projects supported user-message images as an optional `images: [{ mediaType, base64 }]` field, subject to the same validation and a bounded budget; malformed or over-budget image blocks are omitted rather than failing the export. Live-session and read-only JSONL exports share the same projection and are byte-for-byte identical.
+- `GET /v1/sessions/:id/file-preview?path=<relative>&line=<optional>` is read-only for viewer/user/admin and owner-scoped. Its root is the canonical path and device/inode identity frozen in that owned session's JSONL at creation; it never falls back to mutable project/default cwd. Legacy sessions without this snapshot return the ordinary fixed unavailable/not-found response: create a new session to use preview. It rejects absolute/traversal, static root/ancestor/leaf symlinks or identity changes, sensitive credential names (`.env*`, `auth.json`, `.npmrc`, `key`, credential/secret names including matching Unicode names), non-regular/binary/non-UTF-8 files, and files over 262,144 bytes. It opens only `O_NOFOLLOW|O_NONBLOCK` regular descriptors and reads at most 262,145 bytes, returning `{ path, content, lineCount, requestedLine? }`; `line` is a positive in-range 1-based client scroll target. All preview failures use fixed codes and never disclose filesystem paths.
+- This is a compatibility hardening measure for **trusted, service-maintained local project directories** on macOS and Linux. Node has no portable descriptor-relative `openat` walk, so it is not strict TOCTOU/ABA isolation against a malicious concurrent process, and it makes no Linux `/proc` security-strength claim. It does not turn a trusted local directory into permission to read arbitrary user files or bypass filesystem ownership/permissions.
 
 
 ## Access control
@@ -188,6 +213,7 @@ An unregistered IP inside an allowed CIDR receives `role=user` with token disabl
 | `PI_DEFAULT_THINKING_LEVEL` | Pi default | `off` through `max` |
 | `TOOLS` | `read,ls,find,grep` | Complete comma-separated tool list; replaces the defaults when set, for example `read,ls,find,grep,bash,edit,write` |
 | `PI_PLUGINS` | unset | Comma-separated ESM package specifiers for explicitly loaded trusted in-process plugins; no directory or `.pi` discovery |
+| `PI_PROVIDER_EXTENSION_PATHS` | unset | Comma-separated absolute (or `~/…`) paths to explicitly loaded trusted Pi extensions that register model providers; no automatic discovery, and a configured path that fails to load rejects startup |
 | `CORS_ORIGINS` | empty | Web page addresses allowed to call this service from a browser; separate multiple addresses with commas, for example `http://127.0.0.1:5173` |
 | `PI_BACKUP_STAGING_ROOT` | per-user private application directory | Temporary working directory for backups or database upgrades; usually does not need to be set |
 

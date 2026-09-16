@@ -17,6 +17,7 @@ import {
   ModelRuntime,
   SessionManager,
   SettingsManager,
+  type InlineExtension,
 } from "@earendil-works/pi-coding-agent";
 import type { FastifyInstance } from "fastify";
 import { buildApp } from "./app.js";
@@ -33,7 +34,7 @@ import type { IpAccessResolveInput } from "../core/ip-access-policy.js";
 import { createIdempotentStorageCloser } from "./storage-close.js";
 import { createOperationStatus, validateMigrationGate, validateDataMode, enforceDataModeGate, type DataMode } from "./ops-status.js";
 import { SessionConversationCoordinator } from "../application/session-conversation-coordinator.js";
-import { PiAgentSessionFactory } from "../agent/pi-agent-session-factory.js";
+import { PiAgentSessionFactory, type PiResourceLoaderRequest } from "../agent/pi-agent-session-factory.js";
 import { PiJsonlConversationStorage } from "../agent/pi-jsonl-conversation-storage.js";
 import { runSqliteMigrations } from "../storage/migration-engine.js";
 import { initializeDatabaseVerifyOnly } from "../storage/bootstrap.js";
@@ -64,6 +65,11 @@ import { registerPlugins, type PluginHost } from "./plugin-host.js";
 import type { LoadedPlugin, PluginSource } from "../plugin/index.js";
 import { SessionService } from "../application/session-service.js";
 import { ProviderAdapterRegistry } from "../provider-adapters/registry.js";
+import {
+  getProviderExtensionEventBus,
+  loadSessionResourceLoader,
+  resolveProviderExtensionPaths,
+} from "./provider-extensions.js";
 import { openAIToolPolicyAdapter } from "../provider-adapters/openai-tool-policy.js";
 import {
   deepSeekV4FlashStreamAdapter,
@@ -114,6 +120,13 @@ export type StartConfig = {
   systemPrompt?: string;
   /** 显式加载的受信外部插件（模块 specifier 或测试内联模块）；未配置时不加载任何插件。 */
   plugins?: readonly PluginSource[];
+  /**
+   * 显式接入的受信 provider 扩展（绝对路径或 `~/…` 的目录/文件；PI_PROVIDER_EXTENSION_PATHS）。
+   * 经 DefaultResourceLoader.additionalExtensionPaths 受控注入，noExtensions 恒为 true、
+   * 绝不自动发现；可注册 provider（pi.registerProvider）并订阅 provider/hook 事件。
+   * 未配置时不加载任何外部扩展；配置后加载失败即拒绝启动。
+   */
+  providerExtensionPaths?: readonly string[];
   /**
    * 测试注入点（生产不配置，恒定无操作）：存储初始化完成（Kysely + 四个 Repository + 默认项目
    * + backfill）之后、buildApp 之前回调。供测试观测/注入启动中段失败，验证启动失败/成功路径的
@@ -288,6 +301,9 @@ export async function startServer(config: StartConfig) {
   // 存储方言 + 连接配置先于任何资源创建/网络访问解析（fail-fast：PG URL 缺失/未知方言在此抛错）。
   const storage = resolveStorageConfig(config, dbPath);
 
+  // 显式 provider 扩展路径（纯函数，fail-fast：相对路径在创建任何资源前拒绝；未配置时为空）。
+  const providerExtensionPaths = resolveProviderExtensionPaths(config.providerExtensionPaths);
+
   // 模型运行时：凭证默认读个人 ~/.pi/agent/auth.json（与 pi CLI 共用，OAuth token 临近过期时 SDK 会自动
   // 刷新并回写该文件，同文件带锁并发安全）；生产部署可用 PI_AUTH_PATH 指向服务端独立凭证。
   // 服务端默认 API key 也可用 setRuntimeApiKey 运行时注入（不持久化，needs.md §7）。
@@ -314,39 +330,16 @@ export async function startServer(config: StartConfig) {
   if (config.defaultThinkingLevel && !THINKING_LEVELS.has(config.defaultThinkingLevel)) {
     throw new Error(`不支持的默认思考级别：${config.defaultThinkingLevel}`);
   }
-  const configuredDefaultModel = config.defaultModel
-    ? modelRuntime.getModel(config.defaultModel.provider, config.defaultModel.id)
-    : undefined;
-  if (config.defaultModel && !configuredDefaultModel) {
-    throw new Error(`默认模型不可用：${config.defaultModel.provider}/${config.defaultModel.id}`);
-  }
-  if (configuredDefaultModel && !credentials.hasConfiguredAuth(configuredDefaultModel.provider)) {
-    throw new Error(`默认模型未配置凭证：${config.defaultModel?.provider}/${config.defaultModel?.id}`);
-  }
 
   // 能力注册表：注册、启用、会话冻结与审计的唯一来源。外部插件仅按显式配置加载，
   // 绝不扫描用户目录、项目目录或 .pi；插件为受信同进程代码，加载/校验失败即拒绝启动。
+  // 阶段一只解析 manifest/tools/modes（不触碰模型运行时）；mode 的模型/凭证校验放在
+  // provider 扩展注册完成之后，否则显式接入的 provider 对插件 mode 不可见。
   const capabilityRegistry = new CapabilityRegistry();
   const pluginLoader = new PluginLoader({ projectCwd: cwd });
   const loadedPlugins: LoadedPlugin[] = [];
   for (const source of config.plugins ?? []) {
     const loaded = await pluginLoader.load(source);
-    for (const mode of loaded.modes) {
-      const modeModel = modelRuntime.getModel(mode.modelProvider, mode.modelId);
-      if (!modeModel) {
-        throw new Error(
-          `插件 mode 模型不可用: ${loaded.manifest.id}/${mode.id} -> ${mode.modelProvider}/${mode.modelId}`,
-        );
-      }
-      if (!credentials.hasConfiguredAuth(modeModel.provider)) {
-        throw new Error(
-          `插件 mode 模型未配置凭证: ${loaded.manifest.id}/${mode.id} -> ${mode.modelProvider}/${mode.modelId}`,
-        );
-      }
-      if (mode.thinkingLevel !== undefined && !THINKING_LEVELS.has(mode.thinkingLevel)) {
-        throw new Error(`插件 mode 思考级别不支持: ${loaded.manifest.id}/${mode.id}`);
-      }
-    }
     capabilityRegistry.register({
       id: loaded.manifest.id,
       version: loaded.manifest.version,
@@ -373,41 +366,62 @@ export async function startServer(config: StartConfig) {
   // 由能力 manifest 显式声明后，经 additionalExtensionPaths / extensionFactories /
   // additionalSkillPaths 受控注入（阶段 2 能力扩展机制），而非自动发现。
   const providerAdapters = new ProviderAdapterRegistry([openAIToolPolicyAdapter]);
-  const resourceLoader = new DefaultResourceLoader({
-    cwd,
-    agentDir,
-    noExtensions: true,
-    noSkills: true,
-    noPromptTemplates: true,
-    noThemes: true,
-    noContextFiles: true,
-    // 未设置 PI_SYSTEM_PROMPT 时不覆盖，让 Pi SDK buildSystemPrompt() 生成其默认提示词。
-    ...(config.systemPrompt ? { systemPrompt: config.systemPrompt } : {}),
-    // 能力提示词片段（inline 文本或文件路径）追加到系统提示词（Pi 原生支持）。
-    appendSystemPrompt: collectPromptFragmentSources(capabilitySnapshot.promptFragments),
-    // 服务内置且受控的协议兼容层；noExtensions 不会加载用户/项目扩展。
-    extensionFactories: [
-      {
-        name: "pi-agent-server-provider-adapters",
-        factory: (pi) => {
-          // The provider override only wraps direct deepseek/deepseek-v4-flash;
-          // every other model delegates to Pi's normal OpenAI-compatible stream.
-          pi.registerProvider("deepseek", {
-            api: "openai-completions",
-            streamSimple: deepSeekV4FlashStreamAdapter,
-          });
-          pi.registerProvider("opencode", {
-            api: "openai-completions",
-            streamSimple: openCodeDeepSeekV4FlashFreeStreamAdapter,
-          });
-          pi.on("before_provider_request", (event, ctx) =>
-            providerAdapters.adaptRequest(event.payload, ctx.model),
-          );
-        },
+  // 显式 provider 扩展：noExtensions 恒为 true（不自动发现），仅这些 additionalExtensionPaths
+  // 会被加载；加载/注册/刷入 ModelRuntime 的完整语义见 provider-extensions.ts。
+  // 服务内置且受控的协议兼容层；noExtensions 不会加载用户/项目扩展。
+  const providerAdapterExtensionFactories: InlineExtension[] = [
+    {
+      name: "pi-agent-server-provider-adapters",
+      factory: (pi) => {
+        // The provider override only wraps direct deepseek/deepseek-v4-flash;
+        // every other model delegates to Pi's normal OpenAI-compatible stream.
+        pi.registerProvider("deepseek", {
+          api: "openai-completions",
+          streamSimple: deepSeekV4FlashStreamAdapter,
+        });
+        pi.registerProvider("opencode", {
+          api: "openai-completions",
+          streamSimple: openCodeDeepSeekV4FlashFreeStreamAdapter,
+        });
+        pi.on("before_provider_request", (event, ctx) =>
+          providerAdapters.adaptRequest(event.payload, ctx.model),
+        );
       },
-    ],
-  });
-  await resourceLoader.reload();
+    },
+  ];
+
+  /**
+   * 会话专属 ResourceLoader 工厂（薄封装，实现见 provider-extensions.loadSessionResourceLoader）：
+   * 每个 loader 恰好 reload 一次、加载显式 provider 扩展、把 provider 注册刷进共享 ModelRuntime，
+   * 并**只服务一个活动 session**——loader 持有自己的 ExtensionRuntime，`AgentSession.dispose()`
+   * 会 invalidate 它，所以 startup/项目提示词探针会话（创建后立即 dispose）绝不与真实会话共享
+   * loader，也绝不按 frozen systemPrompt 缓存复用。同一 session 的多轮共享同一 adapter/loader。
+   *
+   * **扩展加载 cwd 恒为服务 cwd**：SDK 的扩展模块缓存以上一次加载 cwd 为键，cwd 一变就
+   * `clearExtensionCache()` 重求值全部扩展模块（模块级副作用重放，例如 WorkBuddy 会再次包装
+   * `globalThis.fetch`）。项目 cwd 只交给 `createAgentSession({ cwd })`（会话工具/提示词 cwd），
+   * 绝不传给 loader；提示词里的 `Current working directory` 行取会话 cwd，因此项目提示词不受影响。
+   */
+  const createSessionResourceLoader = (
+    extra: {
+      systemPrompt?: string;
+      systemPromptOverride?: () => string;
+      appendSystemPrompt?: readonly string[];
+    } = {},
+  ): Promise<DefaultResourceLoader> =>
+    loadSessionResourceLoader(modelRuntime, {
+      extensionCwd: cwd,
+      agentDir,
+      providerExtensionPaths,
+      extensionFactories: providerAdapterExtensionFactories,
+      ...(extra.systemPrompt !== undefined ? { systemPrompt: extra.systemPrompt } : {}),
+      ...(extra.systemPromptOverride !== undefined
+        ? { systemPromptOverride: extra.systemPromptOverride }
+        : {}),
+      ...(extra.appendSystemPrompt !== undefined
+        ? { appendSystemPrompt: extra.appendSystemPrompt }
+        : {}),
+    });
 
   // 工具清单 = 已启用能力 manifest 声明的工具并集 ∪ 内置工具白名单（未配置时默认只读工具集）。
   const builtinGrant = toolPolicyFromAllowlist(config.tools).resolve();
@@ -416,12 +430,51 @@ export async function startServer(config: StartConfig) {
   const agentToolConfig =
     allTools.length > 0 ? { tools: allTools } : { noTools: "all" as const };
 
+  // 会话专属 loader 首次创建即完成 provider 扩展加载 + provider 注册刷入共享 ModelRuntime，
+  // 因此默认模型/凭证与插件 mode 校验必须排在它之后（否则显式接入的 provider 不可见）。
+  // 这个 loader 只用于 startup 探针会话，探针 dispose 后不再交给任何真实会话
+  // （同一 cwd 下扩展模块只求值一次，见 provider-extensions.ts）。
+  const probeResourceLoader = await createSessionResourceLoader({
+    // 未设置 PI_SYSTEM_PROMPT 时不覆盖，让 Pi SDK buildSystemPrompt() 生成其默认提示词。
+    ...(config.systemPrompt ? { systemPrompt: config.systemPrompt } : {}),
+    // 能力提示词片段（inline 文本或文件路径）追加到系统提示词（Pi 原生支持）。
+    appendSystemPrompt: collectPromptFragmentSources(capabilitySnapshot.promptFragments),
+  });
+
+  // provider 扩展注册完成后才解析默认模型与插件 mode：显式接入的 provider 对二者可见。
+  const configuredDefaultModel = config.defaultModel
+    ? modelRuntime.getModel(config.defaultModel.provider, config.defaultModel.id)
+    : undefined;
+  if (config.defaultModel && !configuredDefaultModel) {
+    throw new Error(`默认模型不可用：${config.defaultModel.provider}/${config.defaultModel.id}`);
+  }
+  if (configuredDefaultModel && !credentials.hasConfiguredAuth(configuredDefaultModel.provider)) {
+    throw new Error(`默认模型未配置凭证：${config.defaultModel?.provider}/${config.defaultModel?.id}`);
+  }
+  for (const loaded of loadedPlugins) {
+    for (const mode of loaded.modes) {
+      const modeModel = modelRuntime.getModel(mode.modelProvider, mode.modelId);
+      if (!modeModel) {
+        throw new Error(
+          `插件 mode 模型不可用: ${loaded.manifest.id}/${mode.id} -> ${mode.modelProvider}/${mode.modelId}`,
+        );
+      }
+      if (!credentials.hasConfiguredAuth(modeModel.provider)) {
+        throw new Error(
+          `插件 mode 模型未配置凭证: ${loaded.manifest.id}/${mode.id} -> ${mode.modelProvider}/${mode.modelId}`,
+        );
+      }
+      if (mode.thinkingLevel !== undefined && !THINKING_LEVELS.has(mode.thinkingLevel)) {
+        throw new Error(`插件 mode 思考级别不支持: ${loaded.manifest.id}/${mode.id}`);
+      }
+    }
+  }
+
   // 用与真实会话完全一致的 SDK 解析路径确定默认模型/思考级别/提示词，供 HTTP/UI 展示。
-  // 使用内存 SessionManager，不写入 JSONL 或服务数据库。
   const { session: defaultSession } = await createAgentSession({
     sessionManager: SessionManager.inMemory(cwd),
     modelRuntime,
-    resourceLoader,
+    resourceLoader: probeResourceLoader,
     settingsManager: SettingsManager.inMemory(),
     cwd,
     ...(configuredDefaultModel ? { model: configuredDefaultModel } : {}),
@@ -445,10 +498,16 @@ export async function startServer(config: StartConfig) {
   const systemPromptResolver: SystemPromptPort = {
     async resolve(projectCwd: string): Promise<string> {
       if (projectCwd === cwd) return defaultSystemPrompt;
+      // 探针 loader 同样独立：创建后立即 dispose，只影响该次探针自己的 runtime；
+      // 扩展加载 cwd 仍是服务 cwd（模块缓存不因项目 cwd 交替而清空）。
+      const projectLoader = await createSessionResourceLoader({
+        ...(config.systemPrompt ? { systemPrompt: config.systemPrompt } : {}),
+        appendSystemPrompt: collectPromptFragmentSources(capabilitySnapshot.promptFragments),
+      });
       const { session } = await createAgentSession({
         sessionManager: SessionManager.inMemory(projectCwd),
         modelRuntime,
-        resourceLoader,
+        resourceLoader: projectLoader,
         settingsManager: SettingsManager.inMemory(),
         cwd: projectCwd,
         ...(configuredDefaultModel ? { model: configuredDefaultModel } : {}),
@@ -543,49 +602,30 @@ export async function startServer(config: StartConfig) {
     const piStorage = new PiJsonlConversationStorage(dataDir);
     conversationStorage.register(piStorage);
     const agentFactories = new DefaultAgentSessionFactoryRegistry();
-    const modeResourceLoaders = new Map<string, DefaultResourceLoader>();
-    const resourceLoaderForSystemPrompt = async (systemPrompt: string) => {
-      if (systemPrompt === defaultSystemPrompt) return resourceLoader;
-      const cached = modeResourceLoaders.get(systemPrompt);
-      if (cached) return cached;
-      const loader = new DefaultResourceLoader({
-        cwd,
-        agentDir,
-        noExtensions: true,
-        noSkills: true,
-        noPromptTemplates: true,
-        noThemes: true,
-        noContextFiles: true,
-        // systemPrompt 是已冻结会话快照；用 override 按字面量返回，避免 SDK 将恰为
-        // 文件路径的提示词重新读盘；恢复时也绝不能追加当前能力片段。
-        systemPromptOverride: () => systemPrompt,
-        extensionFactories: [
-          {
-            name: "pi-agent-server-provider-adapters",
-            factory: (pi) => {
-              pi.registerProvider("deepseek", {
-                api: "openai-completions",
-                streamSimple: deepSeekV4FlashStreamAdapter,
-              });
-              pi.registerProvider("opencode", {
-                api: "openai-completions",
-                streamSimple: openCodeDeepSeekV4FlashFreeStreamAdapter,
-              });
-              pi.on("before_provider_request", (event, ctx) =>
-                providerAdapters.adaptRequest(event.payload, ctx.model),
-              );
-            },
-          },
-        ],
+    /**
+     * 每个 adapter（新会话或恢复）都构造**独立**的会话专属 loader：provider 扩展与 provider
+     * hook 在恢复出的会话上同样可用，但两次会话绝不共享 ExtensionRuntime（否则一个 session 的
+     * dispose 会 invalidate 另一个）。同一 cwd 下扩展模块已缓存，不会重复安装扩展模块级副作用。
+     *
+     * 有冻结提示词（会话创建时快照）时用字面量 override：既不重新解析，也绝不追加当前能力片段；
+     * 未冻结时才重新解析（与 startup 探针同一份 Pi 默认提示词语义）。两者都用同一个稳定扩展
+     * 加载 cwd，因此同一扩展模块整进程只求值一次、工厂函数每会话重跑一次。
+     */
+    const createResourceLoader = async (request: PiResourceLoaderRequest) => {
+      const frozen = request.systemPrompt;
+      const loader = await createSessionResourceLoader({
+        ...(frozen === null
+          ? {
+              ...(config.systemPrompt ? { systemPrompt: config.systemPrompt } : {}),
+              appendSystemPrompt: collectPromptFragmentSources(capabilitySnapshot.promptFragments),
+            }
+          : { systemPromptOverride: () => frozen }),
       });
-      await loader.reload();
-      modeResourceLoaders.set(systemPrompt, loader);
-      return loader;
+      return { loader, failbackLifecycleSource: getProviderExtensionEventBus(loader) };
     };
     const piFactory = new PiAgentSessionFactory({
       modelRuntime,
-      resourceLoader,
-      resourceLoaderForSystemPrompt,
+      createResourceLoader,
       defaultModel: configuredDefaultModel,
       defaultThinkingLevel,
       customTools: pluginTools,

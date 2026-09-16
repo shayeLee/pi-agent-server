@@ -88,4 +88,24 @@ describe("PiAgentAdapter（接入真实 AgentSession 的适配层）", () => {
     session.emit({ type: "agent_start" });
     expect(received).toEqual([]);
   });
+
+  it("每轮只包稳定 stream base：取消旧轮后新轮可用，旧 continuation 不会借新 token 复活", async () => {
+    const session = new FakeSession() as FakeSession & { agent: { streamFunction: (...args: any[]) => string } };
+    const base = (...args: any[]) => `base:${args[2]?.signal?.aborted}`;
+    session.agent = { streamFunction: base };
+    const adapter = new PiAgentAdapter(session);
+
+    await adapter.prompt("one");
+    const oldContinuation = session.agent.streamFunction;
+    await adapter.abort();
+    await adapter.prompt("two");
+    const newContinuation = session.agent.streamFunction;
+
+    expect(newContinuation).not.toBe(oldContinuation);
+    expect(newContinuation("m", [], {})).toBe("base:false");
+    expect(() => oldContinuation("m", [], {})).toThrow(/Aborted/);
+    // A third turn replaces rather than wraps the second gate (the base receives one signal).
+    await adapter.prompt("three");
+    expect(session.agent.streamFunction("m", [], {})).toBe("base:false");
+  });
 });

@@ -21,6 +21,7 @@ export const PUBLIC_API_OPERATIONS = [
   ["/v1/sessions/{id}/config", "patch", "sessions:update-config"],
   ["/v1/sessions/{id}/messages", "post", "sessions:send-message"],
   ["/v1/sessions/{id}/export", "get", "sessions:export"],
+  ["/v1/sessions/{id}/file-preview", "get", "sessions:file-preview"],
   ["/v1/sessions/{id}/steer", "post", "sessions:control"],
   ["/v1/sessions/{id}/follow-ups", "post", "sessions:control"],
   ["/v1/sessions/{id}/abort", "post", "sessions:control"],
@@ -96,6 +97,7 @@ const roles: Record<Permission, readonly string[]> = {
   "sessions:send-message": ["admin", "user"],
   "sessions:control": ["admin", "user"],
   "sessions:export": ["admin", "user", "viewer"],
+  "sessions:file-preview": ["admin", "user", "viewer"],
   "sessions:events": ["admin", "user", "viewer"],
 };
 
@@ -247,6 +249,13 @@ export const openapiV1 = {
         "500": headJson("Session export could not be read; the GET response body is suppressed."),
       }, { parameters: sessionParameters }),
     },
+    "/v1/sessions/{id}/file-preview": {
+      get: operation("previewSessionFile", "sessions:file-preview", {
+        "200": { description: "Read-only, bounded UTF-8 text preview under the session project root.", ...json(ref("FilePreview")) },
+        "400": error(400, "The path is invalid, sensitive, outside the project, not regular UTF-8 text, too large, or line is out of range."),
+        "404": error(404, "Session or file not found."),
+      }, { parameters: [...sessionParameters, { name: "path", in: "query", required: true, schema: { type: "string", minLength: 1 }, description: "Project-relative file path; absolute paths and traversal are rejected." }, { name: "line", in: "query", required: false, schema: { type: "integer", minimum: 1 }, description: "Optional 1-based line for a client-side scroll target." }] }),
+    },
     "/v1/sessions/{id}/steer": {
       post: operation("steerSession", "sessions:control", { "204": noContent, "404": error(404, "Session not found."), "409": error(409, "No active task.") }, { parameters: sessionParameters, requestBody: request(ref("TextInput")), ...requestValidation }),
     },
@@ -254,7 +263,7 @@ export const openapiV1 = {
       post: operation("followUpSession", "sessions:control", { "204": noContent, "404": error(404, "Session not found."), "409": error(409, "No active task.") }, { parameters: sessionParameters, requestBody: request(ref("TextInput")), ...requestValidation }),
     },
     "/v1/sessions/{id}/abort": {
-      post: operation("abortSession", "sessions:control", { "204": noContent, "400": error(400, "Invalid abort input."), "404": error(404, "Session not found."), "409": error(409, "No active task or requestId mismatch.") }, {
+      post: operation("abortSession", "sessions:control", { "204": noContent, "400": error(400, "Invalid abort input."), "404": error(404, "Session not found."), "409": { description: "No active task, requestId mismatch, or model-failback continuation.", content: { "application/json": { schema: { anyOf: [ref("ApiError"), { type: "object", required: ["statusCode", "error", "code", "message"], properties: { statusCode: { const: 409 }, error: { const: "Conflict" }, code: { const: "MODEL_FAILBACK_IN_PROGRESS", description: "A model-failback continuation owns this request; retry abort after its end event." }, message: { type: "string" } }, additionalProperties: false }] } } } } }, {
         parameters: sessionParameters,
         requestBody: request(ref("AbortInput"), false),
         // Deliberately no `x-pi-request-validation`: this body is parsed by a hand-written strict
@@ -305,7 +314,15 @@ export const openapiV1 = {
       ImageInput: { type: "object", required: ["mediaType", "base64"], properties: { mediaType: { type: "string", enum: ["image/png", "image/jpeg", "image/webp"] }, base64: { type: "string", maxLength: 5592408 } }, additionalProperties: false },
       MessageInput: { type: "object", required: ["requestId", "prompt"], properties: { requestId: { type: "string", maxLength: 128 }, prompt: { type: "string", maxLength: 32768 }, parentId: { type: "string" }, images: { type: "array", maxItems: 4, items: ref("ImageInput") } }, additionalProperties: false },
       SubmitResult: { oneOf: [{ type: "object", required: ["status"], properties: { status: { const: "accepted" } }, additionalProperties: false }, { type: "object", required: ["status"], properties: { status: { const: "queued" }, position: { type: "integer" } }, additionalProperties: false }] },
-      Export: { type: "object", required: ["messages", "lastEventId"], properties: { messages: {}, lastEventId: { type: "integer", minimum: 0 } }, additionalProperties: false },
+      FilePreview: { type: "object", required: ["path", "content", "lineCount"], properties: { path: { type: "string", description: "Normalized project-relative path." }, content: { type: "string", description: "Complete UTF-8 content; maximum 262144 bytes." }, lineCount: { type: "integer", minimum: 1 }, requestedLine: { type: "integer", minimum: 1 } }, additionalProperties: false },
+      ExportMessage: { type: "object", required: ["role", "text"], properties: { id: { type: "string", description: "Preserved legacy host message id, if any." }, sourceId: { type: "string", description: "Pi JSONL message-entry id. When present, exactly matches timeline.messageId; image-only messages have one too." }, role: { enum: ["user", "assistant"] }, text: { type: "string" }, images: { type: "array", items: ref("ImageInput") } }, additionalProperties: false },
+      Export: { type: "object", required: ["messages", "timeline", "lastEventId"], properties: { messages: { type: "array", items: ref("ExportMessage"), description: "Legacy message projection. Pi transcripts include sourceId; no text-based timeline association is permitted." }, timeline: { type: "array", items: ref("TimelineItem"), description: "Current-branch, block-ordered history. Thinking is never exported; tool text/JSON is not host-truncated." }, lastEventId: { type: "integer", minimum: 0 } }, additionalProperties: false },
+      TimelineItem: { oneOf: [
+        { type: "object", required: ["id", "type", "role", "messageId", "turnId", "text", "order"], properties: { id: { type: "string" }, type: { const: "message" }, role: { enum: ["user", "assistant"] }, messageId: { type: "string" }, turnId: { type: ["string", "null"] }, text: { type: "string" }, order: { type: "integer", minimum: 0 }, timestamp: { type: "string" } }, additionalProperties: false },
+        { type: "object", required: ["id", "type", "messageId", "turnId", "callId", "toolCallId", "toolName", "args", "status", "order"], properties: { id: { type: "string" }, type: { const: "tool_call" }, messageId: { type: "string" }, turnId: { type: ["string", "null"] }, callId: { type: "string", description: "SDK tool-call id; use as the SSE deduplication key." }, toolCallId: { type: "string" }, toolName: { type: "string" }, args: {}, status: { enum: ["completed", "error", "no_result"] }, order: { type: "integer", minimum: 0 }, timestamp: { type: "string" } }, additionalProperties: false },
+        { type: "object", required: ["id", "type", "messageId", "turnId", "callId", "toolCallId", "toolName", "result", "isError", "order"], properties: { id: { type: "string" }, type: { const: "tool_result" }, messageId: { type: ["string", "null"] }, turnId: { type: ["string", "null"] }, callId: { type: "string" }, toolCallId: { type: "string" }, toolName: { type: "string" }, result: {}, isError: { type: "boolean" }, order: { type: "integer", minimum: 0 }, timestamp: { type: "string" } }, additionalProperties: false },
+        { type: "object", required: ["id", "type", "event", "from", "to", "reason", "order"], properties: { id: { type: "string" }, type: { const: "system_event" }, event: { const: "model_failback" }, from: { type: "string" }, to: { type: "string" }, reason: { type: "string" }, order: { type: "integer", minimum: 0 }, timestamp: { type: "string" } }, additionalProperties: false },
+      ] },
       TextInput: { type: "object", required: ["text"], properties: { text: { type: "string" } }, additionalProperties: false },
       AbortInput: { type: "object", required: ["requestId"], properties: { requestId: { type: "string", maxLength: 128 } }, additionalProperties: false },
       SseEvent: { oneOf: [
@@ -317,6 +334,7 @@ export const openapiV1 = {
         { type: "object", required: ["type", "phase"], properties: { type: { const: "status" }, phase: { type: "string", enum: ["agent_start", "turn_start"] }, requestId: { type: "string" } }, additionalProperties: false },
         { type: "object", required: ["type"], properties: { type: { const: "queued" }, position: { type: "integer" }, requestId: { type: "string" } }, additionalProperties: false },
         { type: "object", required: ["type", "promptTokens", "completionTokens", "totalTokens", "durationMs", "ttftMs"], properties: { type: { const: "usage" }, promptTokens: { type: "number" }, completionTokens: { type: "number" }, totalTokens: { type: "number" }, durationMs: { type: "number" }, ttftMs: { type: "number" }, requestId: { type: "string" } }, additionalProperties: false },
+        { type: "object", required: ["type", "phase", "attemptId"], properties: { type: { const: "model_failback" }, phase: { type: "string", enum: ["start", "end"] }, attemptId: { type: "string" }, outcome: { type: "string", enum: ["switched", "no-target", "failed", "cancelled"] }, from: { type: "string" }, to: { type: "string" }, reason: { type: "string" }, requestId: { type: "string" } }, additionalProperties: false },
         { type: "object", required: ["type", "message"], properties: { type: { const: "error" }, message: { type: "string" }, requestId: { type: "string" } }, additionalProperties: false },
         { type: "object", required: ["type"], properties: { type: { const: "completed" }, requestId: { type: "string" } }, additionalProperties: false },
         { type: "object", required: ["type"], properties: { type: { const: "aborted" }, requestId: { type: "string" } }, additionalProperties: false },

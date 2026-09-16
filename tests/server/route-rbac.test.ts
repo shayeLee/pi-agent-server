@@ -672,7 +672,7 @@ describe("WP5D-3 SSE：viewer 只读可，writes 拒", () => {
       await seedSession(sessions, ownerOf(ROLE_IP.viewer), "v-export", "v");
       const res = await app.inject({ method: "GET", url: "/v1/sessions/v-export/export", remoteAddress: ROLE_IP.viewer });
       expect(res.statusCode).toBe(200);
-      expect(res.json()).toEqual({ messages: [], lastEventId: 0 });
+      expect(res.json()).toEqual({ messages: [], timeline: [], lastEventId: 0 });
       expect(adapters.get("v-export")).toBeUndefined();
       expect(await sessions.get("v-export")).toMatchObject({ id: "v-export", conversationRef: null });
     } finally {

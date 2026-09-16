@@ -442,6 +442,21 @@ describe("SessionService", () => {
     expect(resolveCalls).toBe(0);
   });
 
+  it("getSystemPrompt 只返回 owner 自己在创建时冻结的提示词", async () => {
+    const { service } = makeService();
+    const owned = createdSession(await service.createSession("owner-a", {
+      systemPromptOverride: "owner-a 的冻结提示词",
+    }));
+    const other = createdSession(await service.createSession("owner-b", {
+      systemPromptOverride: "owner-b 的冻结提示词",
+    }));
+
+    expect(await service.getSystemPrompt("owner-a", owned.id)).toBe("owner-a 的冻结提示词");
+    // 越权和不存在统一折叠为 null，既不泄漏其他 owner 的提示词，也不泄漏会话存在性。
+    expect(await service.getSystemPrompt("owner-a", other.id)).toBeNull();
+    expect(await service.getSystemPrompt("owner-a", "missing")).toBeNull();
+  });
+
   it("createSession 拒绝空字符串 systemPromptOverride", async () => {
     const { service } = makeService();
 
@@ -755,7 +770,7 @@ describe("SessionService", () => {
     await sessions.reserveConversation(second.id, { conversationRef: "/tmp/second.jsonl", tombstoneOperationKey: "tombstone-second" });
 
     // 有文件但无 runtime：只经只读解析口导出（同一投影），不创建 adapter、不写 DB/文件。
-    expect(await service.exportSession("owner-a", first.id)).toEqual({ messages: [], lastEventId: 0 });
+    expect(await service.exportSession("owner-a", first.id)).toEqual({ messages: [], timeline: [], lastEventId: 0 });
     expect(readCalls).toEqual(["/tmp/first.jsonl"]);
     expect(await service.deleteProject("owner-a", "project-a")).toBe("deleted");
     expect(await projects.get("project-a")).toBeNull();

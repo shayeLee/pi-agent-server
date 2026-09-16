@@ -78,7 +78,7 @@ describe("会话导出（AgentAdapter.exportSession）", () => {
       session.messages = messages;
       const adapter = new PiAgentAdapter(session);
 
-      expect(await adapter.exportSession()).toEqual([
+      expect((await adapter.exportSession() as { messages: unknown }).messages).toEqual([
         { role: "user", text: "hi" },
         { role: "assistant", text: "hello" },
       ]);
@@ -107,7 +107,7 @@ describe("会话导出（AgentAdapter.exportSession）", () => {
       session.messages = messages;
       const adapter = new PiAgentAdapter(session);
 
-      expect(await adapter.exportSession()).toEqual([
+      expect((await adapter.exportSession() as { messages: unknown }).messages).toEqual([
         {
           role: "user",
           text: "看图",
@@ -136,7 +136,7 @@ describe("会话导出（AgentAdapter.exportSession）", () => {
       session.messages = messages;
       const adapter = new PiAgentAdapter(session);
 
-      expect(await adapter.exportSession()).toEqual([
+      expect((await adapter.exportSession() as { messages: unknown }).messages).toEqual([
         { role: "user", text: "看图", images: [{ mediaType: "image/png", base64: PNG_2X2_BASE64 }] },
       ]);
     });

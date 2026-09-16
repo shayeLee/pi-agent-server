@@ -5,14 +5,14 @@ import { createHash } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import {
-  buildSessionContext,
   parseSessionEntries,
   SessionManager,
   type NewSessionOptions,
   type SessionEntry,
   type SessionHeader,
 } from "@earendil-works/pi-coding-agent";
-import { projectExportMessages } from "./pi-agent-adapter.js";
+import { projectExportSnapshot } from "./session-export.js";
+import { readSessionCwdIdentity, type SessionCwdIdentity } from "./session-cwd-identity.js";
 import type {
   ConversationCleanupPlan,
   ConversationDescriptor,
@@ -116,6 +116,17 @@ export function assertCurrentPiJsonl(content: string): void {
   }
 }
 
+/** Read the creation-time canonical root from an immutable Pi transcript; malformed/legacy data is unavailable. */
+export function readPiSessionCwdIdentity(file: string): SessionCwdIdentity | null {
+  try {
+    const content = readFileSync(file, "utf8");
+    assertOpenablePiJsonl(content);
+    return readSessionCwdIdentity(parseSessionEntries(content) as SessionEntry[]);
+  } catch {
+    return null;
+  }
+}
+
 function assertOpenablePiJsonl(content: string): void {
   if (content.trim().length === 0) throw new Error("session history is empty");
   assertCurrentPiJsonl(content);
@@ -164,16 +175,21 @@ export function openPiRuntimeSessionFile(
 
 /** 只读解析 Pi JSONL，返回与活 AgentAdapter 相同的导出投影。 */
 export async function readPiJsonlExport(conversationRef: string | null): Promise<unknown> {
-  if (conversationRef === null) return [];
+  if (conversationRef === null) return { messages: [], timeline: [] };
   const before = fileFingerprint(conversationRef);
   let messages: unknown;
   try {
     const content = readFileSync(conversationRef, "utf8");
-    const parsed = parseSessionEntries(content);
-    assertCurrentPiJsonl(content);
-    if (content.length > 0 && parsed.length === 0) throw new Error("cannot parse session file");
-    const context = buildSessionContext(parsed as unknown as SessionEntry[]);
-    messages = projectExportMessages(context.messages as unknown[]);
+    if (content.trim().length === 0) {
+      messages = { messages: [], timeline: [] };
+    } else {
+      const parsed = parseSessionEntries(content);
+      assertCurrentPiJsonl(content);
+      if (parsed.length === 0) throw new Error("cannot parse session file");
+      const manager = buildPersistedSessionManager(conversationRef, parsed as SessionEntry[]);
+      // getBranch() is the SDK's selected current path: orphaned sibling branches never leak.
+      messages = projectExportSnapshot(manager.buildSessionContext().messages as unknown[], manager.getBranch());
+    }
   } catch (error) {
     throw new Error("会话历史读取失败", { cause: error });
   }

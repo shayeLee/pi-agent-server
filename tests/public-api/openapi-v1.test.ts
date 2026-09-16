@@ -13,6 +13,7 @@ import { identityKey } from "../../src/core/user-identity.js";
 import { makeInitializedMemoryDb } from "../helpers/sqlite.js";
 import { makePolicy, makeTestIpAccess } from "../helpers/ip-access.js";
 import { MockAgentAdapter } from "../../src/agent/mock-agent-adapter.js";
+import type { FailbackLifecycleEvent } from "../../src/agent/failback-lifecycle.js";
 
 const document = openapiV1 as unknown as {
   openapi: string;
@@ -21,6 +22,41 @@ const document = openapiV1 as unknown as {
 };
 
 const ROLE_IP = "10.0.0.9";
+
+class FailbackExportAdapter extends MockAgentAdapter {
+  private readonly failbackListeners = new Set<(event: FailbackLifecycleEvent) => void>();
+  private startResolve!: () => void;
+  private readonly started = new Promise<void>((resolve) => { this.startResolve = resolve; });
+  private releaseResolve!: () => void;
+  private readonly release = new Promise<void>((resolve) => { this.releaseResolve = resolve; });
+
+  constructor() {
+    super();
+    this.exportData = {
+      messages: [],
+      timeline: [{ id: "system-event:failback-1", type: "system_event", event: "model_failback", from: "primary/model", to: "fallback/model", reason: "rate_limit", order: 0 }],
+    };
+  }
+
+  subscribeFailbackLifecycle(listener: (event: FailbackLifecycleEvent) => void): () => void {
+    this.failbackListeners.add(listener);
+    return () => this.failbackListeners.delete(listener);
+  }
+
+  override async prompt(text: string): Promise<void> {
+    await super.prompt(text);
+    for (const listener of this.failbackListeners) listener({ version: 1, sessionId: "failback-session", phase: "start", attemptId: "failback-1" });
+    this.startResolve();
+    await this.release;
+  }
+
+  waitForStart(): Promise<void> { return this.started; }
+
+  finish(): void {
+    for (const listener of this.failbackListeners) listener({ version: 1, sessionId: "failback-session", phase: "end", attemptId: "failback-1", outcome: "cancelled" });
+    this.releaseResolve();
+  }
+}
 
 /** 直接向存储播种会话：SSE 路由需要记录存在，测试无需经 HTTP 创建。 */
 function seedSession(sessions: SessionStorePort, id: string): Promise<void> {
@@ -166,8 +202,8 @@ describe("public host API v1 contract", () => {
     }
     expect(Object.keys(document.paths)).not.toContain("/v1/capabilities");
     expect(JSON.stringify(document)).not.toContain("/v1/capabilities");
-    expect(SSE_EVENT_TYPES).toHaveLength(11);
-    expect(document.components.schemas.SseEvent!.oneOf).toHaveLength(11);
+    expect(SSE_EVENT_TYPES).toHaveLength(12);
+    expect(document.components.schemas.SseEvent!.oneOf).toHaveLength(12);
   });
 
   it("maps every documented fixed operation to Fastify and its central RBAC permission", async () => {
@@ -361,6 +397,44 @@ describe("public host API v1 contract", () => {
       expect(invalid.statusCode).toBe(400);
       expect(schemaMatches(invalid.json(), document.components.schemas.ApiError!)).toBe(true);
     } finally {
+      await app.close();
+    }
+  });
+
+  it("validates real failback conflicts and exports against their response schemas, rejecting unknown timeline types", async () => {
+    const { sessions, projects } = await makeInitializedMemoryDb({ cwd: "/tmp/public-api-failback-contract" });
+    let adapter: FailbackExportAdapter | undefined;
+    const app = buildApp({
+      sessions,
+      projects,
+      defaultProjectCwd: "/tmp/public-api-failback-contract",
+      defaultModel: null,
+      modelCatalog: { getAvailable: async () => [], isAvailable: async () => false },
+      ipAccess: makeTestIpAccess(),
+      createAdapter: async () => (adapter = new FailbackExportAdapter()),
+    });
+    try {
+      const created = await app.inject({ method: "POST", url: "/v1/sessions", remoteAddress: "10.0.0.1", headers: { "content-type": "application/json" }, payload: "{}" });
+      const sessionId = created.json().id as string;
+      const submitted = await app.inject({ method: "POST", url: `/v1/sessions/${sessionId}/messages`, remoteAddress: "10.0.0.1", headers: { "content-type": "application/json" }, payload: JSON.stringify({ requestId: "failback-request", prompt: "trigger" }) });
+      expect(submitted.statusCode).toBe(202);
+      await adapter!.waitForStart();
+
+      const conflict = await app.inject({ method: "POST", url: `/v1/sessions/${sessionId}/abort`, remoteAddress: "10.0.0.1", headers: { "content-type": "application/json" }, payload: JSON.stringify({ requestId: "failback-request" }) });
+      expect(conflict.statusCode).toBe(409);
+      const abort409 = document.paths["/v1/sessions/{id}/abort"]!.post!.responses as Record<string, { content: { "application/json": { schema: Record<string, unknown> } } }>;
+      expect(schemaMatches(conflict.json(), abort409["409"]!.content["application/json"].schema)).toBe(true);
+
+      const exported = await app.inject({ method: "GET", url: `/v1/sessions/${sessionId}/export`, remoteAddress: "10.0.0.1" });
+      expect(exported.statusCode).toBe(200);
+      expect(schemaMatches(exported.json(), document.components.schemas.Export!)).toBe(true);
+      const timeline = document.components.schemas.TimelineItem!;
+      expect(schemaMatches(exported.json().timeline[0], timeline)).toBe(true);
+      expect(schemaMatches({ id: "unknown", type: "system_event", event: "unexpected", from: "a", to: "b", reason: "x", order: 0 }, timeline)).toBe(false);
+      expect(schemaMatches({ id: "unknown", type: "unknown", order: 0 }, timeline)).toBe(false);
+      adapter!.finish();
+    } finally {
+      adapter?.finish();
       await app.close();
     }
   });

@@ -72,6 +72,7 @@ function mode(overrides: Partial<PluginModeProfile> = {}): PluginModeProfile {
 function fakeSessions(options: {
   session?: PluginSessionRef;
   getEntry?: (ownerKey: string, sessionId: string) => Promise<unknown>;
+  getSystemPrompt?: (ownerKey: string, sessionId: string) => Promise<string | null>;
   createResult?: (input: Record<string, unknown>) => unknown;
   runTurn?: (ownerKey: string, input: Record<string, unknown>) => unknown;
 } = {}): {
@@ -79,6 +80,7 @@ function fakeSessions(options: {
   createCalls: Array<{ ownerKey: string; input: Record<string, unknown> }>;
   listCalls: string[];
   entryCalls: Array<{ ownerKey: string; sessionId: string }>;
+  systemPromptCalls: Array<{ ownerKey: string; sessionId: string }>;
   runTurnCalls: Array<{ ownerKey: string; input: Record<string, unknown> }>;
 } {
   const session = options.session ?? {
@@ -91,6 +93,7 @@ function fakeSessions(options: {
   const createCalls: Array<{ ownerKey: string; input: Record<string, unknown> }> = [];
   const listCalls: string[] = [];
   const entryCalls: Array<{ ownerKey: string; sessionId: string }> = [];
+  const systemPromptCalls: Array<{ ownerKey: string; sessionId: string }> = [];
   const runTurnCalls: Array<{ ownerKey: string; input: Record<string, unknown> }> = [];
   const created: PluginSessionRef[] = [];
   const service = {
@@ -110,6 +113,10 @@ function fakeSessions(options: {
       entryCalls.push({ ownerKey, sessionId });
       return options.getEntry ? options.getEntry(ownerKey, sessionId) : {};
     },
+    getSystemPrompt: async (ownerKey: string, sessionId: string) => {
+      systemPromptCalls.push({ ownerKey, sessionId });
+      return options.getSystemPrompt ? options.getSystemPrompt(ownerKey, sessionId) : null;
+    },
     runTurn: async (ownerKey: string, input: Record<string, unknown>) => {
       runTurnCalls.push({ ownerKey, input });
       if (options.runTurn) return options.runTurn(ownerKey, input);
@@ -121,6 +128,7 @@ function fakeSessions(options: {
     createCalls,
     listCalls,
     entryCalls,
+    systemPromptCalls,
     runTurnCalls,
   };
 }
@@ -243,6 +251,49 @@ describe("plugin host", () => {
     await expect(routeContext!.sessions.reserve({ modeId: "copilot" })).rejects.toThrow("会话 API 已失效");
     await expect(routeContext!.sessions.create({ reservation })).rejects.toThrow("会话 API 已失效");
     await expect(routeContext!.sessions.restore(created.id)).rejects.toThrow("会话 API 已失效");
+  });
+
+  it("getSystemPrompt 仅返回当前 owner 的创建快照，插件不能伪造 owner", async () => {
+    const { app, routes } = fakeApp();
+    const request = { user: { kind: "ip", ip: "192.0.2.24" } } as const;
+    const ownerKey = identityKey(request.user);
+    const fake = fakeSessions({
+      getSystemPrompt: async (actualOwner, sessionId) => (
+        actualOwner === ownerKey && sessionId === "session-1" ? "创建时冻结的提示词" : null
+      ),
+    });
+    let routeContext: PluginRouteRequestContext | undefined;
+    const plugin = loadedPlugin("copilot", {
+      modes: [mode()],
+      register: (received) => {
+        received.mountRoute({
+          method: "GET",
+          path: "/system-prompt",
+          access: "read",
+          handler: async (context) => {
+            routeContext = context;
+            return {
+              own: await context.sessions.getSystemPrompt("session-1"),
+              // 运行时额外 owner 参数会被忽略；API 只接受 sessionId，宿主绑定认证 owner。
+              other: await (context.sessions.getSystemPrompt as unknown as (
+                sessionId: string,
+                ownerKey: string,
+              ) => Promise<string | null>)("other-owner-session", "owner-b"),
+            };
+          },
+        });
+      },
+    });
+    await registerPlugins([plugin], { app, projectCwd: "/tmp/project", sessions: fake.sessions });
+
+    await expect(
+      routes[0]!.handler(request as unknown as FastifyRequest, {} as FastifyReply),
+    ).resolves.toEqual({ own: "创建时冻结的提示词", other: null });
+    expect(fake.systemPromptCalls).toEqual([
+      { ownerKey, sessionId: "session-1" },
+      { ownerKey, sessionId: "other-owner-session" },
+    ]);
+    await expect(routeContext!.sessions.getSystemPrompt("session-1")).rejects.toThrow("会话 API 已失效");
   });
 
   it("插件 GET 路由禁用自动 HEAD：HEAD 404 且 handler/session API 零调用，同路径 POST 不受影响", async () => {

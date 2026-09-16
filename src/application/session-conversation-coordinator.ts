@@ -24,6 +24,8 @@ export type SessionConversationCoordinatorOptions = {
   readonly dataDir: string;
   readonly defaultThinkingLevel?: string;
   readonly agentToolConfig: AgentSessionContext["agentToolConfig"];
+  /** 配置快照写回的时钟；生产默认 Date.now，测试可注入。 */
+  readonly now?: () => number;
 };
 
 export class SessionConversationCoordinator {
@@ -36,6 +38,7 @@ export class SessionConversationCoordinator {
   private readonly dataDir: string;
   private readonly defaultThinkingLevel?: string;
   private readonly agentToolConfig: AgentSessionContext["agentToolConfig"];
+  private readonly now: () => number;
 
   constructor(options: SessionConversationCoordinatorOptions) {
     this.sessions = options.sessions;
@@ -47,6 +50,7 @@ export class SessionConversationCoordinator {
     this.dataDir = options.dataDir;
     this.defaultThinkingLevel = options.defaultThinkingLevel;
     this.agentToolConfig = options.agentToolConfig;
+    this.now = options.now ?? Date.now;
   }
 
   async createAdapter(sessionId: string): Promise<AgentAdapter> {
@@ -59,7 +63,7 @@ export class SessionConversationCoordinator {
     const factory = this.factories.require(conversation);
     const context = this.contextOf(record, projectCwd);
     if (conversation.conversationRef !== null) {
-      return factory.restore(context, conversation);
+      return this.bindConfigurationSnapshot(record, await factory.restore(context, conversation));
     }
 
     const prepared = await factory.prepareNew(context);
@@ -80,7 +84,7 @@ export class SessionConversationCoordinator {
         throw new Error("agent session factory materialized a conversation reference different from its reservation");
       }
       const committed = await this.sessions.commitConversationReservation(sessionId, proposedRef, proposedRef);
-      if (committed) return opened.adapter;
+      if (committed) return this.bindConfigurationSnapshot(record, opened.adapter);
       await this.anchorCleanup(sessionId, record.projectId, opened.conversation);
       try { opened.adapter.dispose(); } catch { /* preserve the winner outcome */ }
       return this.restoreReservationOutcome(sessionId, projectCwd);
@@ -112,6 +116,26 @@ export class SessionConversationCoordinator {
     }
   }
 
+  /** Persist SDK's actual model/thinking state. JSONL wins on restore; DB remains an index/fallback. */
+  private async bindConfigurationSnapshot(record: SessionRecord, adapter: AgentAdapter): Promise<AgentAdapter> {
+    const persist = async () => {
+      const snapshot = adapter.getConfigurationSnapshot?.();
+      if (!snapshot) return;
+      await this.sessions.update(record.id, {
+        modelProvider: snapshot.modelProvider,
+        modelId: snapshot.modelId,
+        thinkingLevel: snapshot.thinkingLevel,
+        updatedAt: this.now(),
+      });
+    };
+    await persist();
+    adapter.subscribeConfigurationSnapshot?.(() => {
+      // SDK event dispatch cannot await persistence; a later snapshot is still authoritative.
+      void persist().catch(() => {});
+    });
+    return adapter;
+  }
+
   private async restoreReservationOutcome(sessionId: string, projectCwd: string): Promise<AgentAdapter> {
     // A different creator or a concurrent delete may have won the CAS. Never
     // overwrite its value. A still-unmaterialized row instead means the
@@ -124,7 +148,7 @@ export class SessionConversationCoordinator {
     }
     const winnerConversation = this.conversationOf(winner);
     const winnerFactory = this.factories.require(winnerConversation);
-    return winnerFactory.restore(this.contextOf(winner, projectCwd), winnerConversation);
+    return this.bindConfigurationSnapshot(winner, await winnerFactory.restore(this.contextOf(winner, projectCwd), winnerConversation));
   }
 
   private async anchorCleanup(
