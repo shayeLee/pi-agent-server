@@ -157,6 +157,14 @@ export PI_MIGRATION_GATE=verify
 
 在 v1 内，既有 operation、字段、状态语义和 SSE 事件 data 保持兼容；可以新增可选字段或 operation。破坏性变更必须提供新的版本化契约/path，而不能修改 v1。RC 期间，`src/server/app.ts` 的实际 API 仍是实现权威。
 
+### 受信插件的会话标题
+
+插件 `PluginSessionApi.getMessages(sessionId)` 只读取当前认证 owner 导出的 `messages`；不存在或不归属时返回 `null`，绝不创建 runtime/provider，也不暴露 timeline 或 thinking。`setTitle({ sessionId, title, onlyIfEmpty?: boolean })` 只更新该 owner 的宿主会话元数据，并返回更新后/当前的会话，或 `null`。`onlyIfEmpty: true` 时存储层原子地对空标题 CAS，因此自动标题不会覆盖并发的用户改名。它们是插件契约，不是公共 v1 HTTP operation。标题会 trim，且只接受非空、不含非法控制字符、最长 80 个 UTF-16 code unit 的纯文本；UI 必须按文本而非 HTML 渲染。
+
+标题策略属于理解该 mode 及其数据的插件：插件在已接受首条有效 user 消息后，可以在自己的 mode-session 记录中持久化派生标题并以 `onlyIfEmpty: true` 调用 `setTitle`；即使之后模型轮次报错或停止也可以命名。插件不得为未提交/被拒绝的消息命名、不得覆盖用户自定义标题、不得使用模型输出，也不得以 `conversation_ref` 推断消息存在。插件必须从真实首条 user 消息中自行解包 `ONEV_CONTEXT` envelope 后再派生首问文本；宿主有意不解析插件业务 envelope。首条仅图片消息使用插件明确的图片会话默认标题。
+
+`GET /v1/sessions` 有意不提供 `hasMessages` 或 `messageCount`：它只是元数据列表，`conversation_ref` 不能证明 user 消息已提交。需要隐藏历史空会话的 UI 必须 hydrate `GET /v1/sessions/:id/export`，并从真实导出的 messages 判断（代价是逐会话读取）；或者消费插件列表摘要，其中 `hasMessages`/`messageCount` 必须由插件持久化的已接受消息状态支持。不得把失败/空 export 或任何 reference 字段替代为消息存在的证据。
+
 ### 访问能力投影
 
 `GET /v1/access` 返回最小固定响应体 `{ canRead, canWrite }`，由中央路由权限矩阵（`ROUTE_PERMISSIONS` + `evaluateRouteAuthorization`）派生，而非硬编码；绝不返回调用方的 `role`、IP 或 token。

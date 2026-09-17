@@ -5,6 +5,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { randomUUID } from "node:crypto";
 import { SessionService, type SessionDto } from "../application/session-service.js";
 import {
+  PLUGIN_SESSION_TITLE_LIMITS,
   type LoadedPlugin,
   type PluginHostContext,
   type PluginModeProfile,
@@ -154,6 +155,27 @@ function createSessionApi(
         // 无法通过此 API 读取或探测其他 owner 的冻结提示词。
         return sessions.getSystemPrompt(ownerKey, sessionId);
       },
+      async getMessages(sessionId) {
+        assertActive();
+        const id = requireTurnText(sessionId, "sessionId", 200);
+        // exportSession 是既有的零 runtime 创建只读路径；这里只投影 messages，不将
+        // timeline 或宿主 thinking 细节暴露给插件契约。
+        const exported = await sessions.exportSession(ownerKey, id);
+        return exported?.messages ?? null;
+      },
+      async setTitle(input) {
+        assertActive();
+        const sessionId = requireTurnText(input?.sessionId, "sessionId", 200);
+        const title = requirePluginTitle(input?.title);
+        if (input?.onlyIfEmpty !== undefined && typeof input.onlyIfEmpty !== "boolean") {
+          throw new Error("插件会话标题 onlyIfEmpty 必须是布尔值");
+        }
+        const updated = input?.onlyIfEmpty === true
+          ? await sessions.renameSession(ownerKey, sessionId, title, { onlyIfEmpty: true })
+          : await sessions.renameSession(ownerKey, sessionId, title);
+        // renameSession 统一折叠越权/不存在；插件不能用标题 API 探测其他 owner。
+        return updated ? sessionRef(updated) : null;
+      },
       async runTurn(input): Promise<PluginTurnResult> {
         assertActive();
         const sessionId = requireTurnText(input?.sessionId, "sessionId", 200);
@@ -213,6 +235,21 @@ function sessionRef(session: SessionDto): PluginSessionRef {
  * 与公开 `POST /v1/sessions/:id/messages` 共用 core/text-input.ts 的同一套规则（同一权威常量）。
  * 上限由宿主固定，插件无法覆盖。
  */
+/** 标题是单行纯文本元数据，不复用 prompt 对 tab/newline 的兼容例外。 */
+function requirePluginTitle(value: unknown): string {
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new Error("插件会话标题必须是非空字符串");
+  }
+  const title = value.trim();
+  if (title.length > PLUGIN_SESSION_TITLE_LIMITS.maxLength) {
+    throw new Error("插件会话标题超过宿主上限");
+  }
+  if (/[\u0000-\u001f\u007f]/.test(title)) {
+    throw new Error("插件会话标题含非法控制字符");
+  }
+  return title;
+}
+
 function requireTurnText(value: unknown, label: string, maxLength: number): string {
   const result = checkTurnText(value, maxLength);
   if (!result.ok) {

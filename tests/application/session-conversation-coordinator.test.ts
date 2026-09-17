@@ -29,6 +29,16 @@ class MemorySessions implements SessionStorePort {
     this.records.set(id, { ...record, ...patch });
     return true;
   }
+  async updateTitleIfEmpty(ownerKey: string, id: string, title: string, updatedAt: number): Promise<SessionRecord | null> {
+    const record = this.records.get(id);
+    if (!record || record.ownerKey !== ownerKey) return null;
+    if (record.title === "") {
+      const updated = { ...record, title, updatedAt };
+      this.records.set(id, updated);
+      return updated;
+    }
+    return record;
+  }
   async reserveConversation(id: string, reservation: ConversationReservationInput): Promise<boolean> {
     const record = this.records.get(id);
     if (!record || record.conversationRef !== null) return false;

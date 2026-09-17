@@ -141,6 +141,15 @@ export interface PluginSessionRef {
  * `runTurn` 的宿主强制上限：requestId / prompt 与返回给插件的助手文本。
  * 插件无法调整这些上限，也无法指定模型、工具、cwd 或图片。
  */
+/**
+ * 自动会话标题的宿主边界。插件负责从其已接受的首条 user 消息中提取业务标题；
+ * 宿主只接受纯文本并强制这个长度/控制字符预算，不解析插件业务 envelope。
+ */
+export const PLUGIN_SESSION_TITLE_LIMITS = {
+  /** UTF-16 code units；UI 应按普通文本渲染，绝不当作 HTML。 */
+  maxLength: 80,
+} as const;
+
 export const PLUGIN_RUN_TURN_LIMITS = {
   /** requestId 的最大长度（UTF-16 code units）。 */
   maxRequestIdLength: 128,
@@ -196,6 +205,21 @@ export interface PluginSessionApi {
    * 未记录提示词时均返回 null，插件不能借此读取其他 owner 的会话。
    */
   getSystemPrompt(sessionId: string): Promise<string | null>;
+  /**
+   * 只读取得当前认证 owner 会话的导出 messages；不存在或不属于该 owner 返回 null。
+   * 返回内容对宿主不透明，宿主不解析任何插件业务 envelope，也不返回 timeline/thinking。
+   */
+  getMessages(sessionId: string): Promise<unknown | null>;
+  /**
+   * 更新当前认证 owner 的会话标题；不存在或不属于该 owner 返回 null。
+   *
+   * 插件负责决定何时命名以及从已接受的 user 消息中提取安全纯文本；宿主不理解
+   * 插件业务 envelope，也不从模型输出推断标题。`title` 必须是非空、不含非法控制
+   * 字符且不超过 {@link PLUGIN_SESSION_TITLE_LIMITS.maxLength} 的字符串。`onlyIfEmpty`
+   * 为 true 时原子地仅更新空标题，并返回当前会话（含已有标题）。调用只更新宿主
+   * 会话元数据，不改变插件自己的 mode 映射或用户自定义标题标记。
+   */
+  setTitle(input: { sessionId: string; title: string; onlyIfEmpty?: boolean }): Promise<PluginSessionRef | null>;
   /**
    * 在当前认证 owner 的指定 session 上**同步**执行一轮对话，返回助手最终文本。
    *

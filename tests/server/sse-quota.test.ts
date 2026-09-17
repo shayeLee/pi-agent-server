@@ -59,6 +59,7 @@ function makeStore(
     listByProject: (o, p) => inner.listByProject(o, p),
     backfillSystemPrompt: (s) => inner.backfillSystemPrompt(s),
     update: (id, patch) => inner.update(id, patch),
+    updateTitleIfEmpty: (ownerKey, id, title, updatedAt) => inner.updateTitleIfEmpty(ownerKey, id, title, updatedAt),
     reserveConversation: (id, reservation) => inner.reserveConversation(id, reservation),
     commitConversationReservation: (id, expectedRef, actualRef) => inner.commitConversationReservation(id, expectedRef, actualRef),
     releaseConversationReservation: (id, expectedRef) => inner.releaseConversationReservation(id, expectedRef),

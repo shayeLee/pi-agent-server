@@ -58,6 +58,11 @@ export interface SessionStorePort {
   backfillSystemPrompt(systemPrompt: string): Promise<number>;
   update(id: string, patch: SessionRecordPatch): Promise<boolean>;
   /**
+   * 原子条件标题更新：仅在 owner 匹配且 title 仍为空时写入；无论是否实际写入，
+   * 都返回该 owner 当前记录，或在不存在/越权时返回 null。
+   */
+  updateTitleIfEmpty(ownerKey: string, id: string, title: string, updatedAt: number): Promise<SessionRecord | null>;
+  /**
    * 原子 reservation：只在 conversation_ref 仍为 NULL，且 file_operations 不存在
    * tombstoneOperationKey（任意状态都视为 tombstone，永久禁止复用）时写入。
    * false 表示会话不存在、已被其他创建者占用，或其 artifact 已被删除。

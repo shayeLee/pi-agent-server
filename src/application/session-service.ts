@@ -332,7 +332,18 @@ export class SessionService {
     return true;
   }
 
-  async renameSession(ownerKey: string, id: string, title: string): Promise<SessionDto | null> {
+  async renameSession(
+    ownerKey: string,
+    id: string,
+    title: string,
+    options?: { onlyIfEmpty?: boolean },
+  ): Promise<SessionDto | null> {
+    if (options?.onlyIfEmpty) {
+      // 条件写入必须由存储层在同一 SQL 条件更新中完成，不能先读 title 再写，
+      // 否则插件自动标题可能覆盖并发的用户改名。
+      const current = await this.deps.sessions.updateTitleIfEmpty(ownerKey, id, title, this.deps.now());
+      return current ? toSessionDto(current) : null;
+    }
     if (!(await this.findOwned(ownerKey, id))) return null;
     await this.deps.sessions.update(id, { title, updatedAt: this.deps.now() });
     const updated = await this.deps.sessions.get(id);

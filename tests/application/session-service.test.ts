@@ -38,6 +38,16 @@ class MemorySessions implements SessionStorePort {
     this.records.set(id, { ...current, ...patch });
     return true;
   }
+  async updateTitleIfEmpty(ownerKey: string, id: string, title: string, updatedAt: number) {
+    const current = this.records.get(id);
+    if (!current || current.ownerKey !== ownerKey) return null;
+    if (current.title === "") {
+      const updated = { ...current, title, updatedAt };
+      this.records.set(id, updated);
+      return updated;
+    }
+    return current;
+  }
   async reserveConversation(id: string, reservation: ConversationReservationInput) {
     const current = this.records.get(id);
     if (!current || current.conversationRef !== null) return false;
@@ -682,6 +692,19 @@ describe("SessionService", () => {
     expect(await service.deleteSession("owner-b", created.id)).toBe(false);
     expect(await service.exportSession("owner-b", created.id)).toBeNull();
     expect((await sessions.get(created.id))?.title).toBe("私有");
+  });
+
+  it("onlyIfEmpty 原子更新空标题，保留已有自定义标题并隐藏其他 owner", async () => {
+    const { service, sessions } = makeService(undefined, undefined, undefined, undefined, undefined, undefined, () => 500);
+    const created = createdSession(await service.createSession("owner-a", {}));
+
+    expect(await service.renameSession("owner-a", created.id, "自动标题", { onlyIfEmpty: true }))
+      .toMatchObject({ title: "自动标题" });
+    await service.renameSession("owner-a", created.id, "用户标题");
+    expect(await service.renameSession("owner-a", created.id, "不应覆盖", { onlyIfEmpty: true }))
+      .toMatchObject({ title: "用户标题" });
+    expect(await service.renameSession("owner-b", created.id, "越权", { onlyIfEmpty: true })).toBeNull();
+    expect((await sessions.get(created.id))?.title).toBe("用户标题");
   });
 
   it("先切换 runtime 配置再持久化配置", async () => {

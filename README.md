@@ -157,6 +157,14 @@ Request validation semantics: Fastify validates bodies and params with its AJV b
 
 Within v1, existing operations, fields, status meanings, and SSE event data remain compatible; additive optional fields or operations may be introduced. A breaking change requires a new versioned contract/path rather than changing v1. The running API in `src/server/app.ts` remains the implementation authority during RC.
 
+### Trusted-plugin session titles
+
+The plugin `PluginSessionApi.getMessages(sessionId)` reads only the authenticated owner's exported `messages`, returning `null` for a missing/non-owned session; it never creates a runtime/provider and exposes neither timeline nor thinking. `setTitle({ sessionId, title, onlyIfEmpty?: boolean })` updates only that owner's host-session metadata and returns the resulting/current session, or `null`. With `onlyIfEmpty: true`, the store performs an atomic empty-title CAS, so an automatic title cannot overwrite a concurrent user rename. They are plugin contracts, not public v1 HTTP operations. Titles are trimmed non-empty plain text without illegal control characters, up to 80 UTF-16 code units; UIs must render them as text, never HTML.
+
+Title policy belongs to the plugin that understands the mode and its data: after it has accepted the first valid user message, it may persist a derived title in its own mode-session record and call `setTitle` with `onlyIfEmpty: true`, including when the later model turn errors or is stopped. It must not name an unsubmitted/rejected message, overwrite a user-custom title, use model output, or infer message presence from `conversation_ref`. A plugin must unwrap its own `ONEV_CONTEXT` envelope from the real first user message before deriving the first-question text; the host deliberately does not parse plugin business envelopes. Image-only first messages use the plugin's explicit image-session default title.
+
+`GET /v1/sessions` intentionally has no `hasMessages` or `messageCount`: it is metadata-only and `conversation_ref` is not evidence of a submitted user message. A UI that must hide historical empty sessions must hydrate `GET /v1/sessions/:id/export` and determine this from the real exported messages (with the corresponding per-session read cost), or consume a plugin list summary whose `hasMessages`/`messageCount` is backed by the plugin's persisted accepted-message state. It must not substitute a failed/empty export or any reference field as evidence.
+
 ### Access capability projection
 
 `GET /v1/access` returns the minimal fixed body `{ canRead, canWrite }`, derived from the central route-permission matrix (`ROUTE_PERMISSIONS` + `evaluateRouteAuthorization`) rather than being hardcoded. It never returns the caller's `role`, IP, or token.

@@ -73,6 +73,8 @@ function fakeSessions(options: {
   session?: PluginSessionRef;
   getEntry?: (ownerKey: string, sessionId: string) => Promise<unknown>;
   getSystemPrompt?: (ownerKey: string, sessionId: string) => Promise<string | null>;
+  exportSession?: (ownerKey: string, sessionId: string) => Promise<{ messages: unknown } | null>;
+  renameSession?: (ownerKey: string, sessionId: string, title: string, options?: { onlyIfEmpty?: boolean }) => Promise<PluginSessionRef | null>;
   createResult?: (input: Record<string, unknown>) => unknown;
   runTurn?: (ownerKey: string, input: Record<string, unknown>) => unknown;
 } = {}): {
@@ -81,6 +83,8 @@ function fakeSessions(options: {
   listCalls: string[];
   entryCalls: Array<{ ownerKey: string; sessionId: string }>;
   systemPromptCalls: Array<{ ownerKey: string; sessionId: string }>;
+  exportCalls: Array<{ ownerKey: string; sessionId: string }>;
+  renameCalls: Array<{ ownerKey: string; sessionId: string; title: string; options?: { onlyIfEmpty?: boolean } }>;
   runTurnCalls: Array<{ ownerKey: string; input: Record<string, unknown> }>;
 } {
   const session = options.session ?? {
@@ -94,6 +98,8 @@ function fakeSessions(options: {
   const listCalls: string[] = [];
   const entryCalls: Array<{ ownerKey: string; sessionId: string }> = [];
   const systemPromptCalls: Array<{ ownerKey: string; sessionId: string }> = [];
+  const exportCalls: Array<{ ownerKey: string; sessionId: string }> = [];
+  const renameCalls: Array<{ ownerKey: string; sessionId: string; title: string; options?: { onlyIfEmpty?: boolean } }> = [];
   const runTurnCalls: Array<{ ownerKey: string; input: Record<string, unknown> }> = [];
   const created: PluginSessionRef[] = [];
   const service = {
@@ -117,6 +123,14 @@ function fakeSessions(options: {
       systemPromptCalls.push({ ownerKey, sessionId });
       return options.getSystemPrompt ? options.getSystemPrompt(ownerKey, sessionId) : null;
     },
+    exportSession: async (ownerKey: string, sessionId: string) => {
+      exportCalls.push({ ownerKey, sessionId });
+      return options.exportSession ? options.exportSession(ownerKey, sessionId) : null;
+    },
+    renameSession: async (ownerKey: string, sessionId: string, title: string, renameOptions?: { onlyIfEmpty?: boolean }) => {
+      renameCalls.push({ ownerKey, sessionId, title, ...(renameOptions ? { options: renameOptions } : {}) });
+      return options.renameSession ? options.renameSession(ownerKey, sessionId, title, renameOptions) : null;
+    },
     runTurn: async (ownerKey: string, input: Record<string, unknown>) => {
       runTurnCalls.push({ ownerKey, input });
       if (options.runTurn) return options.runTurn(ownerKey, input);
@@ -129,6 +143,8 @@ function fakeSessions(options: {
     listCalls,
     entryCalls,
     systemPromptCalls,
+    exportCalls,
+    renameCalls,
     runTurnCalls,
   };
 }
@@ -294,6 +310,106 @@ describe("plugin host", () => {
       { ownerKey, sessionId: "other-owner-session" },
     ]);
     await expect(routeContext!.sessions.getSystemPrompt("session-1")).rejects.toThrow("会话 API 已失效");
+  });
+
+  it("setTitle 仅更新当前 owner 的会话，返回更新后的元数据并受标题预算约束", async () => {
+    const { app, routes } = fakeApp();
+    const request = { user: { kind: "ip", ip: "192.0.2.25" } } as const;
+    const ownerKey = identityKey(request.user);
+    const fake = fakeSessions({
+      renameSession: async (actualOwner, sessionId, title) => (
+        actualOwner === ownerKey && sessionId === "session-1"
+          ? { id: sessionId, projectId: "project-1", title, createdAt: 100, updatedAt: 300 }
+          : null
+      ),
+    });
+    let routeContext: PluginRouteRequestContext | undefined;
+    const plugin = loadedPlugin("copilot", {
+      modes: [mode()],
+      register: (received) => {
+        received.mountRoute({
+          method: "POST",
+          path: "/title",
+          access: "write",
+          handler: async (context) => {
+            routeContext = context;
+            let tooLongError = "";
+            try {
+              await context.sessions.setTitle({ sessionId: "session-1", title: "x".repeat(81) });
+            } catch (error) {
+              tooLongError = (error as Error).message;
+            }
+            return {
+              own: await context.sessions.setTitle({ sessionId: "session-1", title: "首问标题" }),
+              other: await context.sessions.setTitle({ sessionId: "other-owner-session", title: "不可见" }),
+              tooLongError,
+            };
+          },
+        });
+      },
+    });
+    await registerPlugins([plugin], { app, projectCwd: "/tmp/project", sessions: fake.sessions });
+
+    await expect(routes[0]!.handler(request as unknown as FastifyRequest, {} as FastifyReply)).resolves.toEqual({
+      own: { id: "session-1", projectId: "project-1", title: "首问标题", createdAt: 100, updatedAt: 300 },
+      other: null,
+      tooLongError: "插件会话标题超过宿主上限",
+    });
+    expect(fake.renameCalls).toEqual([
+      { ownerKey, sessionId: "session-1", title: "首问标题" },
+      { ownerKey, sessionId: "other-owner-session", title: "不可见" },
+    ]);
+    await expect(routeContext!.sessions.setTitle({ sessionId: "session-1", title: "有效" }))
+      .rejects.toThrow("会话 API 已失效");
+  });
+
+  it("getMessages 只读投影 messages，并让 onlyIfEmpty 原子标题结果同步给插件", async () => {
+    const { app, routes } = fakeApp();
+    const request = { user: { kind: "ip", ip: "192.0.2.26" } } as const;
+    const ownerKey = identityKey(request.user);
+    const titles = new Map([["empty", ""], ["custom", "用户标题"]]);
+    const fake = fakeSessions({
+      exportSession: async (actualOwner, sessionId) => actualOwner === ownerKey && sessionId === "own"
+        ? { messages: [{ role: "user", text: "首问" }], timeline: [{ thinking: "不应泄露" }] }
+        : null,
+      renameSession: async (actualOwner, sessionId, title, options) => {
+        if (actualOwner !== ownerKey || !titles.has(sessionId)) return null;
+        const current = titles.get(sessionId)!;
+        if (!options?.onlyIfEmpty || current === "") titles.set(sessionId, title);
+        return { id: sessionId, projectId: "project-1", title: titles.get(sessionId)!, createdAt: 100, updatedAt: 300 };
+      },
+    });
+    let context: PluginRouteRequestContext | undefined;
+    const plugin = loadedPlugin("copilot", {
+      modes: [mode()],
+      register: (received) => received.mountRoute({
+        method: "POST", path: "/automatic-title", access: "write",
+        handler: async (receivedContext) => {
+          context = receivedContext;
+          return {
+            ownMessages: await receivedContext.sessions.getMessages("own"),
+            otherMessages: await receivedContext.sessions.getMessages("other"),
+            empty: await receivedContext.sessions.setTitle({ sessionId: "empty", title: "自动标题", onlyIfEmpty: true }),
+            custom: await receivedContext.sessions.setTitle({ sessionId: "custom", title: "不应覆盖", onlyIfEmpty: true }),
+          };
+        },
+      }),
+    });
+    await registerPlugins([plugin], { app, projectCwd: "/tmp/project", sessions: fake.sessions });
+
+    await expect(routes[0]!.handler(request as unknown as FastifyRequest, {} as FastifyReply)).resolves.toEqual({
+      ownMessages: [{ role: "user", text: "首问" }],
+      otherMessages: null,
+      empty: { id: "empty", projectId: "project-1", title: "自动标题", createdAt: 100, updatedAt: 300 },
+      custom: { id: "custom", projectId: "project-1", title: "用户标题", createdAt: 100, updatedAt: 300 },
+    });
+    expect(fake.exportCalls).toEqual([{ ownerKey, sessionId: "own" }, { ownerKey, sessionId: "other" }]);
+    expect(fake.entryCalls).toEqual([]); // 只读导出不触发 runtime/provider。
+    expect(fake.renameCalls).toEqual([
+      { ownerKey, sessionId: "empty", title: "自动标题", options: { onlyIfEmpty: true } },
+      { ownerKey, sessionId: "custom", title: "不应覆盖", options: { onlyIfEmpty: true } },
+    ]);
+    await expect(context!.sessions.getMessages("own")).rejects.toThrow("会话 API 已失效");
   });
 
   it("插件 GET 路由禁用自动 HEAD：HEAD 404 且 handler/session API 零调用，同路径 POST 不受影响", async () => {

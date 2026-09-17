@@ -175,6 +175,28 @@ export class KyselySessionRepository implements SessionStorePort {
     });
   }
 
+  async updateTitleIfEmpty(ownerKey: string, id: string, title: string, updatedAt: number): Promise<SessionRecord | null> {
+    return this.withWriteLock(async () => {
+      // CAS 条件与 owner 共同放在单条 UPDATE 中，自动标题绝不能覆盖并发用户改名。
+      await this.db
+        .updateTable("sessions")
+        .set({ title, updated_at: updatedAt })
+        .where("id", "=", id)
+        .where("owner_key", "=", ownerKey)
+        .where("title", "=", "")
+        .executeTakeFirst();
+      // 即使 CAS 未命中也返回当前 owner 记录，让插件同步已有（用户）标题；owner
+      // 条件避免以 id 探测其他会话。写锁使 SQLite 的条件更新和读取保持连续。
+      const row = await this.db
+        .selectFrom("sessions")
+        .selectAll()
+        .where("id", "=", id)
+        .where("owner_key", "=", ownerKey)
+        .executeTakeFirst();
+      return row ? toRecord(row) : null;
+    });
+  }
+
   async reserveConversation(id: string, reservation: ConversationReservationInput): Promise<boolean> {
     if (reservation.conversationRef.length === 0) throw new Error("conversation reference must be non-empty");
     if (reservation.tombstoneOperationKey.length === 0) {

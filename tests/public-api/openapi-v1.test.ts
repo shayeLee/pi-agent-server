@@ -466,6 +466,7 @@ describe("public host API v1 contract", () => {
       listByProject: (ownerKey, projectId) => inner.listByProject(ownerKey, projectId),
       backfillSystemPrompt: (sessionId) => inner.backfillSystemPrompt(sessionId),
       update: (id, patch) => inner.update(id, patch),
+      updateTitleIfEmpty: (ownerKey, id, title, updatedAt) => inner.updateTitleIfEmpty(ownerKey, id, title, updatedAt),
       reserveConversation: (id, reservation) => inner.reserveConversation(id, reservation),
       commitConversationReservation: (id, expectedRef, actualRef) => inner.commitConversationReservation(id, expectedRef, actualRef),
       releaseConversationReservation: (id, expectedRef) => inner.releaseConversationReservation(id, expectedRef),
