@@ -918,6 +918,35 @@ describe("plugin host", () => {
     await expect(handlerPromise).resolves.toEqual({ result: { status: "aborted" } });
   });
 
+  it("插件显式停止信号无需 HTTP 断连即可中止原轮次", async () => {
+    const { app, routes } = fakeApp();
+    const controller = new AbortController();
+    let observed: AbortSignal | undefined;
+    const fake = fakeSessions({ runTurn: async (_ownerKey, input) => {
+      observed = input.signal as AbortSignal;
+      await new Promise<void>(resolve => observed!.addEventListener('abort', () => resolve(), { once: true }));
+      return { status: 'aborted' };
+    } });
+    const plugin = loadedPlugin('prototype', {
+      modes: [mode({ id: 'interactive-prototype' })],
+      register: received => {
+        received.mountRoute({ method: 'POST', path: '/generate', access: 'write', handler: async context => {
+          expect(context.sessions.supportsTurnCancellation).toBe(true);
+          return context.sessions.runTurn({ sessionId: 's', requestId: 'attempt', prompt: 'p', signal: controller.signal });
+        } });
+      }
+    });
+    await registerPlugins([plugin], { app, projectCwd: '/tmp/project', sessions: fake.sessions });
+    const responseRaw = Object.assign(new EventEmitter(), { writableEnded: false });
+    const pending = routes[0]!.handler({ user: { kind: 'ip', ip: '192.0.2.70' } } as unknown as FastifyRequest, { raw: responseRaw } as unknown as FastifyReply);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(observed!.aborted).toBe(false);
+    controller.abort(); // connection intentionally remains open, as with a buffering proxy
+    await expect(pending).resolves.toEqual({ status: 'aborted' });
+    expect(observed!.aborted).toBe(true);
+    expect(responseRaw.writableEnded).toBe(false);
+  });
+
   it("正常响应完成（res close 且 writableEnded=true）不会误中止 runTurn", async () => {
     const { app, routes } = fakeApp();
     let observedSignal: AbortSignal | undefined;

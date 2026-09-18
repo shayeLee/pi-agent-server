@@ -427,6 +427,28 @@ describe("WP5D-2 admission 先于 CORS 预检 short-circuit", () => {
     }
   });
 
+  it("tokenRequired 仅豁免严格内容寻址的 ONEV runtime，原型与相似路径仍需 token", async () => {
+    const policy = makePolicy([{ ip: USER_IP_A, tokenRequired: true, tokens: ['asset-secret'] }]);
+    const app = await makeApp(makeTestIpAccess({ policy }));
+    const hash = 'a'.repeat(64);
+    try {
+      const asset = await app.inject({ method: 'GET', url: `/v1/capabilities/onev/prototype-assets/${hash}/runtime.js`, remoteAddress: USER_IP_A });
+      expect(asset.statusCode).not.toBe(401); // reaches routing/RBAC; plugin presence is outside this admission test
+      for (const url of [
+        '/v1/capabilities/onev/prototypes/proto_1',
+        `/v1/capabilities/onev/prototype-assets/${hash}/runtime.js.map`,
+        `/v1/capabilities/onev/prototype-assets/${hash}/runtime.css/extra`,
+        '/v1/capabilities/onev/prototype-assets/not-a-hash/runtime.js',
+        `/v1/capabilities/other/prototype-assets/${hash}/runtime.js`
+      ]) {
+        const denied = await app.inject({ method: 'GET', url, remoteAddress: USER_IP_A });
+        expect(denied.statusCode, url).toBe(401);
+      }
+      const outside = await app.inject({ method: 'GET', url: `/v1/capabilities/onev/prototype-assets/${hash}/runtime.css`, remoteAddress: OUTSIDE_IP });
+      expect(outside.statusCode).toBe(403);
+    } finally { await app.close(); }
+  });
+
   it("tokenRequired 画像：合规预检免 token（/v1 与 /metrics），非预检 OPTIONS 仍要求 token", async () => {
     process.env.CORS_ORIGINS = CORS_ORIGIN;
     const policy = makePolicy([{ ip: USER_IP_A, tokenRequired: true, tokens: ["preflight-secret"] }]);

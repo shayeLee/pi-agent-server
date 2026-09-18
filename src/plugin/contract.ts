@@ -229,7 +229,9 @@ export interface PluginSessionApi {
    * - 返回文本受上限约束，覆盖 `completed` / `aborted` / `error` / `busy`；
    * - 宿主不建立 HTTP 回调或长期订阅，handler 返回后（API 被 revoke）调用会抛错。
    */
-  runTurn(input: { sessionId: string; requestId: string; prompt: string }): Promise<PluginTurnResult>;
+  /** Explicit plugin-owned cancellation, independent of the HTTP connection/proxy. */
+  readonly supportsTurnCancellation?: boolean;
+  runTurn(input: { sessionId: string; requestId: string; prompt: string; signal?: AbortSignal }): Promise<PluginTurnResult>;
 }
 
 /** 插件 register 时宿主提供的受限上下文（阶段二）。 */

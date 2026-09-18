@@ -1,6 +1,8 @@
 # 外部能力插件架构与实施计划
 
 > **状态：P1–P7d 已实现并通过跨仓验收；P8 自动化隔离演练、Copilot 人工浏览器验收以及 Tag 组件→钉钉文档真实绑定/同步/本地图片渲染验收均已完成；真实生产数据变更仍待受控环境执行。** 本文定义 `pi-agent-capability-onev` 作为 `pi-agent-server` 外部插件包的工程边界。onev 业务需求见 [capabilities/knowledge-qa.md](capabilities/knowledge-qa.md)。
+>
+> **需求原型增量：** 实施已完成，自动化验证与跨仓真实 onev Vue runtime 浏览器验收通过；真实生产模型端到端验收（包括所有组件规范遵循）待执行。当前 light 主题动作仅为 `navigate`/`back`，原型不连接真实业务后端，详见[需求原型模式增量实施计划](capabilities/interactive-prototype-implementation-plan.md)。
 
 ## 决策
 
@@ -14,7 +16,7 @@ onev                         组件库、文档与同步产物工作目录
 - 开发宿主由操作人手动在 `pi-agent-server` 目录运行 `pnpm dev:real` 启动；插件不自动拉起或停止宿主服务。
 - 插件包不是独立服务进程；由 `pi-agent-server` 显式加载并在其进程内运行。
 - `pi-agent-capability-onev` 是受信任代码；外部插件是工程边界，不是进程级安全隔离。
-- 插件拥有自己的数据库及其迁移、备份、恢复，HTTP 接口、同步 Worker、Pi 工具和交互原型 HTML 产物实现。
+- 插件拥有自己的数据库及其迁移、备份、恢复，HTTP 接口、同步 Worker、Pi 工具和需求原型 HTML 产物实现。
 - `pi-agent-server` 不包含 onev 业务表、业务路由、同步逻辑或工具实现。
 - `onev` 不包含插件业务代码，只提供源码、组件文档及 `npm run codegraph` 脚本。
 
@@ -53,7 +55,7 @@ src/config/         插件配置
 - 注册 `vue2-index`、`gitnexus` 两个只读 Pi 工具；
 - 为每个 Copilot 模式按其独立配置的模型和系统提示词创建独立 session，并维护独立历史记录；模型配置允许相同，恢复会话时使用原 mode profile；
 - 使用 pi-agent-server 既有会话消息图片通道接收参考图片，不建立插件图片上传接口或图片数据库；
-- 提供组件绑定/改绑、绑定列表、单组件同步、同步任务状态、同步元数据和交互原型读取接口。
+- 提供组件绑定/改绑、绑定列表、单组件同步、同步任务状态、同步元数据和需求原型读取接口。
 
 插件接口的能力范围为：
 
@@ -63,12 +65,12 @@ GET   绑定列表
 POST  单组件同步
 GET   同步任务状态
 GET   绑定同步元数据
-POST  交互原型生成（write，仅 interactive-prototype）
-GET   交互原型列表（安全元数据 + 相对 preview URL）
-GET   交互原型 HTML（严格预览响应头）
+POST  需求原型生成（write，仅 interactive-prototype）
+GET   需求原型列表（安全元数据 + 相对 preview URL）
+GET   需求原型 HTML（严格预览响应头）
 ```
 
-问答仍使用 pi-agent-server 既有会话与消息接口；插件通过 Pi 工具参与回答。插件接口统一挂载在 `/v1/capabilities/onev`。查询接口允许 `viewer`、`user`、`admin`；绑定、改绑、同步与交互原型生成接口允许 `user`、`admin`。
+问答仍使用 pi-agent-server 既有会话与消息接口；插件通过 Pi 工具参与回答。插件接口统一挂载在 `/v1/capabilities/onev`。查询接口允许 `viewer`、`user`、`admin`；绑定、改绑、同步与需求原型生成接口允许 `user`、`admin`。
 
 插件只能依赖宿主公开的插件 API，不能引用 `pi-agent-server/src/*` 内部模块。`pi-agent-server` 应作为插件的 `peerDependency`。开发阶段使用 `pnpm link` 建立本地链接，不发布包。
 
@@ -132,14 +134,14 @@ pi-agent-server 进程
 - 插件包携带 schema 定义与迁移脚本，数据库实例由部署环境提供。
 - 插件迁移由插件 CLI 或部署流程显式执行，不在插件加载时隐式建表或迁移。
 - 插件使用独立数据库或独立 schema，不修改 `pi-agent-server` 的 `schema-manifest.ts`。
-- **当前开发环境插件数据目录**：`/Users/mz/.local/share/pi-agent-capability-onev`（`ONEV_DATA_DIR`）；SQLite 文件为 `/Users/mz/.local/share/pi-agent-capability-onev/onev.db`，交互原型 HTML 位于其 `prototypes/` 子目录。该目录独立于宿主开发数据库 `/tmp/pi-agent-server`。
+- **当前开发环境插件数据目录**：`/Users/mz/.local/share/pi-agent-capability-onev`（`ONEV_DATA_DIR`）；SQLite 文件为 `/Users/mz/.local/share/pi-agent-capability-onev/onev.db`，需求原型 HTML 位于其 `prototypes/` 子目录。该目录独立于宿主开发数据库 `/tmp/pi-agent-server`。
 - 数据库连接和钉钉配置属于插件配置；onev 根目录取自 pi-agent-server 默认项目配置。认证沿用 pi-agent-server 已有能力，不定义新的认证方案。
 
 ### 数据库生命周期
 
 - **迁移**：创建或升级插件数据库表结构。
-- **备份**：备份组件绑定、同步元数据、交互原型元数据和插件数据目录中的交互原型 HTML；本地 desc/图片不进入 Git，可由钉钉在恢复后重新同步。
-- **恢复**：恢复插件数据库与交互原型 HTML，随后按需执行全量钉钉同步重建本地 desc/图片产物。
+- **备份**：备份组件绑定、同步元数据、需求原型元数据和插件数据目录中的需求原型 HTML；本地 desc/图片不进入 Git，可由钉钉在恢复后重新同步。
+- **恢复**：恢复插件数据库与需求原型 HTML，随后按需执行全量钉钉同步重建本地 desc/图片产物。
 - 迁移、备份与恢复均由插件自己的 CLI 或部署/运维流程显式执行，并提供对应的验证与演练。
 
 ## 任务跟踪
@@ -158,7 +160,7 @@ pi-agent-server 进程
 | A8 | 确认三个 Copilot mode 维护独立 session 与历史记录，模式之间不复制上下文 | 已&#8288;完&#8288;成 | — |
 | A13 | 确认 `pi-agent-capability-onev` 是受信任代码 | 已&#8288;完&#8288;成 | — |
 | A14 | 确认接口 RBAC：查询允许 `viewer` / `user` / `admin`；绑定、改绑和同步允许 `user` / `admin` | 已&#8288;完&#8288;成 | — |
-| A15 | 确认交互原型 HTML 保存于插件数据目录、元数据保存于插件数据库，并按查询 RBAC 提供读取链接 | 已&#8288;完&#8288;成 | — |
+| A15 | 确认需求原型 HTML 保存于插件数据目录、元数据保存于插件数据库，并按查询 RBAC 提供读取链接 | 已&#8288;完&#8288;成 | — |
 | A16 | 确认 `npm run codegraph` 通过插件 CLI 全量同步；页面仅向有写权限用户显示操作按钮 | 已&#8288;完&#8288;成 | — |
 | A9 | 确认 Copilot 输入包含模式、可编辑组件上下文、文本和可选参考图片 | 已&#8288;完&#8288;成 | — |
 | A10 | 确认每个 Copilot 模式绑定固定系统提示词与模型，用户不可单独选择模型 | 已&#8288;完&#8288;成 | — |
@@ -166,11 +168,11 @@ pi-agent-server 进程
 | A12 | 确认参考图片支持本地上传、屏幕截图和系统剪贴板粘贴 | 已&#8288;完&#8288;成 | — |
 | P1 | 在 `pi-agent-server` 定义并实现公开的外部插件加载 API：向插件提供默认项目目录；按 mode profile 在宿主会话存储中创建与恢复 session | 已&#8288;完&#8288;成 | A1, A8, A10 |
 | P2 | 初始化 `pi-agent-capability-onev` 的 pnpm 包；由操作人手动通过 `pnpm link` 接入宿主 API | 已&#8288;完&#8288;成 | P1, A4–A7 |
-| P3 | 实现插件数据库、迁移、备份、恢复、绑定、同步任务、mode ↔ session 历史映射和交互原型元数据存储 | 已&#8288;完&#8288;成 | P2, A15 |
-| P4 | 在 `/v1/capabilities/onev` 实现插件 HTTP 接口与宿主 RBAC 挂载（按 A14），包括 mode 独立历史、新建与恢复会话和交互原型读取 | 已&#8288;完&#8288;成 | P2, P3, A14, A15 |
+| P3 | 实现插件数据库、迁移、备份、恢复、绑定、同步任务、mode ↔ session 历史映射和需求原型元数据存储 | 已&#8288;完&#8288;成 | P2, A15 |
+| P4 | 在 `/v1/capabilities/onev` 实现插件 HTTP 接口与宿主 RBAC 挂载（按 A14），包括 mode 独立历史、新建与恢复会话和需求原型读取 | 已&#8288;完&#8288;成 | P2, P3, A14, A15 |
 | P5 | 实现钉钉同步 Worker（单组件与全量） | 已&#8288;完&#8288;成 | P3, P4 |
 | P6 | 按 Agent 查询命令白名单实现受控 `vue2-index`、`gitnexus` 工具 | 已&#8288;完&#8288;成 | P1, P2 |
-| P6a | 实现交互原型 HTML 的生成、持久化与访问链接（查询权限按 A14，纳入插件备份恢复） | 已&#8288;完&#8288;成 | P1, P2, P3, P4, A14 |
+| P6a | 实现需求原型 HTML 的生成、持久化与访问链接（查询权限按 A14，纳入插件备份恢复） | 已&#8288;完&#8288;成 | P1, P2, P3, P4, A14 |
 | P7 | 开发 onev 组件库页面的 Copilot UI（模式、独立历史记录、新建与恢复会话、组件上下文、文本、参考图片、本地上传、屏幕截图和系统剪贴板粘贴）；无写权限时隐藏操作按钮。组件仅负责渲染和事件，通过可替换数据接口与 mock 获取状态 | 已&#8288;完&#8288;成 | A8–A12, A14, A16 |
 | P7a | 验证并修复 pi-agent-server 从会话图片输入到 Pi SDK 的真实图片传递链路，并加入图片压缩与大小校验 | 已完成（跨仓真实验收通过） | A11, A12 |
 | P7b | 实现 onev UI 的真实数据适配器并在组合层注入 | 已完成（跨仓真实验收通过） | P4–P7a |
@@ -180,7 +182,7 @@ pi-agent-server 进程
 
 ## P7c mode APPEND_SYSTEM 与手动组件上下文（已完成）
 
-> 状态：宿主通用追加、插件 Markdown 配置、V1 信封规则、ONEV 三 mode 手动组件选择及交互原型传递均已实现，并通过跨仓真实浏览器验收。宿主范围仍严格限定在通用能力。
+> 状态：宿主通用追加、插件 Markdown 配置、V1 信封规则、ONEV 三 mode 手动组件选择及需求原型传递均已实现，并通过跨仓真实浏览器验收。宿主范围仍严格限定在通用能力。
 
 宿主范围（仅 `pi-agent-server`；不新增插件专属分支）：
 
@@ -193,7 +195,7 @@ pi-agent-server 进程
 7. **插件 mode Markdown**：`pi-agent-capability-onev` 的三个 mode 均改用 `appendSystemPrompt`，默认内容位于 `src/prompts/<mode>.md`；三个显式环境变量可分别覆盖为绝对 Markdown 文件。文件必须是非空 UTF-8 普通文件，拒绝 symlink 与超过 64 KiB 的内容；读取失败在插件导入时 fail-closed。固定的 `ONEV_CONTEXT_V1` 解释规则永远位于内置或自定义 mode 内容之前（两者间隔两个换行），不可被覆盖文件删除；宿主最终快照顺序为 Pi 默认提示词 → Envelope → mode 规则。
 8. **网站手动组件上下文**：ONEV 不再从路由或当前文档自动选择组件。三个 mode 默认选择为空并在各自草稿中隔离；用户可手动搜索、选择、移除或清空。Working 期间 UI 与方法双重禁止修改。网站对组件名做严格数量、长度、类型、控制字符及保留标记校验，有选择时生成精确 V1 信封，无选择时发送用户原文。
 9. **信封与历史**：普通问答把网站生成的完整 prompt 作为宿主既有 `prompt` 发送，宿主不解析；ONEV export 仅对 user 消息剥离完整、规范且位于开头的 V1 信封，assistant/畸形/未知版本保持原文。用户正文自身不得以保留 V1 前缀开头，避免来源歧义。
-10. **交互原型**：`prototypes/generate` 接收 `{requestId,prompt,title?}`，网站向 `prompt` 传入同一 V1 信封；插件不解析 `componentNames`，只在需求后追加不可变 Prototype DSL 契约。`title` 只作元数据，原有严格 JSON、CSP、hash 和 sandbox 边界不变。
+10. **需求原型**：`prototypes/generate` 接收 `{requestId,prompt,title?}`，网站向 `prompt` 传入同一 V1 信封；插件不解析 `componentNames`，只在需求后追加不可变 Prototype DSL 契约。`title` 只作元数据，原有严格 JSON、CSP、hash 和 sandbox 边界不变。
 11. **验证**：宿主完整测试 `1253 passed / 108 skipped`；插件 `392 passed / 1 skipped`；ONEV Karma `457/457`，定向 ESLint 与三仓 `git diff --check` 通过。真实浏览器确认 Table 页面初始选择为空、mode 选择隔离、普通问答模型识别 `Button 按钮`、历史只展示原文、`Table 表格` 原型生成成功及 iframe sandbox/CSP 正常；数据库中新会话提示词以 Pi 默认提示词开头并包含 mode Markdown 与 V1 固定规则。
 
 ### 非目标

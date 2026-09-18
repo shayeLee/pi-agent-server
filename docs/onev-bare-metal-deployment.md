@@ -65,7 +65,7 @@ PI_DEFAULT_MODEL=openai-codex/gpt-5.6-luna
 PI_DEFAULT_THINKING_LEVEL=medium
 # models.json/auth.json（或环境变量）还必须能解析并认证插件固定使用的：
 # modelscope/deepseek-ai/DeepSeek-V4.1-Flash
-# 用法原理/设计规范 thinkingLevel=medium；交互原型 thinkingLevel=high
+# 用法原理/设计规范 thinkingLevel=medium；需求原型 thinkingLevel=high
 MODELSCOPE_API_KEY=<通过受限环境或 secret 注入，不写入 Git>
 PI_AGENT_DIR=/var/lib/pi-agent-server/pi-agent
 PI_AUTH_PATH=/var/lib/pi-agent-server/pi-agent/auth.json

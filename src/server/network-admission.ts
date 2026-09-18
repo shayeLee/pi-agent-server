@@ -51,13 +51,19 @@ export type Admission = (request: FastifyRequest) => AdmissionResult;
 
 /**
  * token gate 覆盖范围（WP5D-3 reviewer 语义）：
- * - /v1 全部路径：tokenRequired 画像必须出示绑定该 IP 的 Bearer token；
+ * - /v1 默认全部路径：tokenRequired 画像必须出示绑定该 IP 的 Bearer token；唯一例外是
+ *   ONEV 严格内容寻址、只含组件库公开字节的 runtime.js/runtime.css GET；
  * - /metrics：运维面，实际 GET/非预检 OPTIONS 同样要求 token（role 为 admin/operator）；
  * - /health、/readyz：纯存活/就绪探针，永不需要 token（任意 admitted IP/role）。
  * 合规 CORS 预检在所有路径上免 token。
  */
+const ONEV_IMMUTABLE_RUNTIME = /^\/v1\/capabilities\/onev\/prototype-assets\/[a-f0-9]{64}\/runtime\.(?:js|css)$/;
 function isTokenGatedUrl(rawUrl: string): boolean {
   const path = rawUrl.split("?")[0]!;
+  // Opaque sandbox subresources cannot attach a Bearer token. This narrow exception exposes
+  // only content-addressed, hash-verified public library bytes; CIDR admission and read-role
+  // RBAC still apply. Prototype HTML, generated code, sessions, and unknown paths stay gated.
+  if (ONEV_IMMUTABLE_RUNTIME.test(path)) return false;
   return path === "/v1" || path.startsWith("/v1/") || path === "/metrics";
 }
 
@@ -109,7 +115,7 @@ export function createAdmission(input: IpAccessResolveInput): Admission {
       return { verdict: "denied", reason: verdict.reason, statusCode: 403 };
     }
     const profile = verdict.profile;
-    // token gate 作用于 /v1 与 /metrics；仅合规 CORS 预检免 token，随后仍交给 CORS origin policy。
+    // token gate 作用于 /v1 与 /metrics；仅合规 CORS 预检及严格 ONEV runtime 资源免 token。
     // 非预检 OPTIONS 与实际请求（GET）仍必须通过 token gate。
     if (profile.tokenRequired && isTokenGatedUrl(request.url) && !isCorsPreflight(request)) {
       const presented = extractBearerToken(request.headers.authorization);

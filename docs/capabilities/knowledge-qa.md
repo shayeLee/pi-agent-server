@@ -2,6 +2,8 @@
 
 > **状态：P1–P7d 已实现。P7a 的图片链路、P7b 的真实 HTTP/SSE dataSource、P7c 的 mode APPEND_SYSTEM 与手动组件上下文，以及 P7d 的全 owner 同步和代码索引编排均已通过跨仓真实验收。Pi 默认系统提示词保持不变，宿主不理解 ONEV 组件上下文。**
 > 知识库能力以外部插件包 `pi-agent-capability-onev` 交付，由 pi-agent-server 加载。平台级约束见[平台需求基线](../../needs.md)。
+>
+> **需求原型增量：** 实施已完成，自动化验证与跨仓真实 onev Vue runtime 浏览器验收通过；真实生产模型端到端验收（包括所有组件规范遵循）待执行。当前 light 主题动作仅为 `navigate`/`back`，原型不连接真实业务后端，详见[需求原型模式增量实施计划](interactive-prototype-implementation-plan.md)。
 
 参考图片的宿主侧契约与已知限制见 [外部能力插件架构与实施计划 §P7a](../external-capability-plugin-plan.md)（宿主只校验与透传，不压缩；压缩由 onev 客户端在提交前完成）。
 
@@ -87,8 +89,8 @@ pi-agent-server（能力宿主）
 调用关系/影响面 → gitnexus
 ```
 
-- Copilot 的「用法原理」「样式规范」「交互原型」模式各自维护独立 session 与历史记录；每个模式独立配置绑定模型和系统提示词，模型配置允许相同。侧滑面板提供新建会话、历史记录和恢复历史会话入口；恢复时使用原 mode profile，模式之间不复制上下文。
-- 用法原理和样式规范回复为 Markdown（包含代码块）；交互原型生成持久化 HTML 链接并展示预览，不提供复制代码片段。
+- Copilot 的「用法原理」「样式规范」「需求原型」模式各自维护独立 session 与历史记录；每个模式独立配置绑定模型和系统提示词，模型配置允许相同。侧滑面板提供新建会话、历史记录和恢复历史会话入口；恢复时使用原 mode profile，模式之间不复制上下文。
+- 用法原理和样式规范回复为 Markdown（包含代码块）；需求原型生成持久化 HTML 链接并展示预览，不提供复制代码片段。
 - 每次提问包含模式、文本、可选的手动组件选择和可选参考图片；当前页面组件不会自动带入。三个 mode 的选择分别隔离，网站以严格 `ONEV_CONTEXT_V1` 信封拼装普通 prompt，宿主不解析 ONEV 专属上下文。参考图片支持本地文件上传、屏幕截图和系统剪贴板粘贴，通过 pi-agent-server 既有会话消息图片通道提交，不上传到 onev 或插件数据库。
 
 `vue2-index` 组件实体已关联 `docs[].usage` 与 `docs[].desc`，例如：
@@ -118,7 +120,7 @@ GET  /v1/capabilities/onev/documents/links              查询绑定列表
 POST /v1/capabilities/onev/sync/dingtalk/:name          同步指定组件（页面「同步」按钮）
 GET  /v1/capabilities/onev/jobs/:id                     查询同步任务状态
 GET  /v1/capabilities/onev/documents/links/:id/metadata 查询同步元数据
-GET  /v1/capabilities/onev/prototypes/:id               读取交互原型 HTML
+GET  /v1/capabilities/onev/prototypes/:id               读取需求原型 HTML
 ```
 
 组件库文档站点仅向具有写权限的用户显示绑定、改绑和同步按钮；服务端仍以 RBAC 为准。`npm run codegraph` 通过插件 CLI 触发全量同步，不调用页面接口。

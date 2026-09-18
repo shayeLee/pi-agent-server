@@ -176,6 +176,7 @@ function createSessionApi(
         // renameSession 统一折叠越权/不存在；插件不能用标题 API 探测其他 owner。
         return updated ? sessionRef(updated) : null;
       },
+      supportsTurnCancellation: true,
       async runTurn(input): Promise<PluginTurnResult> {
         assertActive();
         const sessionId = requireTurnText(input?.sessionId, "sessionId", 200);
@@ -190,9 +191,10 @@ function createSessionApi(
         // 不误杀其他 task（runtime 按 requestId 校验 currentKey 后再 abort）。
         const controller = new AbortController();
         const onRequestAbort = () => controller.abort();
-        if (requestSignal !== undefined) {
-          if (requestSignal.aborted) controller.abort();
-          else requestSignal.addEventListener("abort", onRequestAbort, { once: true });
+        const signals = [requestSignal, input.signal].filter((signal): signal is AbortSignal => signal !== undefined);
+        for (const signal of signals) {
+          if (signal.aborted) controller.abort();
+          else signal.addEventListener("abort", onRequestAbort, { once: true });
         }
         inFlightTurns.add(controller);
         try {
@@ -206,7 +208,7 @@ function createSessionApi(
           return result;
         } finally {
           inFlightTurns.delete(controller);
-          requestSignal?.removeEventListener("abort", onRequestAbort);
+          for (const signal of signals) signal.removeEventListener("abort", onRequestAbort);
         }
       },
     },
