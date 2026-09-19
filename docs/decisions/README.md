@@ -15,3 +15,4 @@
 | --- | --- | --- |
 | [0001](0001-phase-3-data-retention-baseline.md) | 已接受；部分被 0002 取代 | Phase 3 数据保留基线（历史决策） |
 | [0002](0002-canonical-baseline-and-migration-gate.md) | 已接受；当前适用 | Canonical baseline bootstrap 与 migration 启动门禁 |
+| [0003](0003-loopback-proxy-client-ip.md) | 已接受；当前适用 | 同机代理场景下的客户端 IP 解析（回环 + X-Forwarded-For 最右） |

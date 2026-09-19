@@ -36,7 +36,7 @@
 
 ## 2. 当前接入控制（RC）边界
 
-- 当前接入控制由 **IP-RBAC** 承担：所有路由以直接 TCP 对端 IP 过 CIDR/disabled gate；`/v1` 与 `/metrics` 上 `tokenRequired` 画像才要求 Bearer token（hash 绑定精确 IP）；`/health`、`/readyz` 永不需要 token；身份一律取直接 TCP 对端 IP，绝不使用 `X-Forwarded-For`/`request.ip`。详见 [ip-rbac-design.md](ip-rbac-design.md)。
+- 当前接入控制由 **IP-RBAC** 承担：所有路由以客户端 IP 过 CIDR/disabled gate；`/v1` 与 `/metrics` 上 `tokenRequired` 画像才要求 Bearer token（hash 绑定精确 IP）；`/health`、`/readyz` 永不需要 token；身份默认取直接 TCP 对端 IP，仅当对端为回环（同机代理，如 nginx 反代到 `127.0.0.1:8080`）时才采用 `X-Forwarded-For` 最右一条，绝不使用 `request.ip`。详见 [ip-rbac-design.md](ip-rbac-design.md)。
 - **无 legacy 账号/token 迁移**：本 RC 从未存在正式公网 token 数据，因此**不实现**任何「旧 token/旧账号 → 新主体」迁移代码；旧库或无 canonical baseline 的库不做在位转换。只有完全空目标可以离线执行 `pnpm migrate -- --bootstrap-baseline --bootstrap-confirm CONFIRMED` 建立唯一 canonical baseline，具体接受面见 [ADR 0002](decisions/0002-canonical-baseline-and-migration-gate.md)。
 - **公网暴露禁止**，直到未来 OIDC/IAM + workspace/sandbox 设计落地；IP-RBAC 不是 sandbox、不限制 cwd 或 Agent 工具绝对路径/OS 权限（workspace/sandbox 安全延期至公网暴露前）。
 

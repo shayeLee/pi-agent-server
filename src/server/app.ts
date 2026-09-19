@@ -330,7 +330,9 @@ export function buildApp(deps: ServerDeps): FastifyInstance {
   // - 注册顺序关键：必须先于 CORS 插件注册。@fastify/cors 也在 onRequest 层处理预检 OPTIONS
   //   并直接回包；若 CORS 先跑，CIDR 外来源可凭「合法 Origin 的预检」在准入前拿到 200 CORS
   //   响应。准入先跑 → CIDR 外 OPTIONS（含合法 Origin）一律 403，allowed 预检再交回 CORS 正常回 204；
-  // - 身份 = 直接 socket IP（canonical，IPv4-mapped 归一 v4）；X-Forwarded-For 与 request.ip 一律不用；
+  // - 身份默认 = 直接 socket IP（canonical，IPv4-mapped 归一 v4）；仅当 TCP 对端为回环（同机
+  //   代理）时才采用 X-Forwarded-For 最右条目（nginx 追加语义的正确解析），其余情况忽略 XFF；
+  //   request.ip 一律不用（受 trustProxy 影响）；
   // - CIDR 外 / disabled / socket IP 不可解析 → 403（unknown socket IP failclosed）；
   // - /v1 且画像 tokenRequired：实际请求与非预检 OPTIONS 缺失/错误 token → 401，带固定
   //   `WWW-Authenticate: Bearer`（无敏感）；合规 CORS 预检免 token，随后交给 CORS origin policy；

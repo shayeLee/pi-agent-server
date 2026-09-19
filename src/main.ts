@@ -4,7 +4,8 @@
 // WP5D-2 网络准入：
 // - PI_ALLOWED_CLIENT_CIDRS 显式必填（无默认），PI_IP_ACCESS_POLICY_FILE 可选（安全加载：
 //   符号链接/权限/属主/大小/TOCTOU 全程校验）；
-// - 身份 = 直接 socket IP，不信任任何代理头；CIDR 外 / disabled → 403，/v1 tokenRequired → 401。
+// - 身份 = canonical 客户端 IP：默认直接 socket IP；仅当 TCP 对端为回环（同机反向代理）时
+//   取 X-Forwarded-For 最右条目；CIDR 外 / disabled → 403，/v1 tokenRequired → 401。
 
 import { startServer, type DataMode, type StorageDialect } from "./server/start.js";
 import { parseIpAccessEnv } from "./core/ip-access-config.js";

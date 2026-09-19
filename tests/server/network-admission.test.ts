@@ -1,6 +1,8 @@
 // WP5D-2 buildApp 全局网络准入（HTTP 层，真实 buildApp + inject/真实 listen）：
 // - 所有路由（/health /readyz /metrics /v1）先过 CIDR/disabled gate；CIDR 外 / disabled → 403；
-// - 身份 = 直接 socket IP（canonical，IPv4-mapped 归一 v4；X-Forwarded-For 一律无效）；
+// - 身份默认 = 直接 socket IP（canonical，IPv4-mapped 归一 v4）；X-Forwarded-For 仅在 TCP 对端
+//   为回环（同机代理）时生效，且只取最后一条（末段不可解析则整体回落 socket IP，不向左搜索）；
+//   非回环对端一律忽略 XFF；
 // - /v1 且 tokenRequired：缺失/错误 token → 401；token off 忽略 Bearer；
 // - 探针仅 IP gate（不要求 token）；token 不能绕过 CIDR；unknown socket IP failclosed 403；
 // - 401/403 响应体不含原始 IP/token/path 值；ownerKey = ip:canonical。
@@ -101,7 +103,7 @@ describe("WP5D-2 全局准入（buildApp + inject）", () => {
     }
   });
 
-  it("X-Forwarded-For 不影响身份：外网对端伪造内网 XFF → 403；内网对端携带 XFF → 仍按对端 IP", async () => {
+  it("非回环对端：XFF 一律被忽略（外网对端伪造内网 XFF → 403；内网对端携带 XFF → 仍按对端 IP）", async () => {
     const app = await makeApp();
     try {
       const forged = await app.inject({
@@ -119,7 +121,7 @@ describe("WP5D-2 全局准入（buildApp + inject）", () => {
         headers: { "x-forwarded-for": "203.0.113.9" },
       });
       expect(inside.statusCode).toBe(200);
-      // 身份 = 直接 socket IP（10.0.0.1），列表可见（ownerKey ip:10.0.0.1）
+      // 身份 = 直接 socket IP（10.0.0.1，非回环 → XFF 忽略），列表可见（ownerKey ip:10.0.0.1）
       const sessions = await app.inject({
         method: "POST",
         url: "/v1/sessions",
@@ -129,6 +131,144 @@ describe("WP5D-2 全局准入（buildApp + inject）", () => {
       });
       expect(sessions.statusCode).toBe(201);
       expect(sessions.json().ownerKey).toBe(`ip:${USER_IP_A}`);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("回环对端（同机代理）：采用 X-Forwarded-For 作为客户端身份", async () => {
+    const app = await makeApp();
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/v1/sessions",
+        remoteAddress: "127.0.0.1",
+        headers: { ...JSON_HEADERS, "x-forwarded-for": USER_IP_A },
+        payload: JSON.stringify({}),
+      });
+      expect(res.statusCode).toBe(201);
+      expect(res.json().ownerKey).toBe(`ip:${USER_IP_A}`);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("回环对端无 XFF：回落 socket 对端 IP（本机直连 curl 与探针不被打断）", async () => {
+    const app = await makeApp();
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/v1/sessions",
+        remoteAddress: "127.0.0.1",
+        headers: JSON_HEADERS,
+        payload: JSON.stringify({}),
+      });
+      expect(res.statusCode).toBe(201);
+      expect(res.json().ownerKey).toBe("ip:127.0.0.1");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("回环对端 + XFF 多段：只取最右一条（追加语义下的正确解析，不是最左）", async () => {
+    const app = await makeApp();
+    try {
+      // 客户端自带 1.2.3.4（伪造），nginx 追加真实直连地址 10.0.0.1 → 最右是真实值。
+      const res = await app.inject({
+        method: "POST",
+        url: "/v1/sessions",
+        remoteAddress: "127.0.0.1",
+        headers: { ...JSON_HEADERS, "x-forwarded-for": `1.2.3.4, ${USER_IP_A}` },
+        payload: JSON.stringify({}),
+      });
+      expect(res.statusCode).toBe(201);
+      expect(res.json().ownerKey).toBe(`ip:${USER_IP_A}`);
+      expect(res.json().ownerKey).not.toBe("ip:1.2.3.4");
+
+      // 三段（最右仍合法）：仍取最右一条。
+      const multi = await app.inject({
+        method: "POST",
+        url: "/v1/sessions",
+        remoteAddress: "127.0.0.1",
+        headers: { ...JSON_HEADERS, "x-forwarded-for": `1.2.3.4, 5.6.7.8, ${USER_IP_B}` },
+        payload: JSON.stringify({}),
+      });
+      expect(multi.statusCode).toBe(201);
+      expect(multi.json().ownerKey).toBe(`ip:${USER_IP_B}`);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("回环对端 + XFF 末段不可解析：整体回落 socket IP，绝不采用左侧客户端可控值", async () => {
+    const app = await makeApp();
+    try {
+      // 修复 1 核心回归：10.0.0.1 位于 nginx 追加段的左侧，是客户端可控的，必须丢弃。
+      for (const xff of [`${USER_IP_A}, garbage`, `${USER_IP_A},`, `${USER_IP_A},   `, `1.2.3.4, ${USER_IP_A}, 999.999.999.999`]) {
+        const res = await app.inject({
+          method: "POST",
+          url: "/v1/sessions",
+          remoteAddress: "127.0.0.1",
+          headers: { ...JSON_HEADERS, "x-forwarded-for": xff },
+          payload: JSON.stringify({}),
+        });
+        expect(res.statusCode, JSON.stringify(xff)).toBe(201);
+        expect(res.json().ownerKey, JSON.stringify(xff)).toBe("ip:127.0.0.1");
+        expect(res.json().ownerKey, JSON.stringify(xff)).not.toBe(`ip:${USER_IP_A}`);
+      }
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("回环对端 + XFF 最右合法但左侧不可解析：采用最右（不因左侧畸形而回落）", async () => {
+    const app = await makeApp();
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/v1/sessions",
+        remoteAddress: "127.0.0.1",
+        headers: { ...JSON_HEADERS, "x-forwarded-for": `garbage, ${USER_IP_A}` },
+        payload: JSON.stringify({}),
+      });
+      expect(res.statusCode).toBe(201);
+      expect(res.json().ownerKey).toBe(`ip:${USER_IP_A}`);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("回环对端 + XFF 非法/空白/尾随逗号：回落 socket 对端 IP，且不抛异常（无 500）", async () => {
+    const app = await makeApp();
+    try {
+      for (const xff of ["", "   ", ",", " , , ", "not-an-ip", "999.999.999.999", `${USER_IP_A},`]) {
+        const res = await app.inject({
+          method: "POST",
+          url: "/v1/sessions",
+          remoteAddress: "127.0.0.1",
+          headers: { ...JSON_HEADERS, "x-forwarded-for": xff },
+          payload: JSON.stringify({}),
+        });
+        expect(res.statusCode, JSON.stringify(xff)).toBe(201);
+        expect(res.json().ownerKey, JSON.stringify(xff)).toBe("ip:127.0.0.1");
+      }
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("回环对端 + XFF 为 IPv4-mapped 形式：归一为 v4 作为身份", async () => {
+    const app = await makeApp();
+    try {
+      const res = await app.inject({
+        method: "POST",
+        url: "/v1/sessions",
+        remoteAddress: "127.0.0.1",
+        headers: { ...JSON_HEADERS, "x-forwarded-for": `::ffff:${USER_IP_A}` },
+        payload: JSON.stringify({}),
+      });
+      expect(res.statusCode).toBe(201);
+      expect(res.json().ownerKey).toBe(`ip:${USER_IP_A}`);
     } finally {
       await app.close();
     }
@@ -296,22 +436,32 @@ describe("WP5D-2 真实 listen：remote address = TCP 对端", () => {
     expect(body.some((s) => s.title === "loopback")).toBe(true);
   });
 
-  it("真实连接上的 X-Forwarded-For 不影响身份（仍按 TCP 对端 127.0.0.1）", async () => {
+  it("真实连接（回环对端）：X-Forwarded-For 决定身份，取最右一条", async () => {
     const { app, port } = await makeListeningApp();
-    await app.inject({
+    // 经 inject 预置对端 10.0.0.1 的会话（XFF 值即身份）
+    const created = await app.inject({
       method: "POST",
       url: "/v1/sessions",
       remoteAddress: "127.0.0.1",
-      headers: JSON_HEADERS,
-      payload: JSON.stringify({ title: "xff-ignored" }),
+      headers: { ...JSON_HEADERS, "x-forwarded-for": USER_IP_A },
+      payload: JSON.stringify({ title: "xff-applied" }),
     });
-    // 真实连接携带伪造 XFF（外网 IP）：身份仍为 127.0.0.1，能读到自己的会话
+    expect(created.statusCode).toBe(201);
+    expect(created.json().ownerKey).toBe(`ip:${USER_IP_A}`);
+
+    // 真实 socket 连接（127.0.0.1，回环 → 同机代理）：XFF 最右段成为身份，能读到该身份会话。
     const list = await fetch(`http://127.0.0.1:${port}/v1/sessions`, {
-      headers: { "x-forwarded-for": OUTSIDE_IP },
+      headers: { "x-forwarded-for": `1.2.3.4, ${USER_IP_A}` },
     });
     expect(list.status).toBe(200);
     const body = (await list.json()) as Array<{ title: string }>;
-    expect(body.some((s) => s.title === "xff-ignored")).toBe(true);
+    expect(body.some((s) => s.title === "xff-applied")).toBe(true);
+
+    // 真实连接不带 XFF：回落 127.0.0.1，读不到 10.0.0.1 的会话（身份确实来自 XFF）。
+    const loopbackList = await fetch(`http://127.0.0.1:${port}/v1/sessions`);
+    expect(loopbackList.status).toBe(200);
+    const loopbackBody = (await loopbackList.json()) as Array<{ title: string }>;
+    expect(loopbackBody.some((s) => s.title === "xff-applied")).toBe(false);
   });
 
   it("真实 TCP 上 tokenRequired 的 browser semantics：预检免 token，实际请求仍要求 token", async () => {

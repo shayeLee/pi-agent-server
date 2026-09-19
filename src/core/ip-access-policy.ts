@@ -4,7 +4,8 @@
 // 本模块是纯函数（无 fs、无 IO、无日志）；WP5D-2 起由 src/server/network-admission.ts 接线到
 // HTTP（全局 onRequest admission）与启动路径（requireIpAccessRuntimeConfig 运行时校验）。
 // 冻结语义（2026-02 用户新决策：内网不做 workspace 强制，workspace 安全延期至公网暴露前）：
-// - 直接 socket IP 为准；一个 IP = 一个用户（身份键 = canonical IP 文本）。
+// - 默认直接 socket IP 为准；仅当 TCP 对端为回环（同机反向代理）时改用 X-Forwarded-For 最右条目；
+//   一个 IP = 一个用户（身份键 = canonical IP 文本）。
 // - CIDR 外一律 deny；CIDR 内未登记默认 role=user、token off（无任何 workspace 概念）。
 // - 可选策略文件中精确 IP 覆盖 role/disabled/tokenRequired/token sha256。
 // - 策略条目只允许 ip/role/disabled/tokenRequired/tokens，未知字段 failfast；

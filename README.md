@@ -66,7 +66,7 @@ pnpm dev:real
 cp .env.example .env.local
 ```
 
-The local template contains the development values `DATA_DIR=/tmp/pi-agent-server`, `PI_ALLOWED_CLIENT_CIDRS=127.0.0.0/8,10.0.0.0/8`, `PI_DEFAULT_MODEL=openai-codex/gpt-5.6-luna`, and `PI_DEFAULT_THINKING_LEVEL=medium`; edit machine-specific paths before use. Existing environment variables take precedence over `.env.local`; file values take precedence over application defaults. `PI_ALLOWED_CLIENT_CIDRS` is mandatory and matched against the direct socket peer IP for every route, including probes. Do not commit `.env.local`, credentials, API keys, or tokens.
+The local template contains the development values `DATA_DIR=/tmp/pi-agent-server`, `PI_ALLOWED_CLIENT_CIDRS=127.0.0.0/8,10.0.0.0/8`, `PI_DEFAULT_MODEL=openai-codex/gpt-5.6-luna`, and `PI_DEFAULT_THINKING_LEVEL=medium`; edit machine-specific paths before use. Existing environment variables take precedence over `.env.local`; file values take precedence over application defaults. `PI_ALLOWED_CLIENT_CIDRS` is mandatory and matched against the client IP for every route, including probes. The client IP is the direct socket peer IP by default, except that a loopback peer (same-host reverse proxy) uses the rightmost `X-Forwarded-For` entry instead. Do not commit `.env.local`, credentials, API keys, or tokens.
 
 `dev:real` keeps its database under `/tmp/pi-agent-server`; the server verifies but never initializes it. Initialize once before the first run (or after clearing `/tmp`):
 
@@ -193,6 +193,8 @@ Startup requires an explicit CIDR allowlist:
 ```bash
 export PI_ALLOWED_CLIENT_CIDRS=127.0.0.0/8,10.0.0.0/8
 ```
+
+The identity is the client IP: by default the direct socket peer IP; when the TCP peer is loopback (`127.0.0.0/8` or `::1`, i.e. a same-host reverse proxy such as nginx forwarding to `127.0.0.1:8080`), the rightmost entry of `X-Forwarded-For` is used instead (nginx appends, so the rightmost entry is the address the proxy actually saw). Missing or unparsable `X-Forwarded-For` falls back to the socket peer IP, and non-loopback peers always ignore it. If the real users arrive through a same-host proxy, the allowed CIDRs must cover the user subnets, not just `127.0.0.0/8`. See [docs/ip-rbac-design.md](docs/ip-rbac-design.md) and [ADR 0003](docs/decisions/0003-loopback-proxy-client-ip.md).
 
 An optional absolute `PI_IP_ACCESS_POLICY_FILE` may define exact-IP profiles with:
 

@@ -1,8 +1,12 @@
 // WP5D-2 HTTP 网络准入接线：全局 onRequest admission（覆盖探针与 /v1 全部路由）。
 //
 // 冻结语义（docs/ip-rbac-design.md §2，接线后生效）：
-// - 身份 = 直接 TCP 对端 IP：一律读 request.raw.socket.remoteAddress，
-//   不使用 X-Forwarded-For，也不使用 request.ip（后者受 trustProxy 影响）；
+// - 身份默认 = 直接 TCP 对端 IP：读 request.raw.socket.remoteAddress（不使用 request.ip，
+//   后者受 trustProxy 影响）。唯一例外是同机代理边界：TCP 对端为回环（127.0.0.0/8 或 ::1，
+//   生产 HOST=127.0.0.1，只有同机 nginx 能连）时才采用 X-Forwarded-For，且只取最右一条
+//   （nginx $proxy_add_x_forwarded_for 是追加语义，最右段才是直连代理写入的地址；取最左会
+//   把他人的身份当成自己）。XFF 缺失/末段不可解析 → 回落 socket 对端 IP（不 fail-closed），
+//   不向左搜索可解析段（左侧是客户端可控值）；非回环对端一律忽略 XFF；
 // - 所有 HTTP 路由先过 CIDR/disabled gate：CIDR 外 / disabled / socket IP 不可解析 → 403；
 // - /v1 与 /metrics 且画像 tokenRequired：实际请求与非预检 OPTIONS 缺失/错误 Bearer token → 401；
 //   合规 CORS 预检（OPTIONS + Origin + Access-Control-Request-Method）免 token，随后交给 CORS origin policy；
@@ -18,7 +22,7 @@
 //   OS 权限不在 IP-RBAC 范围内（不是 sandbox）。
 
 import type { FastifyRequest } from "fastify";
-import { parseCidrStrict, parseIpStrict, type ParsedCidr } from "../core/cidr.js";
+import { parseCidrStrict, parseIpStrict, type ParsedCidr, type ParsedIp } from "../core/cidr.js";
 import {
   assertPolicyCovered,
   IP_ACCESS_POLICY_VERSION,
@@ -87,10 +91,45 @@ export function extractBearerToken(header: string | string[] | undefined): strin
   return match ? match[1] : undefined;
 }
 
-/** 读取直接 TCP 对端 IP（不信任任何代理头）；undefined/空 → null（failclosed）。 */
+/** 读取直接 TCP 对端 IP；undefined/空 → null（failclosed）。 */
 function socketPeerIpText(request: FastifyRequest): string | null {
   const raw = (request.raw.socket as { remoteAddress?: unknown } | undefined)?.remoteAddress;
   return typeof raw === "string" && raw.length > 0 ? raw : null;
+}
+
+/** 回环判定：v4 127.0.0.0/8 或 v6 ::1（同机代理边界，无需任何配置）。 */
+function isLoopback(ip: ParsedIp): boolean {
+  return ip.family === "v4" ? ip.bytes[0] === 127 : ip.text === "::1";
+}
+
+/**
+ * 从 X-Forwarded-For 取**最后一条**（最右段）作为客户端 IP（IPv4-mapped 归一为 v4）。
+ *
+ * 为什么取最右而非最左：nginx 的 `$proxy_add_x_forwarded_for` 与 http-proxy-middleware 都是
+ * **追加**语义——它们把直连对端地址追加到客户端自带的 header 之后。因此最左段是客户端可控的原值，
+ * 最右段才是直连代理写入的真实地址。取最左是解析错误：同事用一行 curl 就能冒充任意内网 IP
+ * 读走别人的会话。
+ *
+ * 为什么只取最右段、**不向左搜索**可解析段：在追加语义下最右段恒为 nginx 写入的 `$remote_addr`，
+ * 本应是合法地址。末段为空/空白/不可解析即说明请求未正常经过同机代理（或代理链被篡改），
+ * 此时左侧任意条目都是客户端可控值，采用它会破坏身份边界。因此这种情况一律视为代理链异常。
+ *
+ * 返回 null（header 缺失/空白/仅逗号/末段不可解析）→ 调用方回落 socket 对端 IP，
+ * **绝不采用左侧客户端可控值**。本函数不抛异常（畸形 header 不得导致 500）。
+ */
+function forwardedClientIp(request: FastifyRequest): ParsedIp | null {
+  const header = request.headers["x-forwarded-for"];
+  // Node/Fastify 对重复 header 通常合并为单个字符串；数组形态也安全拼接处理。
+  const text = Array.isArray(header) ? header.join(",") : header;
+  if (typeof text !== "string" || text.length === 0) return null;
+  const parts = text.split(",");
+  const candidate = parts[parts.length - 1]!.trim();
+  if (candidate === "") return null;
+  try {
+    return parseIpStrict(candidate);
+  } catch {
+    return null; // 末段不可解析：代理链异常 → 回落 socket IP，不向左搜索
+  }
 }
 
 /**
@@ -109,6 +148,12 @@ export function createAdmission(input: IpAccessResolveInput): Admission {
       parsed = parseIpStrict(raw); // IPv4-mapped → 归一 v4
     } catch {
       return { verdict: "denied", reason: "bad-ip", statusCode: 403 };
+    }
+    // 同机代理边界：仅当 TCP 对端为回环时采用 X-Forwarded-For 最右条目作为真实客户端 IP；
+    // 缺失/末段不可解析则回落 socket 对端 IP（本机直连 curl 与探针没有 XFF，不能 fail-closed）。
+    if (isLoopback(parsed)) {
+      const forwarded = forwardedClientIp(request);
+      if (forwarded !== null) parsed = forwarded;
     }
     const verdict = resolveIpAccessParsed(input, parsed);
     if (verdict.verdict === "denied") {

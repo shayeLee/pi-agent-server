@@ -1,6 +1,6 @@
 # ONEV 裸机首次部署（pi-agent-server + 插件 + 前端）
 
-本文记录 `pi-agent-server`、`pi-agent-capability-onev` 和 ONEV 前端在同一台 Linux 内网服务器上的首次部署流程。**本流程不使用 Docker、Podman，不新增 Nginx 或反向代理，也不面向公网。** 浏览器只访问原组件库文档网站的内网 Origin；agent-server 的 `/v1`、`/health` 与 `/readyz` 由该网站现有部署入口以同一 Origin 暴露。
+本文记录 `pi-agent-server`、`pi-agent-capability-onev` 和 ONEV 前端在同一台 Linux 内网服务器上的首次部署流程。**本流程不使用 Docker、Podman，也不面向公网。** 浏览器只访问原组件库文档网站的内网 Origin；该 Origin 由本机 nginx 同源反代，把 `/v1`、`/health`、`/readyz` 转发到 `127.0.0.1:8080`（见 §5），因此 agent-server 看到的 TCP 对端恒为 `127.0.0.1`。
 
 适用的源码目录示例：
 
@@ -29,8 +29,8 @@
 - Pi 的 `models.json`/`auth.json` 或等价凭据。建议把 `PI_AGENT_DIR`、`PI_AUTH_PATH` 放在服务账号可读且权限为 0600/0700 的目录中。
 - 已登录且能被服务账号使用的 DWS CLI；插件要求通过 `ONEV_DWS_BIN` 指定绝对路径，不扫描 `PATH`。钉钉/DWS 凭据由 DWS 自己的凭据机制提供，不把 token 写进本文或 unit。
 - 一篇可用于首次绑定与同步验收的非生产或可控钉钉文档，并确保服务账号具备读取权限。
-- ONEV 文档站的内网 Origin（例如 `http://onev.internal`）、agent-server 的本机监听地址，以及现有网站如何把同一 Origin 下的 `/v1`、`/health`、`/readyz` 交给 agent-server。本文不新增反向代理配置。
-- 原组件库文档网站必须已有可靠的内网访问控制。agent-server 看到的 TCP 对端是同机网站入口，因此当前宿主会把经该入口访问的浏览器视为同一身份；它不提供终端用户级隔离。
+- ONEV 文档站的内网 Origin（例如 `http://onev.internal`）、agent-server 的本机监听地址（`127.0.0.1:8080`），以及本机 nginx 如何把同一 Origin 下的 `/v1`、`/health`、`/readyz` 反代到 agent-server（配置示例见 §5）。
+- 原组件库文档网站必须已有可靠的内网访问控制。agent-server 看到的 TCP 对端是同机 nginx（`127.0.0.1`），因此宿主仅在「对端为回环」时采用 nginx 写入的 `X-Forwarded-For` 最右条目作为真实客户端 IP；这样每个内网用户保留自己的身份与 owner 隔离。它仍不提供终端用户级认证——同一内网 IP 背后的多人共享同一身份。
 
 **首次部署没有生产数据，因此不要求部署前备份。** 后续已有数据的升级、迁移或换机，必须按 [backup-restore.md](backup-restore.md) 的备份、停写和恢复规则执行；这条例外不适用于本次空库初始化。
 
@@ -50,14 +50,16 @@
 
 ```dotenv
 # pi-agent-server
-# agent-server 只供同机的组件库网站部署入口访问。
+# agent-server 只供同机 nginx 反代访问（HOST=127.0.0.1，外网不可直达）。
 HOST=127.0.0.1
 PORT=8080
 AGENT_CWD=/srv/onev
 DATA_DIR=/var/lib/pi-agent-server
 DB_PATH=/var/lib/pi-agent-server/pi-agent-server.db
-# agent-server 的 TCP 对端是同机网站部署入口；不要使用 0.0.0.0/0。
-PI_ALLOWED_CLIENT_CIDRS=127.0.0.1/32
+# 准入网段必须覆盖真实用户所在内网：同机 nginx 经 X-Forwarded-For 把用户 IP 传给 agent-server，
+# agent-server 取 XFF 最右条目作为身份。127.0.0.0/8 用于无 XFF 的本机直连与探针。
+# 不要使用 0.0.0.0/0。按实际内网网段收窄（下面仅示例）。
+PI_ALLOWED_CLIENT_CIDRS=127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16
 # 浏览器访问同一 Origin，相对路径 /v1 不需要 CORS；保持 CORS_ORIGINS 未设置。
 PI_MIGRATION_GATE=verify
 PI_DATA_MODE=managed
@@ -176,13 +178,103 @@ ONEV 无需配置独立 API 域名。生产页面继续使用 HTTP 客户端的�
 部署验收必须确认：
 
 1. 浏览器地址栏中的文档站 Origin 与 `/v1` 的 Origin 完全一致（协议、主机、端口均一致）；
-2. 原组件库网站现有部署入口能在服务器内部访问 `127.0.0.1:8080`，并把 `/v1`、`/health`、`/readyz` 暴露在其自身 Origin；
+2. 本机 nginx 能在服务器内部访问 `127.0.0.1:8080`，并把 `/v1`、`/health`、`/readyz` 暴露在其自身 Origin（配置见下方示例）；
 3. 构建时 `ONEV_COPILOT_BASE_URL` 已清空，运行时 `window.ONEV_COPILOT_CONFIG.baseUrl` 未设置或为空字符串，浏览器实际请求相对路径 `/v1`；
 4. `CORS_ORIGINS` 未设置，因为不存在浏览器跨 Origin 请求；
-5. agent-server 的 `8080` 不直接对内网客户端或公网开放；
-6. 原文档网站的访问控制已启用，并已接受“当前所有经同机入口访问者共享宿主身份、没有终端用户级 owner 隔离”的边界。
+5. agent-server 的 `8080` 不直接对内网客户端或公网开放（`HOST=127.0.0.1`，只监听回环）；
+6. 原文档网站的访问控制已启用；`PI_ALLOWED_CLIENT_CIDRS` 已覆盖真实用户所在内网网段（nginx 经 XFF 传入的用户 IP 必须能通过 CIDR 准入），并已接受“同一内网 IP 背后的多人共享同一身份、没有终端用户级认证”的边界。
 
-本文不新增或管理 Nginx/反向代理；同源路径如何接入 agent-server 由原组件库文档网站既有部署方式负责。若实际部署只能使用不同端口，必须回到跨 Origin 方案并显式配置 `CORS_ORIGINS`，不能只凭“域名相同”判断为同源。
+同源路径由本机 nginx 反代接入 agent-server，不再是“由原文档网站既有部署入口负责”。若实际部署只能使用不同端口，必须回到跨 Origin 方案并显式配置 `CORS_ORIGINS`，不能只凭“域名相同”判断为同源。
+
+### 5.1 nginx 同源反代配置示例
+
+生产拓扑是 `浏览器 --HTTPS--> 裸机 nginx --http--> 127.0.0.1:8080`（见 [ADR 0003](decisions/0003-loopback-proxy-client-ip.md)）：**TLS 在 nginx 终止**，agent-server 侧仍是明文 `proxy_pass http://127.0.0.1:8080`（不需要 TLS，也不要 `https://`）。
+
+把文档站静态目录与 `/v1`、`/health`、`/readyz` 放在**同一个 TLS `server` 块**（同一协议/主机/端口，否则浏览器会判为跨 Origin）。若文档站已有承载 HTTPS 的 `server` 块，**应把这些 `location` 合并进该现有块，而不是新建一个 80 端口块**：
+
+```nginx
+# 建议：HTTP 仅做跳转，绝不承载文档站或 /v1（否则浏览器拿到 http:// Origin）。
+server {
+    listen 80;
+    server_name onev.internal;
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    http2 on;                              # nginx ≥ 1.25.1；旧版本用 `listen 443 ssl http2;`
+    server_name onev.internal;
+
+    # 证书：占位路径，必须替换为现场实际证书（内网亦要求 TLS）。
+    ssl_certificate     /etc/nginx/tls/onev.internal.crt;
+    ssl_certificate_key /etc/nginx/tls/onev.internal.key;
+    # TLS 参数：按现场基线调整（示例值，不是强制要求）。
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         HIGH:!aNULL:!MD5;
+    ssl_session_cache   shared:SSL:10m;
+    ssl_session_timeout 10m;
+
+    # 文档站静态产物（由 §4 构建得到）
+    root /srv/onev/examples/onev-ui;
+    index index.html;
+
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+
+    # /v1 与探针：同源反代到 agent-server（仅监听 127.0.0.1，明文 http）。
+    location /v1/ {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_http_version 1.1;
+
+        # SSE（/v1/sessions/:id/events）必需：不要缓冲，不要复用连接池 keep-alive。
+        proxy_buffering off;
+        proxy_cache off;
+        proxy_set_header Connection "";
+        proxy_read_timeout 1h;
+
+        # 客户端 IP：追加语义（把 $remote_addr 追加到客户端自带 header 之后），
+        # agent-server 只取最后一段作为真实用户身份。必须保留该头。
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+
+    location = /v1 {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header Host $host;
+    }
+
+    location = /health {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header Host $host;
+    }
+
+    location = /readyz {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header Host $host;
+    }
+}
+```
+
+说明：
+
+- **必须走 HTTPS**：文档站与 `/v1` 都在 `listen 443 ssl` 的 `server` 块内。若照抄成 `listen 80;`，浏览器会以 `http://` Origin 访问，`/v1` 既可能因混合内容被拦，也可能根本不进入 agent-server；`CORS_ORIGINS` 也应按实际 HTTPS Origin 配置（同源方案下无需设置）。
+- **TLS 只终止在 nginx**：`proxy_pass` 保持 `http://127.0.0.1:8080`，不要改成 `https://`（agent-server 不提供 TLS）。
+- **`proxy_http_version 1.1` + `proxy_set_header Connection ""`**：HTTP/1.1 与显式空 `Connection` 头是 SSE（`/v1/sessions/:id/events`）必需的；否则 nginx 会用 HTTP/1.0 或保持连接头，导致事件流被缓冲或立即断开。
+- **`proxy_buffering off`**：关闭响应缓冲，事件才能实时到达浏览器。
+- **`X-Forwarded-For $proxy_add_x_forwarded_for`**：这是**追加**语义（把 `$remote_addr` 追加到客户端自带 header 之后）。agent-server 仅在 TCP 对端为回环（此处为 `127.0.0.1`）时采用 XFF，且**只取最后一段**，因此真实用户 IP 取自 nginx 写入的 `$remote_addr`。必须传该头且保持追加语义；**不要省略该头**（否则所有用户塌缩为 `127.0.0.1` 一个身份）。在本 ADR 的单跳模型下，`$remote_addr` 本身就是真实客户端地址，即使覆盖 XFF 也不会「丢失真实客户端信息」，被丢弃的只是客户端自带、本就不可信的 XFF 链。
+- `/health`、`/readyz` 必须与 `/v1` 一样带上 XFF：探针若不带 XFF 会回落到 `127.0.0.1`，只要 `127.0.0.0/8` 在 `PI_ALLOWED_CLIENT_CIDRS` 内仍可正常放行。
+- 若 nginx 只监听回环（例如仅通过另一层内网入口访问），务必确保 `$remote_addr` 就是真实用户地址；多跳代理会使最右段变成最后一段代理地址（见 [ADR 0003](decisions/0003-loopback-proxy-client-ip.md) 的单跳限制）。
 
 ## 6. systemd 托管（示例待固化）
 
@@ -282,4 +374,4 @@ curl --fail --silent --show-error http://onev.internal/readyz
 - 不要从 npm registry 安装一个声称已发布的 `pi-agent-capability-onev`；当前正确方式是源码构建后 `pnpm link`。
 - 不要用 Node 16 启动宿主/插件，也不要用 Node 22 构建 ONEV `build:docs`。
 - 不要在服务启动时期待自动 migration；两套数据库都应在首次启动前显式迁移并验证。
-- 不要声称 systemd unit 或同源接入配置已经固化；本文件中的 systemd 配置仍标记为“示例待固化”，同源路径由原文档网站的既有部署入口负责。
+- 不要声称 systemd unit 或 nginx 配置已经固化；本文件中的 systemd 与 nginx 配置都标记为“示例待固化”，需按现场实际路径/网段调整后审核。

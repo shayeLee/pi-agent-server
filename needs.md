@@ -73,7 +73,7 @@ GET    /readyz                          进程启动与 migration gate 就绪检
 GET    /metrics                         固定 Prometheus 进程/readiness 指标
 ```
 
-网络准入与用户标识：所有 HTTP 路由（含 `/health`、`/readyz`、`/metrics`）先按**直接 TCP 对端 IP**准入；不信任 `X-Forwarded-For` 或 `request.ip`。`PI_ALLOWED_CLIENT_CIDRS` 必填，可选 `PI_IP_ACCESS_POLICY_FILE` 为精确 IP 定义 role、disabled 和绑定 IP 的 token。CIDR 外、disabled 或不可解析来源返回 403；仅 `/v1` 与 `/metrics` 上 `tokenRequired` 画像的实际请求要求 Bearer token；`/health`、`/readyz` 免 token。
+网络准入与用户标识：所有 HTTP 路由（含 `/health`、`/readyz`、`/metrics`）先按**客户端 IP**准入。默认取**直接 TCP 对端 IP**；**仅当 TCP 对端为回环（`127.0.0.0/8` 或 `::1`，即同机反向代理）时**采用 `X-Forwarded-For` 的**最右条目**（末段为空或不可解析则回落 socket 对端 IP，不向左搜索）；`request.ip` 始终不使用，非回环对端一律忽略 XFF（见 [ADR 0003](docs/decisions/0003-loopback-proxy-client-ip.md)）。`PI_ALLOWED_CLIENT_CIDRS` 必填，可选 `PI_IP_ACCESS_POLICY_FILE` 为精确 IP 定义 role、disabled 和绑定 IP 的 token。CIDR 外、disabled 或不可解析来源返回 403；仅 `/v1` 与 `/metrics` 上 `tokenRequired` 画像的实际请求要求 Bearer token；`/health`、`/readyz` 免 token。
 
 每个 canonical IP 是一个当前用户身份和 owner key。路由按中央 default-deny RBAC 矩阵授权：operator 仅访问运维探针，viewer 仅访问只读 `/v1`，user/admin 访问自己的资源；admin 暂不跨 owner。只读 export 不实例化 runtime，viewer 对无 live runtime 的 SSE 返回 204。IP-RBAC 不限制 cwd 或工具绝对路径，不是 sandbox；公网能力随未来 OIDC/IAM 与 workspace/sandbox 一起规划。DB 层 IP→IP owner transfer 见 [owner-transfer](docs/owner-transfer.md)，不迁移策略 token 或角色。完整当前契约见 [IP-RBAC 设计](docs/ip-rbac-design.md)。
 
@@ -255,7 +255,7 @@ N、M 天数由部署配置决定。
   - 实现例外（本机开发便利）：凭证文件默认指向开发者本机个人 `~/.pi/agent/auth.json`（与 pi CLI 共用，OAuth token 刷新由 SDK 回写该文件，同文件带锁并发安全）；**生产部署必须**通过 `PI_AUTH_PATH` 指向服务端独立凭证文件或 KMS，不得沿用默认个人路径。
 - 用户自定义模型凭证：统一服务端加密存储（KMS）。支持 OAuth 登录（`login()` 授权、token 入库）或 API key 两种方式；不采用浏览器 localStorage 明文保存——XSS 可窃取、明文传输可被抓包、共享设备易残留；凭证不落明文库，按用户/会话独立 ModelRuntime 承载，会话期间经 `setRuntimeApiKey` 注入、结束后清零，禁止在共享实例上可竞争地设置用户密钥；日志按 §5 脱敏。
 - **多项目 cwd 安全边界**：`POST /v1/projects` 允许指定任意 cwd，因此**公网部署不得开放创建项目接口**（应仅内网/管理面开放）。若未来开放公网创建项目，必须先限制 cwd 到服务端配置的项目根目录下（`realpath` 防 `..` 与符号链接逃逸），否则启用文件/命令工具后用户可将 Agent 指向服务账号可访问的任意目录。
-- **来源 IP 准入与反向代理的组合边界（WP5D-2）**：准入依据**直接 TCP 对端 IP**（`request.raw.socket.remoteAddress`），**不信任任何 `X-Forwarded-For`/`request.ip`**。服务位于反向代理后时，所有请求的准入身份都是代理出口 IP——必须把代理出口网段（而非最终客户端网段）纳入 `PI_ALLOWED_CLIENT_CIDRS`，或将服务直接可达（TLS 终结于服务自身）；默认拒绝模型下未纳入即 403，不存在「未配置即默认内网」的隐式语义。
+- **来源 IP 准入与反向代理的组合边界（WP5D-2）**：准入默认依据**直接 TCP 对端 IP**（`request.raw.socket.remoteAddress`）；**仅当对端为回环（`127.0.0.0/8` 或 `::1`，即同机反向代理）时**才改用 `X-Forwarded-For` 的**最右条目**作为客户端 IP（末段为空或不可解析则回落 socket 对端 IP，不向左搜索；`request.ip` 始终不使用；非回环对端一律忽略 XFF，见 [ADR 0003](docs/decisions/0003-loopback-proxy-client-ip.md)）。因此配置语义与旧结论不同：**同机回环代理下，`PI_ALLOWED_CLIENT_CIDRS` 必须覆盖真实用户所在网段**（身份来自 XFF，代理出口 IP `127.0.0.1` 通常无需单独列入）；只有在对端非回环（服务被代理以非回环地址直连，例如 `HOST` 监听内网网卡）时，准入身份才是代理出口 IP，此时才需纳入代理出口网段。默认拒绝模型下未纳入即 403，不存在「未配置即默认内网」的隐式语义；若不想依赖 XFF，也可让服务直接可达（TLS 终结于服务自身）。
 - 日志字段、脱敏与分级遵循 §5 日志设计。
 - 有副作用的流程应使用独立 Worker 或权限受限的 Pi 自定义工具；写仓库、创建 PR、构建和部署等权限必须按能力最小化授予并审计。
 - 审计：有副作用的工具调用与 Job 须记录持久化审计——`UserIdentity`、会话/Job、工具/能力、授权范围、目标、结果、时间与关联 ID；不记录密钥与正文；审计记录单独定义保留期与访问权限，写入失败须告警。

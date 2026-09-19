@@ -82,8 +82,9 @@ describe("WP5D-2 请求日志脱敏（真实 pino 序列化行）", () => {
       const res = await app.inject({
         method: "GET",
         url: "/v1/sessions",
-        remoteAddress: USER_IP_A,
-        headers: { authorization: "Bearer sekrit-bearer" },
+        // 同机代理边界：回环对端 + XFF → 身份取最右段 10.0.0.1（subjectHash 据此派生）。
+        remoteAddress: "127.0.0.1",
+        headers: { authorization: "Bearer sekrit-bearer", "x-forwarded-for": `1.2.3.4, ${USER_IP_A}` },
       });
       expect(res.statusCode).toBe(200);
       expect(res.body).not.toContain("/tmp/default-project");
@@ -92,8 +93,11 @@ describe("WP5D-2 请求日志脱敏（真实 pino 序列化行）", () => {
     }
     expect(capture.lines.length).toBeGreaterThan(0);
     const joined = capture.lines.join("\n");
-    // allowed 行带 subjectHash（IP 派生哈希）
+    // allowed 行带 subjectHash（IP 派生哈希，基于 XFF 最右段 10.0.0.1）
     expect(joined).toContain(subjectHashFor(USER_IP_A));
+    // 原始 socket 对端与 XFF 左侧伪造值都不得进日志
+    expect(joined).not.toContain("127.0.0.1");
+    expect(joined).not.toContain("1.2.3.4");
     // Fastify 内置 per-request 日志被关闭
     expect(joined).not.toContain('"msg":"incoming request"');
     expect(joined).not.toContain("incoming request");
@@ -150,18 +154,19 @@ describe("WP5D-2 请求日志脱敏（真实 pino 序列化行）", () => {
     assertNoSensitiveLeak(capture.lines);
   });
 
-  it("allowed with registered tokenRequired 画像：日志仍无 token 明文/IP/url", async () => {
+  it("allowed with registered tokenRequired 画像：日志仍无 token 明文/IP/url（含回环代理场景）", async () => {
     const policy = makePolicy([
       { ip: USER_IP_A, role: "admin", tokenRequired: true, tokens: ["secret-token"] },
     ]);
     const capture = makeCapture();
     const app = await makeApp(capture, makeTestIpAccess({ policy }));
     try {
+      // 同机代理边界：回环对端 + XFF → 身份取 XFF 最右（10.0.0.1），日志只带 subjectHash。
       const authOk = await app.inject({
         method: "GET",
         url: "/v1/sessions",
-        remoteAddress: USER_IP_A,
-        headers: { authorization: "Bearer secret-token" },
+        remoteAddress: "127.0.0.1",
+        headers: { authorization: "Bearer secret-token", "x-forwarded-for": `1.2.3.4, ${USER_IP_A}` },
       });
       expect(authOk.statusCode).toBe(200);
     } finally {

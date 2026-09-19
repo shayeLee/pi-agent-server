@@ -1,5 +1,6 @@
 // 用户身份（needs.md §4.2 / docs/ip-rbac-design.md §2）
-// WP5D-2 接线后：身份 = canonical 来源 IP（直接 socket IP，IPv4-mapped 归一为 v4），
+// WP5D-2 接线后：身份 = canonical 来源 IP（默认直接 socket IP；仅当 TCP 对端为回环（同机反向代理）
+// 时改用 X-Forwarded-For 最右条目；IPv4-mapped 归一为 v4），
 // 一个 IP = 一个用户；token 只满足 tokenRequired，不改变身份、不能绕过 CIDR。
 
 export type UserIdentity = { kind: "ip"; ip: string };

@@ -66,7 +66,7 @@ pnpm dev:real
 cp .env.example .env.local
 ```
 
-本地模板包含开发值 `DATA_DIR=/tmp/pi-agent-server`、`PI_ALLOWED_CLIENT_CIDRS=127.0.0.0/8,10.0.0.0/8`、`PI_DEFAULT_MODEL=openai-codex/gpt-5.6-luna` 和 `PI_DEFAULT_THINKING_LEVEL=medium`；使用前请修改机器相关路径。实际环境变量优先于 `.env.local`，文件值优先于应用默认值。`PI_ALLOWED_CLIENT_CIDRS` 必填，并按所有路由的直接 socket 对端 IP 匹配，探针也不例外。禁止提交 `.env.local`、认证信息、API key 或令牌。
+本地模板包含开发值 `DATA_DIR=/tmp/pi-agent-server`、`PI_ALLOWED_CLIENT_CIDRS=127.0.0.0/8,10.0.0.0/8`、`PI_DEFAULT_MODEL=openai-codex/gpt-5.6-luna` 和 `PI_DEFAULT_THINKING_LEVEL=medium`；使用前请修改机器相关路径。实际环境变量优先于 `.env.local`，文件值优先于应用默认值。`PI_ALLOWED_CLIENT_CIDRS` 必填，并按所有路由的客户端 IP 匹配，探针也不例外。客户端 IP 默认是直接 socket 对端 IP，但回环对端（同机反向代理）例外：改用 `X-Forwarded-For` 最右一条。禁止提交 `.env.local`、认证信息、API key 或令牌。
 
 `dev:real` 的数据库在 `/tmp/pi-agent-server`，服务启动只验证、不自动初始化。首次运行前（或清空 `/tmp` 后）初始化一次：
 
@@ -192,6 +192,8 @@ export PI_MIGRATION_GATE=verify
 ```bash
 export PI_ALLOWED_CLIENT_CIDRS=127.0.0.0/8,10.0.0.0/8
 ```
+
+身份即客户端 IP：默认取直接 TCP 对端 IP；当 TCP 对端为回环（`127.0.0.0/8` 或 `::1`，即同机反向代理，如 nginx 反代到 `127.0.0.1:8080`）时，改用 `X-Forwarded-For` 的**最右**一条（nginx 是追加语义，最右条目才是代理实际看到的地址）。XFF 缺失或不可解析时回落到 socket 对端 IP；非回环对端一律忽略 XFF。若真实用户经同机代理到达，允许网段必须覆盖用户所在内网，而不只是 `127.0.0.0/8`。详见 [docs/ip-rbac-design.md](docs/ip-rbac-design.md) 与 [ADR 0003](docs/decisions/0003-loopback-proxy-client-ip.md)。
 
 可选的绝对路径 `PI_IP_ACCESS_POLICY_FILE` 能为精确 IP 定义：
 

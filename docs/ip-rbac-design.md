@@ -1,11 +1,11 @@
 # IP Access Policy 设计（WP5D）
 
-> 当前 RC 以**直接 TCP 对端 IP**作为身份：`PI_ALLOWED_CLIENT_CIDRS` 显式必填，可选 `PI_IP_ACCESS_POLICY_FILE` 提供 per-IP role/disabled/token 画像；逐路由 RBAC 默认拒绝。IP-RBAC 不是 filesystem sandbox，公网暴露禁止。owner transfer 见 [owner-transfer.md](owner-transfer.md)，未来公网 IAM 见 [identity-access-plan.md](identity-access-plan.md)；migration 与部署门禁见 [operations.md](operations.md)。
+> 当前 RC 以**客户端 IP**作为身份：默认取直接 TCP 对端 IP；仅当对端为回环（同机代理，如 nginx 反代到 `127.0.0.1:8080`）时采用 `X-Forwarded-For` 最右一条。`PI_ALLOWED_CLIENT_CIDRS` 显式必填，可选 `PI_IP_ACCESS_POLICY_FILE` 提供 per-IP role/disabled/token 画像；逐路由 RBAC 默认拒绝。IP-RBAC 不是 filesystem sandbox，公网暴露禁止。owner transfer 见 [owner-transfer.md](owner-transfer.md)，未来公网 IAM 见 [identity-access-plan.md](identity-access-plan.md)；migration 与部署门禁见 [operations.md](operations.md)。
 
 ## 1. 动机与范围
 
 RC 阶段的接入控制把「哪些客户端 IP 能访问、以什么角色访问、是否需要出示 token」固化为显式、可审计、fail-fast 的
-**策略核心**：直接 TCP 对端 IP → CIDR gate →（可选）精确 IP 策略画像 → 逐路由 RBAC。
+**策略核心**：客户端 IP（默认直接 TCP 对端；同机回环代理时取 `X-Forwarded-For` 最右条目）→ CIDR gate →（可选）精确 IP 策略画像 → 逐路由 RBAC。
 
 WP5D-1 交付 **core**：CIDR/IP canonical 化与匹配、策略 JSON v1 解析、纯函数决策解析器、token 校验助手、环境变量解析与策略文件安全加载。**不修改**数据库 schema、不引入 owner transfer。
 
@@ -18,9 +18,19 @@ owner 只读、workspace/sandbox 安全（current RC 决策：整体延期）、
 
 ## 2. 冻结决策（本工作包已定，不得在实现中偏离）
 
-1. **身份以直接 socket IP 为准**：不使用 `X-Forwarded-For` 等代理头推导客户端 IP；一律读
+1. **身份默认以直接 socket IP 为准**：默认不使用 `X-Forwarded-For` 等代理头推导客户端 IP；一律读
    `request.raw.socket.remoteAddress`（`request.ip` 受 Fastify trustProxy 配置影响，亦不使用）。双栈 socket 上报的
    `::ffff:a.b.c.d` **归一为 v4** 再参与后续判定，身份键/ownerKey 一律使用 canonical IP 文本。
+   **唯一例外——同机代理边界**：当 TCP 对端为回环（`127.0.0.0/8` 或 `::1`）时才采用
+   `X-Forwarded-For`，且只取**最后一条**（最右段）作为客户端 IP；末段为空或不可解析则整体回落
+   socket 对端 IP，**不向左搜索**可解析段（追加语义下最右段恒为代理写入的合法地址，末段不可解析
+   说明请求未正常经过同机代理，左侧任意条目都是客户端可控值）。生产形态为
+   `浏览器 --HTTPS--> 裸机 nginx --http--> 127.0.0.1:8080`，agent-server 看到的对端恒为 `127.0.0.1`，
+   若无此例外则所有用户身份塌缩为同一身份。取最右是**正确解析**而非防伪造机制：nginx 的
+   `$proxy_add_x_forwarded_for` 是**追加**语义（把直连地址追加到客户端自带 header 之后），最左段是
+   客户端可控的原值，最右段才是代理写入的真实地址；取最左会把他人的身份当成自己。
+   XFF 缺失/末段空白或不可解析 → **回落 socket 对端 IP**（不 fail-closed，保证本机直连 `curl 127.0.0.1:8080/health`
+   与探针不被中断）；非回环对端一律忽略 XFF（防止把 `HOST` 改成 `0.0.0.0` 时内网机器直接伪造 XFF）。
 2. **一个 IP = 一个用户**：策略解析的单位是 canonical IP；IP 是身份键、资源隔离键（`owner_key`）与速率限制主体的基础。
 3. **`PI_ALLOWED_CLIENT_CIDRS` 显式必填，无默认值**：缺失/空白直接拒绝启动。CIDR 外的 IP 一律 deny（默认拒绝模型）。
 4. **CIDR 内未登记（策略文件中无精确条目）的 IP 使用默认画像**：`role=user`、`tokenRequired=false`（token off）。**没有 workspace 概念**：IP-RBAC 不限制 cwd 或 Agent 工具的绝对路径/OS 权限（不是 sandbox；见 §7）。
@@ -69,8 +79,14 @@ owner 只读、workspace/sandbox 安全（current RC 决策：整体延期）、
 ## 4. 解析流程（纯函数 `resolveIpAccess` + 接线 `createAdmission`）
 
 ```text
-直接 socket IP（request.raw.socket.remoteAddress；X-Forwarded-For 一律忽略）
+直接 socket IP（request.raw.socket.remoteAddress）
    │ parseIpStrict：canonical 化（::ffff:a.b.c.d → v4；不可解析 → failclosed 403）
+   ▼
+TCP 对端是否为回环（127.0.0.0/8 或 ::1，同机代理边界）？
+   ├─ 是 → 取 X-Forwarded-For 的**最后一段**（最右段，只看这一段，不向左搜索）
+   │        ├─ 末段可解析 → 用该地址作为客户端 IP（canonical）
+   │        └─ XFF 缺失/空白/仅逗号/末段不可解析 → 回落 socket 对端 IP（不 fail-closed）
+   └─ 否 → 一律忽略 XFF，用 socket 对端 IP
    ▼
 是否命中 PI_ALLOWED_CLIENT_CIDRS 任一网段？
    ├─ 否 → deny 403 (outside-cidr)   ← 出示任何 token 都不能绕过
@@ -102,7 +118,7 @@ hashes**）注入 `request`；401/403 响应体不含原始 IP/token/path。prof
 - token off 的请求可不带 token（出示的 Bearer 一律忽略）；token required 时实际请求与非预检 OPTIONS 缺省/错误 token 一律 401。
   **token gate 作用于 `/v1` 与 `/metrics`**：合规 CORS 预检（`OPTIONS` + `Origin` + `Access-Control-Request-Method`）免 token，随后仍交 CORS origin policy；`/health`、`/readyz` 存活/就绪探针仅 IP gate（tokenRequired 画像的 IP
   访问这两个探针也无需出示 token）——探针可被监控正常消费，且不因未登记/令牌问题误报进程状态；`/metrics` 是 admin/operator 运维面，其画像 tokenRequired 时实际 GET 仍须出示 token（预检例外同上）。
-- **日志红线**：token 明文与哈希均不得记录；对外日志只允许 `publicProfile`（ip/role/tokenRequired/registered，无哈希），且接线层日志只带 `subjectHash`（IP 派生哈希），**不记录原始 IP**；`request.access` 与 `request.user` 是唯一注入点，token hashes 从不挂到 request 上。
+- **日志红线**：token 明文与哈希均不得记录；对外日志只允许 `publicProfile`（ip/role/tokenRequired/registered，无哈希），且接线层日志只带 `subjectHash`（IP 派生哈希），**不记录原始 IP**（包括原始 socket 对端与 XFF 原始文本）；`request.access` 与 `request.user` 是唯一注入点，token hashes 从不挂到 request 上。
 - 配合既有 §5 日志约定：涉及主体聚合的日志字段继续使用 `subjectHash`（IP 的派生哈希），不记录原始 IP 或 token。
 
 ## 6. 角色矩阵（WP5D-3 已实现并强制）
@@ -166,7 +182,7 @@ tokenRequired，不换角色）；未登记 IP 默认 `user`。
   逃逸）随未来 OIDC/IAM 工作包一起做。
 - **owner transfer 仅 DB 层面，且只存在 IP→IP 形态**：`owner-transfer` 离线 CLI（WP5D-4，见 [owner-transfer.md](owner-transfer.md)）在数据库层变更 owner 映射（把一个 IP 身份资源归属转到另一个 IP 身份，仅更新 projects.owner_key / sessions.owner_key）；**不迁移**政策文件的 IP 条目与 token 绑定、不迁移角色——接收方继承自己的 IP 画像，与资源原 owner 的画像无关。
 - **无 legacy 账号/token 迁移（RC 决策）**：新 RC **不存在** legacy 账号/token 的 owner 迁移——正式旧公网 token 数据从未存在，因此不实现任何「旧 token/旧账号 → 新主体」迁移代码，也不存在 owner transfer 的账号维度。旧库或无 canonical baseline 的库不做在位转换；只有完全空目标可以按 [ADR 0002](decisions/0002-canonical-baseline-and-migration-gate.md) 离线 bootstrap，绝不把已有数据自动采用为 baseline。
-- **不做**：token 签发/轮换/撤销接口（无签发端点）、OIDC/账号体系（见 identity-access-plan 工作包 1–2）、基于 header 的客户端 IP 推导、审计落库（WP5D-2 接线时按 needs.md §7 要求补齐鉴权审计埋点）。
+- **不做**：token 签发/轮换/撤销接口（无签发端点）、OIDC/账号体系（见 identity-access-plan 工作包 1–2）、除上述回环同机代理例外外的基于 header 的客户端 IP 推导、审计落库（WP5D-2 接线时按 needs.md §7 要求补齐鉴权审计埋点）。
 - **当前为单实例**：未来多实例改造需要统一设计策略分发、共享 JSONL 和分布式协调，架构边界见 [architecture.md](architecture.md)。
 
 ## 8. 策略文件加载安全（`readIpAccessPolicyFile`）
@@ -190,7 +206,8 @@ tokenRequired，不换角色）；未登记 IP 默认 `user`。
   **缺失/非法配置拒绝启动**。`startServer` 与 `buildApp` 入口都执行
   `requireIpAccessRuntimeConfig` 运行时严格 shape 校验（含策略覆盖复核），直接 JS bypass 也 fail。
 - **请求路径**：`buildApp` 注册**全局** `onRequest` admission（`createAdmission`），覆盖探针与 `/v1`：
-  读 `request.raw.socket.remoteAddress` → CIDR/disabled gate（denied → 403）→（`/v1` 或 `/metrics` 且 tokenRequired，且非合规 CORS 预检）
+  读 `request.raw.socket.remoteAddress` → 若对端为回环则采用 `X-Forwarded-For` 的**最后一段**（只取
+  最右段，不向左搜索；XFF 缺失/末段不可解析回落 socket IP；非回环对端一律忽略）→ CIDR/disabled gate（denied → 403）→（`/v1` 或 `/metrics` 且 tokenRequired，且非合规 CORS 预检）
   `verifyProfileToken`（缺失/错误 → 401）；allowed 注入 `request.user`（canonical IP 身份）与
   `request.access`（public profile，无 hashes），`subjectHash` 只进日志。unknown socket IP → failclosed 403。
 - HTTP 状态码：CIDR 外/disabled/不可解析 → `403`（body 不含原始 IP/token/path）；`/v1` 与 `/metrics`
