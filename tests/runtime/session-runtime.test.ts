@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { SessionRuntime, getExpireHandler } from "../../src/runtime/session-runtime.js";
 import {
   ConcurrencyController,
@@ -8,6 +8,7 @@ import { MockAgentAdapter } from "../../src/agent/mock-agent-adapter.js";
 import type { ImageInput } from "../../src/agent/agent-adapter.js";
 import type { SseEvent } from "../../src/agent/events.js";
 import type { ObservabilityEvent, ObservabilityPort } from "../../src/application/ports/index.js";
+import { TURN_ERROR_CODES } from "../../src/application/ports/session-runtime-port.js";
 import { JPEG_2X2_BASE64, PNG_2X2_BASE64 } from "../helpers/image-fixtures.js";
 
 const baseConfig: ConcurrencyConfig = {
@@ -20,6 +21,9 @@ const baseConfig: ConcurrencyConfig = {
 
 /** 等待后台流式任务完成（submitMessage 立即返回决策后，runStreamingTask 在微任务中继续）。 */
 const flush = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+
+/** 真实墙钟等待（时间预算用例用真实 timer，见 session-runtime 的 armTurnDeadline 注释）。 */
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 /** 可控 adapter：prompt 先按基线行为发射预设事件（重置丢弃标记），再挂起直到 finishStream() 释放
  * （模拟真实异步流式结束，便于观察 streaming 中间态；也让 abort 后可直接 enqueue 下一轮事件）。 */
@@ -83,6 +87,7 @@ function makeRuntime(opts: {
   sessionId?: string;
   adapter?: MockAgentAdapter;
   observability?: ObservabilityPort;
+  now?: () => number;
 } = {}) {
   const events: SseEvent[] = [];
   const concurrency =
@@ -94,7 +99,7 @@ function makeRuntime(opts: {
     ownerKey: "owner-1",
     concurrency,
     adapter,
-    now: () => 0,
+    now: opts.now ?? (() => 0),
     onEvent: (e) => events.push(e),
     observability: opts.observability,
   });
@@ -956,8 +961,225 @@ describe("SessionRuntime（needs.md §4.2 会话任务编排）", () => {
       await expect(pending).resolves.toEqual({
         status: "error",
         message: "助手输出超过宿主上限",
+        code: TURN_ERROR_CODES.assistantTextBudget,
       });
       expect(adapter.aborted).toBe(true);
+
+      // 缺陷回归：同一 requestId 重放必须还原**首次返回**的 error+code。
+      // 助手文本 overflow 走的是 aborted outcome，若幂等记录按 outcome 分支写，
+      // 会把 error+code 错记为 { status: "aborted" }，导致重放结果与首次不一致。
+      await expect(runtime.runTurn({ requestId: "r1", prompt: "p", maxAssistantTextLength: 5 })).resolves.toEqual({
+        status: "error",
+        message: "助手输出超过宿主上限",
+        code: TURN_ERROR_CODES.assistantTextBudget,
+      });
+    });
+
+    it("工具次数与墙钟预算的 error 都能被同一 requestId 重放原样还原", async () => {
+      // 工具次数预算：先验证一类，再单独验证墙钟（两者走不同的 code 分支）。
+      const toolAdapter = new ManualAdapter();
+      const { runtime: toolRuntime } = makeRuntime({ adapter: toolAdapter });
+
+      const pending = toolRuntime.runTurn({ requestId: "r-tools", prompt: "p", maxToolCallsPerTurn: 1 });
+      await flush();
+      for (let i = 0; i < 2; i++) {
+        toolAdapter.emit({
+          type: "tool_execution_end",
+          toolCallId: `c${i}`,
+          toolName: "read",
+          result: {},
+          isError: false,
+        });
+      }
+      const first = await pending;
+      expect(first).toEqual({
+        status: "error",
+        message: "本轮工具调用次数超过上限",
+        code: TURN_ERROR_CODES.toolBudget,
+      });
+      // 重放：终态与首次逐字段一致。
+      await expect(toolRuntime.runTurn({ requestId: "r-tools", prompt: "p", maxToolCallsPerTurn: 1 })).resolves.toEqual(first);
+
+      // 墙钟预算：必须同样能被重放还原（否则「只测了工具预算」会漏掉 duration 分支）。
+      const timeAdapter = new ManualAdapter();
+      const { runtime: timeRuntime } = makeRuntime({ adapter: timeAdapter });
+      const timePending = timeRuntime.runTurn({ requestId: "r-time", prompt: "p", maxTurnDurationMs: 10 });
+      await flush();
+      const timeFirst = await timePending;
+      expect(timeFirst).toEqual({
+        status: "error",
+        message: "本轮耗时超过上限",
+        code: TURN_ERROR_CODES.durationBudget,
+      });
+      await expect(timeRuntime.runTurn({ requestId: "r-time", prompt: "p", maxTurnDurationMs: 10 })).resolves.toEqual(timeFirst);
+    });
+
+    it("工具调用次数达到 maxToolCallsPerTurn 即中止，返回带工具预算 code 的 error", async () => {
+      const adapter = new ManualAdapter();
+      const { runtime, events, concurrency } = makeRuntime({ adapter });
+
+      const pending = runtime.runTurn({ requestId: "r1", prompt: "p", maxToolCallsPerTurn: 2 });
+      await flush();
+      // 成功与失败都算一次调用：3 次成功调用即超过上限 2。
+      for (let i = 0; i < 3; i++) {
+        adapter.emit({
+          type: "tool_execution_end",
+          toolCallId: `t${i}`,
+          toolName: "read",
+          result: {},
+          isError: false,
+        });
+      }
+
+      await expect(pending).resolves.toEqual({
+        status: "error",
+        message: "本轮工具调用次数超过上限",
+        code: TURN_ERROR_CODES.toolBudget,
+      });
+      expect(adapter.aborted).toBe(true);
+      expect(runtime.state).toBe("idle");
+      expect(events).toContainEqual({
+        type: "error",
+        message: "本轮工具调用次数超过上限",
+        requestId: "r1",
+      });
+      expect(concurrency.activeCount()).toBe(0);
+      adapter.finishStream();
+    });
+
+    it("工具调用次数未达上限不中止（回归护栏）", async () => {
+      const adapter = new ManualAdapter();
+      const { runtime } = makeRuntime({ adapter });
+
+      const pending = runtime.runTurn({ requestId: "r1", prompt: "p", maxToolCallsPerTurn: 3 });
+      await flush();
+      // 恰好 3 次调用 == 上限：不超限，不中止。
+      for (let i = 0; i < 3; i++) {
+        adapter.emit({
+          type: "tool_execution_end",
+          toolCallId: `t${i}`,
+          toolName: "read",
+          result: {},
+          isError: false,
+        });
+      }
+      expect(adapter.aborted).toBe(false);
+      expect(runtime.state).toBe("streaming");
+
+      adapter.emit({ type: "agent_end", messages: [{ role: "assistant", stopReason: "stop" }] });
+      adapter.finishStream();
+      await expect(pending).resolves.toEqual({ status: "completed", text: "" });
+    });
+
+    it("耗时超过 maxTurnDurationMs 即中止，返回带墙钟预算 code 的 error", async () => {
+      const adapter = new ManualAdapter();
+      const { runtime, concurrency } = makeRuntime({ adapter });
+
+      // 真实墙钟 timer：模型完全不产生事件（静默挂起）时也能触发，事件驱动退路做不到这一点。
+      const pending = runtime.runTurn({ requestId: "r1", prompt: "p", maxTurnDurationMs: 10 });
+      await flush();
+      expect(runtime.state).toBe("streaming");
+      await sleep(60);
+
+      await expect(pending).resolves.toEqual({
+        status: "error",
+        message: "本轮耗时超过上限",
+        code: TURN_ERROR_CODES.durationBudget,
+      });
+      expect(adapter.aborted).toBe(true);
+      expect(runtime.state).toBe("idle");
+      expect(concurrency.activeCount()).toBe(0);
+      adapter.finishStream();
+    });
+
+    it("多个预算在同一事件同时置位：按固定优先级 工具次数 > 工具错误 返回 code", async () => {
+      const adapter = new ManualAdapter();
+      const { runtime } = makeRuntime({ adapter });
+
+      // 第 9 次 isError 调用同时越两个上限：工具次数（9 > 8）与工具错误（9 > 8）。
+      // 两者在同一次 tool_end 里置位，abort 快照按固定优先级取工具次数预算。
+      const pending = runtime.runTurn({ requestId: "r1", prompt: "p", maxToolCallsPerTurn: 8 });
+      await flush();
+      for (let i = 0; i < 9; i++) {
+        adapter.emit({
+          type: "tool_execution_end",
+          toolCallId: `t${i}`,
+          toolName: "bash",
+          result: "Tool bash not found",
+          isError: true,
+        });
+      }
+
+      await expect(pending).resolves.toEqual({
+        status: "error",
+        message: "本轮工具调用次数超过上限",
+        code: TURN_ERROR_CODES.toolBudget,
+      });
+      expect(adapter.aborted).toBe(true);
+      adapter.finishStream();
+    });
+
+    it("abort 等待期间新置位的预算不篡改已快照的墙钟原因（快照语义固定）", async () => {
+      // abort 挂起，制造「墙钟预算先触发 abort、工具次数预算在 abort 等待期间又置位」的稳定窗口。
+      const adapter = new AbortPendingAdapter();
+      const { runtime } = makeRuntime({ adapter });
+
+      const pending = runtime.runTurn({ requestId: "r1", prompt: "p", maxTurnDurationMs: 10, maxToolCallsPerTurn: 2 });
+      await flush();
+      // 先来 1 次调用（未超上限），再等墙钟超限触发 abort（快照时仅墙钟置位）。
+      adapter.emit({ type: "tool_execution_end", toolCallId: "t0", toolName: "read", result: {}, isError: false });
+      await sleep(60);
+      // abort 等待期间（aborting 窗口）继续投递调用，使工具次数预算也置位。
+      for (let i = 1; i < 4; i++) {
+        adapter.emit({ type: "tool_execution_end", toolCallId: `t${i}`, toolName: "read", result: {}, isError: false });
+      }
+      adapter.finishAbort();
+
+      // 原因在进入 streaming 分支时已快照：后到的工具次数预算不得把原因改写。
+      await expect(pending).resolves.toEqual({
+        status: "error",
+        message: "本轮耗时超过上限",
+        code: TURN_ERROR_CODES.durationBudget,
+      });
+      adapter.finishStream();
+    });
+
+    it("不传新预算参数时行为与改动前一致：无墙钟 timer、无工具次数限制（回归护栏）", async () => {
+      const adapter = new ManualAdapter();
+      const { runtime } = makeRuntime({ adapter });
+
+      // 断言方式：直接统计本轮是否武装了**墙钟 deadline timer** —— 「无 timer」才是契约本身。
+      // 早期实现用 sleep(60) 证明，但错误实现武装 300 秒 timer 也会通过，那不是真验证。
+      // 不能断言「setTimeout 完全未被调用」：并发控制器等会调度 0ms 微任务定时器；
+      // 这里只排除「像预算那样的大延迟」（生产默认 300s，任何现实预算都 ≥ 1 分钟）。
+      // 不用假定时器：它会干扰本文件其它依赖真实定时器/微任务的用例。
+      const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
+      const pending = runtime.runTurn({ requestId: "r1", prompt: "p" });
+      await flush();
+      const deadlineLikeCalls = setTimeoutSpy.mock.calls.filter(([, delay]) =>
+        typeof delay === "number" && Number.isFinite(delay) && delay >= 60_000,
+      );
+      expect(deadlineLikeCalls).toEqual([]);
+      expect(adapter.aborted).toBe(false);
+      expect(runtime.state).toBe("streaming");
+
+      // 大量工具调用也不得触发次数预算（未传 maxToolCallsPerTurn → 无限制）。
+      for (let i = 0; i < 80; i++) {
+        adapter.emit({
+          type: "tool_execution_end",
+          toolCallId: `t${i}`,
+          toolName: "read",
+          result: {},
+          isError: false,
+        });
+      }
+      expect(adapter.aborted).toBe(false);
+      expect(runtime.state).toBe("streaming");
+
+      adapter.emit({ type: "agent_end", messages: [{ role: "assistant", stopReason: "stop" }] });
+      adapter.finishStream();
+      await expect(pending).resolves.toEqual({ status: "completed", text: "" });
+      setTimeoutSpy.mockRestore();
     });
   });
 
@@ -1113,6 +1335,123 @@ describe("SessionRuntime（needs.md §4.2 会话任务编排）", () => {
         { type: "text_delta", text: "B", requestId: "r2" },
         { type: "completed", requestId: "r2" },
       ]);
+    });
+  });
+
+  describe("runTurn：预算参数的健壮性（契约固定）", () => {
+    it("TURN_ERROR_CODES 是运行时冻结对象：插件拿到同一对象也无法改写", () => {
+      // 它经 PluginHostContext.turnErrorCodes 直接交给插件；仅靠 `as const` 只提供编译期只读，
+      // 插件意外改写会污染宿主单例并影响其他插件。
+      expect(Object.isFrozen(TURN_ERROR_CODES)).toBe(true);
+      expect(() => {
+        // 严格模式下写冻结对象会抛 TypeError；非严格下静默失败。两者都不应改变值。
+        (TURN_ERROR_CODES as unknown as Record<string, string>).toolBudget = "mutated";
+      }).toThrow();
+      expect(TURN_ERROR_CODES.toolBudget).toBe("turn_tool_budget_exceeded");
+    });
+
+    it("非法 maxTurnDurationMs（负数/NaN）不得撤销已有的墙钟预算", async () => {
+      // 负数不是「更严的上限」：若参与 Math.min 与重武装判断，会先清掉旧 timer
+      // 再因非法值提前 return，把额度变成无限制。
+      const adapter = new ManualAdapter();
+      const { runtime } = makeRuntime({ adapter });
+
+      const pending = runtime.runTurn({ requestId: "r1", prompt: "p", maxTurnDurationMs: 20 });
+      await flush();
+      // 同 requestId 再用负数登记：必须被当作「未提供」，保留原 20ms 预算。
+      const replay = runtime.runTurn({ requestId: "r1", prompt: "p", maxTurnDurationMs: -1 });
+      await flush();
+
+      await expect(pending).resolves.toMatchObject({
+        status: "error",
+        code: TURN_ERROR_CODES.durationBudget,
+      });
+      await expect(replay).resolves.toMatchObject({
+        status: "error",
+        code: TURN_ERROR_CODES.durationBudget,
+      });
+      expect(adapter.aborted).toBe(true);
+    });
+
+    it("极大 maxTurnDurationMs 不得因 Node 定时器上限而立即超时", async () => {
+      // Node 定时器延迟上限是 2^31-1 ms；超过时 Node 会发 TimeoutOverflowWarning 并把延迟
+      // 改成 1ms，使「约 24.8 天」的预算变成「约 1ms 后超时」。必须显式收敛。
+      // 用 spy（不替换实现）只记录传给 setTimeout 的延迟：若未收敛会出现 2147483648。
+      const adapter = new ManualAdapter();
+      const { runtime } = makeRuntime({ adapter });
+      const setTimeoutSpy = vi.spyOn(globalThis, "setTimeout");
+      const pending = runtime.runTurn({ requestId: "r1", prompt: "p", maxTurnDurationMs: 2_147_483_648 });
+      await flush();
+      const delays = setTimeoutSpy.mock.calls
+        .map(([, delay]) => delay)
+        .filter((delay): delay is number => typeof delay === "number" && delay > 0);
+      setTimeoutSpy.mockRestore();
+
+      expect(delays.length).toBeGreaterThan(0);
+      for (const delay of delays) {
+        expect(delay).toBeLessThanOrEqual(2_147_483_647);
+      }
+      // 大额度不应在毫秒级被误判为超时。
+      expect(adapter.aborted).toBe(false);
+      expect(runtime.state).toBe("streaming");
+
+      adapter.emit({ type: "agent_end", messages: [{ role: "assistant", stopReason: "stop" }] });
+      adapter.finishStream();
+      await expect(pending).resolves.toEqual({ status: "completed", text: "" });
+    });
+
+    it("同一 requestId 收紧 maxTurnDurationMs 时必须按**剩余额度**重武装 timer", async () => {
+      // 契约：重复登记取更严上限。对墙钟而言，若只更新 maxDurationMs 而不重武装 timer，
+      // 已武装的 timer 仍按旧（更宽松）额度计时，「更严上限」对墙钟不生效。
+      // 关键在于不能重新计时（那会变相放宽），而要用 maxDurationMs - 已消耗时间。
+      const adapter = new ManualAdapter();
+      let clock = 1_000_000;
+      const { runtime } = makeRuntime({ adapter, now: () => clock });
+
+      // 首次登记 10_000ms，此时武装 10_000ms 的 timer。
+      const pending = runtime.runTurn({ requestId: "r1", prompt: "p", maxTurnDurationMs: 10_000 });
+      await flush();
+
+      // 时间前进 4_000ms，再以同一 requestId 收紧到 6_000ms。
+      // 已消耗 4_000ms，因此剩余额度应为 6_000 - 4_000 = 2_000ms。
+      clock += 4_000;
+      const replay = runtime.runTurn({ requestId: "r1", prompt: "p", maxTurnDurationMs: 6_000 });
+      await flush();
+      // 若实现错误地「按新上限重新计时」，还需 6_000ms 才会超时；这里推进 2_000ms 就应已超时。
+      await sleep(2_200);
+      await flush();
+
+      await expect(pending).resolves.toMatchObject({
+        status: "error",
+        code: TURN_ERROR_CODES.durationBudget,
+      });
+      await expect(replay).resolves.toMatchObject({
+        status: "error",
+        code: TURN_ERROR_CODES.durationBudget,
+      });
+      expect(adapter.aborted).toBe(true);
+    });
+
+    it("收紧后的上限已被消耗完时立即超时，不再等待", async () => {
+      const adapter = new ManualAdapter();
+      let clock = 1_000_000;
+      const { runtime } = makeRuntime({ adapter, now: () => clock });
+
+      const pending = runtime.runTurn({ requestId: "r1", prompt: "p", maxTurnDurationMs: 10_000 });
+      await flush();
+      // 已消耗 8_000ms，再收紧到 5_000ms（remainingMs <= 0）：必须立即按超时处理。
+      clock += 8_000;
+      const replay = runtime.runTurn({ requestId: "r1", prompt: "p", maxTurnDurationMs: 5_000 });
+      await flush();
+
+      await expect(pending).resolves.toMatchObject({
+        status: "error",
+        code: TURN_ERROR_CODES.durationBudget,
+      });
+      await expect(replay).resolves.toMatchObject({
+        status: "error",
+        code: TURN_ERROR_CODES.durationBudget,
+      });
     });
   });
 

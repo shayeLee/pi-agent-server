@@ -166,6 +166,10 @@ export PI_MIGRATION_GATE=verify
 
 `GET /v1/sessions` 有意不提供 `hasMessages` 或 `messageCount`：它只是元数据列表，`conversation_ref` 不能证明 user 消息已提交。需要隐藏历史空会话的 UI 必须 hydrate `GET /v1/sessions/:id/export`，并从真实导出的 messages 判断（代价是逐会话读取）；或者消费插件列表摘要，其中 `hasMessages`/`messageCount` 必须由插件持久化的已接受消息状态支持。不得把失败/空 export 或任何 reference 字段替代为消息存在的证据。
 
+### 受信插件 `runTurn` 轮次预算
+
+`PluginSessionApi.runTurn` 是插件发起的同步轮次，因此宿主强制硬性单轮预算，而不是放任病理轮次一直跑到调用方超时。共有三个宿主强制预算，插件无法调整：返回的助手文本（`PLUGIN_RUN_TURN_LIMITS.maxAssistantTextLength`）、工具调用总次数（`PLUGIN_RUN_TURN_LIMITS.maxToolCallsPerTurn`，默认 60；成功与失败都计数）、墙钟耗时（`PLUGIN_RUN_TURN_LIMITS.maxTurnDurationMs`，默认 5 分钟）。任一预算超限时宿主快速中止本轮并返回 `{ status: "error", message, code }`，其中 `code` 为稳定值之一：`turn_tool_budget_exceeded`、`turn_duration_budget_exceeded`、`turn_assistant_text_budget_exceeded`；`code` 是 additive 字段，只读 `status`/`message` 的既有消费方不受影响。这些预算只作用于 `runTurn`：普通聊天轮次（`POST /v1/sessions/:id/messages`）行为不变，仍然没有工具调用次数或墙钟预算。墙钟预算使用真实 timer，并在 settle/dispose 时清除，因此也能捕获完全不产生事件的静默挂起。这些 code 的**唯一权威定义**在宿主（`TURN_ERROR_CODES`）：它随 `pi-agent-server/contract` 静态导出给同机消费者，并经 `PluginHostContext.turnErrorCodes` 注入插件（插件按绝对路径加载，不能静态 import 宿主包），因此插件不再维护一份可能漂移的副本。
+
 ### 访问能力投影
 
 `GET /v1/access` 返回最小固定响应体 `{ canRead, canWrite }`，由中央路由权限矩阵（`ROUTE_PERMISSIONS` + `evaluateRouteAuthorization`）派生，而非硬编码；绝不返回调用方的 `role`、IP 或 token。

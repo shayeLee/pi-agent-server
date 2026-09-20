@@ -43,6 +43,14 @@ export type ApiError = { statusCode: number; error: string; message: string; cod
 /** JSON `data:` payload carried by the session SSE stream. */
 export type SseEvent = InternalSseEvent;
 
+/**
+ * `runTurn` 预算超限的稳定 error code。**这是唯一权威定义**，同时通过
+ * `pi-agent-server/contract` 静态导出给同机消费者，并经 `PluginHostContext.turnErrorCodes`
+ * 注入给插件（插件不能静态 import 宿主包，见 plugin/contract.ts）。
+ * 命名不可随意变更：插件与测试据此判定终态原因。
+ */
+export { TURN_ERROR_CODES } from "../application/ports/session-runtime-port.js";
+
 /** The twelve event discriminants supported by SSE v1. */
 export const SSE_EVENT_TYPES = [
   "text_delta",

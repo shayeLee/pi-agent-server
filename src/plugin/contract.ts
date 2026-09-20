@@ -10,6 +10,14 @@
 //   不直接修改宿主 Fastify 实例、会话存储或内部数据库。
 
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
+import type { TURN_ERROR_CODES } from "../application/ports/session-runtime-port.js";
+
+/**
+ * `runTurn` 预算超限的稳定 error code 表（宿主的 `TURN_ERROR_CODES` 的类型投影）。
+ * 插件**不在本地重复定义**这些字符串：运行时值由 {@link PluginHostContext.turnErrorCodes}
+ * 注入（插件按绝对路径加载，不能静态 import 宿主包）。
+ */
+export type PluginTurnErrorCodes = typeof TURN_ERROR_CODES;
 
 /**
  * Pi 内置工具保留名（Pi createAllToolDefinitions 的键）：
@@ -157,16 +165,33 @@ export const PLUGIN_RUN_TURN_LIMITS = {
   maxPromptLength: 32_768,
   /** 单轮返回给插件的 assistant 文本最大长度；超过即中止本轮并返回 error。 */
   maxAssistantTextLength: 256 * 1024,
+  /**
+   * 单轮工具调用总次数上限（成功与失败都计数）；超过即中止本轮并返回带
+   * `turn_tool_budget_exceeded` 的 error。
+   * 取值理由：实测病理轮次（交互原型生成）跑了 89 次工具调用，正常生成远低于 60。
+   */
+  maxToolCallsPerTurn: 60,
+  /**
+   * 单轮墙钟上限（毫秒，5 分钟）；超过即中止本轮并返回带
+   * `turn_duration_budget_exceeded` 的 error。
+   * 取值理由：实测最慢成功轮次 273 秒，病理轮次 403 秒（属于不可接受的病理轮次，
+   * 明显超出本预算；当时前端超时仍是 300 秒，现已提到 600 秒）。
+   */
+  maxTurnDurationMs: 300_000,
 } as const;
 
 /**
  * `runTurn` 的结果：宿主用 session 创建时冻结的 mode profile 同步执行一轮，
  * 并绑定到具体 session/requestId；插件不能指定模型、tools、cwd 或图片。
+ *
+ * error 上的 `code` 为 additive 可选字段：宿主预算超限时为稳定值
+ * （`turn_tool_budget_exceeded` / `turn_duration_budget_exceeded` /
+ * `turn_assistant_text_budget_exceeded`），插件据此区分预算超限与一般上游失败。
  */
 export type PluginTurnResult =
   | { readonly status: "completed"; readonly text: string }
   | { readonly status: "aborted" }
-  | { readonly status: "error"; readonly message: string }
+  | { readonly status: "error"; readonly message: string; readonly code?: string }
   | { readonly status: "busy" };
 
 /**
@@ -227,6 +252,10 @@ export interface PluginSessionApi {
    * - `requestId` 与 `prompt` 受 {@link PLUGIN_RUN_TURN_LIMITS} 限制；
    * - 结果绑定到具体 session 的这一轮：idle 时立即执行，session 正忙返回 `busy`；
    * - 返回文本受上限约束，覆盖 `completed` / `aborted` / `error` / `busy`；
+   * - 单轮还受 {@link PLUGIN_RUN_TURN_LIMITS.maxToolCallsPerTurn}（默认 60 次工具调用）与
+   *   {@link PLUGIN_RUN_TURN_LIMITS.maxTurnDurationMs}（默认 5 分钟）约束：超限即快速失败，
+   *   返回带稳定 `code` 的 `error`，不跑到调用方超时；这些预算仅作用于 `runTurn`，
+   *   不影响普通聊天轮次（`POST /v1/sessions/:id/messages`）；
    * - 宿主不建立 HTTP 回调或长期订阅，handler 返回后（API 被 revoke）调用会抛错。
    */
   /** Explicit plugin-owned cancellation, independent of the HTTP connection/proxy. */
@@ -242,6 +271,12 @@ export interface PluginHostContext {
   readonly modes: readonly PluginModeProfile[];
   /** 挂载插件 HTTP 路由。 */
   readonly mountRoute: PluginMountRoute;
+  /**
+   * `runTurn` 预算超限的稳定 error code 表（宿主 `TURN_ERROR_CODES` 的同一对象）。
+   * 插件据此把预算超限映射成可行动文案，而不在本地维护副本；
+   * 旧宿主未注入时插件回退到内置兜底值，因此本字段是 additive。
+   */
+  readonly turnErrorCodes?: PluginTurnErrorCodes;
 }
 
 /** 可选注册钩子：阶段二由宿主调用，插件在此注册工具/路由等能力。 */

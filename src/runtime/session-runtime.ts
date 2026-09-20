@@ -23,12 +23,20 @@ import type {
   ControlDecision,
   SubmitInput,
 } from "../application/ports/index.js";
+import { TURN_ERROR_CODES } from "../application/ports/session-runtime-port.js";
 
 /** 单一 requestId 的同步轮次等待者：settle 时按该 key 专属结果一次性 resolve。 */
 type TurnWaiter = { resolve: (result: SessionTurnResult) => void };
 
-/** 单一 requestId 的轮次累计（按运行时实际 currentKey 归属，隔离跨请求事件）。 */
-type TurnState = { text: string; maxText: number; overflow: boolean };
+/** 单一 requestId 的轮次累计（按运行时实际 currentKey 归属，隔离跨请求事件）。
+ * maxToolCalls / maxDurationMs 与 maxText 同构：runTurn 专属预算，不传时为 Infinity（无限制）。 */
+type TurnState = {
+  text: string;
+  maxText: number;
+  overflow: boolean;
+  maxToolCalls: number;
+  maxDurationMs: number;
+};
 
 /** 会话已删除：disposed runtime 上调用方法时抛出，HTTP 层转 404。 */
 export class SessionDeletedError extends Error {
@@ -79,6 +87,19 @@ const ABORT_TIMEOUT_MS = 5_000;
 const USAGE_TIMEOUT_MS = 1_000;
 /** 单 turn 工具错误（isError）次数上限：超过则中止，避免模型反复请求未授权/失败工具无限循环。 */
 const MAX_TOOL_ERRORS_PER_TURN = 8;
+/**
+ * Node 定时器可接受的最大延迟（2^31 - 1 ms，即 32 位有符号上限）。
+ * 超过该值时 Node 会发 `TimeoutOverflowWarning` 并把延迟**改为 1ms**，使本来“约 24.8 天”的
+ * 预算变成“约 1ms 后超时”。因此必须显式截断；截断后若到点仍未结束，
+ * `armTurnDeadline` 会按剩余额度继续武装下一段（见 expire 前的重算逻辑）。
+ */
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
+
+/** 把毫秒延迟收敛到 Node 定时器可接受范围（非有限值视为无穷，用最大值代替）。 */
+function clampTimerDelay(delayMs: number): number {
+  if (!Number.isFinite(delayMs)) return MAX_TIMER_DELAY_MS;
+  return Math.min(Math.max(delayMs, 0), MAX_TIMER_DELAY_MS);
+}
 
 export class SessionRuntime implements ManagedSessionRuntimePort {
   readonly sessionId: string;
@@ -109,6 +130,15 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
   /** 当前 turn 的工具错误（isError）计数：达到上限后中止，避免无限工具循环。 */
   private toolErrorCount = 0;
   private toolErrorLimitReached = false;
+  /** 当前 turn 的工具调用总次数（成功与失败都算一次）与是否已超 maxToolCallsPerTurn。 */
+  private toolCallCount = 0;
+  private toolCallLimitReached = false;
+  /** 当前 turn 是否已因墙钟超限中止（由本 turn 的 deadline timer 置位）。 */
+  private turnDeadlineExceeded = false;
+  /** 当前 turn 的墙钟 deadline timer；settle / dispose 必须清除，绝不泄漏。 */
+  private turnDeadlineTimer: ReturnType<typeof setTimeout> | null = null;
+  /** 本 turn 墙钟计时的起点（首次武装时记录）；收紧上限时据此算剩余额度，null 表示本 turn 未计时。 */
+  private turnDeadlineStartedAt: number | null = null;
   /** 同 requestId 的并发提交去重：共享同一 in-flight promise（避免 processing 占位与状态机竞态）。
    * 同时记录载荷指纹：不同载荷重用同一 requestId 时拒绝，绝不把旧执行结果返回给新输入。 */
   private readonly inFlightSubmits = new Map<string, { fingerprint: string; promise: Promise<SubmitDecision> }>();
@@ -150,6 +180,8 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
     this.unsubscribe();
     this.unsubscribeFailbackLifecycle();
     this.failbackAttemptId = null;
+    // 清除本 turn 的墙钟 deadline timer，绝不泄漏。
+    this.clearTurnDeadline();
     // 释放 active 任务占用的并发槽位（触发 drain 接续其他会话）；不依赖调用方先 abort
     if (this.currentTaskId !== null) {
       this.continuePromoted(this.concurrency.finish(this.currentTaskId));
@@ -215,7 +247,11 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
    * - session 正忙 / 排队 / 限流 → busy，并撤销本轮排队，不留后台任务；
    * - 同一 requestId 以不同 prompt 重放（进程内可识别）→ busy（不返回旧结果）；
    * - signal 触发只终止本 key 对应的 task（currentKey 不匹配则绝不误杀其他 task）；
-   * - 助手文本超过 maxAssistantTextLength 时中止本轮并返回 error。
+   * - 助手文本超过 maxAssistantTextLength 时中止本轮并返回 error；
+   * - 工具调用次数超过 maxToolCallsPerTurn、或本轮耗时超过 maxTurnDurationMs 时同样中止本轮并返回 error；
+   *   超限 error 都带稳定的 `code`（见 {@link TURN_ERROR_CODES}），多个预算同时置位时按
+   *   工具次数 > 墙钟 > 助手文本的固定优先级取 code；
+   * - 三个上限都是 runTurn 专属预算，不传时为无限制（与不引入预算时逐字节等价）。
    *
    * 已知限制：跨进程重启后，持久化幂等表不保存载荷指纹（见 src/core/payload-fingerprint.ts），
    * 因此同一 requestId 以不同 prompt 重放会命中旧终态并返回 busy/旧结果；本任务不引入 schema 变更。
@@ -236,9 +272,36 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
     if (waiters) waiters.push(waiter);
     else this.turnWaiters.set(key, [waiter]);
     const maxText = input.maxAssistantTextLength ?? Number.POSITIVE_INFINITY;
+    const maxToolCalls = input.maxToolCallsPerTurn ?? Number.POSITIVE_INFINITY;
+    // 墙钟上限只接受有限非负值：负数/NaN 不是「更严的上限」，若直接参与下面的 Math.min 与
+    // 重武装判断，会把已有 deadline 撤销掉（clear 后因非法值提前 return），反而变成无限制。
+    // 非法值一律视为「未提供」，绝不因此放宽已有预算。
+    const requestedDuration = input.maxTurnDurationMs;
+    const maxDurationMs =
+      typeof requestedDuration === "number" && Number.isFinite(requestedDuration) && requestedDuration >= 0
+        ? requestedDuration
+        : Number.POSITIVE_INFINITY;
     const existingState = this.turnStates.get(key);
-    if (existingState) existingState.maxText = Math.min(existingState.maxText, maxText);
-    else this.turnStates.set(key, { text: "", maxText, overflow: false });
+    if (existingState) {
+      // 同一 requestId 重复登记：取更严的上限（与 maxText 一致）。
+      existingState.maxText = Math.min(existingState.maxText, maxText);
+      existingState.maxToolCalls = Math.min(existingState.maxToolCalls, maxToolCalls);
+      const tightenedDuration = maxDurationMs < existingState.maxDurationMs;
+      existingState.maxDurationMs = Math.min(existingState.maxDurationMs, maxDurationMs);
+      // 收紧 duration 时必须重武装 timer：否则已武装的 timer 仍按旧（更宽松）额度计时，
+      // 「取更严上限」对墙钟不生效。仅在收紧且本 key 正是当前 streaming 任务时重算剩余额度。
+      if (tightenedDuration && this.currentKey === key && this.taskState === "streaming") {
+        this.armTurnDeadline(key);
+      }
+    } else {
+      this.turnStates.set(key, {
+        text: "",
+        maxText,
+        overflow: false,
+        maxToolCalls,
+        maxDurationMs,
+      });
+    }
 
     // 只终止本 requestId 对应的 task：先校验 currentKey，再 abort；否则绝不误杀其他 task。
     const abortOwnTask = () => {
@@ -263,13 +326,16 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
       }
       if (decision.kind === "done") {
         // 同一 requestId 已处理：返回值只保存状态，没有可重放的助手文本。
-        const previous = decision.result as { status?: unknown; message?: unknown } | null;
+        const previous = decision.result as { status?: unknown; message?: unknown; code?: unknown } | null;
         if (previous !== null && typeof previous === "object" && previous.status === "aborted") {
           return { status: "aborted" };
         }
         if (previous !== null && typeof previous === "object" && previous.status === "error") {
           const message = typeof previous.message === "string" ? previous.message : "任务失败";
-          return { status: "error", message };
+          // code 为 additive 可选字段：旧记录无 code 时保持原样（不凭空补 code）。
+          return typeof previous.code === "string"
+            ? { status: "error", message, code: previous.code }
+            : { status: "error", message };
         }
         return { status: "error", message: "本轮已完成，助手文本不可重放" };
       }
@@ -503,7 +569,10 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
     if (this.taskState === "streaming") {
       this.taskState = transition("streaming", "abort")!; // → terminal
       this.aborting = true;
-      // 快照 abort 原因：避免 abort 等待期间新到达的工具错误事件改变共享标志，导致用户 abort 被误判为预算超限
+      // 快照 abort 原因：避免 abort 等待期间新到达的事件改变共享标志，导致用户 abort 被误判为预算超限。
+      // 优先级固定为 工具调用次数 > 墙钟 > 工具错误（与 settle 中的 code 优先级一致）。
+      const dueToToolCallBudget = this.toolCallLimitReached;
+      const dueToDurationBudget = this.turnDeadlineExceeded;
       const dueToToolBudget = this.toolErrorLimitReached;
       try {
         // abort 设超时，避免 SDK 永不返回时卡死并发槽位与优雅关闭
@@ -518,10 +587,20 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
         this.poisoned = true;
       } finally {
         this.aborting = false;
-        // 工具错误预算触发的 abort 结算为 error（而非用户 abort），保留超限语义
-        this.settle(dueToToolBudget ? "error" : "aborted", dueToToolBudget ? "连续工具调用失败次数超限" : undefined).catch(() => {
-          // settle 异步失败不影响 abort 控制语义
-        });
+        // 预算触发的 abort 结算为 error（而非用户 abort），保留超限语义
+        if (dueToToolCallBudget) {
+          this.settle("error", "本轮工具调用次数超过上限", undefined, TURN_ERROR_CODES.toolBudget).catch(() => {
+            // settle 异步失败不影响 abort 控制语义
+          });
+        } else if (dueToDurationBudget) {
+          this.settle("error", "本轮耗时超过上限", undefined, TURN_ERROR_CODES.durationBudget).catch(() => {
+            // settle 异步失败不影响 abort 控制语义
+          });
+        } else {
+          this.settle(dueToToolBudget ? "error" : "aborted", dueToToolBudget ? "连续工具调用失败次数超限" : undefined).catch(() => {
+            // settle 异步失败不影响 abort 控制语义
+          });
+        }
       }
       return { kind: "ok" };
     }
@@ -570,13 +649,25 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
     }
     const translated = translateSdkEvent(event);
     if (translated === null) return;
-    // 工具错误预算：tool_end isError 计数，超限中止，避免模型无限循环请求失败/未授权工具
+    // 工具预算（两类）：
+    // - 工具错误预算：tool_end isError 计数，超限中止，避免模型无限循环请求失败/未授权工具；
+    // - 工具调用次数预算：runTurn 专属的 maxToolCallsPerTurn，成功与失败都算一次调用。
+    // 同时置位时优先级固定为 工具调用次数 > 工具错误（abortInternal 快照处同样按此顺序）。
     let budgetAbort = false;
-    if (translated.type === "tool_end" && translated.isError) {
-      this.toolErrorCount++;
-      if (this.toolErrorCount > MAX_TOOL_ERRORS_PER_TURN && !this.toolErrorLimitReached) {
-        this.toolErrorLimitReached = true;
+    if (translated.type === "tool_end") {
+      this.toolCallCount++;
+      const turnState = this.currentKey !== null ? this.turnStates.get(this.currentKey) : undefined;
+      const maxToolCalls = turnState?.maxToolCalls ?? Number.POSITIVE_INFINITY;
+      if (this.toolCallCount > maxToolCalls && !this.toolCallLimitReached) {
+        this.toolCallLimitReached = true;
         budgetAbort = true;
+      }
+      if (translated.isError) {
+        this.toolErrorCount++;
+        if (this.toolErrorCount > MAX_TOOL_ERRORS_PER_TURN && !this.toolErrorLimitReached) {
+          this.toolErrorLimitReached = true;
+          budgetAbort = true;
+        }
       }
     }
     // 首个 text_delta 计算 TTFT
@@ -615,6 +706,68 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
     return !this.disposed && this.taskState === "streaming" && this.currentKey === key;
   }
 
+  /**
+   * 为本 turn 建立墙钟 deadline timer（仅当 runTurn 显式传了有限的 maxTurnDurationMs）。
+   *
+   * 采用真实 timer（而非在事件上比对注入的 `now()`）：事件驱动的退路无法捕获完全静默的
+   * 挂起（模型/provider 不产生任何事件），而真实 timer 可以。timer 已 unref，不会阻止
+   * 进程退出；settle / dispose 必定清除，绝不泄漏。超时走与工具预算完全相同的
+   * abortInternal(undefined, true) 路径。
+   */
+  private armTurnDeadline(key: string): void {
+    // 只清 timer，**不**清起点：收紧上限重武装时必须保留本 turn 已消耗的时间。
+    this.clearTurnDeadlineTimer();
+    const turnState = this.turnStates.get(key);
+    const maxDurationMs = turnState?.maxDurationMs ?? Number.POSITIVE_INFINITY;
+    if (!Number.isFinite(maxDurationMs) || maxDurationMs < 0) return;
+    // 首次武装时记录本 turn 的起点，后续同一 requestId 收紧上限时据此计算剩余额度，
+    // 而不是用新上限重新计时（那会变相放宽已消耗的时间）。
+    if (this.turnDeadlineStartedAt === null) this.turnDeadlineStartedAt = this.now();
+    const remainingMs = maxDurationMs - (this.now() - this.turnDeadlineStartedAt);
+    if (remainingMs <= 0) {
+      // 收紧后的上限已被消耗完：立即按超时处理，不再等待。
+      this.expireTurnDeadline(key);
+      return;
+    }
+    // 是否需要分段：仅当剩余额度超过 Node 定时器上限时才可能被截断。
+    // 未超限时到点即真正超时（不重算），避免在冻结/回拨时钟下 remaining 恒不变而无限重武装。
+    const clamped = remainingMs > MAX_TIMER_DELAY_MS;
+    const timer = setTimeout(() => {
+      this.turnDeadlineTimer = null;
+      if (this.currentKey !== key || this.taskState !== "streaming") return;
+      if (!clamped) {
+        this.expireTurnDeadline(key);
+        return;
+      }
+      // 被截断过：到点后按当前剩余额度重新武装下一段（此时 remaining 已减小）。
+      this.armTurnDeadline(key);
+    }, clampTimerDelay(remainingMs));
+    timer.unref?.();
+    this.turnDeadlineTimer = timer;
+  }
+
+  /** deadline 到点（或收紧后已过期）时的统一处理：只中止仍属本 key 且仍 streaming 的任务。 */
+  private expireTurnDeadline(key: string): void {
+    if (this.currentKey !== key || this.taskState !== "streaming") return;
+    this.turnDeadlineExceeded = true;
+    void this.abortInternal(undefined, true).catch(() => {
+      // 超时中止失败不阻断事件流（abort 内部已做超时/poison 处理）
+    });
+  }
+
+  /** 只清 deadline timer（保留计时起点），供重武装使用。 */
+  private clearTurnDeadlineTimer(): void {
+    if (this.turnDeadlineTimer === null) return;
+    clearTimeout(this.turnDeadlineTimer);
+    this.turnDeadlineTimer = null;
+  }
+
+  /** 清除本 turn 的墙钟计时（timer + 起点；幂等）。settle / dispose / 新 turn 开始时调用。 */
+  private clearTurnDeadline(): void {
+    this.clearTurnDeadlineTimer();
+    this.turnDeadlineStartedAt = null;
+  }
+
   /** 后台启动流式任务，兜底捕获未处理拒绝（任务内部已 settle + finally 释放槽位）。 */
   private launchStreamingTask(task: PendingTask): void {
     void this.runStreamingTask(task).catch(() => {
@@ -624,9 +777,17 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
 
   /** 执行一个处于 streaming 的流式任务：先导航到历史节点（若指定 parentId），再跑 adapter.prompt。 */
   private async runStreamingTask(task: PendingTask): Promise<void> {
-    // 任务取得所有权：重置本 turn 的工具错误预算（在导航前，避免导航期间沿用上一任务的超限标志）
+    // 任务取得所有权：重置本 turn 的工具错误/工具调用次数预算与墙钟 deadline
+    // （在导航前，避免导航期间沿用上一任务的超限标志或残留 timer）。
     this.toolErrorCount = 0;
     this.toolErrorLimitReached = false;
+    this.toolCallCount = 0;
+    this.toolCallLimitReached = false;
+    this.turnDeadlineExceeded = false;
+    // 新 turn 必须先重置计时起点（clearTurnDeadline 同时清 timer 与起点），
+    // 否则上一 turn 的残留起点会让本轮可用额度偏小。
+    this.clearTurnDeadline();
+    this.armTurnDeadline(task.key);
     try {
       if (task.parentId !== undefined) {
         await this.adapter.navigateTree(task.parentId);
@@ -705,8 +866,11 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
     outcome: "completed" | "error" | "aborted",
     message?: string,
     taskKey?: string,
+    code?: string,
   ): Promise<void> {
     if (taskKey !== undefined && this.currentKey !== taskKey) return;
+    // 无论本 turn 以何种方式结束，都先清除墙钟 deadline timer（绝不泄漏）。
+    this.clearTurnDeadline();
     if (this.taskState === "streaming") {
       const event: TaskEvent =
         outcome === "completed" ? "complete" : outcome === "error" ? "fail" : "abort";
@@ -730,13 +894,20 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
     // 无论 extension 是否漏发 end，终态都释放锁，避免异常路径永久 409。
     this.failbackAttemptId = null;
     // 终态结果先用参数确定，保证即使后续 usage/事件异常也会在 finally 中结算等待者。
-    const turnResult: SessionTurnResult = turnOverflow
-      ? { status: "error", message: "助手输出超过宿主上限" }
-      : outcome === "completed"
-        ? { status: "completed", text: turnText }
-        : outcome === "aborted"
-          ? { status: "aborted" }
-          : { status: "error", message: message ?? "任务失败" };
+    // 预算优先级（固定，测试固定）：显式 code（由 abortInternal 在进入 streaming 分支时
+    // **快照**，因此 abort 等待期间新置位的预算绝不会篡改本次 abort 的原因）> 助手文本
+    // overflow（既有路径，不经 abort 快照）。abortInternal 内部的快照顺序为
+    // 工具调用次数 > 墙钟 > 工具错误。
+    const turnResult: SessionTurnResult =
+      code !== undefined
+        ? { status: "error", message: message ?? "任务失败", code }
+        : turnOverflow
+          ? { status: "error", message: "助手输出超过宿主上限", code: TURN_ERROR_CODES.assistantTextBudget }
+          : outcome === "completed"
+            ? { status: "completed", text: turnText }
+            : outcome === "aborted"
+              ? { status: "aborted" }
+              : { status: "error", message: message ?? "任务失败" };
 
     try {
       // 读取 usage 并发送 timing 统计（仅当存在有效数据时才推送，避免测试/空跑时产生无意义事件）
@@ -794,14 +965,17 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
       if (key !== null) {
         // 终态都落幂等账，重试同一 requestId 返回同一终态，不重复执行（needs.md §4.2）。
         // 只有「尚未产生副作用」的路径（reject/conflict/排队取消）才 fail 释放重试资格。
-        let result: unknown;
-        if (outcome === "completed") {
-          result = { status: "completed" };
-        } else if (outcome === "aborted") {
-          result = { status: "aborted" };
-        } else {
-          result = { status: "error", message: message ?? "任务失败" };
-        }
+        // 幂等记录必须保存**已经算好的 turnResult 的可持久化形式**，而不是按 outcome 重新分支：
+        // 助手文本 overflow 走的是 aborted outcome（abortInternal 触发）却要落 error+code，
+        // 按 outcome 分支会把首次返回的 error+code 错记为 aborted，导致重放结果与首次不一致。
+        const result: unknown =
+          turnResult.status === "completed"
+            ? { status: "completed" }
+            : turnResult.status === "aborted"
+              ? { status: "aborted" }
+              : turnResult.code !== undefined
+                ? { status: "error", message: turnResult.message, code: turnResult.code }
+                : { status: "error", message: turnResult.message };
         this.idempotency.complete(key, result, fingerprint ?? undefined);
         // 持久化终态（fire-and-forget 但捕获拒绝），重启后重复 requestId 返回同一结果不重复执行
         if (this.idempotencyRepo && requestId) {

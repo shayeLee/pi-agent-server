@@ -186,6 +186,13 @@ describe("plugin host", () => {
 
     expect(context?.projectCwd).toBe("/workspace/project");
     expect(context?.modes).toBe(plugin.modes);
+    // 跨仓契约：宿主把权威的 runTurn 预算 code 表注入插件上下文，
+    // 插件据此映射文案而不在本地重复定义这些字符串。
+    expect(context?.turnErrorCodes).toEqual({
+      toolBudget: "turn_tool_budget_exceeded",
+      durationBudget: "turn_duration_budget_exceeded",
+      assistantTextBudget: "turn_assistant_text_budget_exceeded",
+    });
     expect(routes.map(({ method, url }) => ({ method, url }))).toEqual([
       { method: "GET", url: "/v1/capabilities/acme/status" },
       { method: "POST", url: "/v1/capabilities/acme/mutate" },
@@ -824,6 +831,8 @@ describe("plugin host", () => {
       { status: "busy" as const },
       { status: "aborted" as const },
       { status: "error" as const, message: "模型失败" },
+      // 预算超限的 error 带稳定 code：宿主层必须原样透传（不得剥离 additive 字段）。
+      { status: "error" as const, message: "本轮工具调用次数超过上限", code: "turn_tool_budget_exceeded" },
     ];
     let callIndex = 0;
     const fake = fakeSessions({

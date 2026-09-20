@@ -420,6 +420,9 @@ export class SessionService {
    * - signal 触发只终止本 requestId 对应的 task，不误杀其他 task，也不因脱离 client
    *   的请求拖住撤销/优雅停机。
    * - 助手文本超过 {@link PLUGIN_RUN_TURN_LIMITS.maxAssistantTextLength} 时中止本轮并返回 error。
+   * - 工具调用次数超过 {@link PLUGIN_RUN_TURN_LIMITS.maxToolCallsPerTurn}、或耗时超过
+   *   {@link PLUGIN_RUN_TURN_LIMITS.maxTurnDurationMs} 时同样中止本轮并返回带稳定 code 的 error。
+   *   这些预算都是 runTurn 专属，不影响普通聊天轮次。
    */
   async runTurn(
     ownerKey: string,
@@ -431,6 +434,8 @@ export class SessionService {
       requestId: input.requestId,
       prompt: input.prompt,
       maxAssistantTextLength: PLUGIN_RUN_TURN_LIMITS.maxAssistantTextLength,
+      maxToolCallsPerTurn: PLUGIN_RUN_TURN_LIMITS.maxToolCallsPerTurn,
+      maxTurnDurationMs: PLUGIN_RUN_TURN_LIMITS.maxTurnDurationMs,
       ...(input.signal !== undefined ? { signal: input.signal } : {}),
     });
   }

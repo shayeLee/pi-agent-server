@@ -20,5 +20,6 @@ export type {
   PluginSessionRef,
   PluginSessionReservation,
   PluginToolDeclaration,
+  PluginTurnErrorCodes,
   PluginTurnResult,
 } from "./contract.js";

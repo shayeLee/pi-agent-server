@@ -6,7 +6,7 @@ import {
   PUBLIC_API_AUTOMATIC_HEAD_OPERATIONS,
   PUBLIC_API_OPERATIONS,
 } from "../../src/public-api/openapi-v1.js";
-import { SSE_EVENT_TYPES } from "../../src/public-api/contract.js";
+import { SSE_EVENT_TYPES, TURN_ERROR_CODES } from "../../src/public-api/contract.js";
 import { ROUTE_PERMISSIONS } from "../../src/server/route-rbac.js";
 import { DEFAULT_PROJECT_ID, type SessionStorePort } from "../../src/application/ports/index.js";
 import { identityKey } from "../../src/core/user-identity.js";
@@ -204,6 +204,18 @@ describe("public host API v1 contract", () => {
     expect(JSON.stringify(document)).not.toContain("/v1/capabilities");
     expect(SSE_EVENT_TYPES).toHaveLength(12);
     expect(document.components.schemas.SseEvent!.oneOf).toHaveLength(12);
+  });
+
+  it("exports the stable runTurn budget error codes from the public contract", () => {
+    // 跨仓契约：这些 code 是插件把预算超限映射成可行动文案的依据。
+    // 它们必须从公开契约（pi-agent-server/contract）可取，且经 PluginHostContext
+    // 注入给插件（插件不能静态 import 宿主包）。改名会静默降级插件文案，
+    // 因此这里把字符串固定住，防止无意重命名。
+    expect(TURN_ERROR_CODES).toEqual({
+      toolBudget: "turn_tool_budget_exceeded",
+      durationBudget: "turn_duration_budget_exceeded",
+      assistantTextBudget: "turn_assistant_text_budget_exceeded",
+    });
   });
 
   it("maps every documented fixed operation to Fastify and its central RBAC permission", async () => {

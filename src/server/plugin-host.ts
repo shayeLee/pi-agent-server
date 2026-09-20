@@ -16,6 +16,7 @@ import {
 } from "../plugin/index.js";
 import { identityKey } from "../core/user-identity.js";
 import { TURN_TEXT_LIMITS, checkTurnText } from "../core/text-input.js";
+import { TURN_ERROR_CODES } from "../application/ports/session-runtime-port.js";
 import { requirePermission } from "./route-rbac.js";
 
 export type PluginHostOptions = {
@@ -44,6 +45,9 @@ export async function registerPlugins(
       const context: PluginHostContext = {
         projectCwd: options.projectCwd,
         modes: loaded.modes,
+        // 权威定义在 application/ports（经 public-api/contract 静态导出）；此处把同一对象
+        // 注入插件，插件不重复定义这些字符串。冻结对象可直接共享，不存在被改写风险。
+        turnErrorCodes: TURN_ERROR_CODES,
         mountRoute: (route) => {
           const routeKey = `${route.method}:${route.path}`;
           if (routes.has(routeKey)) {

@@ -43,6 +43,8 @@
 - [x] 跨仓真实浏览器测试通过：onev Vue runtime 使用真实 `Button`/`Input`/`Table`/`Form`，覆盖输入、`navigate back`、`references`；CSP 无违规、无外部请求。
 - [x] 旧原型真实 fixture 兼容；既有 DSL/HTML 产物仍可打开、保存与预览。
 - [x] 生成指令要求先读取现有 `vue2-index search`/`component` 结果及组件规范，再生成原型。
+- [x] 组件规范检索按需而非穷举：`PREPARE_INSTRUCTION` / `GENERATE_PREFIX` / `PROTOTYPE_GENERATION_INSTRUCTION` 只要求对不确定用法或规范的组件读取，明确禁止「对每个组件都读」与无关检索。原因：旧的穷举式强制读取把单次生成拖到 403 秒，触发前端超时（见 onev 侧 `docs/p8-copilot-evidence.md`）。
+- [x] 生成轮次同时给出检索**下限**：`GENERATE_PREFIX` 与 `PROTOTYPE_GENERATION_INSTRUCTION` 要求「至少读取 1 个最不确定的组件规范」并把总检索次数控制在 8 次以内。原因：只给「按需」会让模型自认「没有不确定项」而一次都不查，导致误用组件 API（renderer 只校验语法与挂载调用，不校验组件名/props/事件）。
 - [ ] 未以真实生产模型完成端到端验收，也未以真实生产模型验证所有组件均遵循规范；该验收待执行。
 
 当前已知边界：light 主题动作仅有 `navigate`/`back`；原型为真实组件运行时展示，不连接真实业务后端。

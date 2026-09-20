@@ -32,19 +32,42 @@ export type ControlDecision = { kind: "ok" } | { kind: "conflict"; reason?: "fai
  * - owner 由调用方（插件宿主）绑定，runtime 不接受模型/tools/cwd/图片；
  * - signal 由上层按 HTTP disconnect 或 API revoke 触发，只终止本 requestId 对应的 task；
  * - maxAssistantTextLength 是本轮助手文本上限，超过即中止本轮并返回 error。
+ * - maxToolCallsPerTurn / maxTurnDurationMs 与 maxAssistantTextLength 同构：都是 runTurn
+ *   专属预算，不传时为无限制（与不引入预算时逐字节等价），绝不影响普通聊天轮次；
+ *   超限时中止本轮并返回带稳定 code（见 {@link TURN_ERROR_CODES}）的 error。
  */
 export type RunTurnInput = {
   requestId: string;
   prompt: string;
   signal?: AbortSignal;
   maxAssistantTextLength?: number;
+  /** 本轮工具调用总次数上限（成功与失败都计数）；超过即中止本轮。 */
+  maxToolCallsPerTurn?: number;
+  /** 本轮墙钟上限（毫秒）；超过即中止本轮。 */
+  maxTurnDurationMs?: number;
 };
+
+/**
+ * runTurn 预算超限的稳定 error code（additive，可被调用方区分预算超限与一般上游失败）。
+ * 命名不可随意变更：插件与测试据此判定终态原因。
+ * 必须是**运行时冻结**对象：它会经 `PluginHostContext.turnErrorCodes` 直接交给插件，
+ * 仅靠 `as const` 只提供编译期只读，插件意外改写会污染宿主单例。
+ */
+export const TURN_ERROR_CODES = Object.freeze({
+  /** 本轮工具调用次数超过 maxToolCallsPerTurn。 */
+  toolBudget: "turn_tool_budget_exceeded",
+  /** 本轮耗时超过 maxTurnDurationMs。 */
+  durationBudget: "turn_duration_budget_exceeded",
+  /** 本轮助手文本超过 maxAssistantTextLength。 */
+  assistantTextBudget: "turn_assistant_text_budget_exceeded",
+} as const);
 
 /** requestId 专属的同步轮次结果：文本/终态只属于该请求，绝不来自 session 级事件流。 */
 export type SessionTurnResult =
   | { status: "completed"; text: string }
   | { status: "aborted" }
-  | { status: "error"; message: string }
+  /** code 可选且 additive：预算超限时为 {@link TURN_ERROR_CODES} 中的稳定值。 */
+  | { status: "error"; message: string; code?: string }
   | { status: "busy" };
 
 /** 面向 HTTP/application 的会话运行时端口。 */

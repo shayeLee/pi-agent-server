@@ -19,8 +19,10 @@ import type {
   SubmitDecision,
   ControlDecision,
   SubmitInput,
+  RunTurnInput,
   CredentialPort,
 } from "../../src/application/ports/index.js";
+import { TURN_ERROR_CODES } from "../../src/application/ports/session-runtime-port.js";
 import { PLUGIN_RUN_TURN_LIMITS } from "../../src/plugin/index.js";
 import type { LoadedPlugin, PluginModeProfile } from "../../src/plugin/index.js";
 import { TURN_TEXT_LIMITS } from "../../src/core/text-input.js";
@@ -136,6 +138,22 @@ describe("端口类型约束（编译型）", () => {
       maxRequestIdLength: PLUGIN_RUN_TURN_LIMITS.maxRequestIdLength,
       maxPromptLength: PLUGIN_RUN_TURN_LIMITS.maxPromptLength,
     });
+  });
+
+  it("runTurn 预算上限与 error code 为稳定字面量（防漂移）", () => {
+    expect(PLUGIN_RUN_TURN_LIMITS.maxToolCallsPerTurn).toBe(60);
+    expect(PLUGIN_RUN_TURN_LIMITS.maxTurnDurationMs).toBe(300_000);
+    expect(TURN_ERROR_CODES).toEqual({
+      toolBudget: "turn_tool_budget_exceeded",
+      durationBudget: "turn_duration_budget_exceeded",
+      assistantTextBudget: "turn_assistant_text_budget_exceeded",
+    });
+    // runTurn 专属预算与普通聊天轮次无关：RunTurnInput 可选、SubmitInput 无这些字段。
+    expectTypeOf<RunTurnInput["maxToolCallsPerTurn"]>().toEqualTypeOf<number | undefined>();
+    expectTypeOf<RunTurnInput["maxTurnDurationMs"]>().toEqualTypeOf<number | undefined>();
+    expectTypeOf<keyof SubmitInput>().toEqualTypeOf<
+      "requestId" | "userId" | "prompt" | "parentId" | "images"
+    >();
   });
 
   it("PluginModeProfile 的提示词字段为 appendSystemPrompt/systemPrompt 二选一（均可选了）", () => {

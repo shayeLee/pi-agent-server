@@ -1,8 +1,10 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { SessionService, MAX_ID_RETRIES, type CreateSessionResult } from "../../src/application/session-service.js";
 import { DEFAULT_PROJECT_ID } from "../../src/application/ports/project-store-port.js";
 import { DuplicateIdError, ProjectForeignKeyError } from "../../src/application/ports/store-errors.js";
 import { ConversationStorageRegistry } from "../../src/application/ports/index.js";
+import { TURN_ERROR_CODES } from "../../src/application/ports/session-runtime-port.js";
+import { PLUGIN_RUN_TURN_LIMITS } from "../../src/plugin/index.js";
 import type {
   ConversationReservationInput,
   IdempotencyStorePort,
@@ -956,8 +958,61 @@ describe("SessionService", () => {
       const { service } = makeService(async () => adapter);
       const session = createdSession(await service.createSession("owner-a", {}));
       const result = await service.runTurn("owner-a", { sessionId: session.id, requestId: "big", prompt: "p" });
-      expect(result).toEqual({ status: "error", message: "助手输出超过宿主上限" });
+      expect(result).toEqual({
+        status: "error",
+        message: "助手输出超过宿主上限",
+        code: TURN_ERROR_CODES.assistantTextBudget,
+      });
       expect(adapter.aborted).toBe(true);
+    });
+
+    it("工具调用次数经服务层透传：超过 PLUGIN_RUN_TURN_LIMITS.maxToolCallsPerTurn 中止并返回对应 code", async () => {
+      const adapter = new ManualPromptAdapter();
+      const { service } = makeService(async () => adapter);
+      const session = createdSession(await service.createSession("owner-a", {}));
+      const pending = service.runTurn("owner-a", { sessionId: session.id, requestId: "tools", prompt: "p" });
+      // 让 runStreamingTask 真正进入 streaming（prompt 已开始、事件订阅就绪）。
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+      // 成功调用也计数：恰好越限一次即中止（默认上限 60）。
+      for (let i = 0; i <= PLUGIN_RUN_TURN_LIMITS.maxToolCallsPerTurn; i++) {
+        adapter.emit({
+          type: "tool_execution_end",
+          toolCallId: `t${i}`,
+          toolName: "read",
+          result: {},
+          isError: false,
+        });
+      }
+
+      await expect(pending).resolves.toEqual({
+        status: "error",
+        message: "本轮工具调用次数超过上限",
+        code: TURN_ERROR_CODES.toolBudget,
+      });
+      expect(adapter.aborted).toBe(true);
+      adapter.finishStream();
+    });
+
+    it("墙钟预算经服务层透传：超过 PLUGIN_RUN_TURN_LIMITS.maxTurnDurationMs 中止并返回对应 code", async () => {
+      vi.useFakeTimers();
+      try {
+        const adapter = new ManualPromptAdapter();
+        const { service } = makeService(async () => adapter);
+        const session = createdSession(await service.createSession("owner-a", {}));
+        const pending = service.runTurn("owner-a", { sessionId: session.id, requestId: "slow", prompt: "p" });
+        await vi.advanceTimersByTimeAsync(0); // 进入 streaming 并武装 deadline timer
+        await vi.advanceTimersByTimeAsync(PLUGIN_RUN_TURN_LIMITS.maxTurnDurationMs + 1);
+
+        await expect(pending).resolves.toEqual({
+          status: "error",
+          message: "本轮耗时超过上限",
+          code: TURN_ERROR_CODES.durationBudget,
+        });
+        expect(adapter.aborted).toBe(true);
+        adapter.finishStream();
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 });
