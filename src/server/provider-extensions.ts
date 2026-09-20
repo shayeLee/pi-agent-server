@@ -138,7 +138,7 @@ export type SessionResourceLoaderOptions = {
    * SDK 以「上一次扩展加载 cwd」为键维护模块缓存：cwd 与上次不同即 `clearExtensionCache()`
    * 并重新求值全部扩展模块（模块级副作用重放，例如 WorkBuddy 在 `globalThis.fetch` 上再包一层）。
    * 项目提示词/工具 cwd 由 `createAgentSession({ cwd })` 决定，与本值无关；提示词里的
-   * `Current working directory` 行取会话 cwd，因此稳定本值不会篡改项目提示词。
+   * `<cwd>` 段取会话 cwd，因此稳定本值不会篡改项目提示词。
    */
   readonly extensionCwd: string;
   /** 服务专用 agentDir（不继承个人 ~/.pi/agent）。 */

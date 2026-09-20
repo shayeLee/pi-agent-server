@@ -422,7 +422,7 @@ export default function (pi) {
         agentDir: join(root, "agent"),
         providerExtensionPaths: [extensionDir],
       });
-      // 会话 cwd 可以与扩展加载 cwd 不同，提示词中的 Current working directory 取会话 cwd。
+      // 会话 cwd 可以与扩展加载 cwd 不同，提示词中的 cwd 段取会话 cwd。
       const { session } = await createAgentSession({
         sessionManager: SessionManager.inMemory(sessionCwd),
         modelRuntime: runtime,
@@ -432,7 +432,7 @@ export default function (pi) {
         tools: [],
       });
       try {
-        expect(session.systemPrompt).toContain(`Current working directory: ${sessionCwd}`);
+        expect(session.systemPrompt).toContain(`<cwd>\n${sessionCwd}\n</cwd>`);
       } finally {
         session.dispose();
       }

@@ -92,8 +92,9 @@ export PI_PROVIDER_EXTENSION_PATHS=~/.pi/packages/pi-workbuddy-connect
 - **仅显式：** 宿主保持 `noExtensions: true`，只经 Pi 的 `additionalExtensionPaths` 加载配置的路径；绝不扫描 `~/.pi/agent`、项目 `.pi/` 或 `settings.json`。变量未设置时不加载任何外部扩展。
 - **provider 注册在首次使用前进入宿主运行时：** 扩展工厂排队的 `registerProvider` 调用在加载后立即由宿主刷入唯一的 `ModelRuntime`，因此 `PI_DEFAULT_MODEL`、插件 mode 模型与 `GET /v1/models` 都能解析它们。
 - **每个活动会话一个资源加载器：** 每个活动会话（新建或恢复）都持有自己的 Pi `ResourceLoader` 与扩展 runtime，并在该会话的多轮中复用。启动探针与按项目解析提示词的探针使用各自的一次性 loader，因此探针会话的 dispose 绝不会让真实会话的扩展 runtime 失效；冻结系统提示词按字面量 override 恢复，不重新解析、不重复追加提示词片段。受信扩展因此按「每个活动会话」加载，而该会话的 provider 与 provider hook 在其整个生命周期内可用。
-- **扩展加载 cwd 固定，模块级副作用整进程只发生一次：** 所有 loader 都用服务 cwd 创建，项目 cwd 只传给 `createAgentSession({ cwd })`。Pi 的扩展模块缓存以 loader cwd 为键，混用服务/项目 cwd 会在每次切换时重新求值扩展模块、无界重放模块级副作用（例如重复包装 `globalThis.fetch`）。固定 loader cwd 后每个扩展模块整进程只求值一次，工厂函数仍按活动会话/探针重跑，项目提示词解析也不受影响（提示词的 `Current working directory` 行取会话 cwd）。
+- **扩展加载 cwd 固定，模块级副作用整进程只发生一次：** 所有 loader 都用服务 cwd 创建，项目 cwd 只传给 `createAgentSession({ cwd })`。Pi 的扩展模块缓存以 loader cwd 为键，混用服务/项目 cwd 会在每次切换时重新求值扩展模块、无界重放模块级副作用（例如重复包装 `globalThis.fetch`）。固定 loader cwd 后每个扩展模块整进程只求值一次，工厂函数仍按活动会话/探针重跑，项目提示词解析也不受影响（提示词的 `<cwd>` 段取会话 cwd）。
 - **提示词追加源恒为显式：** 宿主对每个 loader 都显式传 `appendSystemPrompt`（无能力片段时为空列表），从而关掉 Pi 对 `agentDir/APPEND_SYSTEM.md` 与 `<cwd>/.pi/APPEND_SYSTEM.md` 的自动发现。冻结字面量会话因此即使这两个文件在恢复前被改动，恢复后仍逐字节不变。
+- **provider 流式调用从 transcript 取工具，而非顶层字段：** 自 Pi 0.86.0 起，交给 provider `streamSimple` 的 context 是归一化后的 `TranscriptContext`，只带 `messages`；系统提示词与工具声明被折叠进 leading system message。此处读 `context.tools` 会得到 `undefined`，会让 DeepSeek V4 文本协议适配器静默 fail-open（已授权工具名被转成可执行的原生调用）。因此适配器改用 `getCurrentTools(context.messages)` 解析工具集，并把形参类型固定为 `TranscriptContext`，同时有一个「改回旧读法即失败」的回归测试。
 - **宿主化 model-failback：** 真实会话在安装会话专属 bridge 后只绑定一次扩展。兼容的 `model-failback` 扩展经 EventBus 同步取得该 transport，经公开 SDK `session.steer()` 排队续跑，绝不 await 返回 `void` 的 `ExtensionAPI.sendUserMessage()`。abort 在取消前后都清理 SDK queue；bridge 报告 failback 尝试期间，`POST /abort` 返回精确错误码 `MODEL_FAILBACK_IN_PROGRESS` 的 `409`，前端必须与普通「无活动任务」冲突区分。扩展若无法持久化 continuation marker，会保留 Pi 已持久化的模型切换投影，但采用 fail-closed：报告 `failed`，且不排队不可识别的续跑消息。
 - **fail-fast：** 已配置路径不存在、无法导入、未导出工厂函数，或**没有任何扩展入口**（空目录、manifest 的 `pi.extensions` 入口缺失、空的 `extensions/` 子目录）即拒绝启动；Pi 运行时拒绝的注册同样拒绝启动。错误只报告宿主自己配置的路径与 provider 标识，绝不回显扩展或 Pi 运行时的原始错误文本，也不附带 `cause`。
 - **仅绝对路径：** 相对路径在任何资源创建前即被拒绝；`~/…` 按服务账号 home 展开。
@@ -221,7 +222,7 @@ export PI_ALLOWED_CLIENT_CIDRS=127.0.0.0/8,10.0.0.0/8
 | `PI_DEFAULT_MODEL` | 未设置 | `provider/modelId` |
 | `PI_DEFAULT_THINKING_LEVEL` | Pi 默认值 | `off` 至 `max` |
 | `TOOLS` | `read,ls,find,grep` | 逗号分隔的完整工具列表；设置后替换默认列表，例如 `read,ls,find,grep,bash,edit,write` |
-| `PI_PLUGINS` | 未设置 | 逗号分隔的显式加载、受信任同进程 ESM 插件包名；不扫描目录或 `.pi` |
+| `PI_PLUGINS` | 未设置 | 逗号分隔的显式加载、受信任同进程 ESM specifier；可以是包名，也可以是构建产物入口的绝对路径（裸机部署用后者，因为 `pnpm link` 在重建 `node_modules` 后不保留）；不扫描目录或 `.pi` |
 | `PI_PROVIDER_EXTENSION_PATHS` | 未设置 | 逗号分隔的、显式加载的注册模型 provider 的受信任 Pi 扩展路径（绝对路径或 `~/…`）；不自动发现，已配置但加载失败即拒绝启动 |
 | `CORS_ORIGINS` | 空 | 允许在浏览器中调用本服务的网页地址；多个地址用逗号分隔，例如 `http://127.0.0.1:5173` |
 | `PI_BACKUP_STAGING_ROOT` | 每用户私有应用目录 | 备份或数据库升级时使用的临时工作目录；通常无需设置 |

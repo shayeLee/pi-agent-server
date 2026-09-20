@@ -71,7 +71,10 @@ PI_DEFAULT_THINKING_LEVEL=medium
 MODELSCOPE_API_KEY=<通过受限环境或 secret 注入，不写入 Git>
 PI_AGENT_DIR=/var/lib/pi-agent-server/pi-agent
 PI_AUTH_PATH=/var/lib/pi-agent-server/pi-agent/auth.json
-PI_PLUGINS=pi-agent-capability-onev
+# 插件入口：裸机用绝对路径（不依赖宿主 node_modules，重装宿主依赖不会丢失）。
+# 目标机仍需按 §3.3 在相同路径重建插件 checkout 与 dist。
+# 开发期若用 `pnpm link`，此处改为包名 pi-agent-capability-onev（见 §3.5）。
+PI_PLUGINS=/srv/pi-agent-capability-onev/dist/index.js
 
 # pi-agent-capability-onev：独立于宿主数据库
 ONEV_DATA_DIR=/var/lib/pi-agent-capability-onev
@@ -142,9 +145,40 @@ volta run --node 22.19.0 -- node dist-migrate/scripts/migrate.js --verify
 
 服务启动门禁固定为 `PI_MIGRATION_GATE=verify` 的语义：宿主启动不会自动 bootstrap、reset 或 apply migration。后续升级应先停止 writer、备份，再显式 apply/verify。
 
-### 3.5 用宿主侧本地 link 接入未发布插件
+### 3.5 接入未发布插件（裸机用绝对路径入口；开发期可用 `pnpm link`）
 
-当前插件尚未发布，接入方式是“插件源码构建 + 宿主本地 `pnpm link <dir>`”，不是从 registry 安装，也不使用依赖操作者私有 `PNPM_HOME` 的全局 link。以 `onev` 服务账号在宿主目录执行：
+当前插件尚未发布到 npm，**裸机部署不要依赖 `pnpm link`**。原因：`pnpm link <dir>` 在 pnpm 8 下只在 `node_modules` 下建一个 symlink，**既不写 `package.json` 也不写 `pnpm-lock.yaml`**，因此它是一次性的、不可重现的：
+
+| 操作 | `pnpm link` 建立的链接 |
+|---|---|
+| `pnpm install --frozen-lockfile`（`node_modules` 完好） | 保留 |
+| `rm -rf node_modules` 后重装（宿主升级常见） | **丢失** |
+| 换机器 / 新 checkout | 本来就不存在 |
+
+链接丢失后，宿主会因 `PI_PLUGINS` 解析不到包而 **fail-fast 拒绝启动**（不会静默降级），但这是不必要的运维中断。
+
+**推荐做法**：把 `PI_PLUGINS` 直接指向插件构建产物的**绝对路径入口**。`PluginSource` 接受任意 ESM specifier，Node 的 `import()` 接受绝对文件路径，因此这条路不经过宿主 `node_modules`，宿主重装依赖不会把它冲掉（换机器后仍需按 §3.1/§3.3 在相同路径恢复 checkout 并重建 `dist`）：
+
+```bash
+# 第 2 节环境文件（例如 /etc/pi-agent-server/onev.env）中：
+PI_PLUGINS=/srv/pi-agent-capability-onev/dist/index.js
+```
+
+插件 `package.json` 的 `exports["."]` 为 `./dist/index.js`，故该路径与按包名导入的是同一个入口。可用宿主自己的加载器验证（不要用裸 `node -e "import(...)"` 代替，那只证明 Node 能解析，不证明宿主 manifest/tools/modes 校验通过）。下面的命令在宿主构建产物上运行，所以需先完成 §3.2：
+
+```bash
+cd /srv/pi-agent-server
+volta run --node 22.19.0 -- node --input-type=module -e '
+const { PluginLoader } = await import("./dist/application/plugins/loader.js");
+const loader = new PluginLoader({ projectCwd: process.cwd() });
+const loaded = await loader.load("/srv/pi-agent-capability-onev/dist/index.js");
+console.log(loaded.manifest.id, loaded.manifest.version, loaded.tools.map((t) => t.name).join(","));
+'
+```
+
+预期输出 `onev 1 vue2-index,gitnexus`（工具顺序不固定）。然后按 §7 起服务并跑探针。
+
+**开发期备选：`pnpm link`**（仅限本机联调，由操作人手动执行，不要写进部署流程）：
 
 ```bash
 cd /srv/pi-agent-server
@@ -154,7 +188,9 @@ volta run --node 22.19.0 -- node -e \
   "import('pi-agent-capability-onev').then(() => console.log('plugin resolved'))"
 ```
 
-确认宿主 `node_modules/pi-agent-capability-onev` 指向插件 checkout 的已构建包，并且 `PI_PLUGINS=pi-agent-capability-onev`。插件是宿主同进程的受信任代码，不是独立服务或进程隔离边界。
+这条路径要求 `PI_PLUGINS=pi-agent-capability-onev`（包名），并确认宿主 `node_modules/pi-agent-capability-onev` 指向插件 checkout。**每次重建 `node_modules` 后都要重跑 `pnpm link`**，否则服务拒绝启动。它不使用依赖操作者私有 `PNPM_HOME` 的全局 link。
+
+无论哪种方式，插件都是宿主**同进程的受信任代码**，不是独立服务或进程隔离边界；宿主 `package.json` **不声明**对插件的依赖（依赖方向是插件 `peerDependencies` → 宿主）。
 
 ## 4. 构建 ONEV 前端静态产物
 
@@ -317,7 +353,7 @@ sudo systemctl status pi-agent-server.service
 
 ### 7.1 手动前台启动
 
-在 systemd unit 尚未固化前，可用同一个环境文件前台启动验证。`dist/main.js` 使用已构建的宿主和 link 后的插件：
+在 systemd unit 尚未固化前，可用同一个环境文件前台启动验证。`dist/main.js` 使用已构建的宿主，以及环境文件 `PI_PLUGINS` 指定的已构建插件入口：
 
 ```bash
 cd /srv/pi-agent-server
@@ -371,7 +407,9 @@ curl --fail --silent --show-error http://onev.internal/readyz
 
 - 不要运行 Docker/Podman，也不要把仓库现有的容器演练文档当成裸机部署实现。
 - 不要把插件 `onev.db` 与宿主 `pi-agent-server.db` 合并；新机器必须分别初始化宿主 baseline 和插件 v8。
-- 不要从 npm registry 安装一个声称已发布的 `pi-agent-capability-onev`；当前正确方式是源码构建后 `pnpm link`。
+- 不要从 npm registry 安装一个声称已发布的 `pi-agent-capability-onev`；当前正确方式是插件源码构建后用**绝对路径入口**接入（§3.5）。
+- 不要把裸机部署的插件接入建立在 `pnpm link` 上：它不写 `package.json`/lockfile，`rm -rf node_modules` 后重装即丢失，服务会拒绝启动。`pnpm link` 只用于开发期本机联调。
+- 不要让宿主 `package.json` 声明对插件的依赖：依赖方向是插件 `peerDependencies` → 宿主，反转会破坏公开插件边界。
 - 不要用 Node 16 启动宿主/插件，也不要用 Node 22 构建 ONEV `build:docs`。
 - 不要在服务启动时期待自动 migration；两套数据库都应在首次启动前显式迁移并验证。
 - 不要声称 systemd unit 或 nginx 配置已经固化；本文件中的 systemd 与 nginx 配置都标记为“示例待固化”，需按现场实际路径/网段调整后审核。

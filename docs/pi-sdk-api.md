@@ -21,7 +21,9 @@ volta run node --input-type=module -e \
 
 ## 2. 依赖版本与升级核对清单
 
-**核对基线：`@earendil-works/pi-coding-agent 0.84.4`**（`pi --version` 当前 0.84.4）。
+**核对基线：`@earendil-works/pi-coding-agent` / `@earendil-works/pi-ai` 0.86.0。**
+
+> 0.85.1 → 0.86.0 已核对完毕；当时的四处代码/文档改动见 §3.9。
 
 升级该依赖后按序核对，并更新上方基线版本号：
 
@@ -64,7 +66,7 @@ volta run node --input-type=module -e \
 
 外部插件 mode 的**追加**提示词（P7c）不经过资源加载器的 append 通道：宿主先经 `SystemPromptPort` 取得该项目在 Pi 侧的完整提示词，再以与 `buildSystemPrompt` 相同的空行分隔追加片段，把合并结果作为会话快照冻结进 `sessions.system_prompt`；恢复时按该字面量 override 复用，不重新解析、不重复追加。旧的 `systemPrompt` 整体覆盖语义保持不变，二者互斥。
 
-**显式 provider 扩展（0.85.1 核对结论）**：`additionalExtensionPaths` 在 `noExtensions: true` 下仍会被加载（`noExtensions` 只关掉 settings/manifest 自动发现），因而是受控接入 provider 扩展的正规通道。扩展工厂里的 `pi.registerProvider()` 在 loader 阶段**只入队** `runtime.pendingProviderRegistrations`；由 `createAgentSession` → `AgentSession._buildRuntime` → `ExtensionRunner.bindCore` 刷入 `ModelRuntime`（`agent-session-services.js` 的显式 flush 同理）。宿主若在首个会话创建前就要用到这些 provider（默认模型/凭证校验、插件 mode 校验、`GET /v1/models`），必须在 `loader.reload()` 后自行 flush，且刷完清空队列以避免二次注册；无需额外调用（0.84.4 时期曾误判需要）`bindExtensions`——`sdk.js` 的 `onPayload`/`transformHeaders` 已统一走 `extensionRunnerRef.current` 的 `before_provider_request` / `before_provider_headers`。注册失败（如 `streamSimple` 缺 `api`）在宿主这里即 fail-fast 拒绝启动，且错误只回显扩展路径与 provider 标识，不透传 SDK/provider 原文与 `cause`。
+**显式 provider 扩展（0.86.0 核对结论）**：`additionalExtensionPaths` 在 `noExtensions: true` 下仍会被加载（`noExtensions` 只关掉 settings/manifest 自动发现），因而是受控接入 provider 扩展的正规通道。扩展工厂里的 `pi.registerProvider()` 在 loader 阶段**只入队** `runtime.pendingProviderRegistrations`；由 `createAgentSession` → `AgentSession._buildRuntime` → `ExtensionRunner.bindCore` 刷入 `ModelRuntime`（`agent-session-services.js` 的显式 flush 同理）。宿主若在首个会话创建前就要用到这些 provider（默认模型/凭证校验、插件 mode 校验、`GET /v1/models`），必须在 `loader.reload()` 后自行 flush，且刷完清空队列以避免二次注册；无需额外调用（0.84.4 时期曾误判需要）`bindExtensions`——`sdk.js` 的 `onPayload`/`transformHeaders` 已统一走 `extensionRunnerRef.current` 的 `before_provider_request` / `before_provider_headers`（该结论在 0.86.0 仍成立；但注意 `bindExtensions` 在 0.86.0 里还负责 `session_start` 与 `extendResourcesFromExtensions`，宿主已显式调用，无回归）。注册失败（如 `streamSimple` 缺 `api`）在宿主这里即 fail-fast 拒绝启动，且错误只回显扩展路径与 provider 标识，不透传 SDK/provider 原文与 `cause`。
 
 **一个活动 session 一个 ResourceLoader（冻结提示词与 dispose 语义）**：`AgentSession.dispose()` 会 `extensionRunner.invalidate(...)`，进而 `ExtensionRuntime.invalidate()` 把该 runtime 永久标记为 stale（此后 `pi.*` 动作与 `ctx` 访问都抛错，且该标记无法清除）。因此**同一 `ResourceLoader` 的 ExtensionRuntime 绝不能跨活动会话共享**：
 
@@ -73,14 +75,14 @@ volta run node --input-type=module -e \
 - **恢复冻结提示词会话**同样按会话构造 loader（`systemPromptOverride` 按字面量返回快照），因此恢复出的会话也持有自己的 runtime；绝不按 frozen `systemPrompt` 字符串缓存/复用 loader，否则同一快照的第二个会话会被第一个会话的 dispose 污染；
 - **每个 loader 只 `reload()` 一次**：宿主不用 `session.reload()`/`loader.reload()` 二次加载；这样同一 cwd 下扩展模块只求值一次（见下条）。
 
-**扩展加载 cwd 必须稳定、与项目 cwd 解耦（实测结论）**：`DefaultResourceLoader` 的 `cwd` 同时决定扩展模块缓存的键（`loadExtensionsCached(paths, cwd, ...)` → `useExtensionCacheCwd`）与项目提示词/上下文的根。`AgentSession` 的会话 cwd 由 `createAgentSession({ cwd })` 决定，与 loader 的 `cwd` 是两个独立入参：提示词里的 `Current working directory` 行取**会话 cwd**。因此宿主让**所有** loader 的 `cwd` 恒为服务 cwd，只把项目 cwd 传给 `createAgentSession({ cwd })`：
+**扩展加载 cwd 必须稳定、与项目 cwd 解耦（实测结论）**：`DefaultResourceLoader` 的 `cwd` 同时决定扩展模块缓存的键（`loadExtensionsCached(paths, cwd, ...)` → `useExtensionCacheCwd`）与项目提示词/上下文的根。`AgentSession` 的会话 cwd 由 `createAgentSession({ cwd })` 决定，与 loader 的 `cwd` 是两个独立入参：提示词里的 cwd 段取**会话 cwd**（0.86.0 起渲染为 `<cwd>\n<path>\n</cwd>` 结构化 section，不再是一行 `Current working directory: <path>`；见 §3.9）。因此宿主让**所有** loader 的 `cwd` 恒为服务 cwd，只把项目 cwd 传给 `createAgentSession({ cwd })`：
 
 - 若 loader 的 `cwd` 跟着项目 cwd 交替（startup 探针用服务 cwd、项目探针用项目 cwd、冻结会话又回服务 cwd），`useExtensionCacheCwd()` 每次遇到不同 cwd 就 `clearExtensionCache()`，扩展模块整进程被反复重新求值；模块级副作用（典型如 WorkBuddy 在 `globalThis.fetch` 上再包一层）会层层叠加，进程生命周期内无法卸载。
 - 扩展加载 cwd 稳定后：模块只求值一次、模块级副作用只发生一次，工厂函数仍按 loader（即按活动会话/探针）重跑，provider 注册与每会话独立 runtime 完全不受影响；项目提示词仍按各自项目 cwd 解析（未篡改）。
 
 扩展模块缓存语义（实测）：`ResourceLoader.reload()` 在**自身已 loaded** 时先 `clearExtensionCache()`，否则只在 cwd 与前一次缓存不同时清。因此：已加载过的 loader 再次 reload 会重求值全部扩展模块；**新建 loader 首次 reload 在 cwd 不变时只复用缓存（仅重跑工厂函数）**。宿主每个 loader 只 reload 一次且扩展加载 cwd 恒定，所以扩展模块顶层的副作用（如 `globalThis.fetch` 包装）整进程只发生一次；工厂函数则每个 loader 重跑一次（这正是「每会话独立 runtime」需要的）。仅在以下情形会重叠：同一 cwd 的 loader 被再次 reload（如 `session.reload()`，宿主当前不会调用）。
 
-**提示词的追加源必须显式给出**：`DefaultResourceLoader` 在未传 `appendSystemPrompt` 时会自动发现 `agentDir/APPEND_SYSTEM.md` 与 `<cwd>/.pi/APPEND_SYSTEM.md`（受项目信任影响）。冻结字面量恢复路径（`systemPromptOverride`，不传 `appendSystemPrompt`）若依赖该默认值，恢复出的会话会把**当前磁盘内容**追加到冻结快照之后，破坏「恢复即冻结字面量」；因此宿主对每个 loader 都显式传 `appendSystemPrompt`（无能力片段时传 `[]`）关闭该自动发现。
+**提示词的追加源必须显式给出**：`DefaultResourceLoader` 在未传 `appendSystemPrompt` 时会自动发现 `agentDir/APPEND_SYSTEM.md` 与 `<cwd>/.pi/APPEND_SYSTEM.md`（受项目信任影响）。冻结字面量恢复路径（`systemPromptOverride`，不传 `appendSystemPrompt`）若依赖该默认值，恢复出的会话会把**当前磁盘内容**追加到冻结快照之后，破坏「恢复即冻结字面量」；因此宿主对每个 loader 都显式传 `appendSystemPrompt`（无能力片段时传 `[]`）关闭该自动发现（0.86.0 仍成立）。
 
 可信扩展的模块级副作用（含上面这类 `globalThis.fetch` 包装）属于**进程生命周期**，不是会话生命周期：宿主无法卸载它们，启动失败退出也不保证能回滚任意扩展已经施加的全局副作用（见 README「Current boundaries」）。
 
@@ -110,12 +112,28 @@ volta run node --input-type=module -e \
 - `settle` 在清空 `currentRequestId` **之前**捕获该值，终态与 `usage` 一律归属本请求；
 - 类型上 `requestId` 仍为可选（`SseRequestId`），仅用于非 turn 遗留场景；正常 turn 的发射路径总是携带具体值并有测试断言。
 
-### 3.8 图片输入（P7a 核对结论）
+### 3.8 图片输入（P7a 核对结论，0.86.0 复核未变）
 
-- `PromptOptions.images` / `steer(text, images)` / `followUp(text, images)` 的图片元素类型是 `@earendil-works/pi-ai` 的 `ImageContent`，**当前 0.85.1 的真实形状为 `{ type: "image", data: string (base64), mimeType: string }`**；并不存在 `source.base64` 包裹层（该形状是早期误判，已在 P7a 修正）。`src/agent/pi-agent-adapter.ts` 的 `SdkImageContent` 与之逐字段对齐，并有编译期兼容断言（tests/agent/image-input.test.ts）。
+- `PromptOptions.images` / `steer(text, images)` / `followUp(text, images)` 的图片元素类型是 `@earendil-works/pi-ai` 的 `ImageContent`，**0.86.0 的真实形状仍为 `{ type: "image", data: string (base64), mimeType: string }`**（`pi-ai/dist/types.d.ts` 的 `ImageContent`）；并不存在 `source.base64` 包裹层（该形状是早期误判，已在 P7a 修正）。`src/agent/pi-agent-adapter.ts` 的 `SdkImageContent` 与之逐字段对齐，并有编译期兼容断言（tests/agent/image-input.test.ts）。
 - `AgentSession.prompt` 直接把这些图片块 push 进 user content，并在 JSONL 中以同形状持久化（`{"type":"image","data":...,"mimeType":...}`）；因此只读导出（`buildSessionContext`）与活会话导出（`session.messages`）看到的是同一结构。
 - `detectSupportedImageMimeType`（`utils/mime`）能嗅探 png/jpeg/gif/webp/bmp，但会在 `isAnimatedPng` 命中时返回 `null`；宿主 P7a 策略更严：只接受静态 `image/png`、`image/jpeg`、`image/webp`，由 `src/agent/image-input.ts` 以真实魔数+头部尺寸重新验证，不依赖上游嗅探。
 - SDK 自带的图片处理（`utils/image-process`、`image-resize`）面向工具结果与终端显示，依赖可选的原生 Photon；宿主 P7a **不**调用它们，也不引入任何原生图像依赖：压缩由客户端完成，宿主只做校验与透传。
+
+### 3.9 0.85.1 → 0.86.0 升级结论（`Context` vs `TranscriptContext`）
+
+**provider 层收到的 context 不再是 `Context`，而是归一化后的 `TranscriptContext`**：`TranscriptContext = { messages: Message[] }`（带 brand，只能由 `normalizeContext()` 产生），`systemPrompt` 与 `tools` 被折叠进 transcript 的 leading system message（`content` / `toolsAdded`）。调用链：`ModelRuntime.streamSimple` 先 `normalizeContext(context)` 再转给 provider，provider-composer 原样把该 transcript 交给扩展的 `streamSimple`。
+
+宿主影响（`src/provider-adapters/deepseek-v4/provider-adapter.ts`）：
+
+- **禁止**在读 `context.tools` / `context.systemPrompt`——0.86.0 下两者在流式 context 上恒为 `undefined`。取工具集必须回放 transcript：`getCurrentTools(context.messages).map((t) => t.name)`；取系统提示词用 `getCurrentSystemPrompt(context.messages)`。二者均由 `@earendil-works/pi-ai` 顶层导出。
+- 语义等价性：agent loop 每轮把可执行工具集与 transcript 的差量写成 `toolsAdded`/`toolsRemoved`，其注释明确「replay always yields exactly `context.tools`」，故 `getCurrentTools()` 与 0.85.1 的 `context.tools` 等价。
+- 该缺陷**类型系统拦不住**：`TranscriptContext` 是 `Context` 的子类型，参数逆变让 `(c: Context) => X` 合法赋给 `(c: TranscriptContext) => X`，`tsc` 全绿。宿主已把 `StreamSimple` 的形参收窄为 `TranscriptContext` 以固化修复，并在 `tests/provider-adapters/deepseek-v4-stream-normalizer.test.ts` 增加走 adapter 的回归用例（已实测：改回旧读法即失败）。
+
+**模型 id 改名会让文本协议适配器静默成死代码（本次升级的真实教训）**：0.86.0 的 catalog 把 `deepseek/deepseek-v4-flash` 退役为 `deepseek-flash`（CHANGELOG 有明确记录：「instead of retired Flash aliases」）；`opencode/deepseek-v4-flash-free` → `opencode/deepseek-v4-flash` 则是根据当前 catalog 与旧适配器/真实 fixture 反推（CHANGELOG 未点名 OpenCode）。无论哪条，适配器原先按**精确 id** 匹配，改名后 `matches()` 恒为 false，于是适配器整体退化为透传——**无报错、无测试失败、`tsc` 全绿、`pnpm verify` 全绿**，但 DSML / `<use_tool>` 文本协议已不再被转换。现改为「provider 精确 + 模型 id 子串含 `deepseek`」，并新增断言：用 `builtinProviders()` 要求每个已注册 provider 至少命中一个真实 catalog 模型（`tests/provider-adapters/deepseek-v4-stream-normalizer.test.ts`）。这条断言会在升级当天失败，而不是静默废弃几个月。同时 `opencode` 与 `opencode-go`（同厂、同 4 个 deepseek 模型 id）共用 DSML 适配器，两者都在 `start.ts` 注册；其中 `opencode-go` 的 DSML 归属是**推断而非观测**（见 `provider-adapter.ts` 的 `OPENCODE_PROVIDERS` 注释）。
+
+**系统提示词改为结构化 sections**：0.86.0 的 `buildSystemPromptSections` 把提示词拆成 `preamble`（裸文本）与 `tools`/`rules`/`docs`/`addendum`/`project_context`/`skills`/`cwd`（统一包成 `<name>\n…\n</name>`），段间以空行连接；cwd 因此从 0.85.1 的 `\nCurrent working directory: <path>\n` 变为 `<cwd>\n<path>\n</cwd>`。`customPrompt` 分支仍**无条件**追加 cwd 段，所以冻结字面量恢复路径的拼接结果仍是「冻结字面量 + 一个 cwd 段」（与 0.85.1 语义一致，仅形态不同）。
+
+其余破坏性变更与本仓库的关系：`ToolCall.arguments` 收窄为 `JsonObject`（宿主写入值来自 `Record<string,string>`，合法）、`ToolResultMessage` 条件类型与 `JsonValue` 只读数组（宿主的 `details` 用法不赋值给 SDK 类型）、`user_bash` fail-closed（宿主未使用该 hook）。
 
 ## 4. 签名明细（不在本文维护）
 

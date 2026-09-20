@@ -72,8 +72,10 @@ import {
 } from "./provider-extensions.js";
 import { openAIToolPolicyAdapter } from "../provider-adapters/openai-tool-policy.js";
 import {
-  deepSeekV4FlashStreamAdapter,
-  openCodeDeepSeekV4FlashFreeStreamAdapter,
+  DEEPSEEK_PROVIDERS,
+  deepSeekStreamAdapter,
+  OPENCODE_PROVIDERS,
+  openCodeDeepSeekStreamAdapter,
 } from "../provider-adapters/deepseek-v4/provider-adapter.js";
 
 export type StartConfig = {
@@ -373,16 +375,23 @@ export async function startServer(config: StartConfig) {
     {
       name: "pi-agent-server-provider-adapters",
       factory: (pi) => {
-        // The provider override only wraps direct deepseek/deepseek-v4-flash;
-        // every other model delegates to Pi's normal OpenAI-compatible stream.
-        pi.registerProvider("deepseek", {
-          api: "openai-completions",
-          streamSimple: deepSeekV4FlashStreamAdapter,
-        });
-        pi.registerProvider("opencode", {
-          api: "openai-completions",
-          streamSimple: openCodeDeepSeekV4FlashFreeStreamAdapter,
-        });
+        // 按 provider + 模型 id 子串（含 "deepseek"）命中文本协议适配器；
+        // 其余模型一律透传给 Pi 原生的 OpenAI-compatible stream。
+        // 不用精确 id：catalog 改名（如 0.86.0 的 deepseek-v4-flash -> deepseek-flash）
+        // 曾让适配器静默失效，见 tests/provider-adapters 的 catalog 漂移断言。
+        // `opencode` 与 `opencode-go` 同厂同模型 id，共用 DSML 适配器。
+        for (const provider of DEEPSEEK_PROVIDERS) {
+          pi.registerProvider(provider, {
+            api: "openai-completions",
+            streamSimple: deepSeekStreamAdapter,
+          });
+        }
+        for (const provider of OPENCODE_PROVIDERS) {
+          pi.registerProvider(provider, {
+            api: "openai-completions",
+            streamSimple: openCodeDeepSeekStreamAdapter,
+          });
+        }
         pi.on("before_provider_request", (event, ctx) =>
           providerAdapters.adaptRequest(event.payload, ctx.model),
         );
@@ -400,7 +409,7 @@ export async function startServer(config: StartConfig) {
    * **扩展加载 cwd 恒为服务 cwd**：SDK 的扩展模块缓存以上一次加载 cwd 为键，cwd 一变就
    * `clearExtensionCache()` 重求值全部扩展模块（模块级副作用重放，例如 WorkBuddy 会再次包装
    * `globalThis.fetch`）。项目 cwd 只交给 `createAgentSession({ cwd })`（会话工具/提示词 cwd），
-   * 绝不传给 loader；提示词里的 `Current working directory` 行取会话 cwd，因此项目提示词不受影响。
+   * 绝不传给 loader；提示词里的 `<cwd>` 段取会话 cwd，因此项目提示词不受影响。
    */
   const createSessionResourceLoader = (
     extra: {

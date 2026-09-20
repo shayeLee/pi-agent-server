@@ -1,5 +1,6 @@
 import {
   createAssistantMessageEventStream,
+  type Api,
   type AssistantMessage,
   type AssistantMessageEvent,
   type AssistantMessageEventStream,
@@ -25,6 +26,11 @@ export type DeepSeekV4StreamNormalizationOptions = {
   /** Pi 当前原生注册的工具名。文本标记绝不能绕过这些实际权限。 */
   allowedToolNames?: readonly string[];
   parserFactory?: () => DeepSeekV4TextToolParserLike;
+  /**
+   * 兜底 assistant 消息的 identity。仅在源流未给出 `start` 事件（因而拿不到真实 partial）
+   * 时使用；写死 provider/model 会把改名后的模型标错，所以由适配器传入真实 model。
+   */
+  identity?: { api: Api; provider: string; model: string };
 };
 
 /**
@@ -39,6 +45,7 @@ export function normalizeDeepSeekV4FlashStream(
   const output = createAssistantMessageEventStream();
   const allowedToolNames = new Set(options.allowedToolNames ?? []);
   const parserFactory = options.parserFactory ?? (() => new DeepSeekV4TextToolParser());
+  const identity = options.identity ?? FALLBACK_IDENTITY;
   let message: AssistantMessage | undefined;
   let terminal = false;
   let hasToolCall = false;
@@ -48,7 +55,7 @@ export function normalizeDeepSeekV4FlashStream(
 
   const ensureMessage = (): AssistantMessage => {
     if (message) return message;
-    message = emptyMessage();
+    message = emptyMessage(identity);
     return message;
   };
 
@@ -312,13 +319,24 @@ export function normalizeDeepSeekV4FlashStream(
   return output;
 }
 
-function emptyMessage(): AssistantMessage {
+/**
+ * 直接调用 `normalizeDeepSeekV4FlashStream`（不走适配器）时的兜底身份。
+ * 生产路径由适配器传入真实 identity；此处仅在源流连 `start` 都未给出时才会用到，
+ * 所以刻意不写具体模型 id——旧实现写死 `deepseek-v4-flash`，而该 id 已在 0.86.0 退役。
+ */
+const FALLBACK_IDENTITY = { api: "openai-completions", provider: "deepseek", model: "unknown" } as const satisfies {
+  api: Api;
+  provider: string;
+  model: string;
+};
+
+function emptyMessage(identity: { api: Api; provider: string; model: string }): AssistantMessage {
   return {
     role: "assistant",
     content: [],
-    api: "openai-completions",
-    provider: "deepseek",
-    model: "deepseek-v4-flash",
+    api: identity.api,
+    provider: identity.provider,
+    model: identity.model,
     usage: {
       input: 0,
       output: 0,

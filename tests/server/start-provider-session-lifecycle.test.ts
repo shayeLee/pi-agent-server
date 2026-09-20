@@ -399,10 +399,10 @@ describe("显式 provider 扩展：真实会话打开、恢复与 loader 隔离�
 
     const restoredPrompt = probe().systemPrompts.at(-1);
     expect(restoredPrompt).toBeDefined();
-    // 恢复后的完整提示词 = 冻结快照字面量 + SDK 在同一轮里追加的 cwd 行：既没有重新解析
+    // 恢复后的完整提示词 = 冻结快照字面量 + SDK 在同一轮里追加的 cwd 段：既没有重新解析
     // （否则片段会再次出现），也没有再次追加能力片段。
     expect(restoredPrompt!.startsWith(frozenPrompt)).toBe(true);
-    expect(restoredPrompt!.slice(frozenPrompt.length)).toMatch(/^\nCurrent working directory: /);
+    expect(restoredPrompt!.slice(frozenPrompt.length)).toMatch(/^\n\n<cwd>\n/);
     expect(occurrences(restoredPrompt!, FRAGMENT_MARKER)).toBe(1);
     expect(probe().systemPrompts.length).toBe(beforeRestore + 1);
     // 恢复会话的扩展 hook 同样生效。
@@ -482,7 +482,7 @@ describe("显式 provider 扩展：真实会话打开、恢复与 loader 隔离�
       const session = response.json() as { id: string; systemPrompt: string };
       // 每个项目 cwd 的提示词冻结快照必须包含该项目自己的 cwd（项目提示词解析未被篡改）。
       const expectedCwd = projectCwd ?? fixture.root;
-      expect(session.systemPrompt).toContain(`Current working directory: ${expectedCwd}`);
+      expect(session.systemPrompt).toContain(`<cwd>\n${expectedCwd}\n</cwd>`);
       return session;
     };
 
@@ -532,8 +532,8 @@ describe("显式 provider 扩展：真实会话打开、恢复与 loader 隔离�
     expect(restoredPrompt!.startsWith(frozenPrompt)).toBe(true);
     expect(restoredPrompt!).not.toContain("APPEND-BEFORE-MARKER");
     expect(restoredPrompt!).not.toContain("APPEND-AFTER-MARKER");
-    // 恢复提示词 = 冻结字面量 + SDK 在同一轮追加的 cwd 行（与既有冻结语义一致）。
-    expect(restoredPrompt!.slice(frozenPrompt.length)).toMatch(/^\nCurrent working directory: /);
+    // 恢复提示词 = 冻结字面量 + SDK 在同一轮追加的 cwd 段（与既有冻结语义一致）。
+    expect(restoredPrompt!.slice(frozenPrompt.length)).toMatch(/^\n\n<cwd>\n/);
   });
 
   it("model-failback EventBus 在真实 SDK 会话中锁定用户 abort、end 后解锁，且删除强制取消不被锁挡住", async () => {
