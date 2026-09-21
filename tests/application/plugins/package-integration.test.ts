@@ -46,7 +46,22 @@ describe("外部插件包集成（package specifier → 默认 dist）", () => {
     // 阶段一不产生副作用：加载只是解析与校验，register/dispose 不会被调用。
     expect(typeof loaded.plugin.register).toBe("function");
     expect(typeof loaded.plugin.dispose).toBe("function");
+    // 业务能力标识经真实包的 manifest 进入宿主：声明集合原样透传，不做任何变换。
+    expect(loaded.capabilities).toEqual(["canBind"]);
     // 反向证明：加载的是解析到的包默认入口，而非仓内源码。
     expect(resolvedEntry).toContain(PACKAGE_SPECIFIER);
+  });
+
+  it("真实包的 manifest.capabilities 与插件声明的档位映射一致（跨包契约不漂移）", async (context) => {
+    if (resolvedEntry === null) {
+      context.skip(`${PACKAGE_SPECIFIER} 未安装，无法验证真实包加载`);
+      return;
+    }
+    // 宿主与插件是两个仓库：manifest 声明的 flag 集合必须与 declareCapabilities 的键集
+    // 完全一致，否则宿主会在注册期 fail-fast。这里在加载期就提前暴露漂移。
+    const module = (await import(PACKAGE_SPECIFIER)) as {
+      default: { manifest: { capabilities?: readonly string[] } };
+    };
+    expect(module.default.manifest.capabilities).toEqual(["canBind"]);
   });
 });

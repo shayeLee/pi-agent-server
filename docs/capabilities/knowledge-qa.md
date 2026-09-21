@@ -124,7 +124,7 @@ GET  /v1/capabilities/onev/documents/links/:id/metadata 查询同步元数据
 GET  /v1/capabilities/onev/prototypes/:id               读取需求原型 HTML
 ```
 
-组件库文档站点仅向具有写权限的用户显示绑定、改绑和同步按钮；服务端仍以 RBAC 为准。`npm run codegraph` 通过插件 CLI 触发全量同步，不调用页面接口。
+组件库文档站点先读 `GET /v1/capabilities/onev/access`（插件自有能力投影）拿 `{canBind}`，仅在 `canBind === true` 时显示绑定/改绑/同步入口；服务端仍以 RBAC 为准（`POST /documents/links` 与 `POST /sync/dingtalk/:name` 为 `capability:admin`，仅 `admin` 角色可调用）。宿主通用投影 `GET /v1/access`（`{canRead, canWrite}`）不包含插件业务 flag。`npm run codegraph` 通过插件 CLI 触发全量同步，不调用页面接口。
 
 ## 交付与验收
 

@@ -70,7 +70,7 @@ GET   需求原型列表（安全元数据 + 相对 preview URL）
 GET   需求原型 HTML（严格预览响应头）
 ```
 
-问答仍使用 pi-agent-server 既有会话与消息接口；插件通过 Pi 工具参与回答。插件接口统一挂载在 `/v1/capabilities/onev`。查询接口允许 `viewer`、`user`、`admin`；绑定、改绑、同步与需求原型生成接口允许 `user`、`admin`。
+问答仍使用 pi-agent-server 既有会话与消息接口；插件通过 Pi 工具参与回答。插件接口统一挂载在 `/v1/capabilities/onev`。查询接口允许 `viewer`、`user`、`admin`；需求原型生成等常规变更接口允许 `user`、`admin`；**绑定/改绑与同步（`capability:admin`）仅允许 `admin`**（改绑后同步会以服务自身的 DWS 凭据读取该文档并写入共享项目目录，不能对所有 `user` 开放）。
 
 插件只能依赖宿主公开的插件 API，不能引用 `pi-agent-server/src/*` 内部模块。`pi-agent-server` 应作为插件的 `peerDependency`。开发阶段使用 `pnpm link` 建立本地链接，不发布包。
 
@@ -220,7 +220,9 @@ pi-agent-server 进程
 
 范围（仅宿主；不新增插件 SSE、不改 P7a 图片逻辑）：
 
-1. **访问能力投影 `GET /v1/access`**：返回最小固定响应体 `{canRead, canWrite}`，由中央矩阵 `src/server/route-rbac.ts` 的 `ROUTE_PERMISSIONS` + `evaluateRouteAuthorization` 经 `projectAccessCapabilities` 派生（不硬编码，端点与矩阵不会漂移）。权限走既有 default-deny：`viewer`/`user`/`admin` 可读（`access:read`），`operator` 仍被全局 hook 403 拒。响应体绝不含 role/IP/token。`canWrite` 准确覆盖 sessions send/control 与 `capability:write`；若未来矩阵分项不一致，布尔值只会更保守（少报可写），前端可据此隐藏写操作而无误放行风险。
+1. **访问能力投影 `GET /v1/access`**：返回最小固定响应体 `{canRead, canWrite}`，由中央矩阵 `src/server/route-rbac.ts` 的 `ROUTE_PERMISSIONS` + `evaluateRouteAuthorization` 经 `projectAccessCapabilities` 派生（不硬编码，端点与矩阵不会漂移）。权限走既有 default-deny：`viewer`/`user`/`admin` 可读（`access:read`），`operator` 仍被全局 hook 403 拒。响应体绝不含 role/IP/token。`canWrite` 准确覆盖 sessions send/control 与 `capability:write`；若未来矩阵分项不一致，布尔值只会更保守（少报可写），前端可据此隐藏写操作而无误放行风险。**这是宿主的通用契约，保持闭合（`additionalProperties:false`），绝不加入插件业务 flag**——onev 的 `canBind` 走插件自有投影端点（见下条）。
+
+   **插件业务能力投影 `GET /v1/capabilities/<plugin-id>/access`（onev 为 `/v1/capabilities/onev/access`）**：宿主只拥有 `read`/`write`/`admin` 三个通用档位（`CAPABILITY_TIER_ROLES` 为唯一权威），不理解插件业务语义；插件在 `manifest.capabilities` 声明业务 flag，并在 register 阶段用 `declareCapabilities({ flag: tier })` 绑定档位，宿主据此自动挂载只读投影端点（权限点 `capability:read`）。响应体恰好是声明的 flag 集合，值为由档位矩阵派生的布尔（role 缺失/未知 → false，fail-closed）。onev 当前只声明 `canBind → admin`：前端据此隐藏绑定入口；**新增插件 flag 不需要改动宿主**。`/access` 是宿主保留路径，插件不得声明同名路由。
 2. **SSE turn 事件全部携带 `requestId`**：`text_delta`/`thinking_delta`/`tool_start`/`tool_update`/`tool_end`/`status`/`usage`/`queued`/`error`/`completed`/`aborted`。`SseEvent` 类型改为各分支 `& SseRequestId`（`requestId?`），发射逻辑在 `SessionRuntime` 统一附加当前任务 `requestId`。关键语义：事件仅在活动窗口（streaming/aborting）处理，stray 与结算后迟到事件绝不绑到新 request；队列超时用被超时任务自己的 `requestId`；`settle` 在清空 `currentRequestId` 前捕获该值，终态与 `usage` 一律归属本请求。可选 `requestId` 仅供非 turn 遗留场景；正常 turn 测试断言其存在。
 3. **继续使用宿主 `/v1/sessions/:id/events`**：不引入新的插件 SSE，不改图片 P7a 逻辑。
 4. **前端（web/）**：`types.ts` 的 `SseEvent` 与宿主同步（各分支 `& SseRequestId`）；新增 `ApiClient.getAccess()` 与 `AccessCapabilities` 类型，供 onev 真实数据适配器读取投影、无写权限时隐藏操作。事件按 requestId 过滤 UI 状态属于 onev 数据适配器（P7b onev 侧）职责，宿主 web 不强制。

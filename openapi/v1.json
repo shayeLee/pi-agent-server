@@ -260,6 +260,15 @@
                   "$ref": "#/components/schemas/Access"
                 }
               }
+            },
+            "headers": {
+              "Cache-Control": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "const": "private, no-store"
+                }
+              }
             }
           },
           "401": {

@@ -10,11 +10,14 @@ import { buildApp } from "../../src/server/app.js";
 import { identityKey } from "../../src/core/user-identity.js";
 import type { IpRole } from "../../src/core/ip-access-policy.js";
 import {
+  allowsCapabilityTier,
+  CAPABILITY_TIER_ROLES,
   evaluateRouteAuthorization,
   FORBIDDEN_BODY,
   projectAccessCapabilities,
   ROUTE_PERMISSIONS,
 } from "../../src/server/route-rbac.js";
+import { PLUGIN_ROUTE_ACCESS } from "../../src/plugin/contract.js";
 import { createOperationStatus } from "../../src/server/ops-status.js";
 import type { SseSocket } from "../../src/server/sse-socket.js";
 import { RuntimeRegistry } from "../../src/runtime/runtime-registry.js";
@@ -24,6 +27,8 @@ import { makeInitializedMemoryDb } from "../helpers/sqlite.js";
 import { makePolicy, makeTestIpAccess } from "../helpers/ip-access.js";
 import { DEFAULT_PROJECT_ID } from "../../src/application/ports/project-store-port.js";
 import type { SessionStorePort } from "../../src/application/ports/session-store-port.js";
+import { registerPlugins } from "../../src/server/plugin-host.js";
+import type { LoadedPlugin } from "../../src/plugin/index.js";
 
 const ROLES: readonly IpRole[] = ["admin", "user", "viewer", "operator"];
 /** 每角色一个来源 IP（四个用户 = 四个 IP；一个 IP = 一个用户）。 */
@@ -168,6 +173,67 @@ describe("P7b 访问能力投影 projectAccessCapabilities（GET /v1/access）",
       const canWrite = writeMatrix.every((p) => ROUTE_PERMISSIONS[p].includes(role));
       const canRead = readMatrix.every((p) => ROUTE_PERMISSIONS[p].includes(role));
       expect(projectAccessCapabilities(role), role).toEqual({ canRead, canWrite });
+    }
+  });
+
+  it("/v1/access 响应不可被共享缓存（身份仅来自来源 IP，Vary: Authorization 不够）", async () => {
+    const { app } = await makeRbacApp();
+    try {
+      const res = await app.inject({ method: "GET", url: "/v1/access", remoteAddress: ROLE_IP.user });
+      expect(res.statusCode).toBe(200);
+      expect(res.headers["cache-control"]).toBe("private, no-store");
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("授权表运行时不可被同进程代码改写（深冻结）", () => {
+    // 插件是受信同进程代码：不应仅靠“不会这么做”的约定来保护授权表。
+    expect(Object.isFrozen(CAPABILITY_TIER_ROLES)).toBe(true);
+    expect(Object.isFrozen(CAPABILITY_TIER_ROLES.admin)).toBe(true);
+    expect(Object.isFrozen(ROUTE_PERMISSIONS)).toBe(true);
+    expect(Object.isFrozen(ROUTE_PERMISSIONS["capability:admin"])).toBe(true);
+    expect(() => {
+      (CAPABILITY_TIER_ROLES.admin as unknown as string[]).push("user");
+    }).toThrow();
+    // 改写尝试失败后授权语义不变。
+    expect(allowsCapabilityTier("admin", "user")).toBe(false);
+  });
+});
+
+describe("插件权限档位（CAPABILITY_TIER_ROLES）与能力投影", () => {
+  it("档位词汇表冻结为三个值，且矩阵由它单一权威派生（不重复字面量）", () => {
+    expect([...PLUGIN_ROUTE_ACCESS]).toEqual(["read", "write", "admin"]);
+    expect(Object.keys(CAPABILITY_TIER_ROLES).sort()).toEqual(["admin", "read", "write"]);
+    // 矩阵的三行必须与档位表逐字一致：改表即改矩阵，不存在第二份定义。
+    expect(ROUTE_PERMISSIONS["capability:read"]).toBe(CAPABILITY_TIER_ROLES.read);
+    expect(ROUTE_PERMISSIONS["capability:write"]).toBe(CAPABILITY_TIER_ROLES.write);
+    expect(ROUTE_PERMISSIONS["capability:admin"]).toBe(CAPABILITY_TIER_ROLES.admin);
+  });
+
+  it("admin 档仅 admin：write 档 user/admin；read 档含 viewer；operator 全档拒绝", () => {
+    expect(allowsCapabilityTier("admin", "admin")).toBe(true);
+    for (const role of ["user", "viewer", "operator"]) {
+      expect(allowsCapabilityTier("admin", role), role).toBe(false);
+    }
+    expect(allowsCapabilityTier("write", "admin")).toBe(true);
+    expect(allowsCapabilityTier("write", "user")).toBe(true);
+    expect(allowsCapabilityTier("write", "viewer")).toBe(false);
+    expect(allowsCapabilityTier("read", "viewer")).toBe(true);
+    // operator 是运维面角色：/v1 一律拒绝，三个档位全部 false。
+    for (const tier of PLUGIN_ROUTE_ACCESS) {
+      expect(allowsCapabilityTier(tier, "operator"), tier).toBe(false);
+    }
+  });
+
+  it("未知档位与缺失/未知/伪造 role → false（fail-closed，绝不误报可写）", () => {
+    for (const tier of [undefined, null, "", "readonly", "wrtie", "ADMIN", 42, {}]) {
+      expect(allowsCapabilityTier(tier, "admin"), String(tier)).toBe(false);
+    }
+    for (const role of [undefined, null, "", "superuser", "guest", 42, {}]) {
+      for (const tier of PLUGIN_ROUTE_ACCESS) {
+        expect(allowsCapabilityTier(tier, role), `${tier}/${String(role)}`).toBe(false);
+      }
     }
   });
 });
@@ -666,8 +732,7 @@ describe("WP5D-3 SSE：viewer 只读可，writes 拒", () => {
     }
   });
 
-  it("viewer 的 export 只读：不创建 runtime（registry 保持为空、DB 记录不变）", async () => {
-    const { app, sessions, adapters } = await makeRbacApp();
+  it("viewer 的 export 只读：不创建 runtime（registry 保持为空、DB 记录不变）", async () => {    const { app, sessions, adapters } = await makeRbacApp();
     try {
       await seedSession(sessions, ownerOf(ROLE_IP.viewer), "v-export", "v");
       const res = await app.inject({ method: "GET", url: "/v1/sessions/v-export/export", remoteAddress: ROLE_IP.viewer });
@@ -676,6 +741,85 @@ describe("WP5D-3 SSE：viewer 只读可，writes 拒", () => {
       expect(adapters.get("v-export")).toBeUndefined();
       expect(await sessions.get("v-export")).toMatchObject({ id: "v-export", conversationRef: null });
     } finally {
+      await app.close();
+    }
+  });
+
+  it("外部插件档位端到端：admin 路由对 user/viewer 403、admin 放行；能力投影按角色变化", async () => {
+    // 真实 Fastify + 完整 admission→RBAC 链路 + 内联插件（无外部包依赖，因此 CI 必跑）。
+    // 这条用例是本次权限收紧的核心回归门禁：变更前 user 能调 admin 路由，它会失败。
+    const { app } = await makeRbacApp();
+    const inlinePlugin: LoadedPlugin = {
+      manifest: { id: "onev", version: 1, capabilities: ["canBind"] },
+      tools: [],
+      promptFragments: [],
+      modes: [],
+      capabilities: ["canBind"],
+      plugin: {
+        manifest: { id: "onev", version: 1, capabilities: ["canBind"] },
+        register: (context) => {
+          context.declareCapabilities({ canBind: "admin" });
+          context.mountRoute({
+            method: "POST",
+            path: "/documents/links",
+            access: "admin",
+            handler: ({ reply }) =>
+              (reply as { code: (s: number) => { send: (b: unknown) => unknown } }).code(200).send({ ok: true }),
+          });
+          context.mountRoute({
+            method: "POST",
+            path: "/copilot/generate",
+            access: "write",
+            handler: ({ reply }) =>
+              (reply as { code: (s: number) => { send: (b: unknown) => unknown } }).code(200).send({ ok: true }),
+          });
+        },
+      },
+    };
+    // 真实 Fastify：必须真的注册路由才能验证端到端 403（而非 404）。
+    const host = await registerPlugins([inlinePlugin], {
+      app,
+      projectCwd: "/tmp/default-project",
+      sessions: {} as never,
+    });
+    try {
+      const bind = (ip: string) =>
+        app.inject({
+          method: "POST",
+          url: "/v1/capabilities/onev/documents/links",
+          remoteAddress: ip,
+          headers: JSON_HEADERS,
+          payload: "{}",
+        });
+      expect((await bind(ROLE_IP.admin)).statusCode, "admin").toBe(200);
+      // 变更前 user 也能改绑（capability:write 含 user）：核心回归点。
+      expect((await bind(ROLE_IP.user)).statusCode, "user").toBe(403);
+      expect((await bind(ROLE_IP.viewer)).statusCode, "viewer").toBe(403);
+      expect((await bind(ROLE_IP.operator)).statusCode, "operator").toBe(403);
+      expect((await bind(ROLE_IP.user)).body).toBe(FIXED_403_BODY);
+
+      // 同插件的 write 档不受影响：user/admin 可过，viewer/operator 拒。
+      const generate = (ip: string) =>
+        app.inject({
+          method: "POST",
+          url: "/v1/capabilities/onev/copilot/generate",
+          remoteAddress: ip,
+          headers: JSON_HEADERS,
+          payload: "{}",
+        });
+      expect((await generate(ROLE_IP.user)).statusCode, "user write").toBe(200);
+      expect((await generate(ROLE_IP.viewer)).statusCode, "viewer write").toBe(403);
+
+      // 能力投影：恰好是声明的 flag 集合，且仅 admin 为 true；operator 整体 403。
+      const access = (ip: string) => app.inject({ method: "GET", url: "/v1/capabilities/onev/access", remoteAddress: ip });
+      expect((await access(ROLE_IP.admin)).json()).toEqual({ canBind: true });
+      expect((await access(ROLE_IP.user)).json()).toEqual({ canBind: false });
+      expect((await access(ROLE_IP.viewer)).json()).toEqual({ canBind: false });
+      expect((await access(ROLE_IP.operator)).statusCode).toBe(403);
+      // 身份相关的响应不得被共享缓存。
+      expect((await access(ROLE_IP.admin)).headers["cache-control"]).toBe("private, no-store");
+    } finally {
+      await host.dispose();
       await app.close();
     }
   });

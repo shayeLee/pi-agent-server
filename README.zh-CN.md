@@ -134,6 +134,7 @@ export PI_MIGRATION_GATE=verify
 | `GET` | `/readyz` | 进程启动与 migration gate 就绪状态 |
 | `GET` | `/metrics` | 固定 Prometheus 进程/readiness 指标 |
 | `GET` | `/v1/access` | 由中央 RBAC 矩阵派生的最小访问能力投影 `{canRead, canWrite}` |
+| `GET` | `/v1/capabilities/<plugin-id>/access` | 插件自有能力投影：恰好是插件在 `manifest.capabilities` 声明的 flag（由宿主挂载，见「插件权限档位」） |
 | `GET` | `/v1/models` | 可用模型与默认值 |
 | `GET` / `POST` | `/v1/projects` | 列出或创建项目 |
 | `DELETE` | `/v1/projects/:id` | 逻辑删除项目 |
@@ -179,6 +180,21 @@ export PI_MIGRATION_GATE=verify
 - `operator` 在整个 `/v1` 面被拒，因此返回固定 `403`，得不到任何投影。
 
 该端点与其它只读 `GET` 路由使用同一读 RBAC，并受相同的 token 与 CORS 规则约束。若未来矩阵出现分项不一致，布尔值只会更保守（绝不误报可写），因此访问控制 UI 可安全地据此隐藏写操作。
+
+这是**宿主通用契约且 schema 闭合**（`additionalProperties: false`）：它刻意不携带任何插件业务 flag。插件业务能力走插件自有的投影端点（见下）。
+
+### 插件权限档位与插件自有能力投影
+
+插件路由只能声明三个**宿主所有**的权限档位之一，宿主经唯一权威映射表固定映射为 `capability:read` / `capability:write` / `capability:admin`（角色集合分别为 `viewer+user+admin` / `user+admin` / `admin`）。`CAPABILITY_TIER_ROLES` 是唯一权威定义，矩阵的三条 `capability:*` 由它派生。`access` 是插件包提供的运行时 JS 值，因此在注册期显式校验，未知值 **fail-closed 抛错**，绝不静默降级为写权限。
+
+档位是宿主的词汇且冻结为三个值；插件的业务 flag 是插件的词汇，可自由增殖。插件在 `manifest.capabilities` 声明 flag，并在注册阶段用 `PluginHostContext.declareCapabilities({ flag: tier })` 把每个 flag 绑定到档位。宿主据此为每个声明了能力的插件自动挂载只读投影：
+
+- `GET /v1/capabilities/<plugin-id>/access`（权限点 `capability:read`）返回**恰好**是声明的 flag 集合，每个值由档位矩阵派生；role 缺失或未知时全部为 `false`（fail-closed）；
+- `/access` 是宿主保留路径：插件在该路径声明路由会在注册期被拒；
+- 宿主绝不解释 flag 语义——`canBind` 意味着什么是插件自己的事。**新增一个插件 flag 不需要改动宿主**，新增一个档位才需要；
+- 插件 handler 经 `context.capabilities = {read, write, admin}` 拿到本次调用方的档位布尔（与路由 gate 同源）。这是区分权限的**受支持入口**；不要读 `request.access.role`。`request`/`reply` 是透传的宿主内部载体（插件只应用 params/query/body/headers），其中的身份字段属于未承诺细节，可能静默变化。
+
+onev 插件声明 `canBind → admin`：绑定/改绑钉钉文档会触发同步 worker 以服务自身的 DWS 凭据读取该文档并把产物写入共享项目目录，因此属于管理级变更而非普通写。
 
 ### 消息输入与图片附件
 

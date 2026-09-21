@@ -5,11 +5,14 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { randomUUID } from "node:crypto";
 import { SessionService, type SessionDto } from "../application/session-service.js";
 import {
+  PLUGIN_ROUTE_ACCESS,
   PLUGIN_SESSION_TITLE_LIMITS,
   type LoadedPlugin,
+  type PluginCapabilityTiers,
   type PluginHostContext,
   type PluginModeProfile,
   type PluginRoute,
+  type PluginRouteAccess,
   type PluginSessionApi,
   type PluginSessionRef,
   type PluginTurnResult,
@@ -17,7 +20,31 @@ import {
 import { identityKey } from "../core/user-identity.js";
 import { TURN_TEXT_LIMITS, checkTurnText } from "../core/text-input.js";
 import { TURN_ERROR_CODES } from "../application/ports/session-runtime-port.js";
-import { requirePermission } from "./route-rbac.js";
+import { allowsCapabilityTier, requirePermission, type RoutePermission } from "./route-rbac.js";
+
+/**
+ * 插件权限档位 → 中央权限点：**唯一映射表**。
+ *
+ * 用显式表而非 `route.access === "read" ? … : …` 三元：插件包是运行时 JS，
+ * 非法 access 在三元下会静默拿到写权限（fail-open）；本表 + 注册期校验保证未知值 fail-closed。
+ */
+const PLUGIN_ROUTE_PERMISSIONS: Record<PluginRouteAccess, RoutePermission> = {
+  read: "capability:read",
+  write: "capability:write",
+  admin: "capability:admin",
+};
+
+/** 能力投影的保留路径：插件不得声明同名路由（防止遮蔽宿主投影）。 */
+const RESERVED_CAPABILITY_ACCESS_PATH = "/access";
+
+/**
+ * 是否已知的权限档位（运行时收口，拒绝 "readonly"/"wrtie" 之类变体）。
+ * 用模块私有 Set 判定，不依赖可被同进程插件改写的导出数组。
+ */
+const PLUGIN_ROUTE_ACCESS_SET: ReadonlySet<string> = new Set<string>(PLUGIN_ROUTE_ACCESS);
+function isPluginRouteAccess(value: unknown): value is PluginRouteAccess {
+  return typeof value === "string" && PLUGIN_ROUTE_ACCESS_SET.has(value);
+}
 
 export type PluginHostOptions = {
   readonly app: FastifyInstance;
@@ -42,12 +69,21 @@ export async function registerPlugins(
   try {
     for (const loaded of plugins) {
       const routes = new Set<string>();
+      const declaredCapabilities = loaded.capabilities;
+      // 能力映射在 register 期间由 declareCapabilities 填充；register 返回后校验完整性。
+      let capabilityTiers: Readonly<Record<string, PluginRouteAccess>> | undefined;
       const context: PluginHostContext = {
         projectCwd: options.projectCwd,
         modes: loaded.modes,
         // 权威定义在 application/ports（经 public-api/contract 静态导出）；此处把同一对象
         // 注入插件，插件不重复定义这些字符串。冻结对象可直接共享，不存在被改写风险。
         turnErrorCodes: TURN_ERROR_CODES,
+        declareCapabilities: (map) => {
+          if (capabilityTiers !== undefined) {
+            throw new Error(`插件重复声明能力映射: ${loaded.manifest.id}`);
+          }
+          capabilityTiers = validateCapabilityDeclarations(map, loaded.manifest.id, declaredCapabilities);
+        },
         mountRoute: (route) => {
           const routeKey = `${route.method}:${route.path}`;
           if (routes.has(routeKey)) {
@@ -61,6 +97,17 @@ export async function registerPlugins(
       // register 可能在抛错前已分配资源；先登记，失败回滚时也必须调用其 dispose。
       registered.push(loaded);
       await loaded.plugin.register?.(context);
+      // 声明过的每个 flag 必须有档位映射：否则它会在投影中静默恒 false（fail-closed，
+      // 但那是“插件写错了”而不是“角色不允许”，必须在注册期暴露而不是线上才发现）。
+      const unmapped = declaredCapabilities.filter(
+        (flag) => capabilityTiers === undefined || !Object.hasOwn(capabilityTiers, flag),
+      );
+      if (unmapped.length > 0) {
+        throw new Error(`插件能力缺少档位映射: ${loaded.manifest.id} -> ${unmapped.join(",")}`);
+      }
+      if (declaredCapabilities.length > 0) {
+        registerCapabilityProjection(options.app, loaded.manifest.id, capabilityTiers ?? {});
+      }
     }
   } catch (error) {
     try {
@@ -282,9 +329,92 @@ function assertRoute(route: PluginRoute, pluginId: string): void {
   if (typeof route.method !== "string" || !(PLUGIN_HTTP_METHODS as readonly string[]).includes(route.method)) {
     throw new Error(`插件路由方法无效: ${pluginId} -> ${route.path}`);
   }
+  // access 同样是运行时 JS 值：未知档位必须 fail-closed，绝不静默降级为写权限。
+  if (!isPluginRouteAccess(route.access)) {
+    throw new Error(`插件路由 access 无效: ${pluginId} -> ${route.path} -> ${String(route.access)}`);
+  }
+  // `/access` 是宿主能力投影的保留路径；插件声明同名路由会遮蔽它，注册期直接拒绝。
+  if (route.path === RESERVED_CAPABILITY_ACCESS_PATH) {
+    throw new Error(`插件路由使用宿主保留路径: ${pluginId} -> ${route.path}`);
+  }
   if (typeof route.handler !== "function") {
     throw new Error(`插件路由处理器无效: ${pluginId} -> ${route.path}`);
   }
+}
+
+/**
+ * 校验插件声明的「业务 flag → 权限档位」映射。
+ *
+ * 插件是运行时 JS，因此 map 的形状、键与值都必须显式收口：
+ * 键必须已在 manifest.capabilities 中声明（插件不能凭空发明宿主未审计的标识），
+ * 值必须是已知档位（read/write/admin）。
+ */
+function validateCapabilityDeclarations(
+  map: unknown,
+  pluginId: string,
+  declared: readonly string[],
+): Readonly<Record<string, PluginRouteAccess>> {
+  if (typeof map !== "object" || map === null || Array.isArray(map)) {
+    throw new Error(`插件能力映射无效: ${pluginId}`);
+  }
+  const declaredSet = new Set(declared);
+  const tiers: Record<string, PluginRouteAccess> = {};
+  for (const [flag, tier] of Object.entries(map as Record<string, unknown>)) {
+    if (!declaredSet.has(flag)) {
+      throw new Error(`插件能力映射含未声明的标识: ${pluginId} -> ${flag}`);
+    }
+    if (!isPluginRouteAccess(tier)) {
+      throw new Error(`插件能力档位无效: ${pluginId} -> ${flag} -> ${String(tier)}`);
+    }
+    tiers[flag] = tier;
+  }
+  return tiers;
+}
+
+/**
+ * 挂载插件能力投影：`GET /v1/capabilities/<plugin-id>/access`。
+ *
+ * 响应体恰好是 manifest 声明的 flag 集合（不多不少），值为布尔；由中央矩阵经
+ * allowsCapabilityTier 派生，role 缺失/未知一律 false（fail-closed）。
+ * 宿主不解释 flag 语义——「canBind 意味着什么」是插件自己的事。
+ */
+function registerCapabilityProjection(
+  app: FastifyInstance,
+  pluginId: string,
+  tiers: Readonly<Record<string, PluginRouteAccess>>,
+): void {
+  const flags = Object.keys(tiers);
+  app.route({
+    method: "GET",
+    url: `/v1/capabilities/${pluginId}${RESERVED_CAPABILITY_ACCESS_PATH}`,
+    // 与插件路由一致：宿主显式禁用 GET 派生的自动 HEAD 路由。
+    exposeHeadRoute: false,
+    ...requirePermission("capability:read"),
+    handler: async (request: FastifyRequest, reply: FastifyReply) => {
+      const access = request.access as { role?: unknown } | undefined;
+      const role = access === undefined ? undefined : access.role;
+      const projection: Record<string, boolean> = {};
+      for (const flag of flags) {
+        projection[flag] = allowsCapabilityTier(tiers[flag], role);
+      }
+      // 响应体依赖调用方身份（当前仅来自来源 IP，无 Bearer token）：
+      // 绝不能被共享代理/浏览器中间缓存，否则 admin 的 {canBind:true} 会回给其他来源。
+      // 仅靠 Vary: Authorization 不够——身份可能只由 IP 决定。
+      reply.header("cache-control", "private, no-store");
+      return projection;
+    },
+  });
+}
+
+/** 把本次请求的权限档位投影成三个布尔；role 缺失/未知一律 false（fail-closed）。 */
+function capabilityTiersOf(request: FastifyRequest): PluginCapabilityTiers {
+  const access = request.access as { role?: unknown } | undefined;
+  const role = access === undefined ? undefined : access.role;
+  return {
+    read: allowsCapabilityTier("read", role),
+    write: allowsCapabilityTier("write", role),
+    admin: allowsCapabilityTier("admin", role),
+  };
 }
 
 /** 兼容测试/非 HTTP 组合的最小事件源形状（仅用 on/off/writableEnded）。 */
@@ -337,7 +467,7 @@ function registerRoute(
   sessions: SessionService,
   modes: readonly PluginModeProfile[],
 ): void {
-  const permission = route.access === "read" ? "capability:read" : "capability:write";
+  const permission = PLUGIN_ROUTE_PERMISSIONS[route.access];
   app.route({
     method: route.method,
     url: `/v1/capabilities/${pluginId}${route.path}`,
@@ -356,6 +486,7 @@ function registerRoute(
         return await route.handler({
           ownerKey,
           sessions: sessionScope.api,
+          capabilities: capabilityTiersOf(request),
           request,
           reply,
         });

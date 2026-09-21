@@ -35,10 +35,25 @@ function fakeApp(): { app: FastifyInstance; routes: CapturedRoute[] } {
   return { app: app as unknown as FastifyInstance, routes };
 }
 
+/**
+ * 最小 reply duck type：投影 handler 会调用 reply.header 设置 no-store，因此不能传空对象。
+ * 记录写入的头以便断言（返回 this 支持 Fastify 式链式调用）。
+ */
+function projectionReply(record: Record<string, string> = {}): unknown {
+  return {
+    headers: record,
+    header(name: string, value: string) {
+      record[name] = value;
+      return this;
+    },
+  };
+}
+
 function loadedPlugin(
   id: string,
   options: {
     modes?: readonly PluginModeProfile[];
+    capabilities?: readonly string[];
     register?: PluginModule["register"];
     dispose?: PluginModule["dispose"];
   } = {},
@@ -54,6 +69,7 @@ function loadedPlugin(
     tools: [],
     promptFragments: [],
     modes: options.modes ?? [],
+    capabilities: options.capabilities ?? [],
     plugin,
   };
 }
@@ -1063,5 +1079,230 @@ describe("plugin host", () => {
 
     expect(observed).toEqual(["rejected", "rejected", "rejected", "rejected"]);
     expect(fake.runTurnCalls).toHaveLength(0);
+  });
+});
+
+describe("plugin host：权限档位与能力投影", () => {
+  it("access 映射到中央权限点：read/write/admin，未知值 fail-closed 而不静默降级为写", async () => {
+    const { app, routes } = fakeApp();
+    const fake = fakeSessions();
+    const plugin = loadedPlugin("onev", {
+      register: (received) => {
+        for (const access of ["read", "write", "admin"] as const) {
+          received.mountRoute({ method: "GET", path: `/${access}`, access, handler: () => ({ ok: true }) });
+        }
+      },
+    });
+    await registerPlugins([plugin], { app, projectCwd: "/tmp/project", sessions: fake.sessions });
+
+    expect(routes.map((route) => [route.url, route.config.permission])).toEqual([
+      ["/v1/capabilities/onev/read", "capability:read"],
+      ["/v1/capabilities/onev/write", "capability:write"],
+      ["/v1/capabilities/onev/admin", "capability:admin"],
+    ]);
+  });
+
+  it("非法 access 在注册期抛错，不注册任何路由（绝不当成 write 放行）", async () => {
+    const { app, routes } = fakeApp();
+    const fake = fakeSessions();
+    const plugin = loadedPlugin("onev", {
+      register: (received) => {
+        received.mountRoute({
+          method: "POST",
+          path: "/documents/links",
+          access: "wrtie" as never,
+          handler: () => ({ ok: true }),
+        });
+      },
+    });
+    await expect(
+      registerPlugins([plugin], { app, projectCwd: "/tmp/project", sessions: fake.sessions }),
+    ).rejects.toThrow(/access 无效/);
+    expect(routes).toHaveLength(0);
+  });
+
+  it("/access 是宿主保留路径：插件声明同名路由在注册期被拒", async () => {
+    const { app } = fakeApp();
+    const fake = fakeSessions();
+    const plugin = loadedPlugin("onev", {
+      register: (received) => {
+        received.mountRoute({ method: "GET", path: "/access", access: "read", handler: () => ({}) });
+      },
+    });
+    await expect(
+      registerPlugins([plugin], { app, projectCwd: "/tmp/project", sessions: fake.sessions }),
+    ).rejects.toThrow(/保留路径/);
+  });
+
+  it("能力投影：响应体恰好是声明的 flag，值为由矩阵派生的布尔（按 role 变化）", async () => {
+    const { app, routes } = fakeApp();
+    const fake = fakeSessions();
+    const plugin = loadedPlugin("onev", {
+      capabilities: ["canBind", "canReadDocs"],
+      register: (received) => {
+        received.declareCapabilities({ canBind: "admin", canReadDocs: "read" });
+      },
+    });
+    await registerPlugins([plugin], { app, projectCwd: "/tmp/project", sessions: fake.sessions });
+
+    const projection = routes.find((route) => route.url === "/v1/capabilities/onev/access");
+    expect(projection).toBeDefined();
+    expect(projection!.method).toBe("GET");
+    expect(projection!.config.permission).toBe("capability:read");
+    // 与插件路由一致：禁用 GET 派生的自动 HEAD。
+    expect(projection!.exposeHeadRoute).toBe(false);
+
+    const withRole = (role: string) =>
+      projection!.handler(
+        { user: { kind: "ip", ip: "192.0.2.7" }, access: { role } } as unknown as FastifyRequest,
+        projectionReply() as unknown as FastifyReply,
+      );
+    expect(await withRole("admin")).toEqual({ canBind: true, canReadDocs: true });
+    expect(await withRole("user")).toEqual({ canBind: false, canReadDocs: true });
+    expect(await withRole("viewer")).toEqual({ canBind: false, canReadDocs: true });
+    expect(await withRole("operator")).toEqual({ canBind: false, canReadDocs: false });
+  });
+
+  it("能力投影 fail-closed：access 缺失或 role 未知 → 全部 false", async () => {    const { app, routes } = fakeApp();
+    const fake = fakeSessions();
+    const plugin = loadedPlugin("onev", {
+      capabilities: ["canBind"],
+      register: (received) => received.declareCapabilities({ canBind: "admin" }),
+    });
+    await registerPlugins([plugin], { app, projectCwd: "/tmp/project", sessions: fake.sessions });
+
+    const projection = routes.find((route) => route.url === "/v1/capabilities/onev/access")!;
+    for (const request of [
+      { user: { kind: "ip", ip: "192.0.2.7" } },
+      { user: { kind: "ip", ip: "192.0.2.7" }, access: { role: "superuser" } },
+    ]) {
+      expect(await projection.handler(request as unknown as FastifyRequest, projectionReply() as unknown as FastifyReply)).toEqual({
+        canBind: false,
+      });
+    }
+  });
+
+  it("未声明 capabilities 时不挂载投影端点（不凭空暴露能力）", async () => {
+    const { app, routes } = fakeApp();
+    const fake = fakeSessions();
+    const plugin = loadedPlugin("onev", { register: () => {} });
+    await registerPlugins([plugin], { app, projectCwd: "/tmp/project", sessions: fake.sessions });
+    expect(routes.filter((route) => route.url.endsWith("/access"))).toHaveLength(0);
+  });
+
+  it("声明过的 flag 必须映射到档位：漏映射在注册期抛错，不静默恒 false", async () => {
+    const { app } = fakeApp();
+    const fake = fakeSessions();
+    const plugin = loadedPlugin("onev", {
+      capabilities: ["canBind", "canPublish"],
+      register: (received) => received.declareCapabilities({ canBind: "admin" }),
+    });
+    await expect(
+      registerPlugins([plugin], { app, projectCwd: "/tmp/project", sessions: fake.sessions }),
+    ).rejects.toThrow(/缺少档位映射.*canPublish/);
+  });
+
+  it("投影端点是只读 GET：响应不可被共享缓存（身份仅来自来源 IP）", async () => {
+    const { app, routes } = fakeApp();
+    const fake = fakeSessions();
+    const plugin = loadedPlugin("onev", {
+      capabilities: ["canBind"],
+      register: (received) => received.declareCapabilities({ canBind: "admin" }),
+    });
+    await registerPlugins([plugin], { app, projectCwd: "/tmp/project", sessions: fake.sessions });
+
+    const projection = routes.find((route) => route.url === "/v1/capabilities/onev/access")!;
+    const headers: Record<string, string> = {};
+    await projection.handler(
+      { user: { kind: "ip", ip: "192.0.2.7" }, access: { role: "admin" } } as unknown as FastifyRequest,
+      projectionReply(headers) as unknown as FastifyReply,
+    );
+    // 身份可能仅由来源 IP 决定（无 Bearer token），Vary: Authorization 不够：必须显式禁缓存。
+    expect(headers["cache-control"]).toBe("private, no-store");
+  });
+
+  it("/access 是宿主保留路径：所有方法在同一路径上都被拒（含 GET/POST/HEAD 变体）", async () => {
+    for (const method of ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"] as const) {
+      const { app } = fakeApp();
+      const fake = fakeSessions();
+      const plugin = loadedPlugin("onev", {
+        register: (received) => {
+          received.mountRoute({
+            method: method as never,
+            path: "/access",
+            access: "read",
+            handler: () => ({}),
+          });
+        },
+      });
+      await expect(
+        registerPlugins([plugin], { app, projectCwd: "/tmp/project", sessions: fake.sessions }),
+        method,
+      ).rejects.toThrow(/保留路径|方法无效/);
+    }
+  });
+
+  it("能力映射收口：未声明的 flag、未知档位、重复声明均 fail-fast", async () => {
+    const cases: Array<{ capabilities: string[]; declare: PluginModule["register"]; pattern: RegExp }> = [
+      {
+        capabilities: ["canBind"],
+        declare: (received) => received.declareCapabilities({ canPublish: "write" }),
+        pattern: /未声明的标识/,
+      },
+      {
+        capabilities: ["canBind"],
+        declare: (received) => received.declareCapabilities({ canBind: "readonly" as never }),
+        pattern: /档位无效/,
+      },
+      {
+        capabilities: ["canBind"],
+        declare: (received) => {
+          received.declareCapabilities({ canBind: "admin" });
+          received.declareCapabilities({ canBind: "admin" });
+        },
+        pattern: /重复声明/,
+      },
+    ];
+    for (const { capabilities, declare, pattern } of cases) {
+      const { app } = fakeApp();
+      const fake = fakeSessions();
+      const plugin = loadedPlugin("onev", { capabilities, register: declare });
+      await expect(
+        registerPlugins([plugin], { app, projectCwd: "/tmp/project", sessions: fake.sessions }),
+        String(pattern),
+      ).rejects.toThrow(pattern);
+    }
+  });
+
+  it("handler 上下文注入权限档位投影（与路由 gate 同源，role 缺失/未知全 false）", async () => {
+    const { app, routes } = fakeApp();
+    const fake = fakeSessions();
+    const seen: unknown[] = [];
+    const plugin = loadedPlugin("onev", {
+      register: (received) => {
+        received.mountRoute({
+          method: "POST",
+          path: "/documents/links",
+          access: "admin",
+          handler: (context) => {
+            seen.push((context as PluginRouteRequestContext).capabilities);
+            return { ok: true };
+          },
+        });
+      },
+    });
+    await registerPlugins([plugin], { app, projectCwd: "/tmp/project", sessions: fake.sessions });
+
+    const call = (request: unknown) =>
+      routes[0]!.handler(request as FastifyRequest, {} as FastifyReply);
+    await call({ user: { kind: "ip", ip: "192.0.2.7" }, access: { role: "admin" } });
+    await call({ user: { kind: "ip", ip: "192.0.2.7" }, access: { role: "viewer" } });
+    await call({ user: { kind: "ip", ip: "192.0.2.7" } });
+
+    expect(seen).toEqual([
+      { read: true, write: true, admin: true },
+      { read: true, write: false, admin: false },
+      { read: false, write: false, admin: false },
+    ]);
   });
 });

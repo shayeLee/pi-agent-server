@@ -134,6 +134,7 @@ All routes first check the source IP. `/health` and `/readyz` do not require a t
 | `GET` | `/readyz` | Process startup and migration-gate readiness |
 | `GET` | `/metrics` | Fixed Prometheus process/readiness surface |
 | `GET` | `/v1/access` | Minimal access-capability projection `{canRead, canWrite}` derived from the central RBAC matrix |
+| `GET` | `/v1/capabilities/<plugin-id>/access` | Plugin-owned capability projection: exactly the flags the plugin declared in `manifest.capabilities` (host-mounted; see "Plugin permission tiers") |
 | `GET` | `/v1/models` | Available models and defaults |
 | `GET` / `POST` | `/v1/projects` | List or create projects |
 | `DELETE` | `/v1/projects/:id` | Logically delete a project |
@@ -179,6 +180,21 @@ Title policy belongs to the plugin that understands the mode and its data: after
 - `operator` is denied on the whole `/v1` surface, so it receives the fixed `403` and no projection.
 
 The endpoint uses the same read RBAC as the other read-only `GET` routes and is subject to the same token and CORS rules. If the matrix ever diverges, the boolean is derived conservatively (never over-reports write access), so an access-control UI can safely hide write actions.
+
+This is a **generic host contract with a closed schema** (`additionalProperties: false`): it deliberately carries no plugin business flags. Plugin-specific capabilities use the plugin's own projection (see below).
+
+### Plugin permission tiers and plugin-owned capability projection
+
+Plugin routes declare exactly one of three **host-owned** permission tiers, which the host maps through a single authoritative table to `capability:read` / `capability:write` / `capability:admin` (roles `viewer+user+admin` / `user+admin` / `admin`). `CAPABILITY_TIER_ROLES` is the single source of truth and the three `capability:*` matrix rows are derived from it. `access` is a runtime JS value from a plugin package, so it is validated at registration and an unknown value **fails closed with an error** instead of silently degrading to write access.
+
+Tiers are the host's vocabulary and stay frozen at three values; a plugin's business flags are the plugin's vocabulary and can grow freely. A plugin declares its flags in `manifest.capabilities` and binds each one to a tier at registration via `PluginHostContext.declareCapabilities({ flag: tier })`. The host then auto-mounts a read-only projection for every plugin that declares capabilities:
+
+- `GET /v1/capabilities/<plugin-id>/access` (permission `capability:read`) returns **exactly** the declared flag set, each value derived from the tier matrix; a missing or unknown role yields all `false` (fail-closed).
+- `/access` is a reserved host path: a plugin declaring a route at that path is rejected at registration.
+- The host never interprets flag semantics — what `canBind` means is the plugin's business. **Adding a plugin flag requires no host change**; adding a tier does.
+- Plugin handlers receive the caller's tier booleans as `context.capabilities = {read, write, admin}`, derived from the same matrix as the route gate. That projection is the supported way to branch on permissions; do not read `request.access.role`. The `request`/`reply` objects are pass-through host internals (plugins should use only params/query/body/headers), so their identity fields are uncommitted details that may change silently.
+
+The onev plugin declares `canBind → admin`: binding/rebinding a DingTalk document triggers the sync worker to read that document with the service's own DWS credentials and write the result into the shared project directory, so it is an administrative change rather than an ordinary write.
 
 ### Message input and image attachments
 

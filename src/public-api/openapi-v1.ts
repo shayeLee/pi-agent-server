@@ -183,7 +183,14 @@ export const openapiV1 = {
       }),
     },
     "/v1/access": {
-      get: operation("getAccess", "access:read", { "200": { description: "Access projection.", ...json(ref("Access")) } }),
+      get: operation("getAccess", "access:read", {
+        "200": {
+          description: "Access projection.",
+          ...json(ref("Access")),
+          // 响应依赖调用方身份（当前仅来自来源 IP）：绝不能被共享缓存跨来源复用。
+          headers: { "Cache-Control": { required: true, schema: { type: "string", const: "private, no-store" } } },
+        },
+      }),
       head: automaticHeadOperation("getAccessHead", "access:read", { "200": headJson("Access projection; the GET response body is suppressed.") }),
     },
     "/v1/models": {

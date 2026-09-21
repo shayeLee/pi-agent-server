@@ -102,20 +102,61 @@ export interface PluginManifest {
   promptFragments?: readonly PluginPromptFragment[];
   /** 声明的 Copilot mode profile；也可在 {@link PluginModule.modes} 上声明（后者优先）。 */
   modes?: readonly PluginModeProfile[];
+  /**
+   * 插件自声明的业务能力标识；键名即能力投影响应体的键名（如 "canBind"）。
+   * 宿主不解释这些标识的语义，只保证：未声明的标识永远不出现在投影中，
+   * 且每个声明过的标识必须在 register 阶段通过 declareCapabilities 绑定到一个权限档位。
+   */
+  capabilities?: readonly string[];
 }
 
-/** 插件路由访问级别；宿主映射到固定 capability:read / capability:write RBAC。 */
-export type PluginRouteAccess = "read" | "write";
+/** 插件路由访问级别；宿主映射到固定 capability:read / capability:write / capability:admin RBAC。 */
+export type PluginRouteAccess = "read" | "write" | "admin";
+
+/**
+ * 权限档位的运行时白名单（冻结三个值）。插件包是运行时 JS，不是 TypeScript，
+ * 因此 access 与能力声明必须显式收口为本集合，未知值一律 fail-closed。
+ * 对象自身也被冻结，避免受信插件改写同一模块实例使白名单失效。
+ */
+export const PLUGIN_ROUTE_ACCESS = Object.freeze(["read", "write", "admin"] as const);
+
+/** 插件业务能力标识（manifest.capabilities 的条目）：键名即投影响应体的键名。 */
+export const PLUGIN_CAPABILITY_NAME_PATTERN = /^[a-z][A-Za-z0-9]{0,31}$/;
+/** 单个插件可声明的业务能力数量上限。 */
+export const PLUGIN_CAPABILITY_LIMIT = 32;
 
 /** 插件 HTTP 方法。 */
 export type PluginHttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
 
 /** 受宿主鉴权后的插件路由上下文；ownerKey 只能由宿主从请求身份推导。 */
+/**
+ * 宿主已授权的插件权限档位投影（通用词汇，不含任何插件业务语义）。
+ *
+ * 这是区分权限的**受支持入口**：不要反查 `request.access`（见下）。
+ * `request`/`reply` 是透传的宿主对象，技术上可读到 role/IP，但那是未经承诺的内部细节，
+ * 会在宿主重构时静默失效，因此不属于插件契约。
+ */
+export type PluginCapabilityTiers = {
+  readonly read: boolean;
+  readonly write: boolean;
+  readonly admin: boolean;
+};
+
 export interface PluginRouteRequestContext {
   /** 宿主从已认证请求身份推导，仅供插件关联自己的业务记录。 */
   readonly ownerKey: string;
   /** 已绑定当前认证 owner 的会话 API；插件不能传入或伪造 owner。 */
   readonly sessions: PluginSessionApi;
+  /**
+   * 本次调用方的权限档位投影，由中央 RBAC 矩阵派生（与路由 gate 同源）。
+   * 供插件在同一插件内做更细粒度判断（如“本请求能否执行管理级变更”）。
+   */
+  readonly capabilities: PluginCapabilityTiers;
+  /**
+   * 透传的宿主请求/响应对象（插件只应用其公开的请求面：params/query/body/headers）。
+   * 这是不稳定的内部载体：不要依赖其中的身份字段（如 `access.role`）；
+   * 需要权限判断请读 {@link PluginCapabilityTiers}。
+   */
   readonly request: unknown;
   readonly reply: unknown;
 }
@@ -272,6 +313,14 @@ export interface PluginHostContext {
   /** 挂载插件 HTTP 路由。 */
   readonly mountRoute: PluginMountRoute;
   /**
+   * 声明「本插件业务 flag → 宿主通用权限档位」。宿主不解释 flag 语义，只保证：
+   * - flag 必须已在 manifest.capabilities 中声明（否则 fail-fast）；
+   * - 档位必须是 read/write/admin 之一（否则 fail-fast）；
+   * - 每个声明过的 flag 必须恰好映射一次；未映射的 flag 不会出现在投影中（fail-closed）。
+   * 宿主据此自动挂载只读投影端点 `GET /v1/capabilities/<plugin-id>/access`。
+   */
+  readonly declareCapabilities: (map: Readonly<Record<string, PluginRouteAccess>>) => void;
+  /**
    * `runTurn` 预算超限的稳定 error code 表（宿主 `TURN_ERROR_CODES` 的同一对象）。
    * 插件据此把预算超限映射成可行动文案，而不在本地维护副本；
    * 旧宿主未注入时插件回退到内置兜底值，因此本字段是 additive。
@@ -315,6 +364,8 @@ export interface LoadedPlugin {
   readonly promptFragments: readonly PluginPromptFragment[];
   /** 已通过校验的 Copilot mode profile（module.modes 优先，其次 manifest.modes）。 */
   readonly modes: readonly PluginModeProfile[];
+  /** 已通过校验的业务能力标识（manifest.capabilities）；未声明为空数组。 */
+  readonly capabilities: readonly string[];
   /** 原始插件模块；宿主稍后调用其 register / dispose。 */
   readonly plugin: PluginModule;
 }

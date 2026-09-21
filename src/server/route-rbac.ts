@@ -20,9 +20,33 @@
 
 import type { FastifyReply, FastifyRequest } from "fastify";
 import { IP_ROLES, type IpRole } from "../core/ip-access-policy.js";
+import { PLUGIN_ROUTE_ACCESS, type PluginRouteAccess } from "../plugin/contract.js";
+
+/**
+ * 插件权限档位 → 允许角色集合：插件能力档位的**唯一权威词汇表**。
+ *
+ * 档位是宿主词汇（少而稳定），插件的业务 flag 是插件词汇（可自由增殖）：
+ * 插件只声明「flag → 档位」，宿主不解释 flag 语义，路由 gate 与能力投影都从本表派生，
+ * 因此新增一个插件 flag 不需要改动宿主。档位集合由 PLUGIN_ROUTE_ACCESS 冻结为三个值，
+ * 不会随插件 flag 增长——档位一多，统一授权矩阵就退化成插件私有 ACL。
+ *
+ * 深冻结：授权表与内部角色数组都不可变。同进程插件属于受信代码但仍不应具备改写
+ * 授权表的能力（否则 `CAPABILITY_TIER_ROLES.admin.push("user")` 会同时改变路由 gate
+ * 与能力投影），因此这里不依赖「插件不会这么做」的约定。
+ */
+export const CAPABILITY_TIER_ROLES: Record<PluginRouteAccess, readonly IpRole[]> = Object.freeze({
+  read: Object.freeze(["admin", "user", "viewer"] as IpRole[]),
+  write: Object.freeze(["admin", "user"] as IpRole[]),
+  admin: Object.freeze(["admin"] as IpRole[]),
+});
 
 /** 已知角色集合（策略解析器已保证 policy 内 role 合法；此处防御未知/伪造值）。 */
 const KNOWN_ROLES: ReadonlySet<string> = new Set<string>(IP_ROLES);
+
+/** 构造不可变的角色集合（授权表运行时不可被同进程插件改写）。 */
+function frozenRoles(...roles: IpRole[]): readonly IpRole[] {
+  return Object.freeze(roles);
+}
 
 /**
  * 每路由显式声明的权限点（与 ROUTE_PERMISSIONS 一一对应）。
@@ -48,36 +72,39 @@ export type RoutePermission =
   | "sessions:events"
   | "capability:read"
   | "capability:write"
+  | "capability:admin"
   | "access:read";
 
 /** 中央权限定义：permission → 允许角色集合（default-deny：不在集合内 → 403）。 */
-export const ROUTE_PERMISSIONS: Record<RoutePermission, readonly IpRole[]> = {
+export const ROUTE_PERMISSIONS: Record<RoutePermission, readonly IpRole[]> = Object.freeze({
   // 探针：health/readyz 任何 admitted role；metrics 仅 admin/operator。
-  "probe:health": ["admin", "user", "viewer", "operator"],
-  "probe:readyz": ["admin", "user", "viewer", "operator"],
-  "probe:metrics": ["admin", "operator"],
+  "probe:health": frozenRoles("admin", "user", "viewer", "operator"),
+  "probe:readyz": frozenRoles("admin", "user", "viewer", "operator"),
+  "probe:metrics": frozenRoles("admin", "operator"),
   // viewer 纯读：模型/项目/会话列表、会话导出、SSE 事件流。
-  "models:list": ["admin", "user", "viewer"],
-  "projects:list": ["admin", "user", "viewer"],
-  "sessions:list": ["admin", "user", "viewer"],
-  "sessions:export": ["admin", "user", "viewer"],
-  "sessions:file-preview": ["admin", "user", "viewer"],
-  "sessions:events": ["admin", "user", "viewer"],
-  // 外部能力插件：查询允许 viewer/user/admin；变更允许 user/admin。
-  "capability:read": ["admin", "user", "viewer"],
-  "capability:write": ["admin", "user"],
+  "models:list": frozenRoles("admin", "user", "viewer"),
+  "projects:list": frozenRoles("admin", "user", "viewer"),
+  "sessions:list": frozenRoles("admin", "user", "viewer"),
+  "sessions:export": frozenRoles("admin", "user", "viewer"),
+  "sessions:file-preview": frozenRoles("admin", "user", "viewer"),
+  "sessions:events": frozenRoles("admin", "user", "viewer"),
+  // 外部能力插件：三个档位由 CAPABILITY_TIER_ROLES 单一权威派生（不重复字面量，杜绝漂移）。
+  // read：查询允许 viewer/user/admin；write：常规变更允许 user/admin；admin：管理级变更仅 admin。
+  "capability:read": CAPABILITY_TIER_ROLES.read,
+  "capability:write": CAPABILITY_TIER_ROLES.write,
+  "capability:admin": CAPABILITY_TIER_ROLES.admin,
   // P7b 宿主访问能力投影端点：与其它纯读 GET 同为 viewer/user/admin；operator 仍拒。
-  "access:read": ["admin", "user", "viewer"],
+  "access:read": frozenRoles("admin", "user", "viewer"),
   // 写/变更：user/admin（仍 owner 隔离；admin 暂不跨 owner）。
-  "projects:create": ["admin", "user"],
-  "projects:delete": ["admin", "user"],
-  "sessions:create": ["admin", "user"],
-  "sessions:delete": ["admin", "user"],
-  "sessions:update": ["admin", "user"],
-  "sessions:update-config": ["admin", "user"],
-  "sessions:send-message": ["admin", "user"],
-  "sessions:control": ["admin", "user"], // steer / follow-up / abort
-};
+  "projects:create": frozenRoles("admin", "user"),
+  "projects:delete": frozenRoles("admin", "user"),
+  "sessions:create": frozenRoles("admin", "user"),
+  "sessions:delete": frozenRoles("admin", "user"),
+  "sessions:update": frozenRoles("admin", "user"),
+  "sessions:update-config": frozenRoles("admin", "user"),
+  "sessions:send-message": frozenRoles("admin", "user"),
+  "sessions:control": frozenRoles("admin", "user"), // steer / follow-up / abort
+});
 
 /**
  * P7b 宿主访问能力投影（`GET /v1/access` 的最小固定响应体）：`{canRead, canWrite}`。
@@ -121,6 +148,18 @@ export function projectAccessCapabilities(role: unknown): AccessCapabilities {
 
 export function isRoutePermission(value: unknown): value is RoutePermission {
   return typeof value === "string" && Object.hasOwn(ROUTE_PERMISSIONS, value);
+}
+
+/**
+ * 单个插件能力档位对某 role 是否允许（插件能力投影的唯一判定入口）。
+ *
+ * fail-closed：未知档位、缺失/未知/伪造 role 一律 false，绝不因名义而误报可写。
+ * 直接读 CAPABILITY_TIER_ROLES（而非拼 permission 字符串），因此与路由 gate 同源、不会漂移。
+ */
+export function allowsCapabilityTier(tier: unknown, role: unknown): boolean {
+  if (typeof tier !== "string" || !Object.hasOwn(CAPABILITY_TIER_ROLES, tier)) return false;
+  if (typeof role !== "string" || !KNOWN_ROLES.has(role)) return false;
+  return CAPABILITY_TIER_ROLES[tier as PluginRouteAccess].includes(role as IpRole);
 }
 
 export type RouteAuthorizationVerdict =

@@ -423,8 +423,10 @@ export function buildApp(deps: ServerDeps): FastifyInstance {
     // P7b 宿主访问能力投影：最小固定响应体 `{canRead, canWrite}`，由中央 ROUTE_PERMISSIONS
     // 矩阵 + evaluateRouteAuthorization 派生（绝不返回 role/IP/token）。纯读 GET，与其它只读
     // 路由同为 viewer/user/admin；operator 仍由全局 default-deny 403 拒。
-    api.get("/access", { ...requirePermission("access:read") }, async (request) =>
-      projectAccessCapabilities(request.access.role),
+    // 响应依赖调用方身份（当前仅来自来源 IP）：不得被共享缓存，否则 admin 的
+    // {canWrite:true} 可能回给其他来源（仅 Vary: Authorization 不够）。
+    api.get("/access", { ...requirePermission("access:read") }, async (request, reply) =>
+      reply.header("cache-control", "private, no-store").send(projectAccessCapabilities(request.access.role)),
     );
     api.get("/models", { ...requirePermission("models:list") }, async () => sessions.models());
     api.get("/projects", { ...requirePermission("projects:list") }, async (request) => sessions.listProjects(ownerKeyOf(request)));

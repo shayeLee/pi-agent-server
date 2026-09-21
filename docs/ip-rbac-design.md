@@ -136,6 +136,7 @@ hashes**）注入 `request`；401/403 响应体不含原始 IP/token/path。prof
 | `POST /v1/sessions/:id/messages`、`POST …/steer`、`POST …/follow-ups`、`POST …/abort` | ❌（写/控制） | ✅ | ❌ | ✅ |
 | 外部插件 `capability:read` 路由 | ✅ | ✅ | ❌ | ✅ |
 | 外部插件 `capability:write` 路由 | ❌ | ✅ | ❌ | ✅ |
+| 外部插件 `capability:admin` 路由 | ❌ | ❌ | ❌ | ✅ |
 
 - **operator：`/v1` 全部拒绝（403）**，含纯读 GET；仅探针 `/health`/`/readyz`/`/metrics` 可达。
 - **viewer：只读**——允许上述纯读 GET 与 SSE 订阅；一切 POST/PATCH/DELETE（含 messages/steer/
@@ -169,8 +170,11 @@ tokenRequired，不换角色）；未登记 IP 默认 `user`。
   仍 401（`WWW-Authenticate: Bearer`），不因角色允许而跳过。
 - **CORS 预检不做 role/token**：合规预检（`OPTIONS` + `Origin` + `Access-Control-Request-Method`）由
   CORS 插件在 role gate 之前的 onRequest 直接回 204（仍先过 admission）；实际请求才 role gate。
-- **外部插件路由**：受信插件只能声明 `read` 或 `write` 两档，宿主固定映射为 `capability:read` / `capability:write`；不能声明任意 permission，仍保持 default-deny。
-- **访问能力投影 `GET /v1/access`（P7b）**：权限点为中央矩阵的 `access:read`（允许 `admin/user/viewer`，`operator` 仍拒）；响应体为最小固定投影 `{canRead, canWrite}`，由 `ROUTE_PERMISSIONS` + `evaluateRouteAuthorization` 经 `projectAccessCapabilities` 派生，不硬编码、绝不返回 role/IP/token。`canRead` = 读权限全允许（viewer/user/admin）；`canWrite` = `sessions:send-message` + `sessions:control` + `capability:write` 全允许（user/admin）；矩阵分项不一致时布尔值更保守（少报可写）。
+- **外部插件路由（三档）**：受信插件只能声明 `read` / `write` / `admin` 三档，宿主经唯一映射表固定映射为 `capability:read` / `capability:write` / `capability:admin`（分别对应角色集合 `viewer+user+admin` / `user+admin` / `admin`）；不能声明任意 permission，仍保持 default-deny。`access` 是运行时 JS 值，注册期显式收口，未知值 **fail-closed 抛错**（绝不静默降级为写权限）。
+- **插件权限档位的唯一词汇表**：`CAPABILITY_TIER_ROLES`（`src/server/route-rbac.ts`）是档位 → 角色集合的**唯一权威**定义，`ROUTE_PERMISSIONS` 的三条 `capability:*` 由它派生（不重复字面量，杜绝漂移）。档位是**宿主**词汇且冻结为三个值；插件的业务 flag 是**插件**词汇，可自由增殖——插件只声明「flag → 档位」，宿主不解释 flag 语义。
+- **插件能力投影 `GET /v1/capabilities/<plugin-id>/access`**：插件在 manifest 声明 `capabilities`，并在 register 阶段用 `declareCapabilities({ flag: tier })` 绑定档位；宿主据此为**每个声明了能力的插件**自动挂载该只读端点，权限点为 `capability:read`。响应体**恰好**是声明的 flag 集合（不多不少），值为由 `CAPABILITY_TIER_ROLES` 经 `allowsCapabilityTier` 派生的布尔；role 缺失/未知 → 全 false（fail-closed）。宿主绝不解释 flag 语义——「`canBind` 意味着什么」是插件自己的事。`/access` 是宿主保留路径，插件声明同名路由在注册期被拒。**新增一个插件 flag 不需要改动宿主**；新增一个档位才需要。
+- **插件上下文的能力档位投影**：插件 handler 经 `context.capabilities = {read, write, admin}` 拿到本次调用方的档位布尔（与路由 gate 同源），这是区分权限的**受支持入口**；不要读 `request.access.role`。`request`/`reply` 是透传的宿主内部载体（插件只应用 params/query/body/headers），其中的 role/IP 属于未承诺细节，可能静默变化。
+- **访问能力投影 `GET /v1/access`（P7b）**：权限点为中央矩阵的 `access:read`（允许 `admin/user/viewer`，`operator` 仍拒）；响应体为最小固定投影 `{canRead, canWrite}`，由 `ROUTE_PERMISSIONS` + `evaluateRouteAuthorization` 经 `projectAccessCapabilities` 派生，不硬编码、绝不返回 role/IP/token。`canRead` = 读权限全允许（viewer/user/admin）；`canWrite` = `sessions:send-message` + `sessions:control` + `capability:write` 全允许（user/admin）；矩阵分项不一致时布尔值更保守（少报可写）。**该端点是宿主通用契约，不含任何插件业务 flag**（闭合 schema `additionalProperties:false`）；插件业务能力走上面的插件自有投影端点。
 - **owner 隔离不变**：user/admin 跨 owner 访问统一 404（与不存在一致），admin 暂不跨 owner。
 
 ## 7. 边界与明确不做（WP5D 范围内）

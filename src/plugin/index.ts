@@ -1,7 +1,15 @@
 // src/plugin barrel export
-export { BUILTIN_TOOL_NAMES, PLUGIN_RUN_TURN_LIMITS, PLUGIN_SESSION_TITLE_LIMITS } from "./contract.js";
+export {
+  BUILTIN_TOOL_NAMES,
+  PLUGIN_CAPABILITY_LIMIT,
+  PLUGIN_CAPABILITY_NAME_PATTERN,
+  PLUGIN_ROUTE_ACCESS,
+  PLUGIN_RUN_TURN_LIMITS,
+  PLUGIN_SESSION_TITLE_LIMITS,
+} from "./contract.js";
 export type {
   LoadedPlugin,
+  PluginCapabilityTiers,
   PluginDispose,
   PluginHostContext,
   PluginHttpMethod,

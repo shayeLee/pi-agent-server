@@ -9,6 +9,8 @@ import path from "node:path";
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import {
   BUILTIN_TOOL_NAMES,
+  PLUGIN_CAPABILITY_LIMIT,
+  PLUGIN_CAPABILITY_NAME_PATTERN,
   type LoadedPlugin,
   type PluginManifest,
   type PluginModeProfile,
@@ -78,6 +80,7 @@ export class PluginLoader {
     }
 
     const modes = this.resolveModes(module, manifest);
+    const capabilities = validateCapabilities(manifest.capabilities, manifest.id);
 
     this.modules.set(manifest.id, module);
     this.order.push(manifest.id);
@@ -90,6 +93,7 @@ export class PluginLoader {
       tools,
       promptFragments: [...(manifest.promptFragments ?? [])],
       modes,
+      capabilities,
       plugin: module,
     };
   }
@@ -139,6 +143,7 @@ export class PluginLoader {
     const tools = this.validateToolDeclarations(raw.tools, id);
     const promptFragments = validatePromptFragments(raw.promptFragments, id);
     const modes = validateModeProfiles(raw.modes, id);
+    const capabilities = validateCapabilities(raw.capabilities, id);
     return {
       id,
       version,
@@ -146,6 +151,7 @@ export class PluginLoader {
       ...(tools !== undefined ? { tools } : {}),
       ...(promptFragments !== undefined ? { promptFragments } : {}),
       ...(modes !== undefined ? { modes } : {}),
+      ...(capabilities.length > 0 ? { capabilities } : {}),
     };
   }
 
@@ -363,4 +369,33 @@ function validateModeProfiles(
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * 校验 manifest.capabilities：插件自声明的业务能力标识。
+ *
+ * 键名由插件原样声明，宿主不做任何大小写变换（避免 `bind` → `canBind` 这类脆弱的
+ * 字符串拼接）；未声明时返回空数组（未声明的标识永远不出现在投影中）。
+ */
+function validateCapabilities(raw: unknown, pluginId: string): readonly string[] {
+  if (raw === undefined) return [];
+  if (!Array.isArray(raw)) {
+    throw new Error(`插件能力声明无效: ${pluginId}`);
+  }
+  if (raw.length > PLUGIN_CAPABILITY_LIMIT) {
+    throw new Error(`插件能力声明超过上限 ${PLUGIN_CAPABILITY_LIMIT}: ${pluginId}`);
+  }
+  const seen = new Set<string>();
+  const capabilities: string[] = [];
+  for (const entry of raw) {
+    if (typeof entry !== "string" || !PLUGIN_CAPABILITY_NAME_PATTERN.test(entry)) {
+      throw new Error(`插件能力标识无效: ${pluginId} -> ${String(entry)}`);
+    }
+    if (seen.has(entry)) {
+      throw new Error(`插件能力标识重复: ${pluginId} -> ${entry}`);
+    }
+    seen.add(entry);
+    capabilities.push(entry);
+  }
+  return capabilities;
 }
