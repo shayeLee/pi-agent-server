@@ -33,7 +33,7 @@
 - 一篇可用于首次绑定与同步验收的非生产或可控钉钉文档，并确保服务账号具备读取权限。
 - 若需要“同步后自动重建文档站”，按 §6 部署最简 HTTP publisher：准备 `/srv/onev-publisher` 目录与 `onev-publisher.service`，并在环境文件设置 `ONEV_PUBLICATION_WEBHOOK_URL=http://127.0.0.1:9091/publish`。该端口只应绑定回环，不得转发到内网其他主机。
 - ONEV 文档站的内网 Origin（例如 `http://onev.internal`）、agent-server 的本机监听地址（`127.0.0.1:8080`），以及本机 nginx 如何把同一 Origin 下的 `/v1`、`/health`、`/readyz` 反代到 agent-server（配置示例见 §5）。
-- 原组件库文档网站必须已有可靠的内网访问控制。agent-server 看到的 TCP 对端是同机 nginx（`127.0.0.1`），因此宿主仅在「对端为回环」时采用 nginx 写入的 `X-Forwarded-For` 最右条目作为真实客户端 IP；这样每个内网用户保留自己的身份与 owner 隔离。它仍不提供终端用户级认证——同一内网 IP 背后的多人共享同一身份。
+- 原组件库文档网站必须已有可靠的内网访问控制。agent-server 看到的 TCP 对端是同机 nginx（`127.0.0.1`），因此宿主仅在「对端为回环」时采用 nginx 写入的 `X-Forwarded-For` 最右条目作为真实客户端 IP；这样 mode 会话、原型等用户资源仍保留各自的 owner 隔离。钉钉文档绑定与同步任务是插件级全局配置，不使用 IP 作为 owner：任何获得 `canBind` 的管理员都能查看、绑定、换绑和同步同一批组件。服务仍不提供终端用户级认证——同一内网 IP 背后的多人共享同一身份。
 
 **首次部署没有生产数据，因此不要求部署前备份。** 后续已有数据的升级、迁移或换机，必须按 [backup-restore.md](backup-restore.md) 的备份、停写和恢复规则执行；这条例外不适用于本次空库初始化。
 
