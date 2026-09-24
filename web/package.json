@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "build:ops-viewer": "tsc -p tsconfig.json && vite build --config ops-viewer.vite.config.ts",
     "preview": "vite preview",
     "test": "vitest run"
   },

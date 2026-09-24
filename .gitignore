@@ -20,6 +20,7 @@ dist-reconcile
 dist-owner-transfer
 dist-drill
 web/test-results
+web/dist-ops-viewer/
 
 # pi-agent-server 服务数据（默认 DATA_DIR=项目目录时产生；建议生产用独立 DATA_DIR）
 pi-agent-server.db
