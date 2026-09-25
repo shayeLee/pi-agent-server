@@ -2,7 +2,7 @@ import { DatabaseSync } from "node:sqlite";
 import { createHash } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
@@ -10,7 +10,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { createSqliteBackup } from "../../src/backup/backup-core.js";
 import { decryptAgeBinary, InvalidSessionHistoryError, parseJsonl, restoreSqliteBackup } from "../../src/backup/restore-core.js";
 import { runSqliteMigrations } from "../../src/storage/migration-engine.js";
-import { migrationDefinitions } from "../../src/storage/migration-manifest.js";
+import { migrationDefinitions, stableSerialize } from "../../src/storage/migration-manifest.js";
 
 const canRunAge = process.env.PI_RUN_REAL_AGE_RESTORE === "1" &&
   spawnSync("age", ["--version"], { stdio: "ignore" }).status === 0 &&
@@ -497,5 +497,169 @@ describe("SQLite restore drill", () => {
     expect(byId.get("companion")?.endsWith("projects/p/sessions/companion/companion.jsonl")).toBe(true);
     expect(readFileSync(path.join(restored.finalPath!, "projects/p/sessions/companion/companion.jsonl")).toString()).toContain("companion-header");
     expect(existsSync(path.join(restored.finalPath!, "projects/p/sessions/db-session/history.jsonl"))).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Authenticated source-root references (cross-host restore). Manifest source
+// roots are metadata recorded on the backup host and may legitimately contain
+// symlink components: a Linux `/home/onev/...` root is a system symlink alias
+// when the package is restored on macOS (`/home` -> /System/Volumes/Data/home).
+// They are compared lexically AND physically against the target in both
+// directions, while input/target/identity keep the strict no-symlink-ancestor
+// policy. Every negative case asserts the payload was not decrypted and no
+// target-side staging was materialized.
+// ---------------------------------------------------------------------------
+
+function rewriteSourceRoots(packagePath: string, roots: { dataDir: string; agentDir: string; dbPath: string }): void {
+  rewriteManifest(packagePath, (manifest) => {
+    manifest.sourceRoots = roots;
+    const hash = createHash("sha256").update(stableSerialize(roots), "utf8").digest("hex");
+    manifest.sourceRootsSha256 = hash;
+    manifest.sourceRootsHash = hash;
+  });
+}
+
+function countingAge(): { state: { decryptCalls: number }; age: { encrypt: (input: Buffer) => Buffer; decrypt: (ciphertext: Buffer, identity: string) => Buffer } } {
+  const base = fakeAge();
+  const state = { decryptCalls: 0 };
+  return {
+    state,
+    age: { encrypt: base.encrypt, decrypt(ciphertext: Buffer, _identity: string): Buffer { state.decryptCalls++; return base.decrypt(ciphertext); } },
+  };
+}
+
+async function backupFor(f: Awaited<ReturnType<typeof fixture>>): Promise<string> {
+  const backup = await createSqliteBackup({ paths: { dataDir: f.dataDir, dbPath: f.dbPath, backupRoot: f.backupRoot, ageRecipientFile: f.recipient }, age: fakeAge() });
+  return backup.finalPath!;
+}
+
+describe("SQLite restore source-root references", () => {
+  it("restores with an independent symlinked source root (cross-host source metadata)", async () => {
+    const f = await fixture(false);
+    const packagePath = await backupFor(f);
+    const realSource = path.join(f.root, "real-source");
+    mkdirSync(realSource, { recursive: true, mode: 0o700 });
+    const linkedSource = path.join(f.root, "linked-source");
+    symlinkSync(realSource, linkedSource);
+    rewriteSourceRoots(packagePath, {
+      dataDir: linkedSource,
+      agentDir: path.join(linkedSource, ".pi-agent"),
+      dbPath: path.join(linkedSource, "pi-agent-server.db"),
+    });
+    const target = path.join(f.root, "symlink-source-target");
+    const restored = await restoreSqliteBackup({ paths: { inputBackup: packagePath, targetRoot: target, ageIdentityFile: f.identity }, age: fakeAge() });
+    expect(restored.report.status).toBe("success");
+    expect(restored.finalPath).toBeTruthy();
+    expect(existsSync(path.join(restored.finalPath!, "pi-agent-server.db"))).toBe(true);
+  });
+
+  it.each([
+    ["equal to", (_f: Awaited<ReturnType<typeof fixture>>, target: string) => target],
+    ["a parent of", (_f: Awaited<ReturnType<typeof fixture>>, target: string) => path.dirname(target)],
+    ["a child of", (_f: Awaited<ReturnType<typeof fixture>>, target: string) => path.join(target, "nested")],
+  ])("rejects a source root %s the target without decrypting payloads or creating the target", async (_label, makeRoot) => {
+    const f = await fixture(false);
+    const packagePath = await backupFor(f);
+    const target = path.join(f.root, `overlap-${(_label as string).replaceAll(" ", "-")}`);
+    rewriteSourceRoots(packagePath, {
+      dataDir: makeRoot(f, target),
+      agentDir: path.join(f.root, "unrelated-agent"),
+      dbPath: path.join(f.root, "unrelated-db"),
+    });
+    const { state, age } = countingAge();
+    await expect(restoreSqliteBackup({ paths: { inputBackup: packagePath, targetRoot: target, ageIdentityFile: f.identity }, age })).rejects.toThrow(/overlaps an authenticated source root/);
+    expect(state.decryptCalls).toBe(1);
+    expectNoTargetStaging(target);
+  });
+
+  it("rejects a source root that is a symlink alias of the target", async () => {
+    const f = await fixture(false);
+    const packagePath = await backupFor(f);
+    const target = path.join(f.root, "alias-target");
+    mkdirSync(target, { recursive: true, mode: 0o700 });
+    const alias = path.join(f.root, "alias-to-target");
+    symlinkSync(target, alias);
+    rewriteSourceRoots(packagePath, {
+      dataDir: alias,
+      agentDir: path.join(f.root, "unrelated-agent"),
+      dbPath: path.join(f.root, "unrelated-db"),
+    });
+    const { state, age } = countingAge();
+    await expect(restoreSqliteBackup({ paths: { inputBackup: packagePath, targetRoot: target, ageIdentityFile: f.identity }, age })).rejects.toThrow(/overlaps an authenticated source root/);
+    expect(state.decryptCalls).toBe(1);
+    expect(readdirSync(target)).toEqual([]);
+  });
+
+  it("rejects a dangling symlinked source root", async () => {
+    const f = await fixture(false);
+    const packagePath = await backupFor(f);
+    const dangling = path.join(f.root, "dangling-source");
+    symlinkSync(path.join(f.root, "does-not-exist"), dangling);
+    rewriteSourceRoots(packagePath, {
+      dataDir: dangling,
+      agentDir: path.join(f.root, "unrelated-agent"),
+      dbPath: path.join(f.root, "unrelated-db"),
+    });
+    const { state, age } = countingAge();
+    const target = path.join(f.root, "dangling-target");
+    await expect(restoreSqliteBackup({ paths: { inputBackup: packagePath, targetRoot: target, ageIdentityFile: f.identity }, age })).rejects.toThrow(/could not be resolved/);
+    expect(state.decryptCalls).toBe(1);
+    expectNoTargetStaging(target);
+  });
+
+  it("rejects a symlink loop in a source root", async () => {
+    const f = await fixture(false);
+    const packagePath = await backupFor(f);
+    const loopA = path.join(f.root, "loop-a");
+    const loopB = path.join(f.root, "loop-b");
+    symlinkSync(loopB, loopA);
+    symlinkSync(loopA, loopB);
+    rewriteSourceRoots(packagePath, {
+      dataDir: loopA,
+      agentDir: path.join(f.root, "unrelated-agent"),
+      dbPath: path.join(f.root, "unrelated-db"),
+    });
+    const { state, age } = countingAge();
+    const target = path.join(f.root, "loop-target");
+    await expect(restoreSqliteBackup({ paths: { inputBackup: packagePath, targetRoot: target, ageIdentityFile: f.identity }, age })).rejects.toThrow(/could not be resolved/);
+    expect(state.decryptCalls).toBe(1);
+    expectNoTargetStaging(target);
+  });
+
+  it("rejects a source root with a relative path component", async () => {
+    const f = await fixture(false);
+    const packagePath = await backupFor(f);
+    rewriteSourceRoots(packagePath, {
+      dataDir: `${f.root}/unrelated/../unrelated`,
+      agentDir: path.join(f.root, "unrelated-agent"),
+      dbPath: path.join(f.root, "unrelated-db"),
+    });
+    const target = path.join(f.root, "relative-target");
+    await expect(restoreSqliteBackup({ paths: { inputBackup: packagePath, targetRoot: target, ageIdentityFile: f.identity }, age: fakeAge() })).rejects.toThrow(/relative path component/);
+    expectNoTargetStaging(target);
+  });
+
+  it("keeps the strict no-symlink-ancestor policy for input, target and identity", async () => {
+    const f = await fixture(false);
+    const packagePath = await backupFor(f);
+
+    const realTarget = path.join(f.root, "strict-target");
+    mkdirSync(realTarget, { recursive: true, mode: 0o700 });
+    const targetAlias = path.join(f.root, "strict-target-alias");
+    symlinkSync(realTarget, targetAlias);
+    await expect(restoreSqliteBackup({ paths: { inputBackup: packagePath, targetRoot: targetAlias, ageIdentityFile: f.identity }, age: fakeAge() })).rejects.toThrow(/symbolic-link ancestor/);
+
+    const inputAlias = path.join(f.root, "strict-input-alias");
+    symlinkSync(packagePath, inputAlias);
+    await expect(restoreSqliteBackup({ paths: { inputBackup: inputAlias, targetRoot: path.join(f.root, "strict-target-input"), ageIdentityFile: f.identity }, age: fakeAge() })).rejects.toThrow(/symbolic-link ancestor/);
+
+    const identityAlias = path.join(f.root, "identity-alias");
+    symlinkSync(f.identity, identityAlias);
+    await expect(restoreSqliteBackup({ paths: { inputBackup: packagePath, targetRoot: path.join(f.root, "strict-target-identity"), ageIdentityFile: identityAlias }, age: fakeAge() })).rejects.toThrow(/symbolic-link ancestor/);
+
+    expectNoTargetStaging(path.join(f.root, "strict-target-input"));
+    expectNoTargetStaging(path.join(f.root, "strict-target-identity"));
+    expect(readdirSync(realTarget)).toEqual([]);
   });
 });

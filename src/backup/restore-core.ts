@@ -151,6 +151,54 @@ function within(root: string, candidate: string): boolean {
   return relative === "" || (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
 }
 
+function pathsOverlap(a: string, b: string): boolean {
+  return within(a, b) || within(b, a);
+}
+
+/**
+ * Resolve one authenticated manifest source root into its lexical and physical
+ * forms. Unlike canonicalPath (which enforces the no-symlink-ancestor policy
+ * for input/target/identity), a source root is metadata recorded on the backup
+ * host and may legitimately contain symlink components: a Linux
+ * `/home/onev/...` root is a system symlink alias when the package is restored
+ * on macOS (`/home` -> `/System/Volumes/Data/home`), and rejecting it would
+ * make an otherwise safe cross-host restore impossible. The root is only ever
+ * compared for overlap, never written to, so resolving through symlinks here
+ * is safe.
+ *
+ * Fail-closed rules: the reference must be an absolute path with no NUL byte
+ * and no `.`/`..` component; the nearest existing ancestor is found with lstat
+ * and only ENOENT continues upward; the ancestor is then resolved with
+ * realpathSync so a dangling symlink, symlink loop, permission failure or a
+ * non-directory component (ENOTDIR) rejects the restore instead of silently
+ * falling back to an unverified path. The not-yet-existing suffix is re-appended.
+ */
+function resolveSourceReference(input: string, label: string): { lexical: string; physical: string } {
+  if (typeof input !== "string" || input.length === 0 || input.includes("\0")) fail(`${label} must be a non-empty path without NUL bytes`);
+  if (!path.isAbsolute(input)) fail(`${label} must be an absolute path`);
+  if (input.split(path.sep).some((part) => part === "." || part === "..")) fail(`${label} contains a relative path component`);
+  const lexical = path.resolve(input);
+  let existing = lexical;
+  const suffix: string[] = [];
+  for (;;) {
+    try {
+      lstatSync(existing);
+      break;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code !== "ENOENT") fail(`${label} could not be inspected (${code ?? "unknown error"})`);
+      const parent = path.dirname(existing);
+      if (parent === existing) fail(`${label} has no existing ancestor`);
+      suffix.unshift(path.basename(existing));
+      existing = parent;
+    }
+  }
+  let resolved: string;
+  try { resolved = realpathSync(existing); }
+  catch (error) { fail(`${label} could not be resolved (${(error as NodeJS.ErrnoException).code ?? "unknown error"})`); }
+  return { lexical, physical: path.join(resolved, ...suffix) };
+}
+
 function createPrivateManifestStaging(targetParent: string): string {
   // Normally os.tmpdir() is independent of an application target. Keep a
   // fallback list so even a target directly under the system temp directory
@@ -709,12 +757,21 @@ export async function restoreSqliteBackup(options: RestoreOptions): Promise<Rest
     const migrationContext = selectRestoreMigrationContext(manifest.migrationLedger as MigrationLedgerSnapshot);
     rmSync(manifestPlain, { force: true });
 
-    // The source roots are authenticated metadata. Check every root, including
-    // custom agentDir and databases with no session references, before staging.
+    // The source roots are authenticated metadata recorded on the backup host;
+    // a root may contain symlink components (cross-host restore), so both its
+    // lexical and physical form are compared against the target's lexical and
+    // physical form, in either direction. Check every root, including a custom
+    // agentDir and a database with no session references, before staging. The
+    // input/target/identity policy (canonicalPath/checkAncestors) is unchanged.
     target = canonicalPath(options.paths.targetRoot, "target root");
+    const targetLexical = path.resolve(options.paths.targetRoot);
     const sourceRoots = [manifest.sourceRoots.dataDir, manifest.sourceRoots.agentDir, manifest.sourceRoots.dbPath]
-      .map((root, index) => canonicalPath(root, `manifest source root ${index}`));
-    if (sourceRoots.some((source) => within(source, target) || within(target, source))) fail("target root overlaps an authenticated source root");
+      .map((root, index) => resolveSourceReference(root, `manifest source root ${index}`));
+    if (sourceRoots.some((source) =>
+      pathsOverlap(source.lexical, targetLexical) || pathsOverlap(source.lexical, target) ||
+      pathsOverlap(source.physical, targetLexical) || pathsOverlap(source.physical, target))) {
+      fail("target root overlaps an authenticated source root");
+    }
 
     // Only the authenticated, physically isolated path may now receive a
     // same-filesystem staging directory. The final publish remains one rename.

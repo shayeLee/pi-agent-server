@@ -110,6 +110,7 @@ pnpm restore -- restore \
 
 - 先在明确隔离的新目标上执行，禁止覆盖源数据库、正式 schema 或正式 `DATA_DIR`。
 - SQLite restore 写入新的绝对 target root；PostgreSQL restore 需要明确的 disposable empty database/schema，拒绝 `public` 和系统 schema。
+- **跨主机源元数据（仅 SQLite）**：manifest 的 `sourceRoots` 是备份主机记录的元数据，只用于与 target 的重叠校验，恢复时从不写入。因此这三个已认证源引用允许包含 symlink 分量（例如 Linux `/home/onev/...` 在 macOS 上经由 `/home` 系统 symlink 别名解析），并在词法（lexical）与物理（physical，realpath）两种形态下与 target 双向比对，任一重叠即 fail-fast。源引用仍拒绝非绝对路径、NUL 字节和 `.`/`..` 分量；最近存在的祖先只允许 ENOENT 继续上溯，dangling symlink、symlink loop、权限失败或 ENOTDIR 一律 fail-closed。input/target/identity 仍执行严格的无 symlink 祖先策略。该放宽仅限 SQLite；PostgreSQL restore 保持原有严格策略。
 - restore 不自动迁移；恢复的包必须携带恰为唯一 canonical baseline（version 0 / `initial-schema` / golden checksum）的 migration ledger，否则在 payload 解密/staging 之前 fail-fast。完全空目标可以作为隔离 restore 的写入目标，但 `--bootstrap-baseline` 只建立唯一 canonical baseline、不会创建 pre-backup，也不会生成可恢复的 backup package。
 - age identity 由运维在执行时提供。一次成功解密和恢复演练是“私钥可用”的必要证据。
 - 目标 missing/invalid-as-empty 语义见 §2，恢复行为以该表为准。
