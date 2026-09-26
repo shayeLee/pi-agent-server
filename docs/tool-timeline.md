@@ -30,11 +30,11 @@ Persisted failback custom entries project as `timeline` `system_event` items. Ne
 
 持久化的 failback custom entry 会投影为 `timeline` 的 `system_event` 项。新引擎 entry 包含精确的内部 continuation 模板；只隐藏其直接且完全匹配的 user 子项。旧 entry 仅在完整匹配历史固定模板时才隐藏；未知或歧义的历史记录保持可见，绝不隐藏真实用户输入。
 
-## ONEV integration / ONEV 接入
+## Client reconciliation / 客户端对账
 
-While a turn is running, merge `tool_start`, `tool_update`, and `tool_end` locally by `toolCallId`; render each call at its incoming SSE position, with `args` from `tool_start`. Do not aggregate same-name calls. Merge `model_failback` lifecycle events by `attemptId`. After reconnect, refresh, or session restore, fetch export and replace/reconcile historical items by `timeline[].id`; reconcile live calls by `callId`. Show `tool_result.result` in the modal without a client length cap.
+While a turn is running, clients may merge tool lifecycle events by `toolCallId` and model failback events by `attemptId`. After reconnect, refresh, or session restore, fetch export and reconcile historical items by `timeline[].id`; reconcile live calls by `callId`. Render persisted tool results without an arbitrary client-side length cap.
 
-会话运行时，按 `toolCallId` 在本地合并 `tool_start`、`tool_update`、`tool_end`；在收到 SSE 的原始位置渲染每次调用，并显示 `tool_start` 的 `args`。不得聚合同名调用。按 `attemptId` 合并 `model_failback` 生命周期事件。重连、刷新或恢复后，拉取 export 并按 `timeline[].id` 替换/对账历史项，按 `callId` 对账尚在运行的调用。结果 modal 不应再设置客户端长度截断。
+会话运行时，客户端可按 `toolCallId` 合并工具生命周期事件，按 `attemptId` 合并模型回退事件。重连、刷新或恢复后，拉取 export 并按 `timeline[].id` 对账历史项，按 `callId` 对账仍在运行的调用。展示已持久化工具结果时不应设置任意客户端长度截断。
 
 The host adds no 4096/240 KiB result cap: persisted text/JSON is returned in full. Data already truncated by the SDK/tool before it was written to JSONL cannot be reconstructed. Credential-like keys are redacted and image binary payloads are omitted. Sanitization and cloning are iterative; cyclic, non-JSON, or nesting deeper than 512 levels are represented as `{ "type": "export_unavailable", "reason": "..." }` so one payload cannot make the whole export fail. No separate detail endpoint is needed in v1.
 

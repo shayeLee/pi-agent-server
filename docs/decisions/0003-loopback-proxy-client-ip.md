@@ -40,11 +40,11 @@ nginx 的 `$proxy_add_x_forwarded_for`（以及 http-proxy-middleware）是**追
 - **回环对端的既有语义变更**：`127.0.0.1` 直连若**带** XFF，身份不再是对端 IP 而是 XFF 最右段。本机直连/探针不带 XFF，行为不变；但同机脚本若主动设置 XFF 会改变自身身份，这是预期行为。
 - **非回环对端行为完全不变**：既有测试断言（对端 `10.0.0.1` 携带 XFF 仍按对端 IP）继续成立。
 - **单跳限制**：该解析假设 **agent-server 前面只有一跳可信代理**（同机 nginx）。若未来出现多跳代理、CDN 或代理链，最右段将变成「最后一段代理」而不是真实客户端，需要重新设计（例如可配置信任链长度或网段）。当前拓扑下不构成问题。
-- **不做伪造防护**：内网场景不考虑 XFF 伪造；将来公网暴露时由账号体系（OIDC/IAM，见 [identity-access-plan.md](../identity-access-plan.md)）取代 IP 身份，而不是在本层加固。公网暴露仍然禁止。
+- **不做伪造防护**：内网场景不考虑 XFF 伪造；将来公网暴露时由账号体系（OIDC/IAM，见 [identity-access-plan.md](../archive/identity-access-plan.md)）取代 IP 身份，而不是在本层加固。公网暴露仍然禁止。
 
 ## 关联文档
 
 - [IP Access Policy 设计](../ip-rbac-design.md)：§2 冻结决策第 1 条已按本 ADR 改写；§4 解析流程图含该分支。
-- [ONEV 裸机部署](../onev-bare-metal-deployment.md)：同源 nginx 反代配置示例。
-- [身份与访问管理规划（未来公网方案）](../identity-access-plan.md)
+- [当前生产反向代理运维说明](../operations.md)。
+- [身份与访问管理规划（未来公网方案）](../archive/identity-access-plan.md)
 - [ADR 0002：Canonical baseline bootstrap 与 migration 启动门禁](0002-canonical-baseline-and-migration-gate.md)

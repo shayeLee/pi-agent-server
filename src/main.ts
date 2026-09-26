@@ -10,6 +10,10 @@
 import { startServer, type DataMode, type StorageDialect } from "./server/start.js";
 import { parseIpAccessEnv } from "./core/ip-access-config.js";
 import { loadIpAccessPolicy } from "./core/ip-access-policy-file.js";
+import {
+  DEPRECATED_EXTENSION_PATHS_ENV_WARNING,
+  resolveExtensionPathsFromEnv,
+} from "./server/provider-extensions.js";
 
 // WP5D-2：严格解析准入环境变量 + 可选策略文件安全加载（任何缺失/非法配置 fail-fast）。
 const ipAccessEnv = parseIpAccessEnv(process.env);
@@ -29,12 +33,18 @@ const plugins = (process.env.PI_PLUGINS ?? "")
   .map((s) => s.trim())
   .filter(Boolean);
 
-// 显式 provider 扩展路径（绝对路径或 ~/…，逗号分隔）：只加载显式配置的路径，
-// 绝不自动发现；none 时为空。相对路径/空项处理与校验在 startServer 内 fail-fast。
-const providerExtensionPaths = (process.env.PI_PROVIDER_EXTENSION_PATHS ?? "")
-  .split(",")
-  .map((s) => s.trim())
-  .filter(Boolean);
+// 显式扩展路径（绝对路径或 ~/…，逗号分隔）：只加载显式配置的路径，绝不自动发现；
+// none 时为空。主变量 PI_EXTENSION_PATHS；PI_PROVIDER_EXTENSION_PATHS 保留为 deprecated
+// alias（仅旧名提供有效列表时在 stderr 警告，不回显任何值；两者同时配置有效列表则拒绝）。
+// 相对路径/空项处理与校验在 startServer 内 fail-fast。
+const extensionPathsEnv = resolveExtensionPathsFromEnv({
+  extensionPaths: process.env.PI_EXTENSION_PATHS,
+  deprecatedProviderExtensionPaths: process.env.PI_PROVIDER_EXTENSION_PATHS,
+});
+if (extensionPathsEnv.deprecatedAliasUsed) {
+  process.stderr.write(`${DEPRECATED_EXTENSION_PATHS_ENV_WARNING}\n`);
+}
+const extensionPaths = extensionPathsEnv.paths;
 
 // PI_DEFAULT_MODEL="provider/modelId"；模型 id 可包含斜杠，仅第一个斜杠分隔 provider。
 function parseDefaultModel(value: string | undefined): { provider: string; id: string } | undefined {
@@ -90,7 +100,7 @@ const app = await startServer({
     | undefined,
   systemPrompt: process.env.PI_SYSTEM_PROMPT,
   plugins: plugins.length > 0 ? plugins : undefined,
-  providerExtensionPaths: providerExtensionPaths.length > 0 ? providerExtensionPaths : undefined,
+  extensionPaths: extensionPaths.length > 0 ? extensionPaths : undefined,
   // PI_DATA_MODE 仅保留为部署分类；它不能放宽 migration gate。服务启动总是 verify，
   // 并且绝不自行 bootstrap/migrate/reset。
   dataMode: process.env.PI_DATA_MODE as DataMode | undefined,

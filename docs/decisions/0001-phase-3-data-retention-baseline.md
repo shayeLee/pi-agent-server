@@ -52,8 +52,8 @@
 
 ### 3d. 监控架构（WP5C 方案 B）
 
-- 备份新鲜度由 **WP5C 方案 B backup freshness 部署契约** 定义（部署方经过审核的 helper/timer + per-target node_exporter textfile 指标，仅在 backup CLI 已验证 published 完成后更新、失败绝不更新；独立持久 inventory + Prometheus missing/stale/future/exporter 规则 + 外部 Alertmanager）。契约细节见 [backup-freshness-exporter.md](../backup-freshness-exporter.md)。
-- 部署契约与演练步骤见 [backup-freshness-exporter.md](../backup-freshness-exporter.md) 和 [backup-freshness-drill-sop.md](../backup-freshness-drill-sop.md)。
+- 备份新鲜度由 **WP5C 方案 B backup freshness 部署契约** 定义（部署方经过审核的 helper/timer + per-target node_exporter textfile 指标，仅在 backup CLI 已验证 published 完成后更新、失败绝不更新；独立持久 inventory + Prometheus missing/stale/future/exporter 规则 + 外部 Alertmanager）。契约细节见 [backup-freshness-exporter.md](../archive/backup-freshness-exporter.md)。
+- 部署契约与演练步骤见 [backup-freshness-exporter.md](../archive/backup-freshness-exporter.md) 和 [backup-freshness-drill-sop.md](../archive/backup-freshness-drill-sop.md)。
 
 ### 3e. 备份存储、加密与密钥托管
 
@@ -104,5 +104,5 @@
 - [运维任务索引](../operations.md)
 - [数据库设计](../database-design.md)
 - [备份与恢复契约](../backup-restore.md)
-- [WP5C 方案 B 部署契约](../backup-freshness-exporter.md) / [实际部署演练 SOP](../backup-freshness-drill-sop.md)
-- [身份与访问管理规划（未来公网方案）](../identity-access-plan.md)
+- [WP5C 方案 B 部署契约](../archive/backup-freshness-exporter.md) / [实际部署演练 SOP](../archive/backup-freshness-drill-sop.md)
+- [身份与访问管理规划（未来公网方案）](../archive/identity-access-plan.md)

@@ -10,10 +10,9 @@ pi-agent-server 是基于 Pi Agent Runtime 构建的长期运行、会话式 HTT
 
 - **当前面向内网：** 公网部署能力将在后续版本完善。
 - **当前为单实例运行：** 后续计划支持多实例部署。
-- **默认 Pi 工具：** `read`、`ls`、`find`、`grep`。通过环境变量 `TOOLS` 配置完整工具列表。
-- **外部插件显式且受信任：** 通过 `PI_PLUGINS` 加载指定的同进程 ESM 插件。它是工程扩展边界，不是沙箱。
-- **外部 provider 扩展显式且受信任：** 通过 `PI_PROVIDER_EXTENSION_PATHS` 显式列出注册模型 provider 的 Pi 扩展路径。自动发现始终关闭（`noExtensions: true`）；路径为绝对路径或 `~/…`，逗号分隔，已配置但加载失败即拒绝启动。扩展代码以宿主权限同进程运行，是工程扩展边界，不是沙箱。受信扩展施加的**进程级副作用**（例如包装 `globalThis.fetch`）属于进程生命周期：宿主无法卸载，启动失败退出也不保证能回滚任意全局副作用。
-- **参考图片由宿主校验、不压缩：** `POST /v1/sessions/:id/messages` 可携带可选 `images: [{ mediaType, base64 }]`。宿主只接受静态 `image/png`、`image/jpeg`、`image/webp`，重新校验真实魔数与头部尺寸，并执行数量/体积/像素预算；宿主不压缩、不转码，也不新增图片上传路由或图片数据库。压缩由调用方客户端完成。
+- **Pi 工具：** 默认 `read`、`ls`、`find`、`grep`。可通过环境变量 `TOOLS` 配置完整工具列表。
+- **Pi 扩展：** 通过 `PI_EXTENSION_PATHS` 指定要加载的 Pi 扩展。不设置时不加载扩展。支持范围见下方[Pi 扩展](#pi-扩展)。
+- **可按需增加业务功能：** 开发者可以把额外的工具、接口等功能做成 agent-server 插件，通过 `PI_PLUGINS` 配置启用。不需要额外功能时，无需配置。
 - **Pi Session JSONL 暂不自动清理：** 删除项目或会话后，对应的 JSONL 文件仍会保留。
 - **支持本机加密备份：** 备份与恢复工具已经提供，异地容灾仍在规划中。详见[备份与恢复](docs/backup-restore.md)。
 - **首次部署需要初始化数据库：** 先按[运维文档](docs/operations.md)初始化数据库，再启动服务；如果新版本发布说明要求更新数据库结构，也要先按运维文档升级数据库，再启动新版本服务。
@@ -36,12 +35,6 @@ pi-agent-server 是基于 Pi Agent Runtime 构建的长期运行、会话式 HTT
 - Node.js >= 22.19.0
 - pnpm
 
-```bash
-git clone <仓库地址>
-cd pi-agent-server
-pnpm install
-```
-
 ### Mock 服务与 Web UI
 
 ```bash
@@ -60,13 +53,13 @@ pnpm web:mock
 pnpm dev:real
 ```
 
-`dev:real` 通过 tsx 的 `--env-file-if-exists=.env.local` 加载可选且已被 gitignore 的 `.env.local`。先复制已追踪且不含敏感值的模板：
+`dev:real` 通过 tsx 的 `--env-file-if-exists=.env.local` 加载可选的 `.env.local`。先复制已追踪且不含敏感值的模板：
 
 ```bash
 cp .env.example .env.local
 ```
 
-本地模板包含开发值 `DATA_DIR=/tmp/pi-agent-server`、`PI_ALLOWED_CLIENT_CIDRS=127.0.0.0/8,10.0.0.0/8`、`PI_DEFAULT_MODEL=openai-codex/gpt-5.6-luna` 和 `PI_DEFAULT_THINKING_LEVEL=medium`；使用前请修改机器相关路径。实际环境变量优先于 `.env.local`，文件值优先于应用默认值。`PI_ALLOWED_CLIENT_CIDRS` 必填，并按所有路由的客户端 IP 匹配，探针也不例外。客户端 IP 默认是直接 socket 对端 IP，但回环对端（同机反向代理）例外：改用 `X-Forwarded-For` 最右一条。禁止提交 `.env.local`、认证信息、API key 或令牌。
+本地模板包含开发值 `DATA_DIR=/tmp/pi-agent-server`、`PI_ALLOWED_CLIENT_CIDRS=127.0.0.0/8,10.0.0.0/8`、`PI_DEFAULT_MODEL=openai-codex/gpt-5.6-luna` 和 `PI_DEFAULT_THINKING_LEVEL=medium`；使用前请修改机器相关路径。`PI_ALLOWED_CLIENT_CIDRS` 必填，并按所有路由的客户端 IP 匹配。
 
 `dev:real` 的数据库在 `/tmp/pi-agent-server`，服务启动只验证、不自动初始化。首次运行前（或清空 `/tmp` 后）初始化一次：
 
@@ -78,63 +71,29 @@ pnpm dev:real:init
 
 默认凭证来源是 `~/.pi/agent/auth.json`。部署时应通过 `PI_AUTH_PATH` 指向服务专用凭证文件；也可以用 `PI_MODEL_PROVIDER` 和 `PI_MODEL_API_KEY` 注入默认 provider 的运行时 API key。
 
-### 外部 provider 扩展
+### Pi 扩展
 
-只注册模型 provider（`pi.registerProvider`）的已安装 Pi 扩展可以在不抄写 provider 实现的前提下接入服务：
-
-```bash
-# 绝对路径或 ~/...；多个路径用逗号分隔
-export PI_PROVIDER_EXTENSION_PATHS=~/.pi/packages/pi-workbuddy-connect
-```
-
-语义：
-
-- **仅显式：** 宿主保持 `noExtensions: true`，只经 Pi 的 `additionalExtensionPaths` 加载配置的路径；绝不扫描 `~/.pi/agent`、项目 `.pi/` 或 `settings.json`。变量未设置时不加载任何外部扩展。
-- **provider 注册在首次使用前进入宿主运行时：** 扩展工厂排队的 `registerProvider` 调用在加载后立即由宿主刷入唯一的 `ModelRuntime`，因此 `PI_DEFAULT_MODEL`、插件 mode 模型与 `GET /v1/models` 都能解析它们。
-- **每个活动会话一个资源加载器：** 每个活动会话（新建或恢复）都持有自己的 Pi `ResourceLoader` 与扩展 runtime，并在该会话的多轮中复用。启动探针与按项目解析提示词的探针使用各自的一次性 loader，因此探针会话的 dispose 绝不会让真实会话的扩展 runtime 失效；冻结系统提示词按字面量 override 恢复，不重新解析、不重复追加提示词片段。受信扩展因此按「每个活动会话」加载，而该会话的 provider 与 provider hook 在其整个生命周期内可用。
-- **扩展加载 cwd 固定，模块级副作用整进程只发生一次：** 所有 loader 都用服务 cwd 创建，项目 cwd 只传给 `createAgentSession({ cwd })`。Pi 的扩展模块缓存以 loader cwd 为键，混用服务/项目 cwd 会在每次切换时重新求值扩展模块、无界重放模块级副作用（例如重复包装 `globalThis.fetch`）。固定 loader cwd 后每个扩展模块整进程只求值一次，工厂函数仍按活动会话/探针重跑，项目提示词解析也不受影响（提示词的 `<cwd>` 段取会话 cwd）。
-- **提示词追加源恒为显式：** 宿主对每个 loader 都显式传 `appendSystemPrompt`（无能力片段时为空列表），从而关掉 Pi 对 `agentDir/APPEND_SYSTEM.md` 与 `<cwd>/.pi/APPEND_SYSTEM.md` 的自动发现。冻结字面量会话因此即使这两个文件在恢复前被改动，恢复后仍逐字节不变。
-- **provider 流式调用从 transcript 取工具，而非顶层字段：** 自 Pi 0.86.0 起，交给 provider `streamSimple` 的 context 是归一化后的 `TranscriptContext`，只带 `messages`；系统提示词与工具声明被折叠进 leading system message。此处读 `context.tools` 会得到 `undefined`，会让 DeepSeek V4 文本协议适配器静默 fail-open（已授权工具名被转成可执行的原生调用）。因此适配器改用 `getCurrentTools(context.messages)` 解析工具集，并把形参类型固定为 `TranscriptContext`，同时有一个「改回旧读法即失败」的回归测试。
-- **宿主化 model-failback：** 真实会话在安装会话专属 bridge 后只绑定一次扩展。兼容的 `model-failback` 扩展经 EventBus 同步取得该 transport，经公开 SDK `session.steer()` 排队续跑，绝不 await 返回 `void` 的 `ExtensionAPI.sendUserMessage()`。abort 在取消前后都清理 SDK queue；bridge 报告 failback 尝试期间，`POST /abort` 返回精确错误码 `MODEL_FAILBACK_IN_PROGRESS` 的 `409`，前端必须与普通「无活动任务」冲突区分。扩展若无法持久化 continuation marker，会保留 Pi 已持久化的模型切换投影，但采用 fail-closed：报告 `failed`，且不排队不可识别的续跑消息。
-- **fail-fast：** 已配置路径不存在、无法导入、未导出工厂函数，或**没有任何扩展入口**（空目录、manifest 的 `pi.extensions` 入口缺失、空的 `extensions/` 子目录）即拒绝启动；Pi 运行时拒绝的注册同样拒绝启动。错误只报告宿主自己配置的路径与 provider 标识，绝不回显扩展或 Pi 运行时的原始错误文本，也不附带 `cause`。
-- **仅绝对路径：** 相对路径在任何资源创建前即被拒绝；`~/…` 按服务账号 home 展开。
-- **受信边界：** 扩展代码以宿主权限同进程运行，并可订阅 `before_provider_request` 等 provider hook。它不是沙箱，必须按插件同等标准审查。
-
-需要自定义配置时，手动设置环境变量再运行 `pnpm dev`：
+可通过 `PI_EXTENSION_PATHS` 配置要加载的 Pi 扩展：
 
 ```bash
-export PI_ALLOWED_CLIENT_CIDRS=127.0.0.0/8,10.0.0.0/8
-pnpm dev
+PI_EXTENSION_PATHS=/absolute/path/to/pi-extension
 ```
 
-可选模型默认值：
-
-```bash
-export PI_DEFAULT_MODEL=provider/modelId
-export PI_DEFAULT_THINKING_LEVEL=medium
-```
-
-持久化数据库应先通过离线 migration 流程初始化或升级，并设置绝对 `AGENT_CWD`、`DATA_DIR`、`DB_PATH`，然后使用：
-
-```bash
-export PI_MIGRATION_GATE=verify
-```
-
-`verify` 只检查不可变 migration ledger 和 schema head；绝不应用 migration、reset 数据或 bootstrap baseline。PostgreSQL 必须使用非 `public`、非系统 schema 的 effective `current_schema()`。见[备份与恢复](docs/backup-restore.md)。
-
+### Web UI
 可选独立 Web UI 通过 `pnpm web` 启动。
 
-## API 概览
+## 部署
+内网部署请按[运维文档](docs/operations.md)完成安装、配置和启动检查。
 
-所有路由都先检查来源 IP。`/health`、`/readyz` 不需要 token；`/metrics` 用于运维监控，只有 `admin` 和 `operator` 可以访问。如果策略文件要求某个 IP 出示 token，访问 `/metrics` 时也需要带上为该 IP 配置的 token。
+## API 概览
 
 | 方法 | 路由 | 用途 |
 | --- | --- | --- |
 | `GET` | `/health` | 存活检查 |
 | `GET` | `/readyz` | 进程启动与 migration gate 就绪状态 |
 | `GET` | `/metrics` | 固定 Prometheus 进程/readiness 指标 |
-| `GET` | `/v1/access` | 由中央 RBAC 矩阵派生的最小访问能力投影 `{canRead, canWrite}` |
-| `GET` | `/v1/capabilities/<plugin-id>/access` | 插件自有能力投影：恰好是插件在 `manifest.capabilities` 声明的 flag（由宿主挂载，见「插件权限档位」） |
+| `GET` | `/v1/access` | 查询当前用户是否有读取和写入权限，返回 `canRead` 和 `canWrite` |
+| `GET` | `/v1/capabilities/<plugin-id>/access` | 查询当前用户可以使用该插件的哪些功能，具体返回字段由插件定义 |
 | `GET` | `/v1/models` | 可用模型与默认值 |
 | `GET` / `POST` | `/v1/projects` | 列出或创建项目 |
 | `DELETE` | `/v1/projects/:id` | 逻辑删除项目 |
@@ -145,66 +104,16 @@ export PI_MIGRATION_GATE=verify
 | `GET` | `/v1/sessions/:id/events` | SSE；viewer 对无 live runtime 的会话收到 `204`。所有与 turn 相关的事件都携带产生它们的 `requestId`（`text_delta`、`thinking_delta`、`tool_start`、`tool_update`、`tool_end`、`status`、`usage`、`queued`、`error`、`completed`、`aborted`） |
 | `POST` | `/v1/sessions/:id/steer` | 引导运行中的任务 |
 | `POST` | `/v1/sessions/:id/follow-ups` | 排队追加 follow-up |
-| `POST` | `/v1/sessions/:id/abort` | 中止任务。可省略 body 以兼容旧行为；如提供，必须严格为 `{ "requestId": "..." }`，且仅中止该当前请求。`requestId` 不匹配时返回 `409`，不会取消任务。 |
+| `POST` | `/v1/sessions/:id/abort` | 中止该会话当前正在执行的任务。请求体可以不填；如果填写，必须是 `{ "requestId": "..." }`，只有任务的请求 ID 与它一致时才会中止。ID 不匹配则返回 `409`，任务继续运行。 |
 | `GET` | `/v1/sessions/:id/export` | 只读消息快照；绝不创建 runtime |
-| `GET` | `/v1/sessions/:id/file-preview?path=<relative>&line=<optional>` | 按 owner 隔离、受限的 UTF-8 项目文本预览，位于会话冻结的 canonical 根内；调用方不能提供根目录 |
+| `GET` | `/v1/sessions/:id/file-preview?path=<relative>&line=<optional>` | 预览该会话项目目录中的文本文件；`path` 填相对文件路径，`line` 可选，用于定位行号。不能读取项目目录外的文件 |
 
-### 宿主公共 API 契约 v1
+### 公共 API 契约 v1
 
-宿主只发布 v1 契约产物，不宣称自己是消费方的单一事实源。UI 与其它宿主消费者应从 `pi-agent-server/contract` 导入请求、响应和 SSE 类型。固定 OpenAPI 文档可通过 `pi-agent-server/openapi/v1.json` 获取；其检入源文件为 `openapi/v1.json`，`npm run generate:openapi` 会确定性地重新生成它。动态受信插件路由有意不属于此宿主契约。
-
-消费方各自 pin 所依赖的已发布版本，并在本地测试中与之比对；跨仓产物比对属于人工/发布流程，宿主无法自行验证。
-
-请求校验语义：Fastify 用其 AJV 基线校验 body 与 params，而非按 schema 中 `additionalProperties: false` 的严格读法。已声明类型会被强转（`coerceTypes: 'array'`，因此数字或单元素数组形式的 `title` 会被接受并转成字符串），未声明字段会被静默剔除（`removeAdditional: true`），而不是返回 `400`。因此 `400` 只表示缺少必填字段或值无法强转/越界，绝不表示标量类型错误或出现未知字段。`POST /v1/sessions/:id/abort` 是唯一例外：它没有 AJV schema，其手写解析器会对未知字段和非字符串值返回 `400`。文档级与每个经 AJV 校验且带 request body 的 operation 都带有 `x-pi-request-validation: { coerceTypes: true, removeAdditional: "silent-strip" }` 如实声明这一点。
-
-在 v1 内，既有 operation、字段、状态语义和 SSE 事件 data 保持兼容；可以新增可选字段或 operation。破坏性变更必须提供新的版本化契约/path，而不能修改 v1。RC 期间，`src/server/app.ts` 的实际 API 仍是实现权威。
-
-### 受信插件的会话标题
-
-插件 `PluginSessionApi.getMessages(sessionId)` 只读取当前认证 owner 导出的 `messages`；不存在或不归属时返回 `null`，绝不创建 runtime/provider，也不暴露 timeline 或 thinking。`setTitle({ sessionId, title, onlyIfEmpty?: boolean })` 只更新该 owner 的宿主会话元数据，并返回更新后/当前的会话，或 `null`。`onlyIfEmpty: true` 时存储层原子地对空标题 CAS，因此自动标题不会覆盖并发的用户改名。它们是插件契约，不是公共 v1 HTTP operation。标题会 trim，且只接受非空、不含非法控制字符、最长 80 个 UTF-16 code unit 的纯文本；UI 必须按文本而非 HTML 渲染。
-
-标题策略属于理解该 mode 及其数据的插件：插件在已接受首条有效 user 消息后，可以在自己的 mode-session 记录中持久化派生标题并以 `onlyIfEmpty: true` 调用 `setTitle`；即使之后模型轮次报错或停止也可以命名。插件不得为未提交/被拒绝的消息命名、不得覆盖用户自定义标题、不得使用模型输出，也不得以 `conversation_ref` 推断消息存在。插件必须从真实首条 user 消息中自行解包 `ONEV_CONTEXT` envelope 后再派生首问文本；宿主有意不解析插件业务 envelope。首条仅图片消息使用插件明确的图片会话默认标题。
-
-`GET /v1/sessions` 有意不提供 `hasMessages` 或 `messageCount`：它只是元数据列表，`conversation_ref` 不能证明 user 消息已提交。需要隐藏历史空会话的 UI 必须 hydrate `GET /v1/sessions/:id/export`，并从真实导出的 messages 判断（代价是逐会话读取）；或者消费插件列表摘要，其中 `hasMessages`/`messageCount` 必须由插件持久化的已接受消息状态支持。不得把失败/空 export 或任何 reference 字段替代为消息存在的证据。
-
-### 受信插件 `runTurn` 轮次预算
-
-`PluginSessionApi.runTurn` 是插件发起的同步轮次，因此宿主强制硬性单轮预算，而不是放任病理轮次一直跑到调用方超时。共有三个宿主强制预算，插件无法调整：返回的助手文本（`PLUGIN_RUN_TURN_LIMITS.maxAssistantTextLength`）、工具调用总次数（`PLUGIN_RUN_TURN_LIMITS.maxToolCallsPerTurn`，默认 60；成功与失败都计数）、墙钟耗时（`PLUGIN_RUN_TURN_LIMITS.maxTurnDurationMs`，默认 5 分钟）。任一预算超限时宿主快速中止本轮并返回 `{ status: "error", message, code }`，其中 `code` 为稳定值之一：`turn_tool_budget_exceeded`、`turn_duration_budget_exceeded`、`turn_assistant_text_budget_exceeded`；`code` 是 additive 字段，只读 `status`/`message` 的既有消费方不受影响。这些预算只作用于 `runTurn`：普通聊天轮次（`POST /v1/sessions/:id/messages`）行为不变，仍然没有工具调用次数或墙钟预算。墙钟预算使用真实 timer，并在 settle/dispose 时清除，因此也能捕获完全不产生事件的静默挂起。这些 code 的**唯一权威定义**在宿主（`TURN_ERROR_CODES`）：它随 `pi-agent-server/contract` 静态导出给同机消费者，并经 `PluginHostContext.turnErrorCodes` 注入插件（插件按绝对路径加载，不能静态 import 宿主包），因此插件不再维护一份可能漂移的副本。
-
-### 访问能力投影
-
-`GET /v1/access` 返回最小固定响应体 `{ canRead, canWrite }`，由中央路由权限矩阵（`ROUTE_PERMISSIONS` + `evaluateRouteAuthorization`）派生，而非硬编码；绝不返回调用方的 `role`、IP 或 token。
-
-- `canRead`：当所有读权限（会话列表/导出/事件流与 `capability:read`）对该角色开放时为 `true`，即 `viewer`、`user`、`admin`；
-- `canWrite`：当所有写/控制权限（`sessions:send-message`、`sessions:control`、`capability:write`）对该角色开放时为 `true`，即 `user`、`admin`；
-- `operator` 在整个 `/v1` 面被拒，因此返回固定 `403`，得不到任何投影。
-
-该端点与其它只读 `GET` 路由使用同一读 RBAC，并受相同的 token 与 CORS 规则约束。若未来矩阵出现分项不一致，布尔值只会更保守（绝不误报可写），因此访问控制 UI 可安全地据此隐藏写操作。
-
-这是**宿主通用契约且 schema 闭合**（`additionalProperties: false`）：它刻意不携带任何插件业务 flag。插件业务能力走插件自有的投影端点（见下）。
-
-### 插件权限档位与插件自有能力投影
-
-插件路由只能声明三个**宿主所有**的权限档位之一，宿主经唯一权威映射表固定映射为 `capability:read` / `capability:write` / `capability:admin`（角色集合分别为 `viewer+user+admin` / `user+admin` / `admin`）。`CAPABILITY_TIER_ROLES` 是唯一权威定义，矩阵的三条 `capability:*` 由它派生。`access` 是插件包提供的运行时 JS 值，因此在注册期显式校验，未知值 **fail-closed 抛错**，绝不静默降级为写权限。
-
-档位是宿主的词汇且冻结为三个值；插件的业务 flag 是插件的词汇，可自由增殖。插件在 `manifest.capabilities` 声明 flag，并在注册阶段用 `PluginHostContext.declareCapabilities({ flag: tier })` 把每个 flag 绑定到档位。宿主据此为每个声明了能力的插件自动挂载只读投影：
-
-- `GET /v1/capabilities/<plugin-id>/access`（权限点 `capability:read`）返回**恰好**是声明的 flag 集合，每个值由档位矩阵派生；role 缺失或未知时全部为 `false`（fail-closed）；
-- `/access` 是宿主保留路径：插件在该路径声明路由会在注册期被拒；
-- 宿主绝不解释 flag 语义——`canBind` 意味着什么是插件自己的事。**新增一个插件 flag 不需要改动宿主**，新增一个档位才需要；
-- 插件 handler 经 `context.capabilities = {read, write, admin}` 拿到本次调用方的档位布尔（与路由 gate 同源）。这是区分权限的**受支持入口**；不要读 `request.access.role`。`request`/`reply` 是透传的宿主内部载体（插件只应用 params/query/body/headers），其中的身份字段属于未承诺细节，可能静默变化。
-
-onev 插件声明 `canBind → admin`：绑定/改绑钉钉文档会触发同步 worker 以服务自身的 DWS 凭据读取该文档并把产物写入共享项目目录，因此属于管理级变更而非普通写。
-
-### 消息输入与图片附件
-
-- `POST /v1/sessions/:id/messages` 要求非空 `requestId`；`prompt` 通常必须非空，但至少一张图片通过权威校验时允许为空（仅图片消息）。两者都有长度上限（128 与 32,768 个 UTF-16 code unit），含非法控制字符时同样被拒。
-- 可选 `images: [{ mediaType, base64 }]` 携带参考图片。支持的 `mediaType` 为 `image/png`、`image/jpeg`、`image/webp`。宿主在请求到达会话 runtime 之前，校验 canonical base64、真实魔数、头部尺寸、MIME 一致性与数量/体积/像素预算。非法图片返回 `400` 固定文案，绝不回显内容。
-- 宿主不压缩、不转码图片；客户端应在提交前压缩。PNG/JPEG/WebP 逐字节透传到 Pi SDK 图片内容。
-- 同一 `requestId` 携带不同内容重放返回 `409`，不再静默返回旧结果（`requestId` 是幂等键）。该检查仅限进程内，暂不能跨进程重启识别载荷变化，因为持久化幂等记录只保存终态结果。
-- `GET /v1/sessions/:id/export` 将受支持的 user 消息图片投影为可选 `images: [{ mediaType, base64 }]` 字段，同样经过完整校验并有预算限制；畸形或超预算的图片块被省略而不是使导出失败。活会话与只读 JSONL 导出共用同一投影，逐字节一致。
-- `GET /v1/sessions/:id/file-preview?path=<relative>&line=<optional>` 对 viewer/user/admin 为只读且按 owner 隔离。根目录是会话创建时冻结在该 owner 的 JSONL 中的 canonical 路径及 device/inode identity；绝不回退到可变的 project/default cwd。没有此 snapshot 的旧会话返回普通的固定「不可用/不存在」响应；请新建会话后使用预览。它拒绝绝对路径/穿越、静态 root/ancestor/leaf symlink 或 identity 变化、敏感凭据名称（`.env*`、`auth.json`、`.npmrc`、`key`、credential/secret 名称以及对应 Unicode 名称）、非普通文件、二进制、非 UTF-8 及超过 262,144 bytes 的文件。它只打开 `O_NOFOLLOW|O_NONBLOCK` 的普通文件 descriptor，最多读取 262,145 bytes；返回 `{ path, content, lineCount, requestedLine? }`，`line` 必须是范围内的正整数（从 1 开始），供客户端滚动。所有预览失败使用固定 code，绝不泄露文件系统路径。
-- 这是面向 **受信任、由服务维护的本地项目目录** 的兼容性加固，适用于 macOS 与 Linux。Node 没有可移植的 descriptor-relative `openat` walk，因此它不是针对恶意并发进程的严格 TOCTOU/ABA 隔离，也不声称 Linux `/proc` 级别的安全保证。它不把「可信本地目录」变成读取任意用户文件或绕过文件系统 owner/permission 的权限。
+- v1 请求、响应和 SSE 字段见 [OpenAPI 规范](openapi/v1.json)；客户端可从 `pi-agent-server/contract` 导入对应类型。插件路由及其字段由各插件独立定义，见[插件接入说明](docs/plugin-integration.md)。现有 v1 行为和字段保持兼容；可新增可选内容，破坏性变更需使用新版本。
+- `GET /v1/access` 只返回 `{ canRead, canWrite }`：分别表示用户能否使用只读功能、提交或控制任务。`GET /v1/capabilities/<plugin-id>/access` 返回当前用户能使用该插件的哪些功能。权限配置见 [IP 访问控制](docs/ip-rbac-design.md)。
+- 每次有意提交消息使用唯一 `requestId`，确保重试不会重复处理。同一服务进程运行期间，复用 ID 但提交不同内容会返回 `409`；此检查仅限进程内，重启后不保证识别内容变化。消息图片支持 PNG、JPEG 和 WebP，服务不会压缩图片。
+- `file-preview` 的路径相对于会话的受信项目目录，不能读取目录外文件。没有保存目录快照的旧会话无法使用预览；请新建会话。
 
 ## 访问控制
 
@@ -243,7 +152,7 @@ export PI_ALLOWED_CLIENT_CIDRS=127.0.0.0/8,10.0.0.0/8
 | `PI_DEFAULT_THINKING_LEVEL` | Pi 默认值 | `off` 至 `max` |
 | `TOOLS` | `read,ls,find,grep` | 逗号分隔的完整工具列表；设置后替换默认列表，例如 `read,ls,find,grep,bash,edit,write` |
 | `PI_PLUGINS` | 未设置 | 逗号分隔的显式加载、受信任同进程 ESM specifier；可以是包名，也可以是构建产物入口的绝对路径（裸机部署用后者，因为 `pnpm link` 在重建 `node_modules` 后不保留）；不扫描目录或 `.pi` |
-| `PI_PROVIDER_EXTENSION_PATHS` | 未设置 | 逗号分隔的、显式加载的注册模型 provider 的受信任 Pi 扩展路径（绝对路径或 `~/…`）；不自动发现，已配置但加载失败即拒绝启动 |
+| `PI_EXTENSION_PATHS` | 未设置 | 显式加载 Pi SDK 扩展的主变量，逗号分隔（绝对路径或 `~/…`）；不自动发现，无效路径或加载失败即拒绝启动。`PI_PROVIDER_EXTENSION_PATHS` 为已弃用兼容 alias：去除空白与空项后，仅旧变量得到非空列表时在路径校验前警告；两个变量都得到非空列表则拒绝启动 |
 | `CORS_ORIGINS` | 空 | 允许在浏览器中调用本服务的网页地址；多个地址用逗号分隔，例如 `http://127.0.0.1:5173` |
 | `PI_BACKUP_STAGING_ROOT` | 每用户私有应用目录 | 备份或数据库升级时使用的临时工作目录；通常无需设置 |
 
@@ -274,14 +183,16 @@ pnpm e2e
 
 ## 文档
 
-从[文档索引](docs/README.md)开始。主要文档：
+日常运维只需看这两份操作手册：
 
-- [架构](docs/architecture.md)
-- [数据库设计](docs/database-design.md)
-- [IP-RBAC 设计](docs/ip-rbac-design.md)
+- [运维](docs/operations.md)：生产更新、服务管理、管理员 IP 与排障。
+- [备份与恢复](docs/backup-restore.md)：密钥、定时备份、失败检查、恢复演练与保留策略。
+
+研发参考：
+
+- [架构](docs/architecture.md)与[数据库设计](docs/database-design.md)
+- [IP 接入控制](docs/ip-rbac-design.md)
+- [插件接入](docs/plugin-integration.md)
 - [ADR 索引与维护约定](docs/decisions/README.md)
-- [ADR 0002：canonical baseline 与 migration 启动门禁](docs/decisions/0002-canonical-baseline-and-migration-gate.md)
-- [备份与恢复](docs/backup-restore.md)
-- [运维索引](docs/operations.md)
-- [ONEV 裸机部署](docs/onev-bare-metal-deployment.md)
-- [未来公网 IAM 规划](docs/identity-access-plan.md)
+
+[归档资料](docs/archive/)收录历史安装步骤、已完成计划、验收记录及可选监控/IAM 规划，不作为当前生产操作手册。独立文档索引已移除，以本节为统一入口。

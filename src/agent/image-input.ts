@@ -4,7 +4,7 @@
 // schema 只做廉价预检（maxItems / maxLength / mediaType 枚举）；**业务验证以本模块为权威**——
 // 真实 base64 canonical 校验、真实魔数与头部尺寸解析、声明 MIME 与内容一致性、体积与像素预算。
 //
-// 设计约束（docs/external-capability-plugin-plan.md A11 与 P7a）：
+// 设计约束（docs/plugin-integration.md §会话事件与图片）：
 // - 参考图片只经 pi-agent-server 既有会话消息通道提交；宿主不新增图片数据库或上传路由。
 // - **宿主不压缩、不转码**：不引入 sharp/任何原生图像依赖，也不伪造压缩结果。压缩由客户端
 //   （onev UI）在提交前完成；宿主只接受「压缩后的安全结果」并对它重新做完整验证。

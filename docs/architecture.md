@@ -131,4 +131,3 @@ Factory 创建或恢复具体 Agent Session；Storage 解释引用、导出历�
 - [数据库设计](database-design.md)
 - [备份与恢复](backup-restore.md)
 - [reconcile JSONL](reconcile-jsonl.md)
-- [Agent Session 解耦计划](agent-session-decoupling-plan.md)

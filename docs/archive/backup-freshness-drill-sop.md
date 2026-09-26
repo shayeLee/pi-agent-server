@@ -1,12 +1,17 @@
 # 单实例备份新鲜度演练 SOP
 
-> **状态**：演练 runner 已实现真实的一键执行（`pi-agent-server-drill run`）：容器内 cron、
+> **状态：合成演练（synthetic drill），不是现生产告警。** 本文只描述在 disposable、
+> target-like 环境用合成 fixture 验证监控链路的演练 runner；它**不连接、不验证，也不代表
+> 当前生产监控或告警**，生产也没有安装这套 freshness 告警。生产备份运维入口见
+> [../backup-restore.md](../backup-restore.md)。
+>
+> **实现状态**：演练 runner 已实现真实的一键执行（`pi-agent-server-drill run`）：容器内 cron、
 > SQLite/PostgreSQL 合成数据、真实编译 backup/restore/migrate、隔离恢复校验、临时本地
 > node_exporter/Prometheus/Alertmanager/测试 webhook，以及完整故障注入与恢复矩阵。判定只来自
 > 本次运行采集的证据，绝不通过环境变量自证 `PASS`。
 
 权威契约见 [backup-freshness-exporter.md](backup-freshness-exporter.md)，备份恢复流程见
-[backup-restore.md](backup-restore.md)。
+[../backup-restore.md](../backup-restore.md)。
 
 ## 1. 目的与范围
 
@@ -21,7 +26,7 @@ scheduler → fixed backup CLI → published report → textfile
 目录与 receiver。不得使用正式数据库、JSONL、密钥、服务、备份目录或监控接收方。
 
 missing-as-empty 机器报告语义已随 backup/restore 目标语义落地（见
-[backup-restore.md](backup-restore.md#2-已落地语义)）。
+[../backup-restore.md](../backup-restore.md#2-已落地语义)）。
 
 ## 2. Preflight 与安全边界
 

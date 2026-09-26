@@ -606,7 +606,7 @@ describe("显式 provider 扩展：真实会话打开、恢复与 loader 隔离�
       message = error instanceof Error ? error.message : String(error);
       expect((error as Error).cause).toBeUndefined();
     }
-    expect(message).toMatch(/provider extension failed to load/);
+    expect(message).toMatch(/extension failed to load/);
     expect(message).toContain(extensionDir);
     expect(message).not.toContain(SYNTHETIC_SECRET);
     expect(message).not.toContain("boom");

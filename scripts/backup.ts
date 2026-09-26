@@ -16,7 +16,7 @@ export interface BackupCliOptions {
 
 /**
  * Stable machine-readable success contract for the WP5C Option B deployment
- * contract (helpers/timers; see docs/backup-freshness-exporter.md).
+ * contract (helpers/timers; see docs/archive/backup-freshness-exporter.md).
  * `--dry-run` is subject to the same source-ledger gate and emits no success
  * line. A missing/legacy/multi-row/checksum-mismatched ledger therefore exits
  * non-zero before encryption/publication and cannot advance freshness.

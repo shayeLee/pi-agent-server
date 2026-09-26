@@ -1,7 +1,7 @@
 /**
  * 正式部署侧演习 runner 的纯函数核心。
  *
- * 职责与边界（与 docs/backup-freshness-drill-sop.md 语义一致）：
+ * 职责与边界（与 docs/archive/backup-freshness-drill-sop.md 语义一致）：
  * - 为一次性隔离演练提供安全门禁、计划、判定、脱敏证据与文件清理；live executor 只启动
  *   本次运行专属的临时 Podman scheduler/monitoring 资源，绝不安装宿主 timer/unit/plist；
  * - 绝不触碰正式 data / backup / staging / credential 路径：任一正式路径与演练根

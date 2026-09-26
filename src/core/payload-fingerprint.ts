@@ -9,7 +9,7 @@
 // - 进程内可完整识别：本轮运行期内存幂等表同时保存载荷指纹，命中 done/processing 时比对。
 // - 跨重启**无法**识别：持久化表 `idempotency(result TEXT)` 不含指纹；新增列属于 schema 变更
 //   （canonical baseline 不可变 + 备份/恢复 golden checksum），本任务不做，见
-//   docs/external-capability-plugin-plan.md P7a 说明。因此跨重启的同 requestId 重放仍返回旧结果，
+//   README.zh-CN.md §公共 API 契约 v1。因此跨重启的同 requestId 重放仍返回旧结果，
 //   此为已知且明确记录的限制，不伪装成已修复。
 
 import { createHash } from "node:crypto";

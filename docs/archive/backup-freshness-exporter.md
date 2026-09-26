@@ -1,6 +1,12 @@
 # 单实例本机备份新鲜度契约
 
-> 本文是单实例本机备份新鲜度的部署契约。missing-as-empty 机器报告语义见 [backup-restore.md](backup-restore.md#2-已落地语义)；演练 runner 的执行方式与安全边界见[演练 SOP](backup-freshness-drill-sop.md)。是否满足部署要求，以本契约和实际演练证据为准。
+> **状态：未实际安装的监控扩展设计（future），不是现生产告警。** 本文描述部署方审核的
+> helper/timer 与 Prometheus/Alertmanager 规则；**当前已有基础备份 timer，
+> 但未接入本文的 node_exporter、Prometheus 或 Alertmanager，当前生产没有 freshness 指标和这套
+> 外部告警**。本文不是“现生产告警说明”，任何“已部署/已告警”表述都以实际部署演练证据和签署为准。
+> 生产备份运维入口见 [../backup-restore.md](../backup-restore.md)。missing-as-empty 机器报告语义见
+> [../backup-restore.md](../backup-restore.md#2-已落地语义)；演练 runner 的执行方式与安全边界见
+> [演练 SOP](backup-freshness-drill-sop.md)。是否满足部署要求，以本契约和实际演练证据为准。
 
 ## 1. 范围
 
@@ -15,7 +21,7 @@
   → 外部 Alertmanager
 ```
 
-仓库不交付或安装 helper、timer、systemd unit、launchd plist、node_exporter、Prometheus 或 Alertmanager；`pnpm backup` 只用于人工开发。
+历史方案不包含上述监控链路的安装产物；后续交付的基础备份 timer 见 [当前备份运维](../backup-restore.md)，它不等于本文监控方案已落地。`pnpm backup` 只用于人工开发。
 
 本地备份不覆盖主机/磁盘与 backup root 同时丢失。age identity 由运维托管且不参与备份任务。
 

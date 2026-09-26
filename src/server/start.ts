@@ -68,7 +68,7 @@ import { ProviderAdapterRegistry } from "../provider-adapters/registry.js";
 import {
   getProviderExtensionEventBus,
   loadSessionResourceLoader,
-  resolveProviderExtensionPaths,
+  resolveExtensionPaths,
 } from "./provider-extensions.js";
 import { openAIToolPolicyAdapter } from "../provider-adapters/openai-tool-policy.js";
 import {
@@ -123,11 +123,13 @@ export type StartConfig = {
   /** 显式加载的受信外部插件（模块 specifier 或测试内联模块）；未配置时不加载任何插件。 */
   plugins?: readonly PluginSource[];
   /**
-   * 显式接入的受信 provider 扩展（绝对路径或 `~/…` 的目录/文件；PI_PROVIDER_EXTENSION_PATHS）。
+   * 显式接入的受信扩展（绝对路径或 `~/…` 的目录/文件；PI_EXTENSION_PATHS）。
    * 经 DefaultResourceLoader.additionalExtensionPaths 受控注入，noExtensions 恒为 true、
-   * 绝不自动发现；可注册 provider（pi.registerProvider）并订阅 provider/hook 事件。
-   * 未配置时不加载任何外部扩展；配置后加载失败即拒绝启动。
+   * 绝不自动发现；可注册 provider（pi.registerProvider）、注册工具（pi.registerTool）并订阅
+   * provider/hook 事件。未配置时不加载任何外部扩展；配置后加载失败即拒绝启动。
    */
+  extensionPaths?: readonly string[];
+  /** @deprecated 使用 extensionPaths（PI_EXTENSION_PATHS）；保留仅为兼容既有调用方。 */
   providerExtensionPaths?: readonly string[];
   /**
    * 测试注入点（生产不配置，恒定无操作）：存储初始化完成（Kysely + 四个 Repository + 默认项目
@@ -303,8 +305,8 @@ export async function startServer(config: StartConfig) {
   // 存储方言 + 连接配置先于任何资源创建/网络访问解析（fail-fast：PG URL 缺失/未知方言在此抛错）。
   const storage = resolveStorageConfig(config, dbPath);
 
-  // 显式 provider 扩展路径（纯函数，fail-fast：相对路径在创建任何资源前拒绝；未配置时为空）。
-  const providerExtensionPaths = resolveProviderExtensionPaths(config.providerExtensionPaths);
+  // 显式扩展路径（纯函数，fail-fast：相对路径/主旧同时配置在创建任何资源前拒绝；未配置时为空）。
+  const extensionPaths = resolveExtensionPaths(config.extensionPaths, config.providerExtensionPaths);
 
   // 模型运行时：凭证默认读个人 ~/.pi/agent/auth.json（与 pi CLI 共用，OAuth token 临近过期时 SDK 会自动
   // 刷新并回写该文件，同文件带锁并发安全）；生产部署可用 PI_AUTH_PATH 指向服务端独立凭证。
@@ -421,7 +423,7 @@ export async function startServer(config: StartConfig) {
     loadSessionResourceLoader(modelRuntime, {
       extensionCwd: cwd,
       agentDir,
-      providerExtensionPaths,
+      extensionPaths,
       extensionFactories: providerAdapterExtensionFactories,
       ...(extra.systemPrompt !== undefined ? { systemPrompt: extra.systemPrompt } : {}),
       ...(extra.systemPromptOverride !== undefined

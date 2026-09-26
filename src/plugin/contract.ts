@@ -1,4 +1,4 @@
-// 公开插件契约（docs/external-capability-plugin-plan.md §插件接入契约）：
+// 公开插件契约（docs/plugin-integration.md §模块与 manifest）：
 // 受信外部插件只依赖本文件与 Pi SDK 的公开类型，不得引用 pi-agent-server 内部模块。
 // 宿主按显式配置加载插件并校验；插件是工程边界，不是进程级安全隔离。
 //

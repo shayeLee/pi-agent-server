@@ -2,7 +2,7 @@
 
 基于 Fastify 与 Pi SDK 的长期运行 Pi Agent 服务。它提供与具体能力解耦的会话、控制、流式输出、鉴权和安全边界；能力通过显式注册的工具、提示词片段和（可选）后台 Worker 扩展，权限由各能力单独声明。
 
-规划中的首个能力是[知识库问答与钉钉文档同步](docs/capabilities/knowledge-qa.md)，目前尚未实现。
+具体业务能力通过外部插件交付；能力需求、部署步骤与验收记录由各插件仓库维护，宿主仅定义通用扩展契约。
 
 > 本文是平台级需求基线；能力级需求以对应能力文档为准。核心数据流与模块解耦见[架构文档](docs/architecture.md)。
 
@@ -264,9 +264,9 @@ N、M 天数由部署配置决定。
 
 ## 8. 计划与状态
 
-- 文档导航与使用约定：[docs/README.md](docs/README.md)。
+- 文档统一入口：[README 中文版的文档导航](README.zh-CN.md#文档)。
 - 决策演进与取代关系：[ADR 索引](docs/decisions/README.md)；当前 migration 启动门禁见 [ADR 0002](docs/decisions/0002-canonical-baseline-and-migration-gate.md)。
 - 当前数据库与跨存储边界：[数据库设计](docs/database-design.md)。
-- 当前内网 IP-RBAC：[IP access policy 设计](docs/ip-rbac-design.md)；未来公网 IAM：[身份与访问管理规划](docs/identity-access-plan.md)。
+- 当前内网 IP-RBAC：[IP access policy 设计](docs/ip-rbac-design.md)；未来公网 IAM：[身份与访问管理规划](docs/archive/identity-access-plan.md)。
 - 备份、恢复与运维：[备份与恢复](docs/backup-restore.md)、[运维任务索引](docs/operations.md)。
-- 能力级需求以各能力文档为准；[知识库问答](docs/capabilities/knowledge-qa.md)目前是未来需求，尚未实现。
+- 具体能力需求、实现状态和验收边界由各插件仓库维护，不纳入宿主的通用运维文档。

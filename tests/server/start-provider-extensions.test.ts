@@ -153,6 +153,41 @@ describe("startServer 显式 provider 扩展接入", () => {
     await expect(startWithBaseline(config)).rejects.toThrow(/默认模型不可用/);
   });
 
+  it("StartConfig.extensionPaths（新名）同样受控接入 provider 扩展", async () => {
+    const root = makeTempDir();
+    const extensionDir = writeProviderExtensionFixture(root);
+    const config = baseConfig({
+      dataDir: root,
+      extensionPaths: [extensionDir],
+      defaultModel: { provider: "fixture-provider", id: "fixture-model" },
+    });
+    const app = await startWithBaseline(config);
+    try {
+      const models = await app.inject({ method: "GET", url: "/v1/models" });
+      expect(models.statusCode).toBe(200);
+      const body = models.json() as { models: Array<{ provider: string; id: string }> };
+      expect(body.models.some((model) => model.provider === "fixture-provider" && model.id === "fixture-model")).toBe(true);
+    } finally {
+      await app.close();
+    }
+  });
+
+  it("StartConfig 主/旧同时配置有效列表：在任何资源创建前拒绝，且不回显路径", async () => {
+    const root = makeTempDir();
+    const primary = join(root, "primary-extension");
+    const legacy = join(root, "legacy-extension");
+    let message = "";
+    try {
+      await startServer(baseConfig({ dataDir: root, extensionPaths: [primary], providerExtensionPaths: [legacy] }));
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+    expect(message).toMatch(/不能同时配置/);
+    expect(message).not.toContain(primary);
+    expect(message).not.toContain(legacy);
+    expect(readdirSync(root)).toEqual([]);
+  });
+
   it("显式配置加载失败（路径不存在）：在任何存储资源创建前拒绝启动", async () => {
     const root = makeTempDir();
     const config = baseConfig({
@@ -161,7 +196,7 @@ describe("startServer 显式 provider 扩展接入", () => {
     });
     const dbPath = join(root, "pi-agent-server.db");
     await createBaseline(dbPath);
-    await expect(startServer({ ...config, dbPath })).rejects.toThrow(/provider extension failed to load/);
+    await expect(startServer({ ...config, dbPath })).rejects.toThrow(/extension failed to load/);
     // 拒绝发生在扩展加载阶段：DB 基线文件之外不产生宿主持久化副作用。
     expect(readdirSync(root).filter((entry) => entry.includes("sessions"))).toEqual([]);
   });

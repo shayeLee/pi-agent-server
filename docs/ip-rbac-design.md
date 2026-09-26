@@ -1,220 +1,91 @@
-# IP Access Policy 设计（WP5D）
+# IP 访问控制
 
-> 当前 RC 以**客户端 IP**作为身份：默认取直接 TCP 对端 IP；仅当对端为回环（同机代理，如 nginx 反代到 `127.0.0.1:8080`）时采用 `X-Forwarded-For` 最右一条。`PI_ALLOWED_CLIENT_CIDRS` 显式必填，可选 `PI_IP_ACCESS_POLICY_FILE` 提供 per-IP role/disabled/token 画像；逐路由 RBAC 默认拒绝。IP-RBAC 不是 filesystem sandbox，公网暴露禁止。owner transfer 见 [owner-transfer.md](owner-transfer.md)，未来公网 IAM 见 [identity-access-plan.md](identity-access-plan.md)；migration 与部署门禁见 [operations.md](operations.md)。
+服务按**客户端 IP**识别用户：只有来源 IP 落在管理员允许的网段内才能连接；通过网段检查后，
+角色决定该 IP 能访问哪些功能。未单独配置的 IP 默认是 `user`。同一 IP 共用一个身份；IP 改变就会
+成为新身份，权限画像和资源归属也随之改变。
 
-## 1. 动机与范围
+## 管理员配置
 
-RC 阶段的接入控制把「哪些客户端 IP 能访问、以什么角色访问、是否需要出示 token」固化为显式、可审计、fail-fast 的
-**策略核心**：客户端 IP（默认直接 TCP 对端；同机回环代理时取 `X-Forwarded-For` 最右条目）→ CIDR gate →（可选）精确 IP 策略画像 → 逐路由 RBAC。
+1. 必须设置 `PI_ALLOWED_CLIENT_CIDRS`，以逗号分隔规范 CIDR 网段；无默认值，缺失或格式错误会阻止
+   启动。CIDR 必须使用规范网络地址和前缀，例如 `192.0.2.0/24` 或 `2001:db8:1::/64`；不能写带
+   主机位的网段或重复项。IPv4-mapped IPv6 地址会归一为 IPv4。
+2. `PI_IP_ACCESS_POLICY_FILE` 可选；需要为特定 IP 设置角色、禁用访问或要求 token 时，指定绝对路径的
+   JSON 文件。策略中的 `ip` 是精确 IP 地址（不是 CIDR），且每个地址必须包含在允许网段中。
+3. 以下是格式示例，`203.0.113.7` 和 `198.51.100.8` 均为文档示例地址；token hash 仅示范格式，
+   部署时应替换成真实 Bearer token 的 SHA-256：
 
-WP5D-1 交付 **core**：CIDR/IP canonical 化与匹配、策略 JSON v1 解析、纯函数决策解析器、token 校验助手、环境变量解析与策略文件安全加载。**不修改**数据库 schema、不引入 owner transfer。
+```dotenv
+PI_ALLOWED_CLIENT_CIDRS=198.51.100.0/24,203.0.113.0/24
+PI_IP_ACCESS_POLICY_FILE=/etc/pi-agent-server/ip-access-policy.json
+```
 
-WP5D-2 交付 **HTTP 接线**：startServer/buildApp 强制准入配置（failfast）、全局 onRequest admission（覆盖探针与 `/v1`）、探针与 `/v1` 的 401/403 语义。**不执行** role 授权（WP5D-3）与 workspace 安全（当前 RC 决策：整体延期）。
-
-WP5D-3 交付 **role 授权矩阵**：基于 `request.access.role` 的逐路由授权（每路由显式 permission、全局
-default-deny、纯函数决策）、探针/metrics/operator/viewer/user/admin 冻结矩阵（见 §6）、403 固定响应体
-（不泄 role/IP/path）、CORS 预检不做 role、SSE viewer 只读、矩阵与 failclosed/副作用语义。**不执行** admin 跨
-owner 只读、workspace/sandbox 安全（current RC 决策：整体延期）、owner transfer。
-
-## 2. 冻结决策（本工作包已定，不得在实现中偏离）
-
-1. **身份默认以直接 socket IP 为准**：默认不使用 `X-Forwarded-For` 等代理头推导客户端 IP；一律读
-   `request.raw.socket.remoteAddress`（`request.ip` 受 Fastify trustProxy 配置影响，亦不使用）。双栈 socket 上报的
-   `::ffff:a.b.c.d` **归一为 v4** 再参与后续判定，身份键/ownerKey 一律使用 canonical IP 文本。
-   **唯一例外——同机代理边界**：当 TCP 对端为回环（`127.0.0.0/8` 或 `::1`）时才采用
-   `X-Forwarded-For`，且只取**最后一条**（最右段）作为客户端 IP；末段为空或不可解析则整体回落
-   socket 对端 IP，**不向左搜索**可解析段（追加语义下最右段恒为代理写入的合法地址，末段不可解析
-   说明请求未正常经过同机代理，左侧任意条目都是客户端可控值）。生产形态为
-   `浏览器 --HTTPS--> 裸机 nginx --http--> 127.0.0.1:8080`，agent-server 看到的对端恒为 `127.0.0.1`，
-   若无此例外则所有用户身份塌缩为同一身份。取最右是**正确解析**而非防伪造机制：nginx 的
-   `$proxy_add_x_forwarded_for` 是**追加**语义（把直连地址追加到客户端自带 header 之后），最左段是
-   客户端可控的原值，最右段才是代理写入的真实地址；取最左会把他人的身份当成自己。
-   XFF 缺失/末段空白或不可解析 → **回落 socket 对端 IP**（不 fail-closed，保证本机直连 `curl 127.0.0.1:8080/health`
-   与探针不被中断）；非回环对端一律忽略 XFF（防止把 `HOST` 改成 `0.0.0.0` 时内网机器直接伪造 XFF）。
-2. **一个 IP = 一个用户**：策略解析的单位是 canonical IP；IP 是身份键、资源隔离键（`owner_key`）与速率限制主体的基础。
-3. **`PI_ALLOWED_CLIENT_CIDRS` 显式必填，无默认值**：缺失/空白直接拒绝启动。CIDR 外的 IP 一律 deny（默认拒绝模型）。
-4. **CIDR 内未登记（策略文件中无精确条目）的 IP 使用默认画像**：`role=user`、`tokenRequired=false`（token off）。**没有 workspace 概念**：IP-RBAC 不限制 cwd 或 Agent 工具的绝对路径/OS 权限（不是 sandbox；见 §7）。
-5. **可选 `PI_IP_ACCESS_POLICY_FILE`**：其中**精确 IP** 条目可覆盖：`role`（仅 `admin|user|viewer|operator` 四选一）、`disabled`、`tokenRequired`、绑定的 token `sha256` 哈希列表。
-6. **token 只保存 `sha256:<64 位小写 hex>`**；全文件**全局唯一**（一个 token hash 只能绑定一个精确 IP）；`tokenRequired=true` 的条目**必须有**非空 hash 列表；未启用 `tokenRequired` 的条目**不得**携带任何 hash（off 不得 hash）。token gate **作用于 `/v1` 与 `/metrics`**：`tokenRequired` 画像的**实际请求**（GET/非预检 OPTIONS）必须出示绑定该 IP 的 Bearer token；合规 CORS 预检免 token。另有一个严格例外：不透明 sandbox 无法携带 Bearer token，故仅 `/v1/capabilities/onev/prototype-assets/<64位小写sha256>/runtime.js|runtime.css` 的精确 GET 路径免 token；该路径仍受 CIDR 与 read-role 控制，只能返回 hash 校验通过的组件库公开字节，原型 HTML、页面代码、会话及相似路径均不豁免；`/health`、`/readyz` 存活/就绪探针**永远免 token**（任意 admitted IP/role，不被令牌问题卡死）。
-7. **token 不换绑、不迁移**：token 与精确 IP 的绑定在策略文件中一次性固化；不存在换绑接口；迁移到未来 IAM 账号体系（identity-access-plan 工作包 1）**不**把策略 token 迁走，策略 token 只服务 IP 接入阶段。
-8. **规则异常 failfast**：任何非法/非规范/自相矛盾的配置（含策略条目超出允许 CIDR 的死配置）在加载期抛错，绝不静默降级、绝不部分生效。
-9. **工作目录不受 IP-RBAC 约束（当前 RC 决策）**：内网当前不做 workspace 强制；IP-RBAC 不限制 cwd 或 Agent 工具的绝对路径/OS 权限（不是 sandbox）。workspace 安全（收窄工具/会话可见根目录、防路径逃逸）**仅公网暴露前需要**，随未来 OIDC/IAM + workspace/sandbox 设计一起做。当前服务 cwd（`AGENT_CWD` / 项目 cwd）行为保持原状，不被 IP-RBAC 约束。
-
-## 3. 配置契约
-
-| 环境变量 | 必填 | 语义 | 校验（外层 parser） |
-| --- | --- | --- | --- |
-| `PI_ALLOWED_CLIENT_CIDRS` | **是**（无默认） | 逗号分隔的允许客户端 CIDR 列表 | 每个元素必须是**严格 canonical** CIDR（规范网络地址/前缀）；v4 无前导零、v6 小写且 RFC 5952 规范化、主机位为零；IPv4-mapped 形式允许并归一为 v4（前缀 ≥96，映射出的 v4 地址必须是对应前缀的网络地址、主机位为零：`::ffff:1.2.3.0/120` → `1.2.3.0/24`，`::ffff:1.2.3.4/120` 拒绝）；无重复 |
-| `PI_IP_ACCESS_POLICY_FILE` | 否 | 策略文件绝对路径 | 设置时必须为绝对路径；文件加载另有完整安全检查（§8） |
-
-### 3.1 策略文件 JSON（version 1）
-
-```jsonc
+```json
 {
-  "version": 1,                    // 必须为数字 1
-  "ips": [                         // 非空；精确 IP 条目
+  "version": 1,
+  "ips": [
     {
-      "ip": "203.0.113.7",         // 必须：canonical IP 文本（mapped 归一为 v4）；全文件唯一
-      "role": "admin",             // 可选：admin|user|viewer|operator；缺省 user
-      "disabled": true,            // 可选：true = 永远 deny；disabled 条目不得携带其他字段
-      "tokenRequired": true,       // 可选：true ⇔ 必须提供非空 tokens
-      "tokens": [                  // 可选：仅当 tokenRequired=true；全文件全局唯一
-        "sha256:abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
-      ]
+      "ip": "203.0.113.7",
+      "role": "admin",
+      "tokenRequired": true,
+      "tokens": ["sha256:8e8a5519b6fef23f5c0149e37c6242a3785179a27658a959d72081650b7d9be2"]
+    },
+    {
+      "ip": "198.51.100.8",
+      "disabled": true
     }
   ]
 }
 ```
 
-严格性（全部 failfast，错误消息不回显 token 值）：
+策略文件是严格 JSON：顶层为 `version: 1` 和非空 `ips`；每条策略只接受 `ip`、`role`、`disabled`、
+`tokenRequired`、`tokens`。角色为 `admin`、`user`、`viewer`、`operator` 之一，省略时为 `user`。
+`disabled: true` 条目只能包含 `ip` 和 `disabled`，不能同时设置角色或 token。启用 `tokenRequired`
+必须提供非空 `tokens`；每项必须是 `sha256:` 加 64 位小写十六进制，且全文件唯一（一个 hash 只绑定
+一个 IP）。未启用 token 时不得提供 `tokens`。错误配置会阻止启动，不会部分加载。
 
-- 顶层仅允许 `version`、`ips`；`version` 必须等于数字 1；`ips` 非空数组。
-- JSON 语法由**受限解析器**完整校验：**任意对象层级不得重复 key**（顶层/条目/tokens 内对象一律拒绝，不用 `JSON.parse` 的“后者覆盖前者”语义）；错误消息不回显文件内容或 key 名（脱敏）。
-- 条目仅允许 `ip/role/disabled/tokenRequired/tokens`；未知字段拒绝（防拼写错误）。
-- `disabled: true` 与 `role/tokenRequired/tokens` **互斥**（否定性死配置直接拒绝）。
-- `tokenRequired` 与 `tokens` 的组合严格互证（缺一即错）。
-- 精确 IP 不能重复（归一后判重）；token hash 全文件唯一（不换绑的直接体现）。
-- 加载期一致性：**每个精确 IP 必须落在 `PI_ALLOWED_CLIENT_CIDRS` 内**，否则死配置 failfast。
+策略文件必须是普通文件、非符号链接且只有一个硬链接；属主必须是当前有效用户（euid）或 root。
+权限位不得授予 group/world（`mode & 077 == 0`，建议 `0600` 或 `0400`；`0640` 不合格），文件最大
+1 MiB。文件还必须能被运行服务的账号读取：服务以非 root 账号运行时，可设为该账号所有、`0600`。
+保存配置后**重启服务**生效；策略不会热更新。
 
-## 4. 解析流程（纯函数 `resolveIpAccess` + 接线 `createAdmission`）
+## 请求如何通过认证
 
-```text
-直接 socket IP（request.raw.socket.remoteAddress）
-   │ parseIpStrict：canonical 化（::ffff:a.b.c.d → v4；不可解析 → failclosed 403）
-   ▼
-TCP 对端是否为回环（127.0.0.0/8 或 ::1，同机代理边界）？
-   ├─ 是 → 取 X-Forwarded-For 的**最后一段**（最右段，只看这一段，不向左搜索）
-   │        ├─ 末段可解析 → 用该地址作为客户端 IP（canonical）
-   │        └─ XFF 缺失/空白/仅逗号/末段不可解析 → 回落 socket 对端 IP（不 fail-closed）
-   └─ 否 → 一律忽略 XFF，用 socket 对端 IP
-   ▼
-是否命中 PI_ALLOWED_CLIENT_CIDRS 任一网段？
-   ├─ 否 → deny 403 (outside-cidr)   ← 出示任何 token 都不能绕过
-   ▼ 是
-策略文件是否有该精确 IP 条目？
-   ├─ 有且 disabled → deny 403 (disabled)
-   ├─ 有 → allowed：role=条目.role、tokenRequired=条目.tokenRequired、
-   │        tokenHashes=条目.tokens
-   │        ├─ /v1 或 /metrics 且 tokenRequired：合规 CORS 预检（OPTIONS + Origin +
-   │        │   Access-Control-Request-Method）免 token，随后交 CORS origin policy
-   │        ├─ 其他 /v1 或 /metrics 实际请求（GET）与非预检 OPTIONS：缺失/错误 Bearer → deny 401 (token-required)
-   │        ├─ /health、/readyz（任意 admitted role，永不 token gate）：Bearer 忽略，直接放行
-   │        └─ token off：Bearer 忽略，直接放行
-   └─ 无 → allowed（默认画像）：role=user、token off
-```
+- 通常使用 TCP 连接的直接对端 IP。只有直接对端是回环地址（`127.0.0.0/8` 或 `::1`）时才信任
+  `X-Forwarded-For`，并且只取最右一项；缺失或无效时回退到对端 IP。非回环连接一律忽略该请求头。
+- 回环反向代理必须把实际客户端 IP 写入可信的最右一项，不能让客户端伪造的值成为末项。该规则只
+  适用于同机代理，不会信任任意远端发送的转发头。
+- IP 不在允许 CIDR 中、被策略禁用或无法解析时返回 `403`；Bearer token 缺失或不匹配时返回 `401`。
+  token 只以 `sha256:<hex>` 形式存于策略，不保存明文；哈希和明文都不得写入日志或请求上下文。
+  token 不会改变 IP 的角色。
+- 未登记且位于允许网段内的 IP 默认 `user`、无需 token。策略启用 token 后，`/v1` 和 `/metrics` 的
+  实际请求需要该 IP 绑定的 Bearer token；CORS 预检免 token。仅插件明确登记的公开静态资源 GET 有有限的免 token 例外，仍需通过 IP 准入和只读权限检查。
+- `/health`、`/readyz` 是探针：任何通过 IP 准入的来源都可访问，不要求 token 或特定角色。
+  修改允许网段或策略文件后需重启服务；客户端 IP 变化不需要重启，但会被当成新身份。
 
-解析器是纯函数（无 IO、无日志），输入为已校验配置 + IP 文本，输出 `denied`/`allowed+profile`。接线层
-（`src/server/network-admission.ts` 的 `createAdmission`）把 socket IP、CIDR gate、token gate 组装为
-per-request 决策：allowed 只携带 `user`（canonical IP 身份）+ `access`（public profile，**无 token
-hashes**）注入 `request`；401/403 响应体不含原始 IP/token/path。profile 是 WP5D-3 授权（role）的
-唯一依据：role 已用于逐路由授权（§6.1）；**workspace 安全不在 WP5D 内**（IP-RBAC 不限制 cwd/工具
-绝对路径/OS 权限，当前 RC 决策延期）。
+## 角色权限
 
-## 5. Bearer token 语义
-
-- 存储：只存 `sha256:<64 位小写 hex>`（`hashBearerToken`）。
-- 校验：出示 token **只哈希一次**；随后与该 IP 画像绑定的**全部**哈希逐项做定长常量时间比较（`timingSafeEqual`），**遍历全部条目、不短路**，累积匹配结果——对固定画像，比较工作量与命中位置、命中与否无关（准确表述：常量时间指单项定长比较与不短路遍历；总工作量随画像 hash 条数线性增长，不依赖任何秘密内容）。
-- **IP binding**：只比较当前请求 IP 画像上的哈希——同一 token 出现在别的 IP 下无效（换绑被策略结构禁止）。
-- token off 的请求可不带 token（出示的 Bearer 一律忽略）；token required 时实际请求与非预检 OPTIONS 缺省/错误 token 一律 401。
-  **token gate 作用于 `/v1` 与 `/metrics`**：合规 CORS 预检（`OPTIONS` + `Origin` + `Access-Control-Request-Method`）免 token，随后仍交 CORS origin policy；`/health`、`/readyz` 存活/就绪探针仅 IP gate（tokenRequired 画像的 IP
-  访问这两个探针也无需出示 token）——探针可被监控正常消费，且不因未登记/令牌问题误报进程状态；`/metrics` 是 admin/operator 运维面，其画像 tokenRequired 时实际 GET 仍须出示 token（预检例外同上）。
-- **日志红线**：token 明文与哈希均不得记录；对外日志只允许 `publicProfile`（ip/role/tokenRequired/registered，无哈希），且接线层日志只带 `subjectHash`（IP 派生哈希），**不记录原始 IP**（包括原始 socket 对端与 XFF 原始文本）；`request.access` 与 `request.user` 是唯一注入点，token hashes 从不挂到 request 上。
-- 配合既有 §5 日志约定：涉及主体聚合的日志字段继续使用 `subjectHash`（IP 的派生哈希），不记录原始 IP 或 token。
-
-## 6. 角色矩阵（WP5D-3 已实现并强制）
-
-矩阵冻结如下，`src/server/route-rbac.ts` 的 `ROUTE_PERMISSIONS` 是唯一权威定义（每路由显式声明
-`config.permission`；不是按 HTTP method 粗略匹配）：
-
-| 路由类别 | viewer | user | operator | admin |
+| 角色 | `/health`、`/readyz` | `/metrics` | `/v1` | 插件路由档位 |
 | --- | --- | --- | --- | --- |
-| `GET /health`、`GET /readyz` | ✅ 任意 admitted role | ✅ | ✅ | ✅ |
-| `GET /metrics` | ❌ | ❌ | ✅ | ✅ |
-| `GET /v1/models`、`GET /v1/projects`、`GET /v1/sessions`、`GET /v1/sessions/:id/export`、`GET /v1/sessions/:id/events`（SSE）、`GET /v1/access`（能力投影） | ✅ 纯读 | ✅ | ❌（/v1 一律 403） | ✅ |
-| `POST /v1/projects`、`POST /v1/sessions` | ❌ | ✅ | ❌ | ✅ |
-| `PATCH /v1/sessions/:id`、`PATCH /v1/sessions/:id/config`、`DELETE /v1/projects/:id`、`DELETE /v1/sessions/:id` | ❌ | ✅ | ❌ | ✅ |
-| `POST /v1/sessions/:id/messages`、`POST …/steer`、`POST …/follow-ups`、`POST …/abort` | ❌（写/控制） | ✅ | ❌ | ✅ |
-| 外部插件 `capability:read` 路由 | ✅ | ✅ | ❌ | ✅ |
-| 外部插件 `capability:write` 路由 | ❌ | ✅ | ❌ | ✅ |
-| 外部插件 `capability:admin` 路由 | ❌ | ❌ | ❌ | ✅ |
+| `viewer` | 允许 | 拒绝 | 只读 GET（含会话事件/SSE、导出和访问能力） | `read` |
+| `user` | 允许 | 拒绝 | 常规读写 | `read`、`write` |
+| `operator` | 允许 | 允许 | 拒绝 | 拒绝 |
+| `admin` | 允许 | 允许 | 常规读写 | `read`、`write`、`admin` |
 
-- **operator：`/v1` 全部拒绝（403）**，含纯读 GET；仅探针 `/health`/`/readyz`/`/metrics` 可达。
-- **viewer：只读**——允许上述纯读 GET 与 SSE 订阅；一切 POST/PATCH/DELETE（含 messages/steer/
-  follow-ups/abort）一律 403。
-- **SSE viewer 语义（P2 稳定受控态）**：viewer 订阅只走 `registry.getExisting`，**绝不创建 runtime**；
-  会话记录存在但无 runtime（未实例化）时返回**稳定受控态 `204 No Content`**（无可订阅的 live 事件流，
-  零 adapter/DB/文件副作用）；已有 runtime 的会话可正常订阅（200 流）。这是有意区分：documented
-  404 = 不存在/越权，`204` = 存在但无 live 流。
-- **会话导出只读（P1）**：`GET /v1/sessions/:id/export` 对任何角色都**绝不实例化 runtime**：已有 runtime
-  走活会话导出；无 runtime 且未持久化（`conversationRef` null）→ 空消息 + 游标 0；无 runtime 但已持久化 →
-  注入的 `ConversationStorage` 零写只读解析（与活会话导出同一 `{role,text}` 投影，文件指纹验证零写、
-  错误脱敏），绝不 createAdapter/写 DB/写 conversationRef。
-- **user/admin**：允许既有 own-resource 路由行为；资源访问仍 **owner 隔离**（列表/子资源访问他人
-  资源统一 404）。**admin 跨 owner 只读未实现（WP5D 明确不做）**：admin 与其他角色一样只能访问
-  自己的会话/项目。
-- **workspace 安全已延期（当前 RC 用户决策）**：内网不做 workspace 强制，workspace 安全仅公网暴露前需要。
-- role 是 per-IP 画像的一部分（一个 IP = 一个用户），不因出示 token 而改变（token 只满足
-tokenRequired，不换角色）；未登记 IP 默认 `user`。
+`admin` 仍只能访问自己的项目和会话，不能跨 IP/owner 访问他人资源。每条真实路由都按显式权限检查；
+未声明或不允许的操作默认拒绝。
 
-### 6.1 路由授权实现（WP5D-3，已接线）
+插件路由声明的 `access` 是单一档位 `read`、`write` 或 `admin`；插件 handler 使用
+`context.capabilities: { read, write, admin }` 获取本次调用的档位布尔值。
 
-- **中央定义**：`src/server/route-rbac.ts` 的 `ROUTE_PERMISSIONS`（permission → 允许角色集合）与
-  `evaluateRouteAuthorization`（纯函数决策）；`requirePermission(permission)` 是每路由显式声明点。
-- **default-deny**：全局 `onRequest` hook（注册顺序：admission → `@fastify/cors` → `routeRbacOnRequest`）
-  读 `request.routeOptions.config.permission`；**真实路由未声明/未知 permission → 403**，绝不因
-  method 粗略匹配误放行；未匹配真实路由的请求（含 route-level 禁用的 HEAD/未知路径）交回 404。
-- **failclosed**：`request.access` 缺失/role 未知/伪造 → 403（不泄 role/IP/path；固定 `FORBIDDEN_BODY`）。
-- **403 固定响应体**：与准入 403 同一字面量 `{statusCode:403, error:"Forbidden", message:"请求被拒绝"}`；
-  拒绝日志只带固定枚举（`authz:"denied"` + reason，subjectHash 由准入后置日志携带）。
-- **401 保持 token 语义**：token gate（admission 层）先于 role gate；`tokenRequired` 缺失/错误 token
-  仍 401（`WWW-Authenticate: Bearer`），不因角色允许而跳过。
-- **CORS 预检不做 role/token**：合规预检（`OPTIONS` + `Origin` + `Access-Control-Request-Method`）由
-  CORS 插件在 role gate 之前的 onRequest 直接回 204（仍先过 admission）；实际请求才 role gate。
-- **外部插件路由（三档）**：受信插件只能声明 `read` / `write` / `admin` 三档，宿主经唯一映射表固定映射为 `capability:read` / `capability:write` / `capability:admin`（分别对应角色集合 `viewer+user+admin` / `user+admin` / `admin`）；不能声明任意 permission，仍保持 default-deny。`access` 是运行时 JS 值，注册期显式收口，未知值 **fail-closed 抛错**（绝不静默降级为写权限）。
-- **插件权限档位的唯一词汇表**：`CAPABILITY_TIER_ROLES`（`src/server/route-rbac.ts`）是档位 → 角色集合的**唯一权威**定义，`ROUTE_PERMISSIONS` 的三条 `capability:*` 由它派生（不重复字面量，杜绝漂移）。档位是**宿主**词汇且冻结为三个值；插件的业务 flag 是**插件**词汇，可自由增殖——插件只声明「flag → 档位」，宿主不解释 flag 语义。
-- **插件能力投影 `GET /v1/capabilities/<plugin-id>/access`**：插件在 manifest 声明 `capabilities`，并在 register 阶段用 `declareCapabilities({ flag: tier })` 绑定档位；宿主据此为**每个声明了能力的插件**自动挂载该只读端点，权限点为 `capability:read`。响应体**恰好**是声明的 flag 集合（不多不少），值为由 `CAPABILITY_TIER_ROLES` 经 `allowsCapabilityTier` 派生的布尔；role 缺失/未知 → 全 false（fail-closed）。宿主绝不解释 flag 语义——「`canBind` 意味着什么」是插件自己的事。`/access` 是宿主保留路径，插件声明同名路由在注册期被拒。**新增一个插件 flag 不需要改动宿主**；新增一个档位才需要。
-- **插件上下文的能力档位投影**：插件 handler 经 `context.capabilities = {read, write, admin}` 拿到本次调用方的档位布尔（与路由 gate 同源），这是区分权限的**受支持入口**；不要读 `request.access.role`。`request`/`reply` 是透传的宿主内部载体（插件只应用 params/query/body/headers），其中的 role/IP 属于未承诺细节，可能静默变化。
-- **访问能力投影 `GET /v1/access`（P7b）**：权限点为中央矩阵的 `access:read`（允许 `admin/user/viewer`，`operator` 仍拒）；响应体为最小固定投影 `{canRead, canWrite}`，由 `ROUTE_PERMISSIONS` + `evaluateRouteAuthorization` 经 `projectAccessCapabilities` 派生，不硬编码、绝不返回 role/IP/token。`canRead` = 读权限全允许（viewer/user/admin）；`canWrite` = `sessions:send-message` + `sessions:control` + `capability:write` 全允许（user/admin）；矩阵分项不一致时布尔值更保守（少报可写）。**该端点是宿主通用契约，不含任何插件业务 flag**（闭合 schema `additionalProperties:false`）；插件业务能力走上面的插件自有投影端点。
-- **owner 隔离不变**：user/admin 跨 owner 访问统一 404（与不存在一致），admin 暂不跨 owner。
+`GET /v1/access` 返回本服务的读写权限，响应只有 `{ "canRead": boolean, "canWrite": boolean }`：
+`canRead` 对 `viewer`、`user`、`admin` 为真，`canWrite` 对 `user`、`admin` 为真。它不同于插件路由的
+`access` 档位；插件自己的 `/v1/capabilities/<plugin-id>/access`（如已声明）则投影该插件声明的能力标记。
 
-## 7. 边界与明确不做（WP5D 范围内）
+## 安全边界
 
-- **IP-RBAC 不是 sandbox，也不限制 cwd**：本阶段的网络准入 + 角色授权只判断「谁能访问哪些路由」；
-  **不限制** Agent 工作目录（cwd）、Agent 工具的绝对路径或 OS 级权限，也不做路径逃逸防护。文件系统级
-  隔离由 OS 账号、容器与网络边界负责。**公网暴露禁止**：公网部署不得开放本服务（含 `POST /v1/projects`
-  的任意 cwd 创建项目接口，见 needs.md §7）；workspace/sandbox 安全设计（收窄工具/会话可见根、防路径
-  逃逸）随未来 OIDC/IAM 工作包一起做。
-- **owner transfer 仅 DB 层面，且只存在 IP→IP 形态**：`owner-transfer` 离线 CLI（WP5D-4，见 [owner-transfer.md](owner-transfer.md)）在数据库层变更 owner 映射（把一个 IP 身份资源归属转到另一个 IP 身份，仅更新 projects.owner_key / sessions.owner_key）；**不迁移**政策文件的 IP 条目与 token 绑定、不迁移角色——接收方继承自己的 IP 画像，与资源原 owner 的画像无关。
-- **无 legacy 账号/token 迁移（RC 决策）**：新 RC **不存在** legacy 账号/token 的 owner 迁移——正式旧公网 token 数据从未存在，因此不实现任何「旧 token/旧账号 → 新主体」迁移代码，也不存在 owner transfer 的账号维度。旧库或无 canonical baseline 的库不做在位转换；只有完全空目标可以按 [ADR 0002](decisions/0002-canonical-baseline-and-migration-gate.md) 离线 bootstrap，绝不把已有数据自动采用为 baseline。
-- **不做**：token 签发/轮换/撤销接口（无签发端点）、OIDC/账号体系（见 identity-access-plan 工作包 1–2）、除上述回环同机代理例外外的基于 header 的客户端 IP 推导、审计落库（WP5D-2 接线时按 needs.md §7 要求补齐鉴权审计埋点）。
-- **当前为单实例**：未来多实例改造需要统一设计策略分发、共享 JSONL 和分布式协调，架构边界见 [architecture.md](architecture.md)。
+IP-RBAC 只控制网络准入和 HTTP 路由权限，**不是沙箱**：不会限制 Agent 的工作目录、文件路径、工具或
+进程的 OS 权限；这些仍由运行服务的操作系统账号和部署隔离措施决定。此服务禁止直接暴露到公网。
 
-## 8. 策略文件加载安全（`readIpAccessPolicyFile`）
-
-对齐 backup-core 既有的文件安全约定（`src/backup/backup-core.ts`）：
-
-1. **绝对路径**（parser 已强制，loader 复核）；
-2. `lstat` 先验：**非符号链接**、普通文件、**单一硬链接**（nlink=1）；
-3. **属主 = 当前 euid 或 root**（`st.uid` 检查；允许部署以 root 属主挂载配置）；
-4. **无任何 group/world 权限位**（`mode & 0o077 == 0`，即 0600/0400 之类）；
-5. **大小上限** 1 MiB（`IP_POLICY_FILE_MAX_BYTES`），超出即拒绝；
-6. 以 `O_RDONLY | O_NOFOLLOW` 打开，**fd 上的 `fstat` 复核**同一组约束（打开与统计之间不可被替换）；
-7. 按 fstat 报告的大小精确循环读取，读毕再次 `fstat`：`size/mtime/ino/nlink/uid/mode` 任一变化 → 判定读取期间文件被替换/修改，整体拒绝（稳定读取，杜绝 TOCTOU 不一致内容）。
-
-## 9. HTTP 接线（WP5D-2，已实现）
-
-接线已改变 HTTP 行为，本文上述语义在运行的服务上**生效**：
-
-- **启动路径**：`main.ts` 调 `parseIpAccessEnv(process.env)`（`PI_ALLOWED_CLIENT_CIDRS` 显式必填）→
-  `loadIpAccessPolicy`（可选策略文件安全加载）→ 组装 `ipAccess` 注入 `startServer`；
-  **缺失/非法配置拒绝启动**。`startServer` 与 `buildApp` 入口都执行
-  `requireIpAccessRuntimeConfig` 运行时严格 shape 校验（含策略覆盖复核），直接 JS bypass 也 fail。
-- **请求路径**：`buildApp` 注册**全局** `onRequest` admission（`createAdmission`），覆盖探针与 `/v1`：
-  读 `request.raw.socket.remoteAddress` → 若对端为回环则采用 `X-Forwarded-For` 的**最后一段**（只取
-  最右段，不向左搜索；XFF 缺失/末段不可解析回落 socket IP；非回环对端一律忽略）→ CIDR/disabled gate（denied → 403）→（`/v1` 或 `/metrics` 且 tokenRequired，且非合规 CORS 预检）
-  `verifyProfileToken`（缺失/错误 → 401）；allowed 注入 `request.user`（canonical IP 身份）与
-  `request.access`（public profile，无 hashes），`subjectHash` 只进日志。unknown socket IP → failclosed 403。
-- HTTP 状态码：CIDR 外/disabled/不可解析 → `403`（body 不含原始 IP/token/path）；`/v1` 与 `/metrics`
-  tokenRequired 缺失/错误 → `401`（沿用「缺少或无效的 Bearer Token」），token off 忽略 Bearer；
-  `/health`、`/readyz` 仅 IP gate（任意 admitted role，免 token）。
-- 鉴权审计按 needs.md §7 埋点沿用 `subjectHash`（IP 派生哈希）关联，不记录原始 IP。
+实现依据：[CIDR 配置](../src/core/ip-access-config.ts)、[策略解析](../src/core/ip-access-policy.ts)、
+[策略文件安全加载](../src/core/ip-access-policy-file.ts)、[HTTP 准入](../src/server/network-admission.ts)、
+[路由权限矩阵](../src/server/route-rbac.ts)。

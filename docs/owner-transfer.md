@@ -6,7 +6,7 @@
 > reference 记录进加密 manifest 后仍允许发布；恢复该锚点时对应 `sessions.conversation_ref` 归一为 `NULL`。
 > 旧的 always-strict（`requireCompleteSessionReferences: true`）已退役。
 >
-> 关联文档：[ip-rbac-design.md](ip-rbac-design.md) §7、[identity-access-plan.md](identity-access-plan.md)、
+> 关联文档：[ip-rbac-design.md](ip-rbac-design.md) §7、[identity-access-plan.md](archive/identity-access-plan.md)、
 > [backup-restore.md](backup-restore.md)、[database-design.md](database-design.md)、[needs.md](../needs.md) §4.2/§7。
 
 ## 1. 动机、范围与非目标

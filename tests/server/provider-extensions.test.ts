@@ -24,9 +24,13 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  assertExtensionsLoaded,
   assertProviderExtensionsLoaded,
+  DEPRECATED_EXTENSION_PATHS_ENV_WARNING,
   flushProviderRegistrations,
   loadSessionResourceLoader,
+  resolveExtensionPaths,
+  resolveExtensionPathsFromEnv,
   resolveProviderExtensionPaths,
 } from "../../src/server/provider-extensions.js";
 
@@ -117,6 +121,69 @@ describe("resolveProviderExtensionPaths", () => {
   it("相对路径 fail-fast（不回显以外的静默行为），错误消息不回显为已展开的机密路径", () => {
     expect(() => resolveProviderExtensionPaths(["./relative-extension"])).toThrow(/must be absolute/);
     expect(() => resolveProviderExtensionPaths(["relative-extension"])).toThrow(/must be absolute/);
+  });
+});
+
+describe("resolveExtensionPaths / resolveExtensionPathsFromEnv（新名主 + 旧名 deprecated alias）", () => {
+  it("新名有效时优先；旧名仅作 alias", () => {
+    expect(resolveExtensionPaths(["/opt/a"], undefined)).toEqual(["/opt/a"]);
+    expect(resolveExtensionPaths(undefined, ["/opt/b"])).toEqual(["/opt/b"]);
+    expect(resolveExtensionPaths([], [])).toEqual([]);
+  });
+
+  it("两个有效列表同时配置 → 拒绝且不回显路径", () => {
+    let message = "";
+    try {
+      resolveExtensionPaths(["/opt/a"], ["/opt/b"]);
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+    expect(message).toMatch(/不能同时配置/);
+    expect(message).not.toContain("/opt/a");
+    expect(message).not.toContain("/opt/b");
+  });
+
+  it("空白/逗号项沿旧语义忽略；仅旧名有效列表标记 deprecatedAliasUsed", () => {
+    expect(resolveExtensionPathsFromEnv({ extensionPaths: " /a , , /b " })).toEqual({
+      paths: ["/a", "/b"],
+      deprecatedAliasUsed: false,
+    });
+    expect(resolveExtensionPathsFromEnv({ extensionPaths: " , " })).toEqual({
+      paths: [],
+      deprecatedAliasUsed: false,
+    });
+    expect(resolveExtensionPathsFromEnv({ deprecatedProviderExtensionPaths: "/old" })).toEqual({
+      paths: ["/old"],
+      deprecatedAliasUsed: true,
+    });
+    // 旧名仅空白/逗号：不产生有效列表，不触发 deprecated 警告。
+    expect(resolveExtensionPathsFromEnv({ deprecatedProviderExtensionPaths: "  ,  " })).toEqual({
+      paths: [],
+      deprecatedAliasUsed: false,
+    });
+  });
+
+  it("环境变量两个有效列表同时配置 → 拒绝且不回显路径", () => {
+    let message = "";
+    try {
+      resolveExtensionPathsFromEnv({ extensionPaths: "/new", deprecatedProviderExtensionPaths: "/old" });
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+    expect(message).toMatch(/PI_EXTENSION_PATHS/);
+    expect(message).toMatch(/PI_PROVIDER_EXTENSION_PATHS/);
+    expect(message).not.toContain("/new");
+    expect(message).not.toContain("/old");
+  });
+
+  it("deprecated 警告文案只提示改名、不含任何路径值", () => {
+    expect(DEPRECATED_EXTENSION_PATHS_ENV_WARNING).toContain("PI_EXTENSION_PATHS");
+    expect(DEPRECATED_EXTENSION_PATHS_ENV_WARNING).toContain("PI_PROVIDER_EXTENSION_PATHS");
+  });
+
+  it("旧导出 resolveProviderExtensionPaths 仍可用（兼容 alias）", () => {
+    expect(resolveProviderExtensionPaths(["/opt/legacy"])).toEqual(["/opt/legacy"]);
+    expect(() => resolveProviderExtensionPaths(["rel"])).toThrow(/must be absolute/);
   });
 });
 
@@ -218,6 +285,44 @@ describe("显式 provider 扩展加载（真实 SDK ResourceLoader）", () => {
     expect(runtime.getRegisteredProviderIds()).toEqual([]);
   });
 
+  it("非 provider 扩展：只注册工具/事件也能加载（flushProviderRegistrations 无注册时为 noop）", async () => {
+    const root = makeTempDir();
+    const extensionDir = join(root, "tool-extension");
+    mkdirSync(join(extensionDir, "extensions"), { recursive: true });
+    writeFileSync(join(extensionDir, "package.json"), JSON.stringify({
+      name: "pi-tool-extension-fixture",
+      version: "1.0.0",
+      type: "module",
+      pi: { extensions: ["./extensions"] },
+    }));
+    // 只注册工具 + 订阅事件，不注册任何 provider：通用加载路径必须同样支持。
+    writeFileSync(join(extensionDir, "extensions", "tool.ts"), `
+export default function (pi) {
+  pi.registerTool({
+    name: "fixture_general_tool",
+    label: "Fixture General Tool",
+    description: "A non-provider tool registered by an explicit extension",
+    parameters: { type: "object", properties: {}, additionalProperties: false },
+    async execute() { return { content: [{ type: "text", text: "ok" }], details: {} }; },
+  });
+  pi.on("before_agent_start", () => undefined);
+}
+`);
+
+    const runtime = await makeRuntime(root);
+    const loader = makeLoader(root, [extensionDir]);
+    await loader.reload();
+    expect(loader.getExtensions().errors).toEqual([]);
+    expect(loader.getExtensions().extensions).toHaveLength(1);
+    // 工具注册可见；无 provider 注册时 flush 为 noop，不抛错。
+    const registeredTools = [...loader.getExtensions().extensions[0]!.tools.keys()];
+    expect(registeredTools).toContain("fixture_general_tool");
+    expect(flushProviderRegistrations(runtime, loader)).toEqual([]);
+    expect(runtime.getRegisteredProviderIds()).toEqual([]);
+    // 通用入口同样接受非 provider 扩展。
+    expect(() => assertExtensionsLoaded(loader, [extensionDir])).not.toThrow();
+  });
+
   it("显式配置但加载失败：路径不存在 / 模块抛错 / 非工厂导出 → 拒绝启动", async () => {
     const root = makeTempDir();
     // 扩展错误文本里带一个契合成凭证的标记：宿主一律不透传，只回显自己配置的路径。
@@ -241,7 +346,7 @@ describe("显式 provider 扩展加载（真实 SDK ResourceLoader）", () => {
       // 脱敏：既不透传 SDK/扩展原文，也不附带 cause。
       expect((error as Error).cause).toBeUndefined();
     }
-    expect(message).toMatch(/provider extension failed to load/);
+    expect(message).toMatch(/extension failed to load/);
     // 只报告宿主自己配置的路径（凭证与 SDK 原文一律不出现）。
     for (const path of [brokenFile, notFactory, missing]) expect(message).toContain(path);
     expect(message).not.toContain(secret);
@@ -267,7 +372,7 @@ describe("显式 provider 扩展加载（真实 SDK ResourceLoader）", () => {
     await emptyDirLoader.reload();
     expect(emptyDirLoader.getExtensions().errors.length).toBeGreaterThan(0);
     expect(() => assertProviderExtensionsLoaded(emptyDirLoader, [emptyDir]))
-      .toThrow(/provider extension failed to load/);
+      .toThrow(/extension failed to load/);
 
     // 1) manifest 声明 pi.extensions 指向不存在的入口：SDK 既不报错也不加载。
     const missingEntry = join(root, "missing-entry");
@@ -300,7 +405,7 @@ describe("显式 provider 扩展加载（真实 SDK ResourceLoader）", () => {
         message = error instanceof Error ? error.message : String(error);
         expect((error as Error).cause).toBeUndefined();
       }
-      expect(message).toMatch(/provider extension failed to load/);
+      expect(message).toMatch(/extension failed to load/);
       expect(message).toContain(configured);
       // 脱敏：只回显宿主自己的路径，不透传 SDK 原文。
       expect(message).not.toContain("Cannot find module");
@@ -440,6 +545,40 @@ export default function (pi) {
 
     // 模块只求值一次、fetch 只包一层：每一次 new loader 只重跑工厂函数。
     expect(sideEffectProbe(probeKey)).toEqual({ moduleEvaluations: 1, fetchWrappers: 1 });
+  });
+
+  it("SessionResourceLoaderOptions：旧 providerExtensionPaths alias 仍加载扩展（兼容既有调用）", async () => {
+    const root = makeTempDir();
+    const extensionDir = writeProviderExtensionFixture(root, "fixture-provider", "fixture-model");
+    const runtime = await makeRuntime(root);
+    const loader = await loadSessionResourceLoader(runtime, {
+      extensionCwd: root,
+      agentDir: join(root, "agent"),
+      providerExtensionPaths: [extensionDir],
+    });
+    expect(loader.getExtensions().errors).toEqual([]);
+    expect(runtime.getRegisteredProviderIds()).toContain("fixture-provider");
+  });
+
+  it("SessionResourceLoaderOptions：主/旧同时配置有效列表 → 拒绝且不回显路径", async () => {
+    const root = makeTempDir();
+    const runtime = await makeRuntime(root);
+    const primary = join(root, "primary-extension");
+    const legacy = join(root, "legacy-extension");
+    let message = "";
+    try {
+      await loadSessionResourceLoader(runtime, {
+        extensionCwd: root,
+        agentDir: join(root, "agent"),
+        extensionPaths: [primary],
+        providerExtensionPaths: [legacy],
+      });
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+    expect(message).toMatch(/不能同时配置/);
+    expect(message).not.toContain(primary);
+    expect(message).not.toContain(legacy);
   });
 
   it("对照：扩展加载 cwd 交替会让 SDK 清缓存并重放模块级副作用（这正是解耦要避免的）", async () => {

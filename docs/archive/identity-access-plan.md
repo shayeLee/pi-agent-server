@@ -1,8 +1,12 @@
 # 身份与访问管理（IAM）规划：未来公网方案
 
-> 本文只记录**未来公网暴露前**的 IAM 方案与路线图，是规划文档，**不是实现承诺**；凡标注「待定」的条目均未拍板，标注「尚未实现」的条目当前均为空白。当前 migration 与备份操作分别以 [operations.md](operations.md) 和 [backup-restore.md](backup-restore.md) 为准；**不记录测试数量、不转述历史验收证据**。
+> **状态：已归档（未来规划，非当前实现）。** 本文只保留当时规划与路线图，**当前均未实现**。
+> 当前接入控制以 [../ip-rbac-design.md](../ip-rbac-design.md) 为准；运维入口见
+> [../operations.md](../operations.md)。
+
+> 本文只记录**未来公网暴露前**的 IAM 方案与路线图，是规划文档，**不是实现承诺**；凡标注「待定」的条目均未拍板，标注「尚未实现」的条目当前均为空白。当前 migration 与备份操作分别以 [operations.md](../operations.md) 和 [backup-restore.md](../backup-restore.md) 为准；**不记录测试数量、不转述历史验收证据**。
 >
-> 当前接入控制（RC）由 **IP-RBAC（WP5D）** 承担，语义见 [ip-rbac-design.md](ip-rbac-design.md) 与 [owner-transfer.md](owner-transfer.md)，本文不重复。IAM 从新主体体系开始。
+> 当前接入控制（RC）由 **IP-RBAC（WP5D）** 承担，语义见 [ip-rbac-design.md](../ip-rbac-design.md) 与 [owner-transfer.md](../owner-transfer.md)，本文不重复。IAM 从新主体体系开始。
 
 ## 1. 目的、范围与非目标
 
@@ -36,8 +40,8 @@
 
 ## 2. 当前接入控制（RC）边界
 
-- 当前接入控制由 **IP-RBAC** 承担：所有路由以客户端 IP 过 CIDR/disabled gate；`/v1` 与 `/metrics` 上 `tokenRequired` 画像才要求 Bearer token（hash 绑定精确 IP）；`/health`、`/readyz` 永不需要 token；身份默认取直接 TCP 对端 IP，仅当对端为回环（同机代理，如 nginx 反代到 `127.0.0.1:8080`）时才采用 `X-Forwarded-For` 最右一条，绝不使用 `request.ip`。详见 [ip-rbac-design.md](ip-rbac-design.md)。
-- **无 legacy 账号/token 迁移**：本 RC 从未存在正式公网 token 数据，因此**不实现**任何「旧 token/旧账号 → 新主体」迁移代码；旧库或无 canonical baseline 的库不做在位转换。只有完全空目标可以离线执行 `pnpm migrate -- --bootstrap-baseline --bootstrap-confirm CONFIRMED` 建立唯一 canonical baseline，具体接受面见 [ADR 0002](decisions/0002-canonical-baseline-and-migration-gate.md)。
+- 当前接入控制由 **IP-RBAC** 承担：所有路由以客户端 IP 过 CIDR/disabled gate；`/v1` 与 `/metrics` 上 `tokenRequired` 画像才要求 Bearer token（hash 绑定精确 IP）；`/health`、`/readyz` 永不需要 token；身份默认取直接 TCP 对端 IP，仅当对端为回环（同机代理，如 nginx 反代到 `127.0.0.1:8080`）时才采用 `X-Forwarded-For` 最右一条，绝不使用 `request.ip`。详见 [ip-rbac-design.md](../ip-rbac-design.md)。
+- **无 legacy 账号/token 迁移**：本 RC 从未存在正式公网 token 数据，因此**不实现**任何「旧 token/旧账号 → 新主体」迁移代码；旧库或无 canonical baseline 的库不做在位转换。只有完全空目标可以离线执行 `pnpm migrate -- --bootstrap-baseline --bootstrap-confirm CONFIRMED` 建立唯一 canonical baseline，具体接受面见 [ADR 0002](../decisions/0002-canonical-baseline-and-migration-gate.md)。
 - **公网暴露禁止**，直到未来 OIDC/IAM + workspace/sandbox 设计落地；IP-RBAC 不是 sandbox、不限制 cwd 或 Agent 工具绝对路径/OS 权限（workspace/sandbox 安全延期至公网暴露前）。
 
 ## 3. 术语与边界
@@ -64,7 +68,7 @@
 6. **审计**：认证、授权、token 签发/撤销、API Key 生命周期、鉴权失败均须持久化审计；记录主体、动作、资源、结果与时间，**不记录密钥、token 明文与消息正文**。
 7. **凭证不落明文**：app secret / API Key 明文只在签发时展示一次；落库与日志只存单向哈希 + 可检索前缀；token 记录同样只存哈希。
 8. **认证与身份分离**：token 校验通过后，身份取自账号体系，而不是 token 字符串本身、来源 IP 或静态映射账号名。
-9. **数据变更门禁**：一旦承诺保留真实用户数据，IAM 表上线前必须完成正式 migration / 备份 / 回滚；当前不支持 reset、final reset 或 cutover，migration 只能走完全空目标 bootstrap 或已有 canonical baseline 的 apply（见 [ADR 0002](decisions/0002-canonical-baseline-and-migration-gate.md)）。
+9. **数据变更门禁**：一旦承诺保留真实用户数据，IAM 表上线前必须完成正式 migration / 备份 / 回滚；当前不支持 reset、final reset 或 cutover，migration 只能走完全空目标 bootstrap 或已有 canonical baseline 的 apply（见 [ADR 0002](../decisions/0002-canonical-baseline-and-migration-gate.md)）。
 
 ## 5. 目标架构与典型流程
 
@@ -118,7 +122,7 @@
 
 ## 6. 数据模型方向（非最终 DDL）
 
-> 以下表仅为**方向性设计**，不是最终 DDL。最终实现必须走既有约束：运行时 Schema Manifest 为唯一来源、`schema-types.ts` 推导类型、方言 DDL 由 bootstrap 生成（详见 [database-design.md](database-design.md)），并**先完成正式 migration / 备份 / 回滚**（操作来源见 [operations.md](operations.md) 与 [backup-restore.md](backup-restore.md)）。
+> 以下表仅为**方向性设计**，不是最终 DDL。最终实现必须走既有约束：运行时 Schema Manifest 为唯一来源、`schema-types.ts` 推导类型、方言 DDL 由 bootstrap 生成（详见 [database-design.md](../database-design.md)），并**先完成正式 migration / 备份 / 回滚**（操作来源见 [operations.md](../operations.md) 与 [backup-restore.md](../backup-restore.md)）。
 
 | 表（方向） | 责任 | 关键字段方向 | 敏感字段处理 |
 | --- | --- | --- | --- |
@@ -144,7 +148,7 @@
 ### 工作包 0：前置（数据与基建就绪）
 
 - **内容**：
-  - 数据策略决策：是否开始保留真实用户数据；一旦保留，正式 migration / 备份 / 回滚与当前适用的启动门禁必须先就绪；操作来源是 [operations.md](operations.md) 与 [backup-restore.md](backup-restore.md)。
+  - 数据策略决策：是否开始保留真实用户数据；一旦保留，正式 migration / 备份 / 回滚与当前适用的启动门禁必须先就绪；操作来源是 [operations.md](../operations.md) 与 [backup-restore.md](../backup-restore.md)。
   - IAM schema decision：确定 §6 表集、Access Token 形态、哈希算法、scope 命名（产出决策记录，更新本文档）。
 - **依赖**：数据策略与 IAM schema 决策是本包自身应完成的内容；正式 migration / backup / rollback 依赖当前操作文档所定义的 canonical baseline 与门禁。
 - **验收**：数据策略与 IAM 决策书面确认；无任何真实库上执行 destructive reset；IAM schema 决策完成。
@@ -229,10 +233,10 @@
 
 ### 相关文档
 
-- 架构与核心数据流：[architecture.md](architecture.md)
-- 数据库设计与 Schema Manifest 约束：[database-design.md](database-design.md)
-- 当前接入控制（IP-RBAC）：[ip-rbac-design.md](ip-rbac-design.md)、[owner-transfer.md](owner-transfer.md)
-- ADR 决策索引：[decisions/README.md](decisions/README.md)；当前 migration 门禁：[decisions/0002-canonical-baseline-and-migration-gate.md](decisions/0002-canonical-baseline-and-migration-gate.md)
-- 本地 PostgreSQL 测试流程：[postgres-podman-test.md](postgres-podman-test.md)
-- 平台需求基线：[../needs.md](../needs.md)
-- 对外状态与限制：[../README.md](../README.md) / [../README.zh-CN.md](../README.zh-CN.md)
+- 架构与核心数据流：[architecture.md](../architecture.md)
+- 数据库设计与 Schema Manifest 约束：[database-design.md](../database-design.md)
+- 当前接入控制（IP-RBAC）：[ip-rbac-design.md](../ip-rbac-design.md)、[owner-transfer.md](../owner-transfer.md)
+- ADR 决策索引：[decisions/README.md](../decisions/README.md)；当前 migration 门禁：[decisions/0002-canonical-baseline-and-migration-gate.md](../decisions/0002-canonical-baseline-and-migration-gate.md)
+- 本地 PostgreSQL 测试流程：[postgres-podman-test.md](../postgres-podman-test.md)
+- 平台需求基线：[../needs.md](../../needs.md)
+- 对外状态与限制：[../README.md](../../README.md) / [../README.zh-CN.md](../../README.zh-CN.md)

@@ -1,5 +1,6 @@
-// 显式 provider 扩展接入（可选、受信、同进程）：
-// - 只加载显式配置的路径（StartConfig.providerExtensionPaths / PI_PROVIDER_EXTENSION_PATHS），
+// 显式扩展接入（可选、受信、同进程；provider 注册只是其中一种能力）：
+// - 只加载显式配置的路径（StartConfig.extensionPaths / PI_EXTENSION_PATHS；旧的
+//   providerExtensionPaths / PI_PROVIDER_EXTENSION_PATHS 保留为 deprecated alias），
 //   绝不自动发现——DefaultResourceLoader 恒为 noExtensions:true，保留既有安全边界；
 // - 这些扩展可以注册模型 provider（pi.registerProvider）并订阅 before_provider_request /
 //   before_provider_headers / before_agent_start 等 hook；
@@ -20,12 +21,79 @@ import {
 } from "@earendil-works/pi-coding-agent";
 
 /**
- * 归一化显式 provider 扩展路径（纯函数）：
+ * 归一化显式扩展路径（纯函数）：
  * - 空白项（含逗号分隔产生的空项）忽略；
  * - 支持 `~` / `~/…` 展开；展开后必须是绝对路径，相对路径 fail-fast
  *   （避免相对 AGENT_CWD 的隐式歧义，与其它离线 CLI 的绝对路径约束一致）；
  * - 保序去重。
  */
+function normalizeExtensionPaths(configured: readonly string[] | undefined): readonly string[] {
+  const paths: string[] = [];
+  for (const raw of configured ?? []) {
+    const entry = raw.trim();
+    if (entry === "") continue;
+    const expanded = entry === "~" ? homedir() : entry.startsWith("~/") ? join(homedir(), entry.slice(2)) : entry;
+    if (!isAbsolute(expanded)) {
+      throw new Error(`extension path must be absolute (or start with "~/"): ${entry}`);
+    }
+    if (!paths.includes(expanded)) paths.push(expanded);
+  }
+  return paths;
+}
+
+/**
+ * 解析主/旧扩展路径配置（纯函数）：`extensionPaths` 为主，`providerExtensionPaths` 为
+ * deprecated alias（既有调用方不失效）。两者都解析出有效列表时拒绝（错误不回显路径）。
+ */
+export function resolveExtensionPaths(
+  extensionPaths: readonly string[] | undefined,
+  deprecatedProviderExtensionPaths?: readonly string[] | undefined,
+): readonly string[] {
+  const primary = normalizeExtensionPaths(extensionPaths);
+  const alias = normalizeExtensionPaths(deprecatedProviderExtensionPaths);
+  if (primary.length > 0 && alias.length > 0) {
+    throw new Error("extensionPaths 与已废弃的 providerExtensionPaths 不能同时配置（当前值不回显）");
+  }
+  return primary.length > 0 ? primary : alias;
+}
+
+/** 环境变量入口：PI_EXTENSION_PATHS 为主，PI_PROVIDER_EXTENSION_PATHS 为 deprecated alias。 */
+export type ExtensionPathsEnvInput = {
+  readonly extensionPaths?: string;
+  readonly deprecatedProviderExtensionPaths?: string;
+};
+
+export type ExtensionPathsEnvResult = {
+  readonly paths: readonly string[];
+  /** 主变量未提供、仅 deprecated alias 提供有效列表时为 true。 */
+  readonly deprecatedAliasUsed: boolean;
+};
+
+/** 仅提示变量改名，绝不回显任何路径值。 */
+export const DEPRECATED_EXTENSION_PATHS_ENV_WARNING =
+  "PI_PROVIDER_EXTENSION_PATHS 已废弃：请改用 PI_EXTENSION_PATHS（当前值不回显）";
+
+/** 逗号分隔、trim、忽略空项（沿旧语义）。 */
+function splitExtensionPathsEnv(value: string | undefined): readonly string[] {
+  return (value ?? "").split(",").map((entry) => entry.trim()).filter(Boolean);
+}
+
+/**
+ * 纯函数解析扩展路径环境变量：新名优先；仅旧名提供有效列表时标记 deprecatedAliasUsed；
+ * 两者都提供有效列表时拒绝（错误不回显路径）。
+ */
+export function resolveExtensionPathsFromEnv(input: ExtensionPathsEnvInput): ExtensionPathsEnvResult {
+  const primary = splitExtensionPathsEnv(input.extensionPaths);
+  const alias = splitExtensionPathsEnv(input.deprecatedProviderExtensionPaths);
+  if (primary.length > 0 && alias.length > 0) {
+    throw new Error(
+      "PI_EXTENSION_PATHS 与已废弃的 PI_PROVIDER_EXTENSION_PATHS 不能同时配置（当前值不回显）",
+    );
+  }
+  if (primary.length > 0) return { paths: primary, deprecatedAliasUsed: false };
+  return { paths: alias, deprecatedAliasUsed: alias.length > 0 };
+}
+
 /** 每个 loader 自己的 EventBus；WeakMap 不延长 dispose 后 loader 的生命周期。 */
 const loaderEventBuses = new WeakMap<ResourceLoader, EventBus>();
 
@@ -34,20 +102,11 @@ export function getProviderExtensionEventBus(loader: ResourceLoader): EventBus |
   return loaderEventBuses.get(loader);
 }
 
+/** @deprecated 使用 resolveExtensionPaths；保留仅为兼容既有调用方。 */
 export function resolveProviderExtensionPaths(
   configured: readonly string[] | undefined,
 ): readonly string[] {
-  const paths: string[] = [];
-  for (const raw of configured ?? []) {
-    const entry = raw.trim();
-    if (entry === "") continue;
-    const expanded = entry === "~" ? homedir() : entry.startsWith("~/") ? join(homedir(), entry.slice(2)) : entry;
-    if (!isAbsolute(expanded)) {
-      throw new Error(`provider extension path must be absolute (or start with "~/"): ${entry}`);
-    }
-    if (!paths.includes(expanded)) paths.push(expanded);
-  }
-  return paths;
+  return resolveExtensionPaths(configured);
 }
 
 /** 扩展入口路径是否落在某个显式配置的路径之下（配置为文件时取相等）。纯字符串/路径比较，不做 realpath。 */
@@ -72,14 +131,14 @@ function configuredPathCovers(configuredPath: string, loadedPath: string): boole
  * （扩展可能把凭证、请求头或内部细节写进错误消息），也不附加 `cause`（避免调用方/日志
  * 顺着 cause 读到原文）。定位失败原因需直接检查该扩展自身。
  */
-export function assertProviderExtensionsLoaded(
+export function assertExtensionsLoaded(
   loader: ResourceLoader,
   configuredPaths: readonly string[],
 ): void {
   const result = loader.getExtensions();
   if (result.errors.length > 0) {
     const paths = [...new Set(result.errors.map((entry) => entry.path))];
-    throw new Error(`provider extension failed to load: ${paths.join(", ")}`);
+    throw new Error(`extension failed to load: ${paths.join(", ")}`);
   }
   // 配置路径必须至少被一个已加载入口覆盖：配置为目录时入口在其下（含 manifest/`extensions`
   // 展开出的文件），配置为文件时入口就是该文件。相对入口（manifest 指向目录外）按未覆盖处理，
@@ -89,8 +148,16 @@ export function assertProviderExtensionsLoaded(
     (configured) => !loadedPaths.some((loaded) => configuredPathCovers(configured, loaded)),
   );
   if (uncovered.length > 0) {
-    throw new Error(`provider extension failed to load: ${uncovered.join(", ")}`);
+    throw new Error(`extension failed to load: ${uncovered.join(", ")}`);
   }
+}
+
+/** @deprecated 使用 assertExtensionsLoaded；保留仅为兼容既有调用方。 */
+export function assertProviderExtensionsLoaded(
+  loader: ResourceLoader,
+  configuredPaths: readonly string[],
+): void {
+  assertExtensionsLoaded(loader, configuredPaths);
 }
 
 /**
@@ -112,7 +179,7 @@ export function flushProviderRegistrations(
     try {
       modelRuntime.registerProvider(name, config);
     } catch {
-      throw new Error(`provider extension "${extensionPath}" failed to register provider "${name}"`);
+      throw new Error(`extension "${extensionPath}" failed to register provider "${name}"`);
     }
     registered.push(name);
   }
@@ -122,7 +189,7 @@ export function flushProviderRegistrations(
       modelRuntime.registerNativeProvider(provider);
     } catch {
       throw new Error(
-        `provider extension "${extensionPath}" failed to register native provider "${provider.id}"`,
+        `extension "${extensionPath}" failed to register native provider "${provider.id}"`,
       );
     }
   }
@@ -143,7 +210,9 @@ export type SessionResourceLoaderOptions = {
   readonly extensionCwd: string;
   /** 服务专用 agentDir（不继承个人 ~/.pi/agent）。 */
   readonly agentDir: string;
-  /** 显式 provider 扩展路径；为空时不加载任何外部扩展。 */
+  /** 显式扩展路径（主）；为空时不加载任何外部扩展。 */
+  readonly extensionPaths?: readonly string[];
+  /** @deprecated 使用 extensionPaths；保留仅为兼容既有调用方。 */
   readonly providerExtensionPaths?: readonly string[];
   /** 服务内置受控 extension factory（如协议兼容层）。 */
   readonly extensionFactories?: InlineExtension[];
@@ -160,7 +229,7 @@ export type SessionResourceLoaderOptions = {
  *
  * 安全与生命周期契约：
  * - `noExtensions/noSkills/noPromptTemplates/noThemes/noContextFiles` 恒为 true：只加载显式
- *   配置的 provider 扩展路径，绝不自动发现；
+ *   配置的扩展路径，绝不自动发现；
  * - 显式配置的扩展加载失败即抛错（fail-fast，绝不静默降级为「没加载」）；
  * - reload 后立即把扩展排队的 provider 注册刷进传入的 ModelRuntime（默认模型/凭证校验、插件
  *   mode 校验、`GET /v1/models` 与后续恢复会话都可见），并清空队列避免二次注册；
@@ -180,7 +249,7 @@ export async function loadSessionResourceLoader(
   modelRuntime: ModelRuntime,
   options: SessionResourceLoaderOptions,
 ): Promise<DefaultResourceLoader> {
-  const providerExtensionPaths = options.providerExtensionPaths ?? [];
+  const extensionPaths = resolveExtensionPaths(options.extensionPaths, options.providerExtensionPaths);
   const eventBus = createEventBus();
   const loader = new DefaultResourceLoader({
     cwd: options.extensionCwd,
@@ -191,8 +260,8 @@ export async function loadSessionResourceLoader(
     noPromptTemplates: true,
     noThemes: true,
     noContextFiles: true,
-    ...(providerExtensionPaths.length > 0
-      ? { additionalExtensionPaths: [...providerExtensionPaths] }
+    ...(extensionPaths.length > 0
+      ? { additionalExtensionPaths: [...extensionPaths] }
       : {}),
     ...(options.systemPrompt !== undefined ? { systemPrompt: options.systemPrompt } : {}),
     ...(options.systemPromptOverride !== undefined
@@ -205,7 +274,7 @@ export async function loadSessionResourceLoader(
       : {}),
   });
   await loader.reload();
-  if (providerExtensionPaths.length > 0) assertProviderExtensionsLoaded(loader, providerExtensionPaths);
+  if (extensionPaths.length > 0) assertExtensionsLoaded(loader, extensionPaths);
   flushProviderRegistrations(modelRuntime, loader);
   loaderEventBuses.set(loader, eventBus);
   return loader;
