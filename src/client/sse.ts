@@ -1,17 +1,16 @@
-// SSE 帧解析（纯逻辑，无 DOM 依赖）：把累积的 SSE 文本切分为完整帧，
-// 并解析出 id 与 data。心跳注释（":" 开头）与无 data 的帧被忽略。
+// SSE frame parser (pure logic, no browser DOM dependency): split accumulated text into complete frames.
 
 export type SseFrame = {
-  /** SSE 事件 id（Last-Event-ID 续传基准）；可能为 null。 */
+  /** SSE event id (Last-Event-ID resume cursor); may be null. */
   id: string | null;
-  /** data 字段内容（多行 data 以换行拼接）。 */
+  /** data field content (multiple data lines are joined with a newline). */
   data: string;
 };
 
 export class SseParser {
   private buffer = "";
 
-  /** 追加文本块，返回其中已完整的事件帧。 */
+  /** Append a text chunk and return complete event frames found in it. */
   push(chunk: string): SseFrame[] {
     this.buffer += chunk;
     const frames: SseFrame[] = [];
@@ -30,7 +29,7 @@ function parseFrame(frame: string): SseFrame | null {
   let id: string | null = null;
   const dataLines: string[] = [];
   for (const line of frame.split("\n")) {
-    if (line.startsWith(":")) continue; // 注释/心跳
+    if (line.startsWith(":")) continue;
     if (line.startsWith("id:")) {
       id = line.slice(3).trim() || null;
     } else if (line.startsWith("data:")) {

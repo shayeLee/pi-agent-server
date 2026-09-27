@@ -1,14 +1,14 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import App from "./App.js";
-import type { Project, SseEvent, SessionRecord } from "./types.js";
+import type { Project, SseEvent, SessionRecord } from "pi-agent-server/client";
 
 // —— 基础设施 mock（不碰真实网络）——
 const mocks = vi.hoisted(() => {
   const instances: {
     baseUrl: string;
     token: string;
-    listSessions: ReturnType<typeof vi.fn>;
+    tokenProvided: boolean;
     listSessionsByProject: ReturnType<typeof vi.fn>;
     listProjects: ReturnType<typeof vi.fn>;
     listModels: ReturnType<typeof vi.fn>;
@@ -22,10 +22,8 @@ const mocks = vi.hoisted(() => {
     steer: ReturnType<typeof vi.fn>;
     followUp: ReturnType<typeof vi.fn>;
     abort: ReturnType<typeof vi.fn>;
+    exportSession: ReturnType<typeof vi.fn>;
   }[] = [];
-
-  // 探测行为：false = 内网（无 token 也能访问）；true = 公网（需 token）
-  let probeFails = false;
 
   // 默认项目 id 的测试写照（与 src/application/ports/project-store-port.ts 的 DEFAULT_PROJECT_ID
   // 同值）：Web 不硬编码任何项目 id，默认项目由 isDefault: true 字段从列表推导。
@@ -59,9 +57,9 @@ const mocks = vi.hoisted(() => {
   }
 
   // 项目列表主动失败（模拟 GET /v1/projects 报错）
-  let projectsFail = false;
-  function setProjectsFail(v: boolean): void {
-    projectsFail = v;
+  let projectsFailure: Error | null = null;
+  function setProjectsFail(v: boolean | Error): void {
+    projectsFailure = v === true ? new Error("连接服务失败") : v === false ? null : v;
   }
 
   // 「单个项目的会话请求挂起」：用于陈旧响应测试。deferSessionsFor 指定要挂起的项目，
@@ -82,14 +80,17 @@ const mocks = vi.hoisted(() => {
     deferredSessionsResolvers.clear();
   }
 
+  class MockApiError extends Error {
+    constructor(readonly status: number, message: string) {
+      super(message);
+      this.name = "ApiError";
+    }
+  }
+
   class MockApiClient {
     baseUrl: string;
     token: string;
-    listSessions = vi.fn(() => {
-      // 探测（无 token）时按 probeFails 决定；有 token 后总是成功
-      if (this.token === "" && probeFails) return Promise.reject(new Error("未授权"));
-      return Promise.resolve([...sessionList]);
-    });
+    tokenProvided: boolean;
     listSessionsByProject = vi.fn((projectId: string) => {
       if (projectId === deferredSessionsProject) {
         return new Promise<SessionRecord[]>((resolve) => {
@@ -99,8 +100,8 @@ const mocks = vi.hoisted(() => {
       return Promise.resolve([...sessionList]);
     });
     listProjects = vi.fn(() =>
-      projectsFail
-        ? Promise.reject(new Error("连接服务失败"))
+      projectsFailure
+        ? Promise.reject(projectsFailure)
         : projectListPending
           ? new Promise<Project[]>((resolve) => {
               releaseProjectList = () => resolve([...projectList]);
@@ -152,14 +153,15 @@ const mocks = vi.hoisted(() => {
         ...(config as object),
       }),
     );
-    sendMessage = vi.fn(() => Promise.resolve(undefined));
+    sendMessage = vi.fn((): Promise<unknown> => Promise.resolve(undefined));
     steer = vi.fn(() => Promise.resolve(undefined));
     followUp = vi.fn(() => Promise.resolve(undefined));
     abort = vi.fn(() => Promise.resolve(undefined));
-    exportSession = vi.fn(() => Promise.resolve([]));
-    constructor(baseUrl: string, token: string) {
-      this.baseUrl = baseUrl;
-      this.token = token;
+    exportSession = vi.fn((): Promise<unknown> => Promise.resolve([]));
+    constructor(options: { baseUrl?: string; token?: string }) {
+      this.baseUrl = options.baseUrl ?? "";
+      this.token = options.token ?? "";
+      this.tokenProvided = options.token !== undefined;
       instances.push(this);
     }
   }
@@ -188,17 +190,13 @@ const mocks = vi.hoisted(() => {
     sessionList.length = 0;
     sessionList.push(...list);
   }
-  function setProbeFails(v: boolean): void {
-    probeFails = v;
-  }
-
   return {
     instances,
     MockApiClient,
+    MockApiError,
     createSseConnection,
     sse,
     setSessions,
-    setProbeFails,
     setProjects,
     resetProjects,
     setProjectListPending,
@@ -210,8 +208,15 @@ const mocks = vi.hoisted(() => {
   };
 });
 
-vi.mock("./lib/api.js", () => ({ ApiClient: mocks.MockApiClient }));
-vi.mock("./lib/sse-client.js", () => ({ createSseConnection: mocks.createSseConnection }));
+vi.mock("pi-agent-server/client", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("pi-agent-server/client")>();
+  return {
+    ...actual,
+    ApiClient: mocks.MockApiClient,
+    ApiError: mocks.MockApiError,
+    createSseConnection: mocks.createSseConnection,
+  };
+});
 
 const sessions: SessionRecord[] = [
   { id: "s1", ownerKey: "k", projectId: mocks.DEFAULT_PROJECT_ID, title: "会话一", createdAt: 1, updatedAt: 1, modelProvider: null, modelId: null, thinkingLevel: null, systemPrompt: null },
@@ -225,32 +230,17 @@ beforeEach(() => {
   mocks.sse.onEvent = null;
   mocks.sse.onOpen = null;
   mocks.sse.onNoLiveStream = null;
-  mocks.setProbeFails(false);
   mocks.resetProjects();
   mocks.setProjectListPending(false);
   mocks.setProjectsFail(false);
   mocks.resetDeferredSessions();
 });
 
-/** 内网场景：探测成功（无 token 可访问），直接进入会话列表。 */
+/** 内网场景：通过无令牌客户端直接进入会话列表。 */
 async function enterIntranet(list: SessionRecord[] = sessions) {
   mocks.setSessions(list);
   render(<App />);
   await waitFor(() => expect(screen.getByText("会话一")).toBeInTheDocument());
-  // 探测创建第 1 个实例（token ""），探测成功后 api 创建第 2 个实例；返回 api 实例
-  return mocks.instances.at(-1)!;
-}
-
-/** 公网场景：探测失败显示 token 框，填 token 后进入会话列表。 */
-async function submitToken(list: SessionRecord[] = sessions, token = "sekrit") {
-  mocks.setSessions(list);
-  mocks.setProbeFails(true);
-  render(<App />);
-  await waitFor(() => expect(screen.getByLabelText("token")).toBeInTheDocument());
-  fireEvent.change(screen.getByLabelText("token"), { target: { value: token } });
-  fireEvent.click(screen.getByTestId("token-submit"));
-  await waitFor(() => expect(screen.getByText("会话一")).toBeInTheDocument());
-  // 探测创建第 1 个实例，填 token 后创建第 2 个
   return mocks.instances.at(-1)!;
 }
 
@@ -263,41 +253,147 @@ async function enterChat() {
 }
 
 describe("App（顶层流程）", () => {
-  it("内网探测成功：免登录直接进入会话列表，token 为空、不落 localStorage", async () => {
+  it("不做认证探测，直接使用无令牌客户端加载会话且不写入 localStorage", async () => {
     const inst = await enterIntranet();
     expect(screen.getByText("会话二")).toBeInTheDocument();
+    expect(mocks.instances).toHaveLength(1);
     expect(inst.token).toBe("");
+    expect(inst.tokenProvided).toBe(false);
     expect(window.localStorage.length).toBe(0);
   });
 
-  it("公网探测失败：显示 token 输入框，提交后进入并记录 token", async () => {
-    const inst = await submitToken();
-    expect(inst.token).toBe("sekrit");
-    expect(window.localStorage.length).toBe(0);
-  });
-
-  it("内网 SSE 订阅不带 authorization；公网带 Bearer token", async () => {
-    // 内网
+  it("SSE 订阅不带 authorization", async () => {
     await enterChat();
-    let options = mocks.createSseConnection.mock.calls[0]![0] as unknown as {
+    const options = mocks.createSseConnection.mock.calls[0]![0] as unknown as {
       url: string;
-      headers: Record<string, string>;
+      headers?: Record<string, string>;
       lastEventId: number;
     };
     expect(options.url).toBe("/v1/sessions/s1/events");
-    expect(options.headers.authorization).toBeUndefined();
+    expect(options.headers?.authorization).toBeUndefined();
     expect(options.lastEventId).toBe(0);
   });
 
-  it("公网 SSE 订阅带 Bearer token", async () => {
-    const inst = await submitToken();
+  it("恢复会话历史并将导出游标用于 SSE 续传", async () => {
+    const inst = await enterIntranet();
+    inst.exportSession.mockResolvedValue({
+      messages: [
+        { role: "user", text: "之前的问题" },
+        { role: "assistant", text: "之前的回答" },
+      ],
+      lastEventId: 42,
+    });
     fireEvent.click(screen.getByTestId("session-s1"));
     await waitFor(() => expect(mocks.createSseConnection).toHaveBeenCalledTimes(1));
-    const options = mocks.createSseConnection.mock.calls[0]![0] as unknown as {
-      headers: Record<string, string>;
-    };
-    expect(options.headers.authorization).toBe("Bearer sekrit");
-    expect(inst.token).toBe("sekrit");
+    expect(screen.getByText("之前的问题")).toBeInTheDocument();
+    expect(screen.getByText("之前的回答")).toBeInTheDocument();
+    expect(mocks.createSseConnection.mock.calls[0]![0]).toMatchObject({ lastEventId: 42 });
+  });
+
+  it("历史请求挂起期间禁用发送，历史恢复后恢复发送", async () => {
+    const inst = await enterIntranet();
+    let resolveHistory: (data: unknown) => void = () => {};
+    inst.exportSession.mockImplementation(
+      () => new Promise<unknown>((resolve) => { resolveHistory = resolve; }),
+    );
+
+    fireEvent.click(screen.getByTestId("session-s1"));
+    await waitFor(() => expect(inst.exportSession).toHaveBeenCalledWith("s1"));
+    expect(screen.getByTestId("composer-input")).toBeDisabled();
+    expect(screen.getByTestId("send-button")).toBeDisabled();
+    fireEvent.click(screen.getByTestId("send-button"));
+    expect(inst.sendMessage).not.toHaveBeenCalled();
+
+    resolveHistory({ messages: [{ role: "assistant", text: "恢复的历史" }], lastEventId: 12 });
+    await waitFor(() => expect(mocks.createSseConnection).toHaveBeenCalledTimes(1));
+    expect(screen.getByText("恢复的历史")).toBeInTheDocument();
+    expect(screen.getByTestId("composer-input")).toBeEnabled();
+
+    fireEvent.change(screen.getByTestId("composer-input"), {
+      target: { value: "加载后发送" },
+    });
+    fireEvent.click(screen.getByTestId("send-button"));
+    expect(inst.sendMessage).toHaveBeenCalledWith("s1", {
+      requestId: expect.any(String),
+      prompt: "加载后发送",
+    });
+  });
+
+  it("切回流式会话时保留已有流式内容，不被再次加载的历史覆盖", async () => {
+    const inst = await enterChat();
+    mocks.sse.onEvent?.({ type: "text_delta", text: "切回后仍在的回答" });
+    await waitFor(() => expect(screen.getByText("切回后仍在的回答")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId("session-s2"));
+    await waitFor(() => expect(mocks.createSseConnection).toHaveBeenCalledTimes(2));
+
+    inst.exportSession.mockResolvedValue({
+      messages: [{ role: "assistant", text: "不应覆盖流式内容的旧快照" }],
+      lastEventId: 24,
+    });
+    fireEvent.click(screen.getByTestId("session-s1"));
+    await waitFor(() => expect(mocks.createSseConnection).toHaveBeenCalledTimes(3));
+
+    expect(screen.getByText("切回后仍在的回答")).toBeInTheDocument();
+    expect(screen.queryByText("不应覆盖流式内容的旧快照")).not.toBeInTheDocument();
+    expect(mocks.createSseConnection.mock.calls[2]![0]).toMatchObject({ lastEventId: 24 });
+  });
+
+  it("网络发送失败时使用同一 requestId 重试", async () => {
+    const inst = await enterChat();
+    inst.sendMessage
+      .mockRejectedValueOnce(new Error("网络暂时不可用"))
+      .mockResolvedValueOnce(undefined);
+    fireEvent.change(screen.getByTestId("composer-input"), {
+      target: { value: "重试这条消息" },
+    });
+    fireEvent.click(screen.getByTestId("send-button"));
+
+    await waitFor(() => expect(inst.sendMessage).toHaveBeenCalledTimes(2), { timeout: 3000 });
+    const first = inst.sendMessage.mock.calls[0] as unknown as [string, { requestId: string }];
+    const retry = inst.sendMessage.mock.calls[1] as unknown as [string, { requestId: string }];
+    expect(retry[0]).toBe(first[0]);
+    expect(retry[1].requestId).toBe(first[1].requestId);
+  });
+
+  it("发送请求失败时回滚仍处于排队状态的用户消息", async () => {
+    const inst = await enterChat();
+    inst.sendMessage.mockRejectedValueOnce(new mocks.MockApiError(400, "请求无效"));
+    fireEvent.change(screen.getByTestId("composer-input"), {
+      target: { value: "这条失败消息应回滚" },
+    });
+    fireEvent.click(screen.getByTestId("send-button"));
+
+    await waitFor(() =>
+      expect(screen.queryByText("这条失败消息应回滚")).not.toBeInTheDocument(),
+    );
+    expect(screen.queryByTestId("phase-queued")).not.toBeInTheDocument();
+  });
+
+  it("切换会话后取消旧会话的待发送重试", async () => {
+    const inst = await enterChat();
+    inst.sendMessage.mockRejectedValue(new Error("网络暂时不可用"));
+    fireEvent.change(screen.getByTestId("composer-input"), {
+      target: { value: "不应重试" },
+    });
+    fireEvent.click(screen.getByTestId("send-button"));
+    await waitFor(() => expect(inst.sendMessage).toHaveBeenCalledTimes(1));
+    fireEvent.click(screen.getByTestId("session-s2"));
+    await new Promise((resolve) => setTimeout(resolve, 1100));
+    expect(inst.sendMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("切换会话后隔离聊天状态并忽略旧 SSE 连接迟到的事件", async () => {
+    await enterChat();
+    mocks.sse.onEvent?.({ type: "text_delta", text: "会话一的回答" });
+    await waitFor(() => expect(screen.getByText("会话一的回答")).toBeInTheDocument());
+    const staleOnEvent = mocks.sse.onEvent;
+    fireEvent.click(screen.getByTestId("session-s2"));
+    await waitFor(() => expect(mocks.createSseConnection).toHaveBeenCalledTimes(2));
+
+    expect(screen.queryByText("会话一的回答")).not.toBeInTheDocument();
+    staleOnEvent?.({ type: "text_delta", text: "过期连接消息" });
+    expect(screen.queryByText("过期连接消息")).not.toBeInTheDocument();
   });
 
   it("SSE 204 no-live-stream 后 UI 保持未连接", async () => {
@@ -449,6 +545,21 @@ describe("App（顶层流程）", () => {
     expect(screen.queryByTestId("projects-error")).not.toBeInTheDocument();
     expect(inst.listSessionsByProject).toHaveBeenCalledWith(mocks.DEFAULT_PROJECT_ID);
     expect(screen.getByTestId("new-session")).toBeInTheDocument();
+  });
+
+  it("401 不显示 token 表单，而显示项目加载错误并可重试", async () => {
+    mocks.setProjectsFail(new mocks.MockApiError(401, "HTTP 401"));
+    render(<App />);
+
+    await waitFor(() => expect(screen.getByTestId("projects-error")).toBeInTheDocument());
+    expect(screen.getByRole("alert")).toHaveTextContent("HTTP 401");
+    expect(screen.getByTestId("retry-projects")).toBeInTheDocument();
+    expect(screen.queryByTestId("token-input")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("auth-probing")).not.toBeInTheDocument();
+    expect(mocks.instances).toHaveLength(1);
+    expect(mocks.instances[0]?.token).toBe("");
+    expect(mocks.instances[0]?.tokenProvided).toBe(false);
+    expect(mocks.instances[0]?.listProjects).toHaveBeenCalled();
   });
 
   it("项目列表不含 isDefault 项目：显示可重试错误且不请求项目会话，而非永久加载中", async () => {

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { TimelineItem } from "../types.js";
+import type { TimelineItem } from "pi-agent-server/client";
 
 export type ThinkingRowProps = {
   thinking: Extract<TimelineItem, { kind: "thinking" }>;

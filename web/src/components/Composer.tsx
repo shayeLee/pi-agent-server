@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 
-import type { ModelInfo, SessionRecord } from "../types.js";
+import type { ModelInfo, SessionRecord } from "pi-agent-server/client";
 
 export type ComposerProps = {
   session: SessionRecord | null;
@@ -10,6 +10,7 @@ export type ComposerProps = {
   defaultThinkingLevel: string;
   streaming: boolean;
   queued: boolean;
+  historyLoading?: boolean;
   placeholder: string;
   onSend: (text: string) => void;
   onSteer: (text: string) => void;
@@ -26,6 +27,7 @@ export function Composer({
   defaultThinkingLevel,
   streaming,
   queued,
+  historyLoading = false,
   placeholder,
   onSend,
   onSteer,
@@ -51,6 +53,7 @@ export function Composer({
   }
 
   function handleSubmit() {
+    if (historyLoading) return;
     const trimmed = text.trim();
     if (!trimmed) return;
     if (streaming) {
@@ -63,7 +66,7 @@ export function Composer({
     setText("");
   }
 
-  const sendDisabled = !text.trim() || queued;
+  const sendDisabled = !text.trim() || queued || historyLoading;
   const defaultModelValue = defaultModel ? `${defaultModel.provider}/${defaultModel.id}` : "";
   const configuredModelValue =
     session?.modelProvider && session.modelId ? `${session.modelProvider}/${session.modelId}` : undefined;
@@ -80,7 +83,7 @@ export function Composer({
         value={text}
         onChange={(e) => setText(e.target.value)}
         onKeyDown={handleKeyDown}
-        disabled={queued}
+        disabled={queued || historyLoading}
       />
       <div className="composer-toolbar">
         <div className="composer-left" />

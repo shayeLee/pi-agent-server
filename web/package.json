@@ -5,8 +5,8 @@
   "private": true,
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
-    "build:ops-viewer": "tsc -p tsconfig.json && vite build --config ops-viewer.vite.config.ts",
+    "build": "tsc -p ../tsconfig.client.json && tsc -b && vite build",
+    "build:ops-viewer": "tsc -p ../tsconfig.client.json && tsc -p tsconfig.json && vite build --config ops-viewer.vite.config.ts",
     "preview": "vite preview",
     "test": "vitest run"
   },
@@ -24,6 +24,7 @@
     "vitest": "^4.1.10"
   },
   "dependencies": {
+    "pi-agent-server": "workspace:*",
     "react-markdown": "^10.1.0",
     "remark-gfm": "^4.0.1"
   }

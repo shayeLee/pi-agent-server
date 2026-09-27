@@ -1,4 +1,4 @@
-import type { TimelineItem } from "../types.js";
+import type { TimelineItem } from "pi-agent-server/client";
 import { Markdown } from "./Markdown.js";
 import { ThinkingRow } from "./ThinkingRow.js";
 

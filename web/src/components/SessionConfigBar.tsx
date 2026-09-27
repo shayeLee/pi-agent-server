@@ -1,4 +1,4 @@
-import type { ModelInfo, SessionRecord } from "../types.js";
+import type { ModelInfo, SessionRecord } from "pi-agent-server/client";
 
 export type SessionConfigBarProps = {
   session: SessionRecord;

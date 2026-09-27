@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { consumeSse, createSseConnection } from "./sse-client.js";
+import { consumeSse, createSseConnection } from "pi-agent-server/client";
 
 function sseResponse(
   chunks: string[],
@@ -49,6 +49,16 @@ describe("consumeSse", () => {
       { type: "completed" },
     ]);
     expect(ids).toEqual([1, 2]);
+  });
+
+  it("默认不发送 Authorization header", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(sseResponse([]));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await consumeSse({ url: "http://x/events", onEvent: () => {} });
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect((init.headers as Record<string, string>).authorization).toBeUndefined();
   });
 
   it("带 lastEventId 时发送 last-event-id header", async () => {

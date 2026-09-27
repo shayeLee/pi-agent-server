@@ -1,7 +1,6 @@
 import { describe, it, expect } from "vitest";
-import { createChatState, applySseEvent, addUserMessage } from "./chat-state.js";
-import type { ChatState } from "./chat-state.js";
-import type { SseEvent } from "../types.js";
+import { createChatState, applySseEvent, addUserMessage } from "pi-agent-server/client";
+import type { ChatState, SseEvent } from "pi-agent-server/client";
 
 /** 从初始状态依次应用一组事件。 */
 function run(events: SseEvent[]): ChatState {

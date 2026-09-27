@@ -1,20 +1,18 @@
-// SSE 事件 → 聊天 UI 状态的纯函数映射。
-// 不依赖 DOM/网络；全部通过 createChatState/applySseEvent/addUserMessage 演进状态。
-// 核心模型是「时间线」（timeline）：消息、思考与工具调用按 SSE 事件到达顺序交错排列。
+// SSE event → conversation timeline state mapping. This is pure data logic with no UI framework.
 
-import type { SseEvent, TimelineItem, ToolCall, UsageStats } from "../types.js";
+import type { SseEvent, TimelineItem, ToolCall, UsageStats } from "./types.js";
 
-/** 聊天流程阶段。 */
+/** Chat flow phase. */
 export type ChatPhase = "idle" | "queued" | "streaming" | "completed" | "aborted";
 
-/** 聊天区 UI 状态（纯数据，可序列化）。 */
+/** Serializable chat state, independent of presentation frameworks. */
 export type ChatState = {
-  /** 按时间顺序的消息 + 思考 + 工具调用条目。 */
+  /** Timeline of messages, thinking segments, and tool calls in event order. */
   timeline: TimelineItem[];
   phase: ChatPhase;
-  /** 最近一次 error 事件的展示消息。 */
+  /** Display message from the most recent error event. */
   error: string | null;
-  /** 当前/最近一次 turn 的统计（来自 usage SSE 事件）。 */
+  /** Current/most recent turn statistics from a usage event. */
   stats: UsageStats | null;
 };
 
@@ -22,11 +20,7 @@ export function createChatState(): ChatState {
   return { timeline: [], phase: "idle", error: null, stats: null };
 }
 
-/**
- * 追加用户消息。
- * 同时把会话标记为「本次回答已结束」：下一条 assistant 事件会另起新消息。
- * （SSE 流里没有用户消息事件，用户消息由前端发送时直接入列。）
- */
+/** Append a user message and enter queued phase until the server responds. */
 export function addUserMessage(state: ChatState, text: string, messageId?: string): ChatState {
   const message: TimelineItem = {
     kind: "message",
@@ -35,8 +29,6 @@ export function addUserMessage(state: ChatState, text: string, messageId?: strin
     text,
     streaming: false,
   };
-  // 发送后进入「等待服务端确认」：禁止再次发送（Composer 据此显示 steer/abort），
-  // 直到收到 queued/streaming/completed 事件，或 sendMessage 失败回滚为 idle。
   return {
     ...state,
     timeline: [...state.timeline, message],
@@ -45,7 +37,7 @@ export function addUserMessage(state: ChatState, text: string, messageId?: strin
   };
 }
 
-/** 把一条 SSE 事件映射到新的 ChatState（不改动原状态）。 */
+/** Map one SSE event to a new ChatState without mutating the previous state. */
 export function applySseEvent(state: ChatState, event: SseEvent): ChatState {
   switch (event.type) {
     case "text_delta":
@@ -87,17 +79,23 @@ export function applySseEvent(state: ChatState, event: SseEvent): ChatState {
           totalTokens: event.totalTokens,
         },
       };
+    case "model_failback":
+      // Failback metadata is informational and does not change conversation state.
+      return state;
     case "completed":
       return closeCurrentAssistant({ ...state, phase: "completed", error: null });
     case "aborted":
       return closeCurrentAssistant({ ...state, phase: "aborted" });
     case "error":
-      // error 视为本次回答终止：后续 text_delta 另起新消息。
+      // An error ends this answer; subsequent text_delta starts a new message.
       return closeCurrentAssistant({ ...state, phase: "idle", error: event.message });
+    default:
+      // Ignore future or malformed events without corrupting the current state.
+      return state;
   }
 }
 
-/** text_delta：追加到当前 streaming 的 assistant 消息；没有则新开一条。 */
+/** Append text to the current streaming assistant message, or start a new one. */
 function appendAssistantText(state: ChatState, text: string): ChatState {
   let timeline = closeCurrentThinking(state.timeline);
   const last = timeline[timeline.length - 1];
@@ -122,7 +120,7 @@ function appendAssistantText(state: ChatState, text: string): ChatState {
   return { ...state, timeline: [...timeline, message], phase: "streaming" };
 }
 
-/** thinking_delta：追加到当前 streaming 的思考条目；没有则新开一条。 */
+/** Append text to the current streaming thinking segment, or start a new one. */
 function appendThinking(state: ChatState, text: string): ChatState {
   const last = state.timeline[state.timeline.length - 1];
   if (last && last.kind === "thinking" && last.streaming) {
@@ -139,7 +137,7 @@ function appendThinking(state: ChatState, text: string): ChatState {
   return { ...state, timeline: [...state.timeline, thinking], phase: "streaming" };
 }
 
-/** 收到 assistant 文本/工具/终态时，关闭当前思考条目的 streaming 标记。 */
+/** Close the currently streaming thinking segment. */
 function closeCurrentThinking(timeline: TimelineItem[]): TimelineItem[] {
   const last = timeline[timeline.length - 1];
   if (last && last.kind === "thinking" && last.streaming) {
@@ -148,7 +146,7 @@ function closeCurrentThinking(timeline: TimelineItem[]): TimelineItem[] {
   return timeline;
 }
 
-/** 终态/错误时关闭当前 assistant 消息的 streaming。 */
+/** Close the currently streaming assistant message at terminal events. */
 function closeCurrentAssistant(state: ChatState): ChatState {
   const timeline = closeCurrentThinking(state.timeline);
   const last = timeline[timeline.length - 1];
@@ -158,10 +156,7 @@ function closeCurrentAssistant(state: ChatState): ChatState {
   return { ...state, timeline };
 }
 
-/**
- * tool_start：关闭当前 streaming 的 assistant 消息（工具调用「打断」文本流），
- * 再追加一个新的工具调用条目——保证时间线渲染顺序正确。
- */
+/** A tool start interrupts streaming assistant text and appends a timeline item. */
 function appendToolCall(
   state: ChatState,
   patch: Partial<ToolCall> & { toolCallId: string; toolName: string },
@@ -183,7 +178,7 @@ function appendToolCall(
   return { ...state, timeline, phase: "streaming" };
 }
 
-/** 按 toolCallId 更新时间线上最近一条工具调用（tool_update/tool_end）。 */
+/** Update the most recent timeline tool item with a matching toolCallId. */
 function upsertToolCall(
   state: ChatState,
   patch: Partial<ToolCall> & { toolCallId: string; toolName: string },
@@ -201,7 +196,7 @@ function upsertToolCall(
 function findLastToolIndex(timeline: TimelineItem[], toolCallId: string): number {
   for (let i = timeline.length - 1; i >= 0; i--) {
     const item = timeline[i];
-    if (item.kind === "tool" && item.call.toolCallId === toolCallId) return i;
+    if (item?.kind === "tool" && item.call.toolCallId === toolCallId) return i;
   }
   return -1;
 }

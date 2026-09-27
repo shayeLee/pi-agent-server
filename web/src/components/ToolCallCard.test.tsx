@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { ToolCallCard } from "./ToolCallCard.js";
-import type { ToolCall } from "../types.js";
+import type { ToolCall } from "pi-agent-server/client";
 
 function card(partial: Partial<ToolCall> = {}): ToolCall {
   return {

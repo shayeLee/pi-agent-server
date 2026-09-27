@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { SessionRecord } from "../types.js";
+import type { SessionRecord } from "pi-agent-server/client";
 
 /** 会话更新时间展示（epoch ms → 本地可读时间）。 */
 export function formatSessionTime(updatedAt: number): string {

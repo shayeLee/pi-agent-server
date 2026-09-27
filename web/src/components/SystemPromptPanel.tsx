@@ -1,4 +1,4 @@
-import type { SessionRecord } from "../types.js";
+import type { SessionRecord } from "pi-agent-server/client";
 
 export type SystemPromptPanelProps = {
   session: SessionRecord | null;

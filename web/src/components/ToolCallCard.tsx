@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { ToolCall } from "../types.js";
+import type { ToolCall } from "pi-agent-server/client";
 
 /** 把 unknown 值转成可读文本：字符串原样展示，其它 JSON 美化序列化。 */
 export function stringify(value: unknown): string {

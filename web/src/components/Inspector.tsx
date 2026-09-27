@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { SessionRecord, TimelineItem } from "../types.js";
+import type { SessionRecord, TimelineItem } from "pi-agent-server/client";
 import { EventLog } from "./EventLog.js";
 import { SystemPromptPanel } from "./SystemPromptPanel.js";
 import type { EventLogEntry } from "../types.js";

@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { ProjectSwitcher } from "./ProjectSwitcher.js";
-import type { Project } from "../types.js";
+import type { Project } from "pi-agent-server/client";
 
 // Web 不硬编码默认项目 id：测试夹具直接引用服务端 DEFAULT_PROJECT_ID 的同一 UUID，
 // 并由 isDefault: true 标记默认项目（与真实列表来源一致）。

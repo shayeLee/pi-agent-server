@@ -1,4 +1,4 @@
-import type { TimelineItem, UsageStats } from "../types.js";
+import type { TimelineItem, UsageStats } from "pi-agent-server/client";
 
 export type StatsBarProps = {
   stats: UsageStats | null;

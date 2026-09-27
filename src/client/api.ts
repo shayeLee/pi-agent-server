@@ -1,13 +1,29 @@
-// pi-agent-server HTTP API 客户端（对应 needs.md §4.2 与知识库能力接口）。
-// token 只保存在内存（needs.md §7：不 localStorage 存凭证）。
+// pi-agent-server HTTP API client. Uses only the Fetch API and can be adapted per host.
 
-import type { AccessCapabilities, ModelInfo, Project, SessionRecord } from "../types.js";
+import type { AccessCapabilities, ModelInfo, Project, SessionRecord } from "./types.js";
+import { defaultFetch, hasHeader, resolveHeaders } from "./transport.js";
+import type { AuthToken, FetchLike, HeadersProvider } from "./transport.js";
 
 export type SendMessageInput = {
   requestId: string;
   prompt: string;
   parentId?: string;
   images?: { mediaType: string; base64: string }[];
+};
+
+/** Fetch implementation and host-specific request resolution options. */
+export type ApiClientDependencies = {
+  fetch?: FetchLike;
+  headers?: HeadersProvider;
+  /** Resolve an API path to a complete URL (for proxies, native transports, or custom routing). */
+  resolveUrl?: (path: string) => string;
+};
+
+/** Options form for constructing ApiClient without browser globals or fixed credentials. */
+export type ApiClientOptions = ApiClientDependencies & {
+  baseUrl?: string;
+  /** Static token or a provider evaluated for each request. */
+  token?: AuthToken;
 };
 
 /** 携带 HTTP 状态码的错误：便于区分「服务端明确拒绝」（如 409 已接受）与网络传输失败。 */
@@ -22,20 +38,39 @@ export class ApiError extends Error {
 }
 
 export class ApiClient {
+  private readonly options: ApiClientOptions;
+
+  /** Legacy Web-compatible form: new ApiClient(baseUrl, token, dependencies?). */
+  constructor(baseUrl: string, token: string, dependencies?: ApiClientDependencies);
+  /** Reusable options form with injected URL, authentication, and fetch behavior. */
+  constructor(options?: ApiClientOptions);
   constructor(
-    private readonly baseUrl: string,
-    private readonly token: string,
-  ) {}
+    baseUrlOrOptions: string | ApiClientOptions = "",
+    token = "",
+    dependencies: ApiClientDependencies = {},
+  ) {
+    this.options =
+      typeof baseUrlOrOptions === "string"
+        ? { ...dependencies, baseUrl: baseUrlOrOptions, token }
+        : baseUrlOrOptions;
+  }
 
   private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
-    const headers: Record<string, string> = {
-      ...(body !== undefined ? { "content-type": "application/json" } : {}),
-    };
-    // token 为空时（内网免登录）不带 authorization header
-    if (this.token) {
-      headers.authorization = `Bearer ${this.token}`;
+    const headers = await resolveHeaders(this.options.headers);
+    if (body !== undefined && !hasHeader(headers, "content-type")) {
+      headers["content-type"] = "application/json";
     }
-    const res = await fetch(`${this.baseUrl}${path}`, {
+
+    const token =
+      typeof this.options.token === "function" ? await this.options.token() : this.options.token;
+    // token 为空时（内网免登录）不带 authorization header
+    if (token) headers.authorization = `Bearer ${token}`;
+
+    const url = this.options.resolveUrl
+      ? this.options.resolveUrl(path)
+      : `${this.options.baseUrl ?? ""}${path}`;
+    const fetcher = this.options.fetch ?? defaultFetch;
+    const res = await fetcher(url, {
       method,
       headers,
       body: body !== undefined ? JSON.stringify(body) : undefined,

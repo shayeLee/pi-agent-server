@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { SseParser } from "./sse.js";
+import { SseParser } from "pi-agent-server/client";
 
 describe("SseParser（SSE 帧解析）", () => {
   it("解析单帧 id + data", () => {

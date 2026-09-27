@@ -1,6 +1,5 @@
 import { useEffect, useRef } from "react";
-import type { ChatState } from "../lib/chat-state.js";
-import type { ModelInfo, SessionRecord, UsageStats } from "../types.js";
+import type { ChatState, ModelInfo, SessionRecord, UsageStats } from "pi-agent-server/client";
 import { MessageItem } from "./MessageItem.js";
 import { ToolCallCard } from "./ToolCallCard.js";
 import { Composer } from "./Composer.js";
@@ -11,6 +10,7 @@ import { EmptyState } from "./EmptyState.js";
 export type ChatProps = {
   session: SessionRecord | null;
   timeline: ChatState["timeline"];
+  historyLoading?: boolean;
   streaming: boolean;
   queued: boolean;
   loadError: string | null;
@@ -31,6 +31,7 @@ export type ChatProps = {
 export function Chat({
   session,
   timeline,
+  historyLoading = false,
   streaming,
   queued,
   loadError,
@@ -111,6 +112,7 @@ export function Chat({
             defaultThinkingLevel={defaultThinkingLevel}
             streaming={streaming}
             queued={queued}
+            historyLoading={historyLoading}
             placeholder={placeholder}
             onSend={onSend}
             onSteer={onSteer}

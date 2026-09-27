@@ -1,4 +1,4 @@
-import type { ChatPhase } from "../lib/chat-state.js";
+import type { ChatPhase } from "pi-agent-server/client";
 
 const PHASE_LABEL: Record<ChatPhase, string> = {
   idle: "空闲",

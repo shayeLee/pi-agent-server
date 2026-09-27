@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { ApiClient } from "./api.js";
+import { ApiClient } from "pi-agent-server/client";
 
 function jsonResponse(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
@@ -27,6 +27,17 @@ describe("ApiClient", () => {
     expect((init.headers as Record<string, string>).authorization).toBe("Bearer secret");
     expect(sessions).toHaveLength(1);
     expect(sessions[0]?.id).toBe("s1");
+  });
+
+  it("未配置 token 时请求不带 Authorization", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse([]));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const api = new ApiClient({ baseUrl: "" });
+    await api.listSessions();
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect((init.headers as Record<string, string>).authorization).toBeUndefined();
   });
 
   it("sendMessage POST 正确路径与 body", async () => {

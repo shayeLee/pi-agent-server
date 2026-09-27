@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { Project } from "../types.js";
+import type { Project } from "pi-agent-server/client";
 
 export type ProjectSwitcherProps = {
   projects: Project[];

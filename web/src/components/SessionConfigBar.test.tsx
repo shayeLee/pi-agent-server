@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { SessionConfigBar } from "./SessionConfigBar.js";
-import type { ModelInfo, SessionRecord } from "../types.js";
+import type { ModelInfo, SessionRecord } from "pi-agent-server/client";
 
 const models: ModelInfo[] = [
   { provider: "deepseek", id: "v4-pro", name: "DeepSeek V4 Pro" },

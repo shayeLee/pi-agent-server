@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { SessionList, formatSessionTime } from "./SessionList.js";
-import type { SessionRecord } from "../types.js";
+import type { SessionRecord } from "pi-agent-server/client";
 
 const sessions: SessionRecord[] = [
   { id: "s1", ownerKey: "k", projectId: "6f1a2b3c-4d5e-4f6a-8b9c-0d1e2f3a4b5c", title: "会话一", createdAt: 1000, updatedAt: 1_700_000_000_000, modelProvider: null, modelId: null, thinkingLevel: null, systemPrompt: null },

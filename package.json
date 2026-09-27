@@ -29,6 +29,11 @@
       "types": "./dist/public-api/contract.d.ts",
       "default": "./dist/public-api/contract.js"
     },
+    "./client": {
+      "types": "./dist/client/index.d.ts",
+      "import": "./dist/client/index.js",
+      "default": "./dist/client/index.js"
+    },
     "./openapi/v1.json": "./dist/openapi/v1.json",
     "./package.json": "./package.json"
   },

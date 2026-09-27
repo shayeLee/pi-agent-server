@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { Chat } from "./Chat.js";
-import type { SessionRecord, TimelineItem } from "../types.js";
+import type { SessionRecord, TimelineItem } from "pi-agent-server/client";
 
 const session: SessionRecord = {
   id: "s1",
