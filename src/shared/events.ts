@@ -37,7 +37,7 @@ export type SseEvent =
   | ({ type: "thinking_delta"; text: string } & SseRequestId)
   | ({ type: "tool_start"; toolCallId: string; toolName: string; args: unknown } & SseRequestId)
   | ({ type: "tool_update"; toolCallId: string; toolName: string; partialResult: unknown } & SseRequestId)
-  | ({ type: "tool_end"; toolCallId: string; toolName: string; result: unknown; isError: boolean } & SseRequestId)
+  | ({ type: "tool_end"; toolCallId: string; toolName: string; result: unknown; isError: boolean; durationMs?: number | null } & SseRequestId)
   | ({ type: "status"; phase: "agent_start" | "turn_start"; execution?: import("../core/usage-snapshot.js").ExecutionSnapshot | null } & SseRequestId)
   | ({ type: "queued"; position?: number } & SseRequestId)
   | ({ type: "usage"; promptTokens: number | null; completionTokens: number | null; totalTokens: number | null; durationMs: number; ttftMs: number } & UsageSnapshot & SseRequestId)

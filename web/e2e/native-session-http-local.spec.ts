@@ -22,9 +22,10 @@ test("unified native directory: real App, actors, append, private, tombstones, e
   const rows = [
     { type: "session", version: 3, id: "native-original", cwd, timestamp },
     { type: "message", id: "user", parentId: null, timestamp, message: { role: "user", content: "原生历史任务", timestamp: 1 } },
-    { type: "message", id: "assistant", parentId: "user", timestamp, message: { role: "assistant", content: [{ type: "thinking", thinking: "原生思考记录" }, { type: "text", text: "原生历史回答" }, { type: "toolCall", id: "tool", name: "read", arguments: { path: "fixture.txt" } }], api: "native-fixture-api", provider: "native-fixture", model: "offline", usage, stopReason: "toolUse", timestamp: 2 } },
-    { type: "message", id: "result", parentId: "assistant", timestamp, message: { role: "toolResult", toolCallId: "tool", toolName: "read", content: [{ type: "text", text: "原生工具结果" }], isError: false, timestamp: 3 } },
-    { type: "custom", customType: "agent-team:notification", id: "notice", parentId: "result", timestamp, data: { version: 1, notificationId: "8b58f83a-b77d-4e31-99de-47753962fb0f", runIds: ["run-native"], text: "### 原生通知\n\n离线任务已完成" } },
+    { type: "message", id: "assistant", parentId: "user", timestamp, message: { role: "assistant", content: [{ type: "thinking", thinking: "原生思考记录" }, { type: "text", text: "原生历史回答" }, { type: "toolCall", id: "tool", name: "read", arguments: { path: "fixture.txt" } }, { type: "toolCall", id: "old-tool", name: "read", arguments: { path: "legacy.txt" } }], api: "native-fixture-api", provider: "native-fixture", model: "offline", usage, stopReason: "toolUse", timestamp: 2 } },
+    { type: "message", id: "result", parentId: "assistant", timestamp, message: { role: "toolResult", toolCallId: "tool", toolName: "read", content: [{ type: "text", text: "原生工具结果" }], isError: false, timestamp: 3, durationMs: 2345.6789 } },
+    { type: "message", id: "old-result", parentId: "result", timestamp, message: { role: "toolResult", toolCallId: "old-tool", toolName: "read", content: [{ type: "text", text: "无计时历史结果" }], isError: false, timestamp: 4 } },
+    { type: "custom", customType: "agent-team:notification", id: "notice", parentId: "old-result", timestamp, data: { version: 1, notificationId: "8b58f83a-b77d-4e31-99de-47753962fb0f", runIds: ["run-native"], text: "### 原生通知\n\n离线任务已完成" } },
     { type: "model_change", id: "model", parentId: "notice", timestamp, provider: "native-fixture", modelId: "offline" },
     { type: "session_info", id: "name", parentId: "model", timestamp, name: "原生命名会话" },
   ];
@@ -66,13 +67,22 @@ test("unified native directory: real App, actors, append, private, tombstones, e
     await page.setViewportSize({ width: 1280, height: 900 }); await page.goto("/");
     await expect(page.getByTestId(`session-${id}`)).toContainText("原生命名会话");
     await expect(page.getByTestId(`session-${first.id}`)).toContainText("原生历史任务");
-    await expect(page.getByTestId(`session-${id}`).getByLabel("原生共享会话").locator("svg")).toBeVisible();
+    await expect(page.getByTestId(`session-${id}`).locator("..").getByLabel("原生共享会话").locator("svg")).toBeVisible();
     await page.getByTestId(`session-${id}`).click();
     await expect(page.locator(".message-assistant")).toContainText("原生历史回答");
     await page.getByRole("button", { name: /思考过程/ }).click();
     await expect(page.locator(".thinking-body")).toContainText("原生思考记录");
     await expect(page.getByTestId("subagent-notification")).toContainText("原生通知");
     await expect(page.getByText("fixture.txt", { exact: false }).first()).toBeVisible();
+    const historicalTool = page.locator('[data-tool-call-id="tool"]');
+    await expect(historicalTool.locator(".tool-duration")).toHaveText("2.3 s");
+    await expect(page.locator('[data-tool-call-id="old-tool"] .tool-duration')).toHaveCount(0);
+    await historicalTool.getByRole("button", { name: "工具更多操作" }).click();
+    await page.getByRole("menuitem", { name: "查看原始数据" }).click();
+    await expect(page.getByRole("dialog")).toContainText("2345.6789");
+    mkdirSync(artifacts, { recursive: true });
+    await page.screenshot({ path: `${artifacts}/duration-history-raw.png`, fullPage: true });
+    await page.keyboard.press("Escape");
     const send = page.waitForResponse(response => response.url().endsWith(`/sessions/${id}/messages`) && response.request().method() === "POST");
     await page.getByTestId("composer-input").fill("原生继续发送"); await page.getByTestId("send-button").click(); expect((await send).status()).toBe(202);
     await expect(page.locator(".message-assistant").last()).toContainText("离线模型继续完成");
@@ -97,7 +107,7 @@ test("unified native directory: real App, actors, append, private, tombstones, e
           await page.getByRole("button", { name: "打开工作区导航" }).click();
           await expect.poll(() => page.getByTestId("sidebar").evaluate(el => Math.round(el.getBoundingClientRect().x))).toBe(0);
         }
-        await expect(page.getByTestId(`session-${id}`).getByLabel("原生共享会话")).toBeVisible();
+        await expect(page.getByTestId(`session-${id}`).locator("..").getByLabel("原生共享会话")).toBeVisible();
         await page.screenshot({ path: `${artifacts}/${theme}-${width}-shared.png`, fullPage: true });
         if (width === 390) {
           // The backdrop center is under the drawer: use its actual visible close control, never force.
@@ -122,7 +132,7 @@ test("unified native directory: real App, actors, append, private, tombstones, e
     const createdResponse = await created; expect(createdResponse.status()).toBe(201);
     const privateSession = await createdResponse.json();
     await expect(page.locator(".message-assistant").last()).toContainText("离线模型继续完成");
-    await expect(page.getByTestId(`session-${privateSession.id}`).getByLabel("原生共享会话")).toHaveCount(0);
+    await expect(page.getByTestId(`session-${privateSession.id}`).locator("..").getByLabel("原生共享会话")).toHaveCount(0);
     await page.screenshot({ path: `${artifacts}/dark-1280-private.png`, fullPage: true });
     const privateFiles = readdirSync(dir).filter(name => !["first-prompt.jsonl", "legacy.jsonl", "original.jsonl"].includes(name)); expect(privateFiles).toHaveLength(1);
     const privateFile = path.join(dir, privateFiles[0]!); const privateBytes = readFileSync(privateFile, "utf8"); expect(privateBytes).toContain("Web私有任务");

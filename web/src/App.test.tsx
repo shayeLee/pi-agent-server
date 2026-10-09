@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, fireEvent, waitFor, act } from "@testing-library/react";
+import { render, screen, fireEvent, waitFor, act, within } from "@testing-library/react";
 import App from "./App.js";
 import { DEFAULT_PROJECT_ID } from "pi-agent-server/client";
 import type { Project, SseEvent, SessionRecord } from "pi-agent-server/client";
@@ -636,6 +636,26 @@ describe("App（顶层流程）", () => {
     expect(screen.getByText("之前的问题")).toBeInTheDocument();
     expect(screen.getByText("之前的回答")).toBeInTheDocument();
     expect(mocks.createSseConnection.mock.calls[0]![0]).toMatchObject({ lastEventId: 42 });
+  });
+
+  it.each([false, true])("restores actual exported tool durations (orphan result: %s), preserves raw precision and live merge", async orphan => {
+    const inst = await enterIntranet();
+    const values = [2345.6789, 0, null, undefined, -1, Infinity, NaN];
+    inst.exportSession.mockResolvedValue({ messages: [], lastEventId: 7,
+      timeline: values.flatMap((durationMs, i) => [
+        ...(!orphan ? [{ type: "tool_call", id: `call-${i}`, toolCallId: `duration-${i}`, toolName: "fixture", args: {} }] : []),
+        { type: "tool_result", id: `result-${i}`, toolCallId: `duration-${i}`, toolName: "fixture", result: {}, durationMs },
+      ]) });
+    fireEvent.click(screen.getByTestId("session-s1"));
+    await waitFor(() => expect(document.querySelector('[data-tool-call-id="duration-0"] .tool-duration')).toHaveTextContent("2.3 s"));
+    expect(document.querySelector('[data-tool-call-id="duration-1"] .tool-duration')).toHaveTextContent("0 ms");
+    for (let i = 2; i < values.length; i++) expect(document.querySelector(`[data-tool-call-id="duration-${i}"] .tool-duration`)).toBeNull();
+    act(() => mocks.sse.onEvent?.({ type: "tool_end", toolCallId: "duration-0", toolName: "fixture", result: {}, isError: false }, 8));
+    expect(document.querySelector('[data-tool-call-id="duration-0"] .tool-duration')).toHaveTextContent("2.3 s");
+    const card = document.querySelector('[data-tool-call-id="duration-0"]') as HTMLElement;
+    fireEvent.click(within(card).getByRole("button", { name: "工具更多操作" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "查看原始数据" }));
+    expect(screen.getByRole("dialog").textContent).toContain("2345.6789");
   });
 
   it("thinking 从导出快照恢复，切换会话再返回仍可展开读取原文", async () => {

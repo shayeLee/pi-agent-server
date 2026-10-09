@@ -1,6 +1,6 @@
 # 统计计量与前端契约
 
-依据安装版本 Pi SDK / pi-ai **1.0.4** 的 SDK、message-types、session-format、sessions、compaction 文档，以及 `dist/core/agent-session.{js,d.ts}`、`pi-ai/dist/types.d.ts`。本功能只读取宿主已授权会话的 SDK instance；不扫描全局 session、user ledger 或 subagent 账本，不以 rootSessionId 授权，不暴露 SDK sessionFile/path/credentials。
+依据安装版本 Pi SDK / pi-ai **1.1.0** 的 SDK、message-types、session-format、sessions、compaction 文档，以及 `dist/core/agent-session.{js,d.ts}`、`pi-ai/dist/types.d.ts`。本功能只读取宿主已授权会话的 SDK instance；不扫描全局 session、user ledger 或 subagent 账本，不以 rootSessionId 授权，不暴露 SDK sessionFile/path/credentials。
 
 ## 确定契约
 
@@ -51,6 +51,10 @@ type UsageSnapshot = {
 - SSE status 和结算 usage 推送的是**总量快照**（optional 兼容旧 server），不是前端增量；客户端仍先校验 activeRequestId，重复快照幂等，已知 recorded 高水位不被旧 SSE / cachedcursor / export 快照降低。export 恢复计数到同一 session store，其他 session 不共用；同一文件重启恢复集合后继续累计。
 - 计数通过 SessionManager custom entry 持久化，不新增 DB migration。source claim 由宿主 FD `_persist` 立即追加，包括 custom-only；旧 managed 路径仍受 SDK 延迟 flush 影响。持久化失败计数返回 unknown，FD 写入失败还会 poison runtime；不承诺 fsync 级抗断电或恢复中断的运行状态。
 - 默认单行 `1轮 · 3 turn · 工具2次`；缺失字段为 `—轮 · — turn`，不回退 user count。已记录范围、全量数字和解释收进 tooltip / modal，不在主栏新增长标签或换行。手机只略调密度，保留速度。
+
+## 工具执行耗时
+
+SSE `tool_end`、export timeline `tool_result`、client `ToolCall` 支持 `durationMs?: number | null`。仅透传 SDK `tool_execution_end` 及持久化 `toolResult` 的真实执行测量，接受有限非负值（0 有效），null/缺失未知；非法值省略，不用 tool_start 到结束的宿主时间猜测历史值。subagent 工具的 duration 是该工具调用耗时，不代表 child 后台完整运行时间，也不替代响应速度/usage.durationMs。无数据库迁移。SDK `agent_settled.aborted` 不改变宿主 promise + 最终 stopReason 的终态结算；retry 增加实际 turn、不额外增加 host loop。
 
 ## 响应计时与生命周期
 

@@ -1340,7 +1340,8 @@ select:focus {
 }
 
 .tool-call-header {
-  display: flex;
+  display: grid;
+  grid-template-columns: 16px minmax(0, max-content) minmax(0, 1fr) auto;
   align-items: center;
   gap: var(--space-8);
   width: 100%;
@@ -1378,16 +1379,27 @@ select:focus {
   color: var(--text-secondary);
 }
 
-/* Reserve only the status/chevron slots; summaries yield before names wrap. */
+.tool-call-header > .tool-header-icons { grid-column: 4; }
+.tool-duration {
+  flex: none;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+  font-size: var(--font-micro);
+  font-weight: normal;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-secondary);
+}
+
+/* Intrinsic action width is reserved; summaries yield before names wrap. */
 .tool-call-header .tool-name {
   flex: 0 0 auto;
-  max-width: calc(100% - 42px - var(--tool-icon-gap) - 3 * var(--space-8));
+  max-width: 100%;
   white-space: normal;
   overflow-wrap: anywhere;
 }
 
 /* Parallel identity/count never compete with task prose. */
-.tool-call-header.tool-parallel-header { display: grid; grid-template-columns: 16px auto auto 1fr auto; column-gap: 8px; row-gap: 2px; }
+.tool-call-header.tool-parallel-header { display: grid; grid-template-columns: 16px minmax(0, max-content) auto minmax(0, 1fr) auto; column-gap: 8px; row-gap: 2px; }
 .tool-parallel-header .tool-name { max-width: none; }
 .tool-parallel-count { font-size: var(--font-micro); color: var(--text-tertiary); white-space: nowrap; }
 .tool-parallel-header .tool-header-icons { grid-column: 5; grid-row: 1 / 3; }

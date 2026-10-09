@@ -1,11 +1,11 @@
-// Real SDK 1.0.4, explicit temporary resources/credentials, synthetic stream only.
+// Real SDK 1.1.0, explicit temporary resources/credentials, synthetic stream only.
 import { createAgentSession, createExtensionRuntime, ModelRuntime, SessionManager, SettingsManager, type ResourceLoader } from "@earendil-works/pi-coding-agent";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { getModel } from "@earendil-works/pi-ai/compat";
 import { join } from "node:path";
 import { PiAgentAdapter, type AgentSessionLike } from "../../src/agent/pi-agent-adapter.js";
 
-export async function steeringSdkFixture(root: string) {
+export async function steeringSdkFixture(root: string, configure?: (session: Awaited<ReturnType<typeof createAgentSession>>["session"]) => void) {
   const runtime = await ModelRuntime.create({ authPath: join(root, "auth.json"), modelsPath: join(root, "models.json"), refreshOnCreate: false });
   await runtime.setRuntimeApiKey("openai", "offline-not-a-real-key");
   const loader: ResourceLoader = {
@@ -45,6 +45,7 @@ export async function steeringSdkFixture(root: string) {
     stream.push({ type: "text_delta", contentIndex: 0, delta: message.content[0].text, partial: message });
     stream.push({ type: "done", reason: "toolUse", message }); stream.end(message); return stream;
   };
+  configure?.(session);
   const adapter = new PiAgentAdapter(session as unknown as AgentSessionLike);
   return { session, adapter, release: () => release(), calls: () => calls, waits: () => waits };
 }

@@ -10,12 +10,14 @@ pi-agent-server 是基于 Pi Agent Runtime 构建的长期运行、会话式 HTT
 
 - **当前面向内网：** 公网部署能力将在后续版本完善。
 - **当前为单实例运行：** 后续计划支持多实例部署。
-- **Pi 工具默认授权：** `TOOLS` 未设置或为空/空白时，允许全部可用内置工具及显式加载的扩展/插件工具；保留 Pi 的工具激活及会话恢复行为。非空 `TOOLS` 是覆盖所有工具来源的完整白名单。**风险：** 默认允许命令执行和文件写入（含 `bash`、`edit`、`write`）；只读工具选择请设置 `TOOLS=read,ls,find,grep`，并另行落实文件系统/进程隔离。HTTP RBAC 和文件授权不变。
+- **Pi 工具默认授权：** `TOOLS` 未设置或为空/空白时，允许全部可用内置工具及显式加载的扩展/插件工具；保留 Pi 的工具激活及会话恢复行为。纯工具名 `TOOLS` 是覆盖所有工具来源的完整白名单；全 modifier 列表解析后作为白名单（见配置）。**风险：** 默认允许命令执行和文件写入（含 `bash`、`edit`、`write`）；只读工具选择请设置 `TOOLS=read,ls,find,grep`，并另行落实文件系统/进程隔离。HTTP RBAC 和文件授权不变。
 - **Pi 扩展：** 通过 `PI_EXTENSION_PATHS` 指定要加载的 Pi 扩展。不设置时不加载扩展。支持范围见下方[Pi 扩展](#pi-扩展)。
 - **可按需增加业务功能：** 开发者可以把额外的工具、接口等功能做成 agent-server 插件，通过 `PI_PLUGINS` 配置启用。不需要额外功能时，无需配置。
 - **Pi Session JSONL 暂不自动清理：** 删除项目或会话后，对应的 JSONL 文件仍会保留。
 - **支持本机加密备份：** 备份与恢复工具已经提供，异地容灾仍在规划中。中断运行不自动续传：停止 writer，核验并仅清理本次产物后重做；原生恢复绝不覆盖已有文件。详见[备份与恢复](docs/backup-restore.md)。
 - **首次部署需要初始化数据库：** 先按[运维文档](docs/operations.md)初始化数据库，再启动服务；如果新版本发布说明要求更新数据库结构，也要先按运维文档升级数据库，再启动新版本服务。
+
+Pi SDK 与 pi-ai 固定为 **1.1.0**；本次 SDK 升级无需数据库迁移（下方既有原生会话 v2 要求不变）。SSE `tool_end` 与 export `tool_result` 的可选 `durationMs` 是 SDK 实测工具执行时间，不是子 agent 运行时间或模型吞吐；旧记录缺失仍表示未知。轮/turn 计数仍表示实际执行。见 [SDK 边界](docs/pi-sdk-api.md)与[统计契约](docs/usage-measurement.md)。
 
 ## 特性
 
@@ -169,7 +171,7 @@ export PI_ALLOWED_CLIENT_CIDRS=127.0.0.0/8,10.0.0.0/8
 | `PI_SYSTEM_PROMPT` | Pi 默认提示词 | 可选的系统提示词整体覆盖；保留既有语义 |
 | `PI_APPEND_SYSTEM` | 未设置 | 追加系统提示词原文，**不是路径**；空白不追加。先于文件原文和能力片段追加。修改后重启并新建会话；见 [SDK 提示词边界](docs/pi-sdk-api.md#35-资源加载与系统提示词安全边界)。 |
 | `PI_APPEND_SYSTEM_FILE` | 未设置 | 显式 UTF-8 文件，启动仅读一次；相对路径基于服务启动 cwd，不展开 `~`。无效文件拒绝启动。修改后重启并新建会话；冻结提示词不变。不自动发现 `APPEND_SYSTEM.md`。 |
-| `TOOLS` | 允许全部工具 | 逗号分隔的完整白名单，包含扩展/插件工具；未设置、为空/空白或仅逗号均视为未配置（允许全部）。例如 `read,ls,find,grep` 排除执行/写入工具。程序化 `StartConfig.tools=[]` 禁用全部工具，与环境变量空字符串不同。 |
+| `TOOLS` | 允许全部工具 | 受信服务配置，不是会话输入。纯工具名形成完整白名单，包含扩展/插件工具。全 modifier `+name,-name` 按顺序调整 Pi 默认选择（`read,bash,edit,write`），再冻结为宿主白名单；例如 `-bash,+custom_tool` 保留 read/edit/write 并允许已注册的自定义工具。混合纯名/modifier 或 modifier 通配符拒绝启动。未设置/空白/仅逗号允许全部；程序化 `StartConfig.tools=[]` 禁用全部。 |
 | `PI_PLUGINS` | 未设置 | 逗号分隔的显式加载、受信任同进程 ESM specifier；可以是包名，也可以是构建产物入口的绝对路径（裸机部署用后者，因为 `pnpm link` 在重建 `node_modules` 后不保留）；不扫描目录或 `.pi` |
 | `PI_EXTENSION_PATHS` | 未设置 | 显式加载 Pi SDK 扩展的主变量，逗号分隔（绝对路径或 `~/…`）；不自动发现，无效路径或加载失败即拒绝启动。`PI_PROVIDER_EXTENSION_PATHS` 为已弃用兼容 alias：去除空白与空项后，仅旧变量得到非空列表时在路径校验前警告；两个变量都得到非空列表则拒绝启动 |
 | `CORS_ORIGINS` | 空 | 允许在浏览器中调用本服务的网页地址；多个地址用逗号分隔，例如 `http://127.0.0.1:5173` |

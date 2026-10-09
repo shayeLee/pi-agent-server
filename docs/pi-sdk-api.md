@@ -21,9 +21,13 @@ volta run node --input-type=module -e \
 
 ## 2. 依赖版本与升级核对清单
 
-**当前依赖：`@earendil-works/pi-coding-agent` / `@earendil-works/pi-ai` 1.0.4（见 `package.json`）。**
+**当前依赖：`@earendil-works/pi-coding-agent` / `@earendil-works/pi-ai` 1.1.0（见 `package.json`），本次 SDK 升级无需 DB/JSONL v3 迁移。**
 
-> §3 中标注 0.86.0 的结论和 §3.9 是历史升级核对记录，不代表已对 1.0.4 全量重核。1.0.4 的专题核对见[统计计量](usage-measurement.md)、[steering 消费确认](steering-confirmation.md)。
+1.1.0：受信服务 `TOOLS` 全 `+name`/`-name` 列表按 SDK 顺序修改默认选择，再作为宿主严格白名单传入 SDK；没有独立 hard cap 或会话级授权输入。纯名白名单、缺省 all、程序化 [] 禁用保持；混合名/modifier 与 modifier 通配符沿 SDK 报错。自定义工具须另行注册，activation/reload/restore/`ctx.executeTool` 均受解析后白名单限制。宿主 factory 使用内存 settings，不读取个人 `defaultTools`。
+
+`tool_end`/export `tool_result` 可带 `durationMs?: number | null`（有限且 >=0）：仅来自 SDK `tool_execution_end`/持久化 `toolResult`，历史缺失不反推，不是 subagent child 的运行时间。`agent_settled.aborted` 仅辅助类型信息；终态仍以当前 request 的宿主 promise 和最终 stopReason 为准，不在 settled 事件提前完成。费用仍取 SDK usage；模型目录价格 tier 可变化，历史 usage 不重新定价。
+
+> §3 中标注 0.86.0 的结论和 §3.9 是历史升级核对记录，不代表已对当前版本全量重核。1.0.4 的专题核对见[统计计量](usage-measurement.md)、[steering 消费确认](steering-confirmation.md)。
 
 升级该依赖后按序核对，并更新上方基线版本号：
 

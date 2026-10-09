@@ -3,6 +3,7 @@
 // queued / aborted / error 无直接 SDK 事件，由服务层合成，不在此函数产出。
 
 import type { AgentSdkEvent, SseEvent } from "./events.js";
+import { toolDurationMs } from "../shared/tool-duration.js";
 
 export function translateSdkEvent(event: AgentSdkEvent): Exclude<SseEvent, { type: "notification" | "steering_consumed" }> | null {
   switch (event.type) {
@@ -35,6 +36,7 @@ export function translateSdkEvent(event: AgentSdkEvent): Exclude<SseEvent, { typ
         toolName: event.toolName,
         result: event.result,
         isError: event.isError,
+        ...(toolDurationMs(event.durationMs) !== undefined ? { durationMs: toolDurationMs(event.durationMs) } : {}),
       };
     case "agent_start":
     case "turn_start":

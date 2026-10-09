@@ -13,6 +13,7 @@ export function stringify(value: unknown): string {
 /** JSON transport values are preserved; missing root values omit their key (never become null). */
 export function rawToolData(call: ToolCall): string {
   return JSON.stringify({
+    ...(call.durationMs !== undefined ? { durationMs: call.durationMs } : {}),
     argsProvided: call.args !== undefined,
     ...(call.args !== undefined ? { args: call.args } : {}),
     resultKind: call.done ? "final" : "partial",

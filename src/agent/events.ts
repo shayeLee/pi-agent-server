@@ -42,6 +42,7 @@ export type SdkToolExecutionEndEvent = {
   toolName: string;
   result: unknown;
   isError: boolean;
+  durationMs?: number | null;
 };
 
 export type SdkAgentStartEvent = { type: "agent_start" };
@@ -59,7 +60,7 @@ export type SdkAgentEndEvent = {
 };
 
 /** SDK 完全稳定完成信号（run 结束、retry/continuation/compaction 全部结束后发出）；服务层不以其结算终态（以 prompt resolve + stopReason 为准），仅作参考。 */
-export type SdkAgentSettledEvent = { type: "agent_settled" };
+export type SdkAgentSettledEvent = { type: "agent_settled"; aborted?: boolean };
 
 // 无 SSE 映射、translate 应忽略的 SDK 事件（相关子集）。
 export type SdkIgnoredEvent =

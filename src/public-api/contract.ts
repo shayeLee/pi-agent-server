@@ -34,7 +34,7 @@ export type ExportTimelineItem =
   | { id: string; type: "message"; role: "user" | "assistant"; messageId: string; turnId: string | null; text: string; order: number; timestamp?: string }
   | { id: string; type: "thinking"; messageId: string; turnId: string | null; text: string; order: number; timestamp?: string }
   | { id: string; type: "tool_call"; messageId: string; turnId: string | null; callId: string; toolCallId: string; toolName: string; args: unknown; status: "completed" | "error" | "no_result"; order: number; timestamp?: string }
-  | { id: string; type: "tool_result"; messageId: string | null; turnId: string | null; callId: string; toolCallId: string; toolName: string; result: unknown; isError: boolean; order: number; timestamp?: string }
+  | { id: string; type: "tool_result"; messageId: string | null; turnId: string | null; callId: string; toolCallId: string; toolName: string; result: unknown; isError: boolean; durationMs?: number | null; order: number; timestamp?: string }
   | { id: string; type: "system_event"; event: "model_failback"; from: string; to: string; reason: string; order: number; timestamp?: string };
 /** Read-only session snapshot returned by `GET /v1/sessions/:id/export`. `timeline` is additive; Pi `messages[].sourceId` exactly joins `timeline[].messageId`. */
 export type { UsageSnapshot, UsageTokens, LastResponseUsage, ExecutionSnapshot } from "../core/usage-snapshot.js";

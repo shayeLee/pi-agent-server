@@ -40,7 +40,7 @@ afterEach(() => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
-async function inspect(tools?: string[]): Promise<void> {
+async function inspect(tools?: string[], invalid = false): Promise<void> {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), "pi-tool-policy-")));
   dirs.push(dir);
   const extension = join(dir, "extension.ts");
@@ -56,7 +56,8 @@ async function inspect(tools?: string[]): Promise<void> {
       execute: async () => ({ content: [] }),
     });
   }`);
-  await expect(startServer({
+  probe.options = {};
+  const started = startServer({
     port: 0, ipAccess: makeTestIpAccess(), cwd: dir, dataDir: dir,
     nativeSessionSourceDir: join(dir, "native-fixture"), authPath: join(dir, "auth.json"), extensionPaths: [extension], tools,
     plugins: [{
@@ -68,7 +69,11 @@ async function inspect(tools?: string[]): Promise<void> {
       } as unknown as ToolDefinition],
       register() {},
     }],
-  })).rejects.toBe(probe.stop);
+  });
+  if (invalid) {
+    await expect(started).rejects.toThrow("repeated modifier");
+    expect(probe.options).toEqual({}); // SDK was never reached.
+  } else await expect(started).rejects.toBe(probe.stop);
 }
 
 describe("startServer 工具策略 → 真实 SDK", () => {
@@ -99,6 +104,31 @@ describe("startServer 工具策略 → 真实 SDK", () => {
     expect(probe.options.tools).toEqual(["fixture_plugin_tool"]);
     expect(probe.available).toEqual(["fixture_plugin_tool"]);
     expect(probe.active).toEqual(["fixture_plugin_tool"]);
+  });
+
+  it("modifier selection becomes a strict host allowlist including custom extension names", async () => {
+    await inspect(["-bash", "+fixture_extension_tool"]);
+    expect(probe.options.tools).toEqual(["read", "edit", "write", "fixture_extension_tool"]);
+    expect(probe.available).toEqual(["read", "edit", "write", "fixture_extension_tool"]);
+    expect(probe.active).toEqual(["read", "fixture_extension_tool"]);
+  });
+
+  it.each(["++bash", "+-read", "-+read", "--bash"])("raw %s cannot widen the startup probe", async name => {
+    await inspect(["-read", "-bash", "-edit", "-write", name], true);
+  });
+
+  it("unknown legal exact names retain SDK unavailable behavior without widening", async () => {
+    await inspect(["unknown_legal_name"]);
+    expect(probe.options.tools).toEqual(["unknown_legal_name"]);
+    expect(probe.available).toEqual([]);
+    expect(probe.active).toEqual([]);
+  });
+
+  it("normal modifiers removing defaults stay disabled in the probe", async () => {
+    await inspect(["+read", "-read", "-bash", "-edit", "-write"]);
+    expect(probe.options.tools).toEqual([]);
+    expect(probe.available).toEqual([]);
+    expect(probe.active).toEqual([]);
   });
 
   it("显式空数组禁用全部，不当作 all", async () => {

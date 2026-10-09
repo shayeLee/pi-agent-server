@@ -5,6 +5,7 @@
 //   生产部署应通过 PI_AUTH_PATH 指向服务端独立凭证）；服务端默认模型 API key 可从环境变量注入（setRuntimeApiKey，不落盘）。
 
 import { homedir } from "node:os";
+import { resolveHostToolSelection } from "../agent/tool-selection.js";
 import { readAppendSystemPromptFile } from "./system-prompt-file.js";
 import { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
@@ -471,7 +472,7 @@ export async function startServer(config: StartConfig) {
   const agentToolConfig = toolGrant.kind === "all"
     ? {}
     : toolGrant.kind === "allowlist"
-      ? { tools: [...toolGrant.tools] }
+      ? { tools: resolveHostToolSelection(toolGrant.tools, SettingsManager.inMemory().getDefaultTools())! }
       : { noTools: "all" as const };
 
   // 会话专属 loader 首次创建即完成 provider 扩展加载 + provider 注册刷入共享 ModelRuntime，

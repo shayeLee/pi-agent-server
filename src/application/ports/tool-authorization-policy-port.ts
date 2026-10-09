@@ -12,10 +12,25 @@ export interface ToolAuthorizationPolicyPort {
   resolve(): ToolGrant;
 }
 
-/** 从可选的显式工具列表构建静态策略；undefined 允许全部，[] 禁用全部。 */
+/** Validate trusted host selection using Pi 1.1's tools-option rules. */
+export function validateToolSelection(tools?: readonly string[]): void {
+  if (!tools) return;
+  const modifiers = tools.filter(name => name.startsWith("+") || name.startsWith("-"));
+  if (modifiers.length === 0) return;
+  if (modifiers.length !== tools.length) throw new Error("Invalid tools option: tool names cannot be mixed with +name or -name entries");
+  const repeated = modifiers.find(name => /^[+-]{2}/.test(name));
+  if (repeated) throw new Error(`Invalid tools option: repeated modifier prefix: ${repeated}`);
+  const pattern = modifiers.find(name => name.includes("*"));
+  if (pattern) throw new Error(`Invalid tools option: +name and -name entries take exact tool names, not patterns: ${pattern}`);
+}
+
+/** Trusted host selection; modifiers are resolved at the composition boundary.
+ * Unknown exact names retain the SDK's existing unavailable/ignored behavior.
+ */
 export function toolPolicyFromAllowlist(
   tools?: readonly string[],
 ): ToolAuthorizationPolicyPort {
+  validateToolSelection(tools);
   return {
     resolve(): ToolGrant {
       if (tools === undefined) return { kind: "all" };

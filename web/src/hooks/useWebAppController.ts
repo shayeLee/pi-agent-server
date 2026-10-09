@@ -12,6 +12,7 @@ import type { EventLogEntry } from "../types.js";
 import { EMPTY_MESSAGE, validateSelection, type SubmissionState, type SubmitOutcome, type SubmitSnapshot, type UnsentAttachment, type UnsentMessage } from "../attachment-state.js";
 
 import { readMessageImages } from "../message-images.js";
+import { toolDurationMs } from "../../../src/shared/tool-duration.js";
 
 function projectExportTimeline(raw: readonly unknown[], messages: readonly unknown[]): TimelineItem[] {
   const imagesBySource = new Map<string, ReturnType<typeof readMessageImages>>();
@@ -45,15 +46,17 @@ function projectExportTimeline(raw: readonly unknown[], messages: readonly unkno
         const item = items[i];
         if (item?.kind === "tool" && item.call.toolCallId === row.toolCallId) { index = i; break; }
       }
+      const durationMs = toolDurationMs(row.durationMs);
+      const duration = durationMs !== undefined ? { durationMs } : {};
       if (index >= 0) {
         const previous = items[index];
         if (previous?.kind === "tool") items[index] = { ...previous, call: {
-          ...previous.call, result: row.result, isError: row.isError === true, done: true,
+          ...previous.call, result: row.result, isError: row.isError === true, done: true, ...duration,
         } };
       } else {
         items.push({ kind: "tool", id: `history-${String(row.id ?? items.length)}`, call: {
           toolCallId: row.toolCallId, toolName: String(row.toolName ?? "工具"), args: undefined,
-          partialResult: undefined, result: row.result, isError: row.isError === true, done: true,
+          partialResult: undefined, result: row.result, isError: row.isError === true, done: true, ...duration,
         } });
       }
     }

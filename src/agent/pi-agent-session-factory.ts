@@ -2,6 +2,7 @@
 // 本模块不读取或写入 session Repository；引用 reservation 与删除竞态由应用层协调。
 
 import path from "node:path";
+import { validateResolvedToolSelection } from "./tool-selection.js";
 import { constants, openSync, closeSync, writeSync, fstatSync, mkdirSync, lstatSync, realpathSync } from "node:fs";
 import { canonicalCwdIdentity } from "../core/native-session-policy.js";
 import { nativeProjectDirectory, nativePathSnapshot, type NativeSessionSource, type NativeSourceBinding } from "./native-session-source.js";
@@ -65,6 +66,7 @@ export type PiAgentSessionFactoryOptions = {
   readonly defaultThinkingLevel?: string;
   readonly customTools?: readonly ToolDefinition[];
   readonly agentToolConfig: {
+    /** Resolved exact allowlist; raw modifiers belong at the composition boundary. */
     readonly tools?: readonly string[];
     readonly noTools?: "all" | "builtin";
   };
@@ -98,7 +100,11 @@ export class PiAgentSessionFactory implements AgentSessionFactory {
     this.defaultModel = options.defaultModel;
     this.defaultThinkingLevel = options.defaultThinkingLevel;
     this.customTools = options.customTools;
-    this.agentToolConfig = options.agentToolConfig;
+    validateResolvedToolSelection(options.agentToolConfig.tools);
+    this.agentToolConfig = {
+      ...options.agentToolConfig,
+      ...(options.agentToolConfig.tools !== undefined ? { tools: [...options.agentToolConfig.tools] } : {}),
+    };
   }
 
   async prepareNew(context: AgentSessionContext): Promise<PreparedAgentSession> {
@@ -257,6 +263,9 @@ export class PiAgentSessionFactory implements AgentSessionFactory {
       ? context.thinkingLevel ?? (isNewSession ? this.defaultThinkingLevel : undefined)
       : undefined;
     const toolConfig: { tools?: string[]; noTools?: "all" | "builtin" } = {};
+    const settingsManager = SettingsManager.inMemory();
+    // No parsing here: startup has already frozen modifiers into exact names.
+    validateResolvedToolSelection(this.agentToolConfig.tools);
     if (this.agentToolConfig.tools !== undefined) toolConfig.tools = [...this.agentToolConfig.tools];
     if (this.agentToolConfig.noTools !== undefined) toolConfig.noTools = this.agentToolConfig.noTools;
     const resolvedLoader = await this.resolveResourceLoader(context);
@@ -269,7 +278,7 @@ export class PiAgentSessionFactory implements AgentSessionFactory {
       sessionManager,
       modelRuntime: this.modelRuntime,
       resourceLoader: sessionLoader.loader,
-      settingsManager: SettingsManager.inMemory(),
+      settingsManager,
       cwd: context.projectCwd,
       ...(model ? { model } : {}),
       ...(thinkingLevel ? { thinkingLevel: thinkingLevel as NonNullable<PiCreateOptions["thinkingLevel"]> } : {}),

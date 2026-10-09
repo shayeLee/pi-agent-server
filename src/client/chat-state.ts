@@ -1,6 +1,7 @@
 // SSE event → conversation timeline state mapping. This is pure data logic with no UI framework.
 
 import type { SseEvent, TimelineItem, ToolCall, UsageStats } from "./types.js";
+import { toolDurationMs } from "../shared/tool-duration.js";
 
 /** Chat flow phase. */
 export type ChatPhase = "idle" | "queued" | "streaming" | "completed" | "aborted";
@@ -109,6 +110,7 @@ export function applySseEvent(state: ChatState, event: SseEvent, now: () => numb
         toolName: event.toolName,
         result: event.result,
         isError: event.isError,
+        ...(toolDurationMs(event.durationMs) !== undefined ? { durationMs: toolDurationMs(event.durationMs) } : {}),
         done: true,
       });
     case "status": {

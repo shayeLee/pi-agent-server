@@ -4,6 +4,7 @@ import { Icon } from "./Icon.js";
 import { Modal } from "./Modal.js";
 import type { ToolCall } from "pi-agent-server/client";
 import { CodeBlock } from "./CodeBlock.js";
+import { formatToolDuration } from "../tools/duration.js";
 import { rawToolData } from "../tools/raw.js";
 import { toolPresentation } from "../tools/presentation.js";
 // Existing callers/tests may keep these imports during migration.
@@ -52,6 +53,8 @@ export function ToolCallCard({ call }: { call: ToolCall }) {
   useEffect(() => {
     if (!userToggled.current) setExpanded(!call.done);
   }, [call.done]);
+  const duration = call.done ? formatToolDuration(call.durationMs) : null;
+  const durationTitle = `工具调用耗时：${call.durationMs} ms${call.toolName === "subagent_wait" ? "（本次 wait 调用，非子 agent 运行时长）" : ""}`;
   const status = call.done ? (call.isError ? "失败" : "已完成") : "进行中";
   const { header, Arguments, Result } = toolPresentation(call);
   const { summary, badge, priorityLabels, preview } = header;
@@ -83,6 +86,7 @@ export function ToolCallCard({ call }: { call: ToolCall }) {
           ? <><span className="tool-parallel-names">{priorityLabels.join("、")}</span><span className="tool-parallel-preview">{preview}</span></>
           : summary}</span>}
         <span className="tool-header-icons">
+          {duration !== null && <span className="tool-duration" title={durationTitle} aria-label={durationTitle}>{duration}</span>}
           <ToolStatusIcon done={call.done} isError={call.isError} />
           <Icon name={expanded ? "down" : "chevron"} className="disclosure-chevron tool-toggle" />
         </span>

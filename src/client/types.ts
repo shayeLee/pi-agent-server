@@ -70,6 +70,8 @@ export type ToolCall = {
   partialResult: unknown;
   result: unknown;
   isError: boolean;
+  /** SDK tool execution time, not subagent child runtime; historical values may be absent. */
+  durationMs?: number | null;
   /** tool_end 已收到，调用结束。 */
   done: boolean;
 };

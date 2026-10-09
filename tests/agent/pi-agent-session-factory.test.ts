@@ -10,7 +10,7 @@ const sdk = vi.hoisted(() => ({
 vi.mock("@earendil-works/pi-coding-agent", () => ({
   createAgentSession: sdk.createAgentSession,
   SessionManager: { create: vi.fn(() => sdk.sessionManager) },
-  SettingsManager: { inMemory: vi.fn(() => ({})) },
+  SettingsManager: { inMemory: vi.fn(() => ({ getDefaultTools: () => undefined })) },
 }));
 
 vi.mock("../../src/agent/pi-jsonl-conversation-storage.js", () => ({
@@ -66,6 +66,24 @@ describe("PiAgentSessionFactory", () => {
       ...overrides,
     };
   }
+
+  it.each(["+bash", "-read", "++bash", "+-read", "-+read"])("rejects unresolved factory name %s before SDK creation", name => {
+    expect(() => new PiAgentSessionFactory({
+      modelRuntime: {} as ModelRuntime,
+      createResourceLoader: async () => sessionLoader({} as ResourceLoader),
+      agentToolConfig: { tools: [name] },
+    })).toThrow("resolved tools");
+    expect(sdk.createAgentSession).not.toHaveBeenCalled();
+  });
+
+  it("resolved empty and unknown exact lists are forwarded without defaults or reparsing", async () => {
+    for (const tools of [[], ["unknown_legal_name"]]) {
+      const factory = new PiAgentSessionFactory({ modelRuntime: {} as ModelRuntime,
+        createResourceLoader: async () => sessionLoader({} as ResourceLoader), agentToolConfig: { tools } });
+      await (await factory.prepareNew(context())).open();
+      expect(sdk.createAgentSession.mock.calls.at(-1)![0].tools).toEqual(tools);
+    }
+  });
 
   it("透传自定义工具，同时保留现有工具白名单配置", async () => {
     const customTool = tool("plugin_tool");
