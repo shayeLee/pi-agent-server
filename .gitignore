@@ -30,3 +30,6 @@ pi-agent-server.db-wal
 sessions/
 .onev-publication-locks/
 docs/screenshots/
+
+# TypeScript incremental build cache
+*.tsbuildinfo
