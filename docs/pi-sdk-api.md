@@ -21,9 +21,9 @@ volta run node --input-type=module -e \
 
 ## 2. 依赖版本与升级核对清单
 
-**核对基线：`@earendil-works/pi-coding-agent` / `@earendil-works/pi-ai` 0.86.0。**
+**当前依赖：`@earendil-works/pi-coding-agent` / `@earendil-works/pi-ai` 1.0.4（见 `package.json`）。**
 
-> 0.85.1 → 0.86.0 已核对完毕；当时的四处代码/文档改动见 §3.9。
+> §3 中标注 0.86.0 的结论和 §3.9 是历史升级核对记录，不代表已对 1.0.4 全量重核。1.0.4 的专题核对见[统计计量](usage-measurement.md)、[steering 消费确认](steering-confirmation.md)。
 
 升级该依赖后按序核对，并更新上方基线版本号：
 
@@ -43,9 +43,9 @@ volta run node --input-type=module -e \
 
 ### 3.2 会话持久化（SessionManager）
 
-- 静态入口：`inMemory()`（不落盘，测试）、`create(cwd)`、`continueRecent(cwd)`、`open(path)`、`list(cwd)`、`listAll(cwd)`。
+- 静态入口包括 `inMemory()`、`create(cwd)`、`continueRecent(cwd)`、`open(path)`、`list(cwd)`、`listAll(cwd)`。source claim 在生产使用 `inMemory(cwd, undefined, entries)`，由宿主安全 FD `_persist` 追加，不使用 SDK 路径重写；见[架构](architecture.md#统一-pi-jsonl-落点与访问策略)。
 - 历史编辑/分叉：`branch(entryId)`、`branchWithSummary(...)`、`createBranchedSession(leafId)`；命名 `appendSessionInfo(name)`/`getSessionName()`，读取 `getEntries()`/`getTree()`。
-- 对应 needs.md §4.1 的 Pi JSONL 会话存储。服务层当前 DELETE 只删除 DB 业务记录并写入 outbox，不调用 SDK 做物理 JSONL 删除。
+- DELETE 不调用 SDK 做物理删除：旧 managed 引用写 outbox，source claim 保留索引墓碑。
 
 ### 3.3 模型与凭证（ModelRuntime）
 
@@ -106,6 +106,8 @@ volta run node --input-type=module -e \
 | `agent_start` / `turn_start` | `status` |
 | `agent_end`（成功） | `completed` |
 | `abort()` 调用或异常 | `aborted` / `error` |
+
+`steering_consumed` 仅确认关联输入被 SDK 消费，HTTP 空 `202` 只表示准入，不是终态；见[消费确认](steering-confirmation.md)。
 
 `queued` 由服务层在任务进入模型队列时产生；`completed`/`aborted`/`error` 无直接 SDK 事件，由服务层根据 `agent_end`、异常与 `abort()` 合成。
 

@@ -2,7 +2,7 @@
 
 保留 run30 的独立持久展示边界，新增会话专属宿主准入。没有修改 SDK，也没有开放其他 idle SDK 事件。
 
-- 全局 `~/.pi/agent/extensions/agent-team/index.ts` 在原通知边界先 `appendEntry('agent-team:notification', { version: 1, notificationId: UUID, runIds, text })`，作为持久展示事实，再发送专用 `agent-team:results-ready` custom 模型消息。正文保持原文，details 使用同一 notificationId；SDK 将 custom 内容转换为 model user，details 不进入模型。停止、等待、收集机制不变。
+- 受信 `agent-team` 扩展的集成协议要求在原通知边界先 `appendEntry('agent-team:notification', { version: 1, notificationId: UUID, runIds, text })`，作为持久展示事实，再发送专用 `agent-team:results-ready` custom 模型消息。正文保持原文，details 使用同一 notificationId；SDK 将 custom 内容转换为 model user，details 不进入模型。停止、等待、收集机制不变。
 - Host factory 必须收到 `{ loader, failbackLifecycleSource }` 包装（同一会话 loader 的 EventBus），不再接受裸 ResourceLoader；缺 bus 在 `createAgentSession` 前 fail fast。生产 `getProviderExtensionEventBus` 缺接线也直接拒绝。`session_start` 先经同一 bus 查询独立 `agent-team:host-identity`，由 adapter 回应 `{ version: 1, host: 'pi-agent-server' }`；该身份为扩展实例本地状态，不读写全局 process.env。Host 身份已确认但 transport 缺失时，只保留展示事实，拒绝自动跟进，不得误用 CLI direct。
 - `session_start` 经所属 loader 的 EventBus 同步握手 `agent-team:host-transport`，只得到 `post(payload): Promise<AdmissionAck>`，不传 sessionId，不暴露 runtime/registry。adapter 在 SDK bind 前安装桥，runtime 初始化时接入；尚未接入返回 notready，dispose 撤销。已握手的扩展遇到拒绝/notready/disposed/异常都不得回退 SDK direct。无宿主 CLI 仍保持原 `sendMessage`、`followUp` + `triggerTurn: true`；该 void 返回不代表模型成功。
 - append 与 post 前同步登记 inflight 防重入；同通知重试复用 ID，宿主进程内按 notificationId 和载荷去重（拒绝也保留，不重复提交）。只有宿主 accepted ACK 才 markNotified；异常不冒充 ACK。ACK 仅代表宿主准入/有界暂存，不代表完整回合成功。
@@ -18,7 +18,7 @@
 
 初版只提供进程内通知调度，不是持久 crash outbox：持久 marker 可重放展示，但重启不自动补发通知任务，也不承诺跨重启 notificationId exactly-once。pending ACK 不保证后来取得容量或模型成功；排队取消、超时、删除和 SDK 错误仍可能终止任务。展示事实先于任务，展示可见不等于任务成功。重启后只有明确 marker 的通知恢复；历史无 marker 的旧 user 记录不追认，同文普通 user 不猜测。
 
-已加载全局扩展的进程需要重新加载扩展或重启才会采用新边界；本次不自动重载在用进程，也不修改其他 extensions/settings。
+扩展需显式通过 `PI_EXTENSION_PATHS` 加载；仓库不部署全局扩展。修改已加载扩展后须重启服务，不自动重载在用进程。
 
 ## 验证
 

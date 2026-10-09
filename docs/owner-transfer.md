@@ -2,8 +2,8 @@
 
 > **状态：离线 CLI `owner-transfer` 已实现。** 本工具从未对任何真实用户 SQLite/PG/JSONL 执行过转移；
 > 对真实目标执行需运维/用户明确授权。
-> **当前契约：备份按 missing-as-empty 语义发布**——任一缺失的 session
-> reference 记录进加密 manifest 后仍允许发布；恢复该锚点时对应 `sessions.conversation_ref` 归一为 `NULL`。
+> **当前契约：旧 managed 引用按 missing-as-empty 备份**——缺失的引用记录进加密 manifest，恢复时对应 `sessions.conversation_ref` 归一为 `NULL`。
+> 当前 CLI 未接线 `nativeSourceRoot`；有活动 native/private source claim 时 pre-backup 失败、转移拒绝，不适用 missing-as-empty。
 > 旧的 always-strict（`requireCompleteSessionReferences: true`）已退役。
 >
 > 关联文档：[ip-rbac-design.md](ip-rbac-design.md) §7、[identity-access-plan.md](archive/identity-access-plan.md)、

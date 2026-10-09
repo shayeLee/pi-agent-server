@@ -13,7 +13,7 @@
 ② 授权   role + 路由 permission → allow / 401 / 403
                                             route-rbac.ts
 
-③ 归属   session.owner_key == request.user
+③ 归属   private owner 校验 / shared native 来源策略校验
                                             session-service.ts
 
 ④ 会话   getOrCreate runtime → 读取/创建/恢复 Agent Session → AgentAdapter
@@ -45,13 +45,14 @@
 POST messages(sessionId, requestId)
   → inFlightSubmits 命中：复用同一个执行 Promise
   → 内存 IdempotencyStore 命中 done：返回内存终态
-  → 内存未命中：KyselyIdempotencyRepository.get()
-      → 命中 idempotency 表：返回持久化终态，不调用 Agent
-      → 未命中：执行 Agent turn
-  → settle：内存 complete() + repository.put() 写入终态
+  → 内存未命中：KyselyIdempotencyRepository.reserve()
+      → 已完成：校验 fingerprint 后返回终态，不调用 Agent
+      → 已预约：保留状态未知屏障，不重跑
+      → 取得唯一 token：执行 Agent turn
+  → settle：内存 complete() + token CAS 写入持久化终态
 ```
 
-`idempotency` 表以 `(session_id, request_id)` 为复合主键，`result` 保存 JSON 终态。`KyselyIdempotencyRepository` 以 `ON CONFLICT` 写入，SQLite 与 PostgreSQL 共用；Registry 按 TTL 清理过期记录。
+`idempotency` 以 `(session_id, request_id)` 为复合主键，保存预约或 JSON 终态与 fingerprint。共享请求绑定 actor；未确认预约及文件请求屏障不按 TTL 清理。见[数据库设计](database-design.md#5-请求幂等与-ttl)。
 
 ### 控制、持久化和离线操作
 
@@ -69,7 +70,7 @@ backup / restore / migration / reconcile / owner-transfer / file-ops
 
 - **状态与并发**：状态机保证一个 session 同时只执行一个 turn；并发控制负责全局/每用户槽位和队列。
 - **数据库**：Repository 保存项目、会话、幂等和 `file_operations`。SQLite/PG schema 均由 manifest 定义；服务启动只校验 migration，不自动迁移。
-- **删除**：session/project 删除在数据库事务中登记 outbox；当前没有物理 `unlink` worker，`file-ops` 仅安全只读规划。
+- **删除**：旧 managed 引用在删除事务登记 outbox；source claim 仅保留索引墓碑。当前没有物理 `unlink` worker，`file-ops` 仅安全只读规划。
 - **部署边界**：一个 SQLite 库或 PG schema 及关联 DATA_DIR 只支持一个服务实例；多实例需共享存储和分布式协调改造。
 
 ## 二、解耦模块
@@ -108,7 +109,7 @@ delete
 
 Factory 创建或恢复具体 Agent Session；Storage 解释引用、导出历史并生成清理计划；Coordinator 协调三者，不包含 Pi SDK 逻辑。`SessionRuntime` 不依赖 Pi SDK 或 JSONL。
 
-当前只注册 `pi + pi-jsonl-v3`：Pi factory 管理 Pi SDK Session，Pi storage 校验和读取 Pi JSONL。新增 Agent 只需新增对应 factory/storage 注册，不改变 runtime、HTTP 或通用 session schema。
+当前注册 `pi + pi-jsonl-v3`（managed）及 `pi + pi-native-jsonl-v3`（shared native）：Pi factory 管理 Pi SDK Session，对应 storage 校验和读取 Pi JSONL。新增 Agent 只需新增对应 factory/storage 注册，不改变 runtime、HTTP 或通用 session schema。
 
 非空 `(agent_kind, conversation_format, conversation_ref)` 由唯一约束独占。删除写入 artifact 级 outbox tombstone，已登记删除的引用不能重新绑定。
 
@@ -131,7 +132,7 @@ Factory 创建或恢复具体 Agent Session；Storage 解释引用、导出历�
 
 Web 会话保持 private/managed，来源发现保持 shared/native；不新增第三种格式。既有 v2 `native_session_sources.binding` JSON 增加可选 `private` 标记，不改 schema/migration/checksum。source path 与 original ID 的既有唯一约束在排他创建文件前预约，随后写回 dev/ino；失败和删除保留 source 墓碑，扫描不得将私有文件认领为共享。源文件仅逻辑删除，不经 managed outbox 物理 unlink。准备中的 inode 使用 -1 哨兵，不可恢复；完成前中断保持 fail-closed。后续若确需新列，须新增 canonical migration，不重写 frozen v2。
 
-`PI_SESSION_SHARE_EXCLUDE_CWDS` 只限制共享，不禁止该 cwd 使用 Web 私有会话；私有 FD 仍校验 canonical cwd/inode 与固定来源 allowroot，但不套 share exclusions。新建及恢复均由 FD `_persist` 追加，不调用 SDK 路径迁移。原始 Pi ID 与 server registry ID 分别保留，由 source claim 一对一绑定。没有 CLI/服务跨进程锁，禁止同时写同一文件。共享及私有 source claim 的文件预览仅采用校验后的 binding cwd；SSE live/replay/heartbeat 共用当前写入 FD 的 size/mtime/ctime/path identity 与 poison 校验（无 runtime 时仅校验有界 header），检测到外部修改即撤销旧 runtime，不逐 delta 重读全文。
+`PI_SESSION_SHARE_EXCLUDE_CWDS` 只限制共享，不禁止该 cwd 使用 Web 私有会话；私有 FD 仍校验 canonical cwd/inode 与固定来源 allowroot，但不套 share exclusions。新建及恢复均由 FD `_persist` 追加，不调用 SDK 路径迁移。原始 Pi ID 与 server registry ID 分别保留，由 source claim 一对一绑定。没有 CLI/服务跨进程锁，禁止同时写同一文件。共享及私有 source claim 的文件预览仅采用校验后的 binding cwd。FD `_persist` 单次追加一行，短写/异常使 runtime 永久 poison，部分写入不回滚；校验与追加不是原子文件系统/DB 事务。导出与备份使用前后校验的只读 FD 快照，不重新打开路径。SSE live/replay/heartbeat 共用当前写入 FD 的 size/mtime/ctime/path identity 与 poison 校验（无 runtime 时仅校验有界 header），检测到外部修改即撤销旧 runtime，不逐 delta 重读全文。
 
 SSE HTTP 层一次预取 output guard，在 heartbeat/live/replay 的每次 socket write 前同步检查。共享来源撤权关闭流并中止 runtime；私有 HTTP guard 不访问文件系统。检查不读取 JSONL full entries，路径政策失效不能只在 HTTP 入口拦截。
 

@@ -83,13 +83,15 @@ PI_EXTENSION_PATHS=/absolute/path/to/pi-extension
 
 列出项目或会话时发现原生 **v3** JSONL 并索引原件，依据已验证的 header 自动登记符合条件的 canonical 工作区（绝不反解目录名作为 cwd 授权）；默认 cwd 复用默认项目。不会直接暴露其他 owner 的私有会话或项目。原生会话默认对**所有通过网络准入的用户**共享，仍受现有路由 RBAC 约束；Web 新建会话继续按 owner 私有隔离。有写权限的用户可共同继续、控制或中止共享会话。API 新增可选 `visibility`（`shared`/`private`）与 `origin`（`native`/`managed`），旧客户端仍能 list/open。请求 ID 在共享会话内全局唯一并绑定操作者；其他用户复用会返回 `409`，不会收到对方的请求结果。
 
-不复制、不迁移旧格式、不删除源 JSONL。导出/预览按需读取。显示优先级为 Web 改名、最新原生 `session_info.name`、首条 prompt。发现最多缓存 128 个 cwd 的扫描结果 5 秒；标题元数据最多缓存 128 份按 stat 指纹区分的摘要，每个变化的源只读取不超过 1 MiB 的完整快照（摘要各限 512 字符）。更大历史的列表不提供标题/首条 prompt 回退；不会将截断扫描伪称最新标题。已登记的 private/managed 源路径不能被原生扫描认领。同一原件只对应一个 server session/runtime。逻辑删除为所有人登记持久墓碑，重启后不再发现。新建项目若 canonical cwd 重复（含符号链接别名和默认 cwd）返回 `409`；既有重复项目保留。
+发现不复制、迁移或删除源文件。同一原件只对应一个 server session/runtime；逻辑删除保留持久墓碑。显示优先级为 Web 改名、最新原生名称、首条 prompt。新建项目若 canonical cwd 重复（含符号链接别名和默认 cwd）返回 `409`；既有重复项目保留。
 
-`PI_SESSION_SHARE_EXCLUDE_CWDS` 与 `PI_EXTENSION_PATHS` 一样按逗号分隔、trim 并去除空项；未设置/为空不排除任何目录。填写存在的绝对目录，按 **canonical real cwd 精确匹配**，不是前缀。配置最多允许 64 项。排除路径不存在或不是目录则拒绝启动；启动时固定 canonical 目标，但路径消失、inode 替换或别名重定向仍使全部原生访问 fail closed。已索引操作、每次原生 append、SDK 发射和 SSE 实时/补发输出同步复查目录元数据，不读 JSONL。撤权会关闭存量事件流并 abort/dispose runtime。SSE 传输一次预取 `SessionService.prepareOutputGuard()`，每次 heartbeat/实时/补发写入前同步检查；私有事件流不获取文件系统 guard。修改配置后重启，原件保持不变。
+`PI_SESSION_SHARE_EXCLUDE_CWDS` 按逗号分隔、trim 并去除空项；未设置/为空不排除任何目录。填写最多 64 个存在的绝对目录，按 **canonical cwd 精确匹配**，不是前缀。无效配置拒绝启动；目录替换或别名重定向使共享访问 fail closed，包括活动事件流。修改后重启；私有会话访问与原件保留。
 
-`PI_SESSION_SOURCE_DIR` 可覆盖原生来源根目录。默认使用 CLI `PI_CODING_AGENT_DIR` 下的 `sessions`，否则为 `~/.pi/agent/sessions`；与服务端 `PI_AGENT_DIR` 和 `DATA_DIR` 独立。发现不会创建缺失来源目录；Web 新建私有会话按需创建目标目录。跳过源符号链接、坏 header、cwd 不匹配及非 v3 文件。原生恢复使用经验证的 `O_RDWR|O_APPEND|O_NOFOLLOW|O_NONBLOCK` 描述符，不 create/truncate，并使用 SDK `SessionManager.inMemory(cwd, undefined, entries)`。全部祖先拒绝符号链接，FD/path 必须匹配索引绑定的普通、单链接 inode 与 stat 指纹。SDK `_persist` 经数字 FD 单次追加一行 JSONL；短写/异常永久 poison runtime。禁止会话替换/重写，`getSessionFile()` 仅为元数据。导出读取前后校验的只读 FD 快照，不重新打开路径。`readNativeSourceSnapshot(source, binding, maxBytes?)` 提供经验证的原始 bytes、encoded 根目录相对源路径及身份/stat 元数据，供后续 archive 接入；只有 external-required 索引、缺少这些 JSONL bytes 不算完整原生备份。**不要同时使用 CLI 和服务操作同一原件：** 尚无跨进程锁。这不是抵御恶意本地同 inode 写入者的 sandbox，校验与 append/output 也不是原子的文件系统/DB 事务；部分写入的行不会回滚。macOS 本地 fixture、Node 22.19.0 下，0/8/64 项排除配置的 2,000 次 FD 输出检查约耗时 116/333/1,855 ms，JSONL 读写均为零；元数据成本随排除项数量增长。Web 新建会话使用同一来源根及原生 `--encodedcwd--/<timestamp>_<original-id>.jsonl` 布局，不再使用 server-ID 目录。它们仍按 owner 私有隔离（`managed` origin），分享排除 cwd 也可创建私有会话。文件出现前 DB 同时预约 canonical source path 与原始 Pi ID，排他创建后绑定 inode。创建失败和删除保留 source 墓碑，扫描不能将私有文件提升为共享。旧 server-ID 引用保持可读，不移动或迁移文件。`DATA_DIR` 仍默认 `~/.pi/agent`；覆盖它不会移动 source root，隔离部署须显式设置 `PI_SESSION_SOURCE_DIR`。首版 backup/restore 显式拒绝原生引用（也影响 migration/owner-transfer pre-backup），不会静默漏掉历史；启用前需另行安排原生来源备份。启动此版本前须离线 apply 新增 v2 migration，再重启；启动仍只 verify。实现待 review，不代表生产验收。
+`PI_SESSION_SOURCE_DIR` 是 CLI/Web 新建私有 JSONL 的统一根：默认 `PI_CODING_AGENT_DIR/sessions`，否则为 `~/.pi/agent/sessions`，独立于服务端 `PI_AGENT_DIR` 和 `DATA_DIR`。隔离存储须显式设置。Web 新建会话使用原生 encoded-cwd 布局，但保持 private/managed，包括分享排除 cwd；旧 server-ID 引用继续可读，不移动文件。source claim 与墓碑防止私有文件被重新发现为共享。**不要同时使用 CLI 和服务操作同一原件：** 尚无跨进程锁。FD 校验与追加边界见[架构](docs/architecture.md)。
 
-项目发现每次请求最多推进 100 个目录/header 条目，每轮最多 4096 个顶层条目、每目录 4096 个条目；完整扫描缓存 5 秒，重复请求继续推进游标。自动项目由系统管理，不归首个查看者所有；发现不会授予写权限。无效、排除、私有已认领、仅剩墓碑的工作区不创建项目。`GET /v1/projects` 仅列出当前操作者至少可见一个会话的项目（默认项目也过滤），不会删除已存项目或文件；`canDelete` 表示项目所有权。可选 `canCreateSession` 同时体现路由 RBAC 和项目访问资格：有写权限的操作者，即使不是项目 owner，也可在当前策略允许可见共享会话或自己已有私有会话的项目中新建归属于自己的私有会话。其他操作者不能访问这些会话及其附件。项目完全没有当前操作者可见会话时，非 owner 不能新建或上传；exclude 撤销共享入口，但保留通过自己私有会话的访问。项目改名/删除仍仅限 owner；Web 按此创建能力控制，不改投默认 cwd。默认发现归属以当前配置的 `AGENT_CWD` 为准，而非 DB 保留的旧默认行。cwd 从 A 改为 B 后，已索引的共享 native A 会话仅通过索引元数据原子调整到独立的 canonical A 项目；会话 ID 与原始文件不变，B 绑定默认项目。既有私有 A 会话不重新归属或迁移；runtime cwd 身份检查仍强制执行，不兼容的继续操作会安全拒绝。显式创建项目仍返回空项目，Web 在内存保留该草稿以发送首条消息。列表为空时 Web 仍可向 `DEFAULT_PROJECT_ID` 首次发送，不显示空默认项目下拉条目。
+备份包含已登记原生/私有来源的真实 bytes 与墓碑，不只是索引；活动原件缺失或无效即 fail closed。恢复须显式设置原生目标根和 identity cwd mapping，绝不覆盖文件。中断恢复需核验清理后重做，见[备份与恢复](docs/backup-restore.md)。重启前离线 apply 新增数据库 v2 migration；启动仍只 verify。
+
+自动发现将已验证、符合条件的工作区登记为系统管理项目。`GET /v1/projects` 仅列出当前操作者可见会话的项目，默认项目也过滤；不删除已存项目或文件。有写权限的操作者可在共享项目中新建自己的私有会话（`canCreateSession`），不会取得项目修改或其他操作者附件的访问权。exclude 撤销共享入口，但保留通过自己私有会话的访问。项目改名/删除仍仅限 owner。显式创建返回空草稿，Web 保留它以发送首条消息；空列表仍可向默认项目首次发送。归属与存储规则见[数据库设计](docs/database-design.md)。
 
 ### Web UI
 可选独立 Web UI 通过 `pnpm web` 启动。
@@ -114,7 +116,7 @@ PI_EXTENSION_PATHS=/absolute/path/to/pi-extension
 | `PATCH` | `/v1/sessions/:id/config` | 修改模型/思考配置 |
 | `POST` | `/v1/sessions/:id/messages` | 提交提示词（必须提供 `requestId`） |
 | `GET` | `/v1/sessions/:id/events` | SSE；viewer 对无 live runtime 的会话收到 `204`。所有与 turn 相关的事件都携带产生它们的 `requestId`（`text_delta`、`thinking_delta`、`tool_start`、`tool_update`、`tool_end`、`status`、`usage`、`queued`、`error`、`completed`、`aborted`） |
-| `POST` | `/v1/sessions/:id/steer` | 引导运行中的任务 |
+| `POST` | `/v1/sessions/:id/steer` | 引导运行中的任务；带关联身份的请求返回空 `202`，消费由 SSE 确认，HTTP 准入不代表消费。见[消费确认](docs/steering-confirmation.md) |
 | `POST` | `/v1/sessions/:id/follow-ups` | 排队追加 follow-up |
 | `POST` | `/v1/sessions/:id/abort` | 中止该会话当前正在执行的任务。请求体可以不填；如果填写，必须是 `{ "requestId": "..." }`，只有任务的请求 ID 与它一致时才会中止。ID 不匹配则返回 `409`，任务继续运行。 |
 | `GET` | `/v1/sessions/:id/export` | 只读消息快照；绝不创建 runtime |
@@ -124,7 +126,7 @@ PI_EXTENSION_PATHS=/absolute/path/to/pi-extension
 
 - v1 请求、响应和 SSE 字段见 [OpenAPI 规范](openapi/v1.json)；客户端可从 `pi-agent-server/contract` 导入对应类型。插件路由及其字段由各插件独立定义，见[插件接入说明](docs/plugin-integration.md)。现有 v1 行为和字段保持兼容；可新增可选内容，破坏性变更需使用新版本。
 - `GET /v1/access` 只返回 `{ canRead, canWrite }`：分别表示用户能否使用只读功能、提交或控制任务。`GET /v1/capabilities/<plugin-id>/access` 返回当前用户能使用该插件的哪些功能。权限配置见 [IP 访问控制](docs/ip-rbac-design.md)。
-- 每次有意提交消息使用唯一 `requestId`，确保重试不会重复处理。同一服务进程运行期间，复用 ID 但提交不同内容会返回 `409`；此检查仅限进程内，重启后不保证识别内容变化。消息图片支持 PNG、JPEG 和 WebP，服务不会压缩图片。
+- 每次有意提交消息使用唯一 `requestId`。持久化 fingerprint 在重启后仍以 `409` 拒绝内容变化；无 fingerprint 的旧记录不保证该检查。共享会话的 ID 还绑定操作者。消息图片支持 PNG、JPEG 和 WebP，服务不会压缩图片。非图片上传需显式配置存储与配额，见[附件上传](docs/attachment-uploads.md)。
 - `file-preview` 的路径相对于会话的受信项目目录，不能读取目录外文件。没有保存目录快照的旧会话无法使用预览；请新建会话。
 
 ## 访问控制
@@ -152,7 +154,7 @@ export PI_ALLOWED_CLIENT_CIDRS=127.0.0.0/8,10.0.0.0/8
 | --- | --- | --- |
 | `PORT` | `8080` | HTTP 端口 |
 | `HOST` | `127.0.0.1` | 绑定地址 |
-| `DATA_DIR` | `~/.pi/agent` | JSONL、服务 agent 目录和默认 SQLite 位置 |
+| `DATA_DIR` | `~/.pi/agent` | 服务数据、旧布局 JSONL 与默认 SQLite 位置；不覆盖统一会话来源根 |
 | `PI_SESSION_SOURCE_DIR` | CLI agent 目录 + `/sessions` | CLI/Web 新建私有 JSONL 的统一根；独立于 `DATA_DIR`/服务端 `PI_AGENT_DIR`；隔离存储须显式覆盖 |
 | `PI_SESSION_SHARE_EXCLUDE_CWDS` | 未设置（共享所有符合条件的项目） | 逗号 split/trim/去空项；精确 canonical cwd 排除；无效目录 fail closed；修改后重启 |
 | `DB_PATH` | `<DATA_DIR>/pi-agent-server.db` | SQLite 文件 |
@@ -165,8 +167,8 @@ export PI_ALLOWED_CLIENT_CIDRS=127.0.0.0/8,10.0.0.0/8
 | `PI_DEFAULT_MODEL` | 未设置 | `provider/modelId` |
 | `PI_DEFAULT_THINKING_LEVEL` | Pi 默认值 | `off` 至 `max` |
 | `PI_SYSTEM_PROMPT` | Pi 默认提示词 | 可选的系统提示词整体覆盖；保留既有语义 |
-| `PI_APPEND_SYSTEM` | 未设置 | 追加系统提示词原文，**不是文件路径**；未设置、空串或纯空白不追加，有效多行文本保留原始空白。顺序：Pi 默认或 `PI_SYSTEM_PROMPT` 整体覆盖 → 此原文 → `PI_APPEND_SYSTEM_FILE` 原文 → capability fragments（能力片段）。程序化等价配置为 `StartConfig.appendSystemPrompt`。修改后需重启服务并新建会话；已有冻结提示词按字面量恢复，不再次追加。仍禁用 `APPEND_SYSTEM.md` 自动发现。 |
-| `PI_APPEND_SYSTEM_FILE` | 未设置 | 显式 UTF-8 提示词文件；程序化等价配置为 `StartConfig.appendSystemPromptFile`。未设置、空串或纯空白路径不读取；路径首尾空白会去除。支持绝对路径；相对路径基于服务启动时的 `process.cwd()`，**不是** `AGENT_CWD` 或项目 cwd；不展开 `~`。启动时仅读取一次，所有新项目/会话提示词复用同份文本（cwd 或磁盘内容变化不重读）。保留多行空白；空/纯空白内容不追加。不存在、不可读、目录/非普通文件或非法 UTF-8 均拒绝启动，错误含变量名/路径，不含文件正文。顺序：默认/整体覆盖 → 原文 → 文件原文 → 能力片段。不自动发现 `APPEND_SYSTEM.md`。文件/配置修改须重启**并新建会话**；冻结会话不再次追加。 |
+| `PI_APPEND_SYSTEM` | 未设置 | 追加系统提示词原文，**不是路径**；空白不追加。先于文件原文和能力片段追加。修改后重启并新建会话；见 [SDK 提示词边界](docs/pi-sdk-api.md#35-资源加载与系统提示词安全边界)。 |
+| `PI_APPEND_SYSTEM_FILE` | 未设置 | 显式 UTF-8 文件，启动仅读一次；相对路径基于服务启动 cwd，不展开 `~`。无效文件拒绝启动。修改后重启并新建会话；冻结提示词不变。不自动发现 `APPEND_SYSTEM.md`。 |
 | `TOOLS` | 允许全部工具 | 逗号分隔的完整白名单，包含扩展/插件工具；未设置、为空/空白或仅逗号均视为未配置（允许全部）。例如 `read,ls,find,grep` 排除执行/写入工具。程序化 `StartConfig.tools=[]` 禁用全部工具，与环境变量空字符串不同。 |
 | `PI_PLUGINS` | 未设置 | 逗号分隔的显式加载、受信任同进程 ESM specifier；可以是包名，也可以是构建产物入口的绝对路径（裸机部署用后者，因为 `pnpm link` 在重建 `node_modules` 后不保留）；不扫描目录或 `.pi` |
 | `PI_EXTENSION_PATHS` | 未设置 | 显式加载 Pi SDK 扩展的主变量，逗号分隔（绝对路径或 `~/…`）；不自动发现，无效路径或加载失败即拒绝启动。`PI_PROVIDER_EXTENSION_PATHS` 为已弃用兼容 alias：去除空白与空项后，仅旧变量得到非空列表时在路径校验前警告；两个变量都得到非空列表则拒绝启动 |

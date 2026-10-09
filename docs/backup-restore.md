@@ -14,11 +14,11 @@
 
 ### 原生共享内容归档（v2 migration）
 
-`DATA_DIR=~/.pi/agent` 可以与 Pi CLI 共用 `sessions/--cwdencoded--/*.jsonl`，不转换成 managed/server-id 布局。SQLite/PostgreSQL backup（含 migration/owner-transfer pre-backup）保存冻结 DB 中完整 `native_session_sources` 索引及墓碑。活动 claim 必须通过安全同 FD 的 `readNativeSourceSnapshot` 获取实际完整 v3 JSONL bytes，逐条归档到 `payload/native/<encoded-cwd>/<filename>.age`，manifest 标为 `archived` 并绑定相对路径、payload、plaintext/ciphertext hash 与 size；墓碑标为 `tombstone`，不读取已删除原件。原件缺失、allowroot 外路径、替换 inode、cwd/header/id 不符、symlink/hardlink 或不完整历史均拒绝发布，不降级成 external-required 或 missing-as-empty。
+`DATA_DIR=~/.pi/agent` 可以与 Pi CLI 共用 `sessions/--cwdencoded--/*.jsonl`，不转换成 managed/server-id 布局。SQLite/PostgreSQL backup（含 migration pre-backup）保存冻结 DB 中完整 `native_session_sources` 索引及墓碑。活动 claim 必须通过安全同 FD 的 `readNativeSourceSnapshot` 获取实际完整 v3 JSONL bytes，逐条归档到 `payload/native/<encoded-cwd>/<filename>.age`，manifest 标为 `archived` 并绑定相对路径、payload、plaintext/ciphertext hash 与 size；墓碑标为 `tombstone`，不读取已删除原件。原件缺失、allowroot 外路径、替换 inode、cwd/header/id 不符、symlink/hardlink 或不完整历史均拒绝发布，不降级成 external-required 或 missing-as-empty。
 
 备份是独立的 **admin 离线数据备份 scope**，不是共享会话读权限：从固定 `PI_SESSION_SOURCE_DIR`（默认 `PI_CODING_AGENT_DIR/sessions` 或 `~/.pi/agent/sessions`）只读取冻结索引中注册的路径，始终验证原授权 binding 的 cwd/dev/ino/sourceId/sourceDev/sourceIno。它不应用 `PI_SESSION_SHARE_EXCLUDE_CWDS`，所以排除共享读取后仍可备份/迁移；不修改运行时 policy，不开放网络访问，不扫描/迁移整个原生库。判别依据是冻结 source claim，而不只看 format：新 Web 私有会话仍为 `pi-jsonl-v3`，但 `binding.private=true` 且 `visibility=private/origin=managed`，同样走 safe-FD 归档、恢复 encoded-cwd 布局并保留 private marker，绝不变成 scanner 可导入的 shared claim。无 claim 的历史 managed 布局走旧兼容路径；无历史的 managed NULL ref 保持 NULL。活动 private reservation 若 ref 为 NULL 或 inode 尚未落实，拒绝完整备份，要求先停 writer 并处理未完成 reservation，不伪造历史。
 
-库 API 调用须在 backup paths 注入 `nativeSourceRoot`；工厂/服务授权仍由运行时自行构造，不能复用备份 scope。未注册原生文件不是本 DB bundle 的接受面。
+当前 owner-transfer CLI 未接线 `nativeSourceRoot`，有活动 source claim 时其 pre-backup 失败，不能执行转移；仅设置环境变量不能补齐该接线。库 API 调用须在 backup paths 注入 `nativeSourceRoot`；工厂/服务授权仍由运行时自行构造，不能复用备份 scope。未注册原生文件不是本 DB bundle 的接受面。
 
 恢复必须显式配置 `PI_RESTORE_NATIVE_SOURCE_ROOT` 及 `PI_RESTORE_NATIVE_CWD_MAP`（JSON object，例如 `{"/canonical/project":"/canonical/project"}`）。每个活动 binding.cwd 要映射到当前存在的 canonical directory；当前只支持 identity mapping，避免改写原始 header.cwd/bytes，不支持跨路径 cwd 迁移。header.cwd 可以保留 `/project/.` 等备份已接受的写法，但恢复时仍须 realpath 到映射目录且 dev/ino 相符；原 cwd 不存在或任意跨路径映射仍拒绝。目标仅由当前配置的 source root、validated cwd 的 encoded directory 和安全文件名生成，包内绝对 source_path/binding 仅用于冻结 DB 对照，不是写入能力。完整验证后以私有 staging 文件的当前 inode 构造新 binding 和原生引用；墓碑保留且旧 inode authority 失效。已有目标（即使内容相同）拒绝覆盖；symlink/traversal/未认领 payload 拒绝。旧 `external-required` metadata 可识别，但缺归档内容的包拒绝完整恢复，不冒充历史恢复成功。
 
@@ -102,7 +102,7 @@ PI_DATABASE_URL=postgresql://...
 
 ### 4.1 宿主 SQLite 正式定时备份（systemd oneshot + timer，参数化）
 
-本节给出**通用**的宿主 SQLite 在线定时备份运维流程：与 [operations.md](operations.md) 使用同一个 `agent-server` 服务账号、同一份 `DATA_DIR`/`DB_PATH` 与源码目录（root 拥有、服务账号只读），不绑定任何具体插件、主机、网段或仓库内一次性脚本，也不要求停服。插件或扩展数据可能有各自的备份链路，不属于本流程。以下路径/账号沿用 operations.md 的示例值，**正式值须先按 §1 由运维确认**，确认前不得当作默认值。
+本节给出**通用**的宿主 SQLite 定时备份模板：与 [operations.md](operations.md) 使用同一个 `agent-server` 服务账号、同一份 `DATA_DIR`/`DB_PATH` 与源码目录（root 拥有、服务账号只读）；活动 source claim 的稳定性要求见步骤 4。插件或扩展数据可能有各自的备份链路，不属于本流程。以下路径/账号沿用 operations.md 的示例值，**正式值须先按 §1 由运维确认**，确认前不得当作默认值。
 
 前置条件：
 
@@ -153,6 +153,8 @@ DB_PATH=/var/lib/pi-agent-server/pi-agent-server.db
 PI_STORAGE_DIALECT=sqlite
 PI_AGENT_DIR=/var/lib/pi-agent-server/agent
 PI_AUTH_PATH=/var/lib/pi-agent-server/agent/auth.json
+# 与服务配置使用同一来源根（独立于 DATA_DIR/PI_AGENT_DIR）：
+PI_SESSION_SOURCE_DIR=/var/lib/pi-agent-server/sessions
 PI_BACKUP_STAGING_ROOT=/srv/pi-agent-backup-staging
 # 有非图片上传时另由部署者填入与服务同一、经核验的绝对原件目录：
 # PI_UPLOAD_STORAGE_ROOT=/absolute/private/upload-root
@@ -188,7 +190,7 @@ ExecStart=<NODE_BIN_ABSOLUTE> /srv/pi-agent-server/dist-backup/scripts/backup.js
 
 - `ExecStart` 必须直接调用固定 Node 绝对路径与 `dist-backup/scripts/backup.js create`，并显式传入绝对 `--backup-root` 与 `--age-recipient-file`；不经过任何包装、下载或网络脚本。
 - `Type=oneshot`、`Restart=no`：失败不自动重试，由人工处理（见步骤 7）。
-- SQLite 备份使用在线 `VACUUM INTO` 快照，**无需停服**；但一次运行只保证单个 logical DB/schema + `DATA_DIR` 的自身一致性，**不承诺**与插件或扩展数据之间的跨组件原子一致点。
+- SQLite 备份使用在线 `VACUUM INTO` 快照，managed 旧布局无需停服。存在活动 source claim 时，源文件变化会使安全 FD 校验失败；需要稳定完整备份时停止所有相关 writer（包括 CLI）。不承诺 DB 与 JSONL 或插件/扩展数据的跨存储原子一致点。
 - 若需要防重入，可让 `ExecStart` 经 `flock` 指向服务账号可写路径的锁文件（例如 `/run/pi-agent-server/backup.lock`）；这不是正确性前提，timer 与 oneshot 本身已避免并发启动同一 unit。
 
 步骤 5 — timer（每 12 小时，localtime）：
@@ -261,7 +263,7 @@ Migration CLI 有两条互斥路径：
 
 ### 5.1 完全空目标建立 canonical 迁移 head
 
-完全空 SQLite DB 或完全空 non-public/non-system PostgreSQL schema，须离线建立完整的 v0→v1 head：
+完全空 SQLite DB 或完全空 non-public/non-system PostgreSQL schema，须离线建立完整的 v0→v1→v2 head：
 
 ```bash
 pnpm migrate -- --bootstrap-baseline --bootstrap-confirm CONFIRMED
@@ -269,9 +271,9 @@ pnpm migrate -- --bootstrap-baseline --bootstrap-confirm CONFIRMED
 
 `--bootstrap-baseline` 不可混用 `--backup-root`、`--age-recipient-file`、`--maintenance-window` 等 backup/maintenance 参数，也不会创建 pre-backup。它建立已认证的完整迁移 head；完成后先执行 `--verify`，服务启动仍只接受 verify。
 
-### 5.2 已有 v0 前缀的增量 apply
+### 5.2 已有 canonical 前缀的增量 apply
 
-`--apply` 在已有已认证 v0 前缀的数据库上增量迁移到 v1。正式顺序为 **pre-backup → apply → verify**：
+`--apply` 将已有已认证 v0 或 v0→v1 前缀增量迁移到当前 v2 head。正式顺序为 **pre-backup → apply → verify**：
 
 1. 在窗口前用最近可用备份完成隔离恢复演练；
 2. 停服务并独立确认无 writer；
@@ -302,7 +304,7 @@ pnpm restore -- restore \
 - 先在明确隔离的新目标上执行，禁止覆盖源数据库、正式 schema 或正式 `DATA_DIR`。
 - SQLite restore 写入新的绝对 target root；PostgreSQL restore 需要明确的 disposable empty database/schema，拒绝 `public` 和系统 schema。
 - **跨主机源元数据（仅 SQLite）**：manifest 的 `sourceRoots` 是备份主机记录的元数据，只用于与 target 的重叠校验，恢复时从不写入。因此这三个已认证源引用允许包含 symlink 分量（例如 Linux `/home/<user>/...` 在 macOS 上经由 `/home` 系统 symlink 别名解析），并在词法（lexical）与物理（physical，realpath）两种形态下与 target 双向比对，任一重叠即 fail-fast。源引用仍拒绝非绝对路径、NUL 字节和 `.`/`..` 分量；最近存在的祖先只允许 ENOENT 继续上溯，dangling symlink、symlink loop、权限失败或 ENOTDIR 一律 fail-closed。input/target/identity 仍执行严格的无 symlink 祖先策略。该放宽仅限 SQLite；PostgreSQL restore 保持原有严格策略。
-- restore 不自动迁移；包须携带已认证 v0 或 v0→v1 前缀，未知、错序或不匹配的 ledger 在解密/staging 前 fail-fast。含上传文件元数据却缺原件的 v1 包不可恢复；v2 包逐项校验加密原件，源库文件缺失或不稳定时拒绝发布。完全空目标可用于隔离 restore；`--bootstrap-baseline` 不创建 pre-backup，也不生成可恢复的 backup package。
+- restore 不自动迁移；包须携带已认证 v0、v0→v1 或 v0→v1→v2 前缀，未知、错序或不匹配的 ledger 在解密/staging 前 fail-fast。含上传文件元数据却缺原件的 v1 包不可恢复；v2 包逐项校验加密原件，源库文件缺失或不稳定时拒绝发布。完全空目标可用于隔离 restore；`--bootstrap-baseline` 不创建 pre-backup，也不生成可恢复的 backup package。
 - age identity 由运维在执行时提供。一次成功解密和恢复演练是“私钥可用”的必要证据。
 - 目标 missing/invalid-as-empty 语义见 §2，恢复行为以该表为准。
 

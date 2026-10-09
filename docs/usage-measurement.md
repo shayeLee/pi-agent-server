@@ -49,7 +49,7 @@ type UsageSnapshot = {
 - `scope: allEntries` 与 sessionTotals 一致：当前授权 session 文件所有分支，不随 active-leaf 导航减计数；用 loopId / turnId 去重，复制的相同记录不重复计。SDK fork 复制的祖先路径只继承其中仍存在的记录，原文件未复制的其他分支不随 fork 继承。HTTP messages/timeline 仍仅当前分支；**工具次数和用户消息详情仍是当前已加载分支**，不是服务端全会话计数。
 - `complete`：从空会话开始记录，totalLoops/totalTurns 是权威累计，新会话确实空为 0。`unknown`：老历史无记录、缺乏 manager 能力或持久化异常，数字为 null。`recorded`：有新记录但旧历史存在缺口，**totalLoops/totalTurns 始终 null**，recordedLoops/recordedTurns 仅表示已记录范围；详情明确“已记录范围 / 全历史未知”，不假装全历史已补齐。不能从相同文本、用户消息数或恢复的 assistant 数反推历史真实执行。
 - SSE status 和结算 usage 推送的是**总量快照**（optional 兼容旧 server），不是前端增量；客户端仍先校验 activeRequestId，重复快照幂等，已知 recorded 高水位不被旧 SSE / cachedcursor / export 快照降低。export 恢复计数到同一 session store，其他 session 不共用；同一文件重启恢复集合后继续累计。
-- 持久性沿用 SDK SessionManager 的 JSONL append。SDK 尚无任何 user/assistant 的纯空文件会延迟 flush（包括 custom-only 开始的极端场景），不直接绕过 SDK 写文件，不引入 DB migration；正常用户任务第一条 user message 会触发 flush，后续 idle custom task 在既有 conversation 文件立即追加。磁盘写入失败返回 unknown，不承诺 fsync 级抗断电，也不恢复被中断进程的运行状态。
+- 计数通过 SessionManager custom entry 持久化，不新增 DB migration。source claim 由宿主 FD `_persist` 立即追加，包括 custom-only；旧 managed 路径仍受 SDK 延迟 flush 影响。持久化失败计数返回 unknown，FD 写入失败还会 poison runtime；不承诺 fsync 级抗断电或恢复中断的运行状态。
 - 默认单行 `1轮 · 3 turn · 工具2次`；缺失字段为 `—轮 · — turn`，不回退 user count。已记录范围、全量数字和解释收进 tooltip / modal，不在主栏新增长标签或换行。手机只略调密度，保留速度。
 
 ## 响应计时与生命周期

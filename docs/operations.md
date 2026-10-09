@@ -99,6 +99,8 @@ PI_DATA_MODE=managed
 PI_ALLOWED_CLIENT_CIDRS=127.0.0.0/8,<user-cidr-1>,<user-cidr-2>
 PI_AGENT_DIR=/var/lib/pi-agent-server/agent
 PI_AUTH_PATH=/var/lib/pi-agent-server/agent/auth.json
+# CLI/Web 新建 JSONL 的统一根；不由 DATA_DIR 或 PI_AGENT_DIR 改写
+PI_SESSION_SOURCE_DIR=/var/lib/pi-agent-server/sessions
 PI_DEFAULT_MODEL=<provider>/<modelId>
 PI_DEFAULT_THINKING_LEVEL=medium
 # 可选：为指定 IP 设置管理员、只读等权限；先创建下面的 JSON 文件，再取消下一行注释
@@ -162,8 +164,8 @@ runuser -u agent-server -- env \
 
 - `--bootstrap-baseline --bootstrap-confirm CONFIRMED` 是**唯一**建立 canonical baseline 的写入命令；不可混用 backup/maintenance 参数，也不会创建 pre-backup。它要求目标完全为空；对已有库重跑会 fail-closed。
 - 手工命令**只显式传** `AGENT_CWD`/`DATA_DIR`/`DB_PATH`/`PI_MIGRATION_GATE`，值与 `server.env` 一致；不要 source env 文件。
-- migration CLI 要求 `AGENT_CWD` 为绝对路径；入口是 `dist-migrate/scripts/migrate.js`（`bin.pi-agent-server-migrate`）。
-- 空库是唯一例外：后续 schema 升级**禁止**再跑 bootstrap，必须走 [backup-restore.md §5.2](backup-restore.md#52-已有唯一-canonical-baseline-的-apply) 的 pre-backup → `--apply` → `--verify`。
+- migration CLI 要求 `AGENT_CWD` 为绝对路径；入口是 `dist-migrate/scripts/migrate.js`（`bin.pi-agent-server-migrate`）。从源码运行 `pnpm migrate` 不自动加载 `.env.local`，需显式提供与服务相同的环境；未设置/空白 `DATA_DIR` 同样默认 `~/.pi/agent`。
+- 空库是唯一例外：后续 schema 升级**禁止**再跑 bootstrap，必须走 [backup-restore.md §5.2](backup-restore.md#52-已有-canonical-前缀的增量-apply) 的 pre-backup → `--apply` → `--verify`。
 
 ### 7. systemd unit
 
@@ -244,7 +246,7 @@ curl -fsS http://127.0.0.1:8080/readyz          # {"ready":true,"migrationGate":
 1. `systemctl stop pi-agent-server.service`，并独立确认没有其他 writer（单实例：每个 DB + `DATA_DIR` 只允许一个实例）。
 2. 按 [backup-restore.md](backup-restore.md) 做加密备份。`--apply` 强制要求绝对 `--backup-root` 与 `--age-recipient-file`，因此升级路径必须先具备加密备份能力；未配置备份/加密时，先完成该能力配置再升级。
 3. 准备并部署**目标版本**的服务与 migration 产物（`pnpm build`、`pnpm build:migrate`）；可提前在独立发布目录构建，不能让旧版本 migration 工具代替目标版本。此时服务仍保持停止。
-4. 使用**目标版本**的离线入口执行 `--dry-run` 审核 → 必要时 `--apply`（内部先创建并验证 pre-migration 加密备份）→ `--verify`，命令与边界见 [backup-restore.md §5.2](backup-restore.md#52-已有唯一-canonical-baseline-的-apply)。如无 schema 变化则仅验证，不多做迁移。
+4. 使用**目标版本**的离线入口执行 `--dry-run` 审核 → 必要时 `--apply`（内部先创建并验证 pre-migration 加密备份）→ `--verify`，命令与边界见 [backup-restore.md §5.2](backup-restore.md#52-已有-canonical-前缀的增量-apply)。如无 schema 变化则仅验证，不多做迁移。
 5. `systemctl start pi-agent-server.service`，重新检查 `/health`、`/readyz`。
 
 禁止对已有库重跑 `--bootstrap-baseline`；该命令只用于完全空库。
@@ -303,13 +305,13 @@ export PI_ALLOWED_CLIENT_CIDRS=127.0.0.0/8
 pi-agent-server
 ```
 
-本地 PostgreSQL 环境示例见 [postgres-podman-test.md](postgres-podman-test.md)。后续 schema 升级不要再次运行 `pi-agent-server-migrate --bootstrap-baseline --bootstrap-confirm CONFIRMED`；应按 [backup-restore.md §5.2](backup-restore.md#52-已有唯一-canonical-baseline-的-apply) 执行 pre-backup、`--apply` 和 `--verify`。
+本地 PostgreSQL 环境示例见 [postgres-podman-test.md](postgres-podman-test.md)。后续 schema 升级不要再次运行 `pi-agent-server-migrate --bootstrap-baseline --bootstrap-confirm CONFIRMED`；应按 [backup-restore.md §5.2](backup-restore.md#52-已有-canonical-前缀的增量-apply) 执行 pre-backup、`--apply` 和 `--verify`。
 
 ## 部署边界
 
 - 每个 logical SQLite DB / PostgreSQL schema 及其 `DATA_DIR` 只支持一个 pi-agent-server 实例；不支持共享同一存储的多副本或重叠滚动升级，架构约束见 [architecture.md](architecture.md)。
 - 备份根路径、age 密钥、异地边界、RPO/RTO、保留期和恢复演练要求以 [backup-restore.md](backup-restore.md) 为准。
-- DELETE 会在数据库事务中写入 `file_operations` outbox；当前没有 worker、unlink 或 quarantine，物理 JSONL 不会被删除。
+- 旧 managed 引用 DELETE 写入 `file_operations` outbox；source claim 只保留索引墓碑。当前没有物理清理 worker，JSONL 不会被删除。
 
 <details>
 <summary>非当前生产方案：未来主服务 Podman 部署前置条件</summary>
