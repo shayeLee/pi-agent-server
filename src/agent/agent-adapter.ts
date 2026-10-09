@@ -37,7 +37,9 @@ export interface AgentAdapter {
 
   /** 流式生成中插入指令（POST /v1/sessions/:id/steer）。 */
   steer(text: string, input?: import("../shared/steering.js").SteeringInput): Promise<void>;
-  subscribeSteeringConsumed?(listener: (identity: import("../shared/steering.js").SteeringIdentity) => void): () => void;
+  subscribeSteeringConsumed?(listener: (identity: import("../shared/steering.js").SteeringConsumed) => void): () => void;
+  /** Deferred request-owned adapter failures; must never be routed to a later request. */
+  subscribeRequestError?(listener: (error: Error, requestId: string) => void): () => void;
 
   /** 流式生成中追加指令（POST /v1/sessions/:id/follow-ups）。 */
   followUp(text: string): Promise<void>;

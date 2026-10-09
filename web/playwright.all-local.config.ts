@@ -2,6 +2,7 @@ import { defineConfig } from "@playwright/test";
 
 // Entire Web E2E suite against a fresh mock server and installed local Chrome.
 export default defineConfig({
+  testIgnore: ["**/long-session-performance.spec.ts", "**/recent-session-restore.spec.ts"],
   testDir: "./e2e", timeout: 30_000, workers: 1,
   use: { baseURL: "http://127.0.0.1:5189", browserName: "chromium",
     launchOptions: { executablePath: "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" } },

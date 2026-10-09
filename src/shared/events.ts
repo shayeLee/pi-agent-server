@@ -31,7 +31,7 @@ export type ModelOutputProgress = {
 export type SseRequestId = { readonly requestId?: string };
 export type SseEvent =
   | NotificationEvent
-  | ({ type: "steering_consumed" } & import("./steering.js").SteeringIdentity)
+  | ({ type: "steering_consumed" } & import("./steering.js").SteeringConsumed)
   | ({ type: "model_output_progress" } & ModelOutputProgress & SseRequestId)
   | ({ type: "text_delta"; text: string } & SseRequestId)
   | ({ type: "thinking_delta"; text: string } & SseRequestId)

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import { imageDataUrl, readMessageImages } from "../message-images.js";
 import type { TimelineItem } from "pi-agent-server/client";
 import { Markdown } from "./Markdown.js";
@@ -9,7 +9,7 @@ export type MessageItemProps = {
   item: Extract<TimelineItem, { kind: "message" | "thinking" }>;
 };
 
-export function MessageItem({ item }: MessageItemProps) {
+export const MessageItem = memo(function MessageItem({ item }: MessageItemProps) {
   const [preview, setPreview] = useState<string | null>(null);
   const dialogRef = useRef<HTMLDialogElement>(null);
   useEffect(() => { if (preview) dialogRef.current?.showModal(); }, [preview]);
@@ -54,4 +54,4 @@ export function MessageItem({ item }: MessageItemProps) {
       </div>
     </div>
   );
-}
+});

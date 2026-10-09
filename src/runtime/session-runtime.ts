@@ -131,6 +131,7 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
   private readonly observability?: ObservabilityPort;
   private readonly unsubscribe: () => void;
   private readonly unsubscribeSteering: () => void;
+  private readonly unsubscribeRequestError: () => void;
   private readonly steeringAdmissions = new Map<string, { actorKey: string; fingerprint: string;
     identity: import("../shared/steering.js").SteeringIdentity; consumed: boolean; promise: Promise<ControlDecision> }>();
   private readonly unsubscribeNotifications: () => void;
@@ -199,6 +200,16 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
     this.observability = options.observability;
     this.unbindSubagentTransport = this.adapter.bindSubagentHostTransport?.({ post: payload => this.postNotification(payload) }) ?? (() => {});
     this.unsubscribe = this.adapter.subscribe((event) => this.handleSdkEvent(event));
+    this.unsubscribeRequestError = this.adapter.subscribeRequestError?.((error, requestId) => {
+      if (this.disposed || this.currentRequestId !== requestId || this.taskState !== "streaming") return;
+      // A native persistence failure leaves uncertain disk/in-memory state. Fail closed,
+      // with the normal request-keyed terminal path, never auto-retry model-visible input.
+      this.poisoned = true;
+      this.cancelReleaseNotifications();
+      const key = this.currentKey!;
+      void this.settle("error", error.message, key).catch(() => {});
+      try { void this.adapter.abort().catch(() => {}); } catch { /* Poison already prevents reuse. */ }
+    }) ?? (() => {});
     this.unsubscribeSteering = this.adapter.subscribeSteeringConsumed?.(identity => {
       const admission = this.steeringAdmissions.get(identity.controlId);
       if (this.disposed || this.aborting || this.currentRequestId !== identity.requestId ||
@@ -228,6 +239,7 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
     this.unbindSubagentTransport();
     this.unsubscribe();
     this.unsubscribeSteering();
+    this.unsubscribeRequestError();
     this.unsubscribeNotifications();
     this.unsubscribeOutputProgress();
     this.unsubscribeFailbackLifecycle();

@@ -60,6 +60,7 @@ describe("PiAgentAdapter（接入真实 AgentSession 的适配层）", () => {
     } });
     const adapter = new PiAgentAdapter(session);
     const consumed: unknown[] = [];
+    await adapter.prompt("primary"); // Establish the request lifecycle owning the queued steering.
     adapter.subscribeSteeringConsumed(identity => consumed.push(identity));
     const first = { controlId: "one", acknowledgementId: "token", requestId: "primary", images: [{ mediaType: "image/png", base64: "aGVsbG8=" }] };
     await adapter.steer("same", first);

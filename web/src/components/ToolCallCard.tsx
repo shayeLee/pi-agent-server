@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import { ToolStatusIcon } from "./ToolStatusIcon.js";
 import { Icon } from "./Icon.js";
 import { Modal } from "./Modal.js";
@@ -15,7 +15,7 @@ export { rawToolData, stringify } from "../tools/raw.js";
  * tool_start → 创建（done=false，展示 args）；tool_update → 流式 partialResult；
  * tool_end → 展示 result 并标记完成（done=true）。
  */
-export function ToolCallCard({ call }: { call: ToolCall }) {
+export const ToolCallCard = memo(function ToolCallCard({ call }: { call: ToolCall }) {
   const [expanded, setExpanded] = useState(!call.done);
   const userToggled = useRef(false);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -128,4 +128,4 @@ export function ToolCallCard({ call }: { call: ToolCall }) {
       </Modal>
     </div>
   );
-}
+});

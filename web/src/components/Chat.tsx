@@ -1,9 +1,8 @@
 import { useLayoutEffect, useRef, useState } from "react";
 import { Icon } from "./Icon.js";
 import type { ChatState, ModelInfo, Project, SessionRecord, UsageStats } from "pi-agent-server/client";
-import { NotificationItem } from "./NotificationItem.js";
-import { MessageItem } from "./MessageItem.js";
-import { ToolCallCard } from "./ToolCallCard.js";
+import { Timeline } from "./Timeline.js";
+import type { DraftSource } from "../draft-store.js";
 import { Composer } from "./Composer.js";
 import { StatsBar } from "./StatsBar.js";
 import { ChatHeader } from "./ChatHeader.js";
@@ -33,6 +32,8 @@ export type ChatProps = {
   activeTools?: boolean;
   onSend: (text: string) => void | Promise<boolean>;
   draft?: UnsentMessage;
+  draftSource?: DraftSource;
+  draftScope?: string;
   submission?: SubmissionState | null;
   pendingControls?: Array<{ id: string; kind: "steer" | "followUp"; text: string; status: "submitting" | "submitted" | "unknown" | "failed" }>;
   onDraftText?: (text: string) => void;
@@ -74,6 +75,8 @@ export function Chat({
   activeTools,
   onSend,
   draft,
+  draftSource,
+  draftScope,
   submission,
   pendingControls,
   onDraftText,
@@ -166,9 +169,15 @@ export function Chat({
       <div className="chat-body" ref={bodyRef} data-testid="chat-body"
         role="region" aria-label="会话内容" tabIndex={0}
         onKeyDown={(event) => {
-          if (event.target !== event.currentTarget || event.key !== "End" || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || event.nativeEvent.isComposing) return;
+          if (event.target !== event.currentTarget || (event.key !== "Home" && event.key !== "End") || event.currentTarget.isContentEditable || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || event.nativeEvent.isComposing) return;
           event.preventDefault();
-          goToLatest();
+          if (event.key === "End") goToLatest();
+          else {
+            followRef.current = false;
+            const el = event.currentTarget;
+            el.scrollTop = 0;
+            remember(el);
+          }
         }}
         onScroll={(event) => {
           const el = event.currentTarget;
@@ -207,17 +216,7 @@ export function Chat({
             {!hasMessages ? (
               <EmptyState />
             ) : (
-              <div className="timeline" data-testid="message-list">
-                {timeline.map((item) =>
-                  item.kind === "notification" ? (
-                    <NotificationItem key={item.id} item={item} />
-                  ) : item.kind === "tool" ? (
-                    <ToolCallCard key={item.id} call={item.call} />
-                  ) : (
-                    <MessageItem key={item.id} item={item} />
-                  ),
-                )}
-              </div>
+              <Timeline timeline={timeline} />
             )}
           </div>
         )}
@@ -250,6 +249,8 @@ export function Chat({
             placeholder={placeholder}
             onSend={(text) => { goToLatest(); return onSend(text); }}
             draft={draft}
+            draftSource={draftSource}
+            draftScope={draftScope}
             submission={submission}
             pendingControls={pendingControls}
             onDraftText={onDraftText}

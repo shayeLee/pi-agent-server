@@ -3,7 +3,7 @@
 // 真实 AgentSession 的验证走独立的慢速集成测试（docs/architecture.md §3.2）。
 
 import { AsyncLocalStorage } from "node:async_hooks";
-import type { SteeringIdentity, SteeringInput } from "../shared/steering.js";
+import type { SteeringConsumed, SteeringIdentity, SteeringInput } from "../shared/steering.js";
 import type { AgentAdapter, AgentConfigurationSnapshot, ImageInput, UsageInfo } from "./agent-adapter.js";
 import { FAILBACK_LIFECYCLE_EVENT, isFailbackLifecycleEvent, type FailbackLifecycleSource } from "./failback-lifecycle.js";
 import { FAILBACK_HOST_TRANSPORT_EVENT, isFailbackHostTransportHandshake, type FailbackHostTransport } from "./failback-host-transport.js";
@@ -15,7 +15,7 @@ import { cacheHitPercent, nonnegative, responseSpeed, type LastResponseUsage, ty
 import type { Usage } from "@earendil-works/pi-ai";
 import type { SessionManager } from "@earendil-works/pi-coding-agent";
 import { ExecutionMetrics } from "./execution-metrics.js";
-import { projectExportSnapshot } from "./session-export.js";
+import { projectExportMessages, projectExportSnapshot } from "./session-export.js";
 export { extractText, projectExportMessages, type ExportMessage, type ExportSnapshot, type ExportTimelineItem } from "./session-export.js";
 
 /**
@@ -100,14 +100,24 @@ export class PiAgentAdapter implements AgentAdapter {
     // One internal observer, regardless of how many host SSE subscribers exist.
     this.unsubscribeMeasurement = session.subscribe((event) => {
       if (!this.discard) {
+        // Public message_end listeners run BEFORE SDK appendMessage. Flush at the next
+        // event (before its host translation), or the microtask after persistence.
+        const token = this.requestAbort;
+        this.flushConsumedSteering(token);
+        if (this.discard) return;
+        if (event.type === "message_end") queueMicrotask(() => this.flushConsumedSteering(token));
         if (event.type === "message_start" && typeof event.message === "object" && event.message !== null &&
             (event.message as { role?: string }).role === "user") {
-          const identity = this.steeringMessages.get(event.message);
-          if (identity) {
+          const pending = this.steeringMessages.get(event.message);
+          if (pending) {
             this.steeringMessages.delete(event.message);
-            // CustomEntry.data is metadata only: never alter user content/source or inject model context.
-            session.sessionManager?.appendCustomEntry?.("pi-agent-server.steering-consumed", { version: 1, ...identity });
-            for (const listener of this.steeringListeners) listener(identity);
+            if (pending.token === token && !token.signal.aborted) {
+              if (session.sessionManager) this.consumedSteering.set(event.message, pending);
+              else {
+                try { for (const listener of this.steeringListeners) listener(pending.identity); }
+                catch (error) { this.failSteering(error, pending.identity, token); }
+              }
+            }
           }
         }
         if (this.executionActive) this.executionMetrics.observe(event);
@@ -233,6 +243,7 @@ export class PiAgentAdapter implements AgentAdapter {
     this.usageBoundary = this.session.messages[this.usageStart - 1];
     this.discard = false; // 新 run 开始：恢复事件传递
     this.failbackAttempt = null;
+    this.consumedSteering.clear(); // Cancel work owned by a previous lifecycle, never retry it.
     const token = this.requestAbort = new AbortController();
     this.installStreamGate(token);
     try {
@@ -244,10 +255,54 @@ export class PiAgentAdapter implements AgentAdapter {
     }
   }
 
-  private readonly steeringContext = new AsyncLocalStorage<SteeringIdentity>();
-  private readonly steeringMessages = new WeakMap<object, SteeringIdentity>();
-  private readonly steeringListeners = new Set<(identity: SteeringIdentity) => void>();
-  subscribeSteeringConsumed(listener: (identity: SteeringIdentity) => void): () => void {
+  private readonly steeringContext = new AsyncLocalStorage<{ identity: SteeringIdentity; token: AbortController }>();
+  private readonly steeringMessages = new WeakMap<object, { identity: SteeringIdentity; token: AbortController }>();
+  private readonly consumedSteering = new Map<object, { identity: SteeringIdentity; token: AbortController }>();
+  private readonly requestErrorListeners = new Set<(error: Error, requestId: string) => void>();
+  subscribeRequestError(listener: (error: Error, requestId: string) => void): () => void {
+    this.requestErrorListeners.add(listener);
+    return () => { this.requestErrorListeners.delete(listener); };
+  }
+
+  private failSteering(error: unknown, identity: SteeringIdentity, token: AbortController): void {
+    if (this.disposed || token !== this.requestAbort || token.signal.aborted) return;
+    token.abort(); // Revoke the captured run before any error subscriber can reenter.
+    this.discard = true;
+    this.outputSampler.reset();
+    try { this.session.clearQueue?.(); } catch { /* Already revoked; runtime remains poisoned. */ }
+    const failure = error instanceof Error ? error : new Error(String(error));
+    for (const listener of this.requestErrorListeners) {
+      try { listener(failure, identity.requestId); } catch { /* Error reporting must not recursively throw. */ }
+    }
+  }
+  private readonly steeringListeners = new Set<(identity: SteeringConsumed) => void>();
+  private flushConsumedSteering(token: AbortController | null): void {
+    if (this.disposed || this.discard || !token || token !== this.requestAbort || token.signal.aborted || !this.consumedSteering.size) return;
+    for (const [message, pending] of this.consumedSteering) {
+      if (pending.token !== token) continue;
+      const { identity } = pending;
+      try {
+        const branch = this.session.sessionManager?.getBranch() ?? [];
+        const entry = branch.find(entry => entry.type === "message" && entry.message === message);
+        if (!entry || entry.type !== "message") continue;
+        const projected = projectExportMessages([], [entry])[0];
+        if (!projected || projected.role !== "user") continue;
+        // Metadata only, after the actual user entry; no second prompt/message.
+        const manager = this.session.sessionManager;
+        if (!manager?.appendCustomEntry) throw new Error("Steering consumption persistence unavailable");
+        manager.appendCustomEntry("pi-agent-server.steering-consumed",
+          { version: 1, ...identity, sourceId: entry.id });
+        this.consumedSteering.delete(message); // Never acknowledge a failed durable append.
+        const consumed: SteeringConsumed = { ...identity, message: { sourceId: entry.id,
+          text: projected.text, ...(projected.images ? { images: projected.images } : {}) } };
+        for (const listener of this.steeringListeners) listener(consumed);
+      } catch (error) {
+        this.failSteering(error, identity, token);
+        return; // No retry/requeue: the user message may already be model-visible and durable.
+      }
+    }
+  }
+  subscribeSteeringConsumed(listener: (identity: SteeringConsumed) => void): () => void {
     this.steeringListeners.add(listener);
     return () => { this.steeringListeners.delete(listener); };
   }
@@ -256,7 +311,9 @@ export class PiAgentAdapter implements AgentAdapter {
     if (!input) { await this.session.steer(text); return; }
     // Async-local context survives input extension awaits and isolates concurrent equal-text submissions.
     const { controlId, acknowledgementId, requestId } = input;
-    await this.steeringContext.run({ controlId, acknowledgementId, requestId }, () => this.session.steer(text,
+    const token = this.requestAbort;
+    if (!token || token.signal.aborted || this.disposed) throw new Error("Steering request no longer owned");
+    await this.steeringContext.run({ identity: { controlId, acknowledgementId, requestId }, token }, () => this.session.steer(text,
       input.images?.map(image => ({ type: "image", data: image.base64, mimeType: image.mediaType }))));
   }
 
@@ -273,11 +330,13 @@ export class PiAgentAdapter implements AgentAdapter {
     this.session.clearQueue?.();
     try {
       await this.session.abort();
-      this.discard = true; // 中止后丢弃残余事件（迟到 agent_end/text/tool）
+      if (this.requestAbort === token) this.discard = true; // Only discard the captured lifecycle.
     } finally {
-      this.outputSampler.reset();
-      this.session.clearQueue?.();
-      this.failbackAttempt = null;
+      if (this.requestAbort === token) {
+        this.outputSampler.reset();
+        this.session.clearQueue?.();
+        this.failbackAttempt = null;
+      }
     }
   }
 
@@ -319,6 +378,8 @@ export class PiAgentAdapter implements AgentAdapter {
     this.unsubscribeMeasurement();
     this.outputListeners.clear();
     this.steeringListeners.clear();
+    this.requestErrorListeners.clear();
+    this.consumedSteering.clear();
     this.clearResponseMeasurement();
     this.session.dispose();
   }

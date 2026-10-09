@@ -2,8 +2,8 @@
 // - 稳定错误码类别：code=usage（退出码 2，参数用法文本不含输入值）/ code=connection /
 //   code=internal（退出码 1）；底层连接/query 原文、IPv4/IPv6/hostname/path/url/凭证
 //   一律不得透传；
-// - 单元层直接验证 render/sanitize 管线；进程层以真实 CLI（tsx）验证 ECONNREFUSED
-//   （IPv4 与 IPv6 环回、DNS NXDOMAIN hostname）与参数用法错误的输出边界。
+// - 单元层直接验证 render/sanitize 管线；进程层以真实 CLI（tsx）和确定性的离线
+//   transport 错误验证 IPv4/IPv6 ECONNREFUSED、DNS ENOTFOUND 与参数错误的输出边界。
 import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -31,8 +31,35 @@ function fixture(): { root: string; cwd: string; dataDir: string; backupRoot: st
 }
 
 function runCli(args: readonly string[], env: Record<string, string>): { status: number | null; stdout: string; stderr: string } {
+  // Simulate Node's transport error, not the offline harness's policy-denial text.
+  // This preload runs after any inherited network guard and only intercepts this fixture target.
+  const databaseUrl = env.PI_DATABASE_URL;
+  let nodeOptions = process.env.NODE_OPTIONS ?? "";
+  if (databaseUrl) {
+    const target = new URL(databaseUrl);
+    const host = target.hostname.replace(/^\[|\]$/g, "");
+    const dnsFailure = host.endsWith(".invalid");
+    const code = dnsFailure ? "ENOTFOUND" : "ECONNREFUSED";
+    const message = dnsFailure ? `getaddrinfo ENOTFOUND ${host}` : `connect ECONNREFUSED ${host}:${target.port}`;
+    const preload = path.join(env.AGENT_CWD!, "transport-error.cjs");
+    writeFileSync(preload, `
+const net = require('node:net');
+const original = net.Socket.prototype.connect;
+net.Socket.prototype.connect = function(...args) {
+  const first = Array.isArray(args[0]) ? args[0][0] : args[0];
+  const opts = typeof first === 'object' ? first : {port:first, host:args[1]};
+  if (opts && !opts.path && String(opts.host).replace(/^\\[|\\]$/g, '') === ${JSON.stringify(host)} && Number(opts.port) === ${Number(target.port)}) {
+    const error = Object.assign(new Error(${JSON.stringify(message)}), {code:${JSON.stringify(code)}});
+    queueMicrotask(() => this.destroy(error));
+    return this;
+  }
+  return original.apply(this,args);
+};
+`, { mode: 0o600 });
+    nodeOptions += ` --require=${preload}`;
+  }
   const result = spawnSync(process.execPath, [resolveBinPath("tsx", "tsx"), ownerTransferEntry, ...args], {
-    env: { ...process.env, ...env }, encoding: "utf8", timeout: 90_000,
+    env: { ...process.env, ...env, NODE_OPTIONS: nodeOptions }, encoding: "utf8", timeout: 90_000,
   });
   return { status: result.status, stdout: result.stdout ?? "", stderr: result.stderr ?? "" };
 }

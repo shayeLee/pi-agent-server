@@ -5,7 +5,8 @@ import { getModel } from "@earendil-works/pi-ai/compat";
 import { join } from "node:path";
 import { PiAgentAdapter, type AgentSessionLike } from "../../src/agent/pi-agent-adapter.js";
 
-export async function steeringSdkFixture(root: string, configure?: (session: Awaited<ReturnType<typeof createAgentSession>>["session"]) => void) {
+export async function steeringSdkFixture(root: string, configure?: (session: Awaited<ReturnType<typeof createAgentSession>>["session"]) => void,
+  sessionManager = SessionManager.inMemory(root)) {
   const runtime = await ModelRuntime.create({ authPath: join(root, "auth.json"), modelsPath: join(root, "models.json"), refreshOnCreate: false });
   await runtime.setRuntimeApiKey("openai", "offline-not-a-real-key");
   const loader: ResourceLoader = {
@@ -20,7 +21,7 @@ export async function steeringSdkFixture(root: string, configure?: (session: Awa
   let waits = 0;
   const { session } = await createAgentSession({ cwd: root, agentDir: join(root, "agent"), modelRuntime: runtime,
     model: getModel("openai", "gpt-4o")!, thinkingLevel: "off", resourceLoader: loader, tools: ["subagent_wait"],
-    sessionManager: SessionManager.inMemory(root), settingsManager: SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false } }),
+    sessionManager, settingsManager: SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false } }),
     customTools: [{ name: "subagent_wait", label: "Wait", description: "Offline gated tool",
       parameters: { type: "object", properties: {}, additionalProperties: false } as any,
       execute: async (_id, _args, signal) => {

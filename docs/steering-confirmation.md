@@ -1,55 +1,11 @@
-# Steering consumption confirmation (rescue78)
+# Steering consumption and visible history
 
-## Contract and fix
+`POST /v1/sessions/{id}/steer` returns empty 202 for correlated controls (`controlId`, `acknowledgementId`, primary `requestId`, optional images), or legacy empty 204 for text only. Admission is not consumption: no sent bubble is created before the SDK consumes the actual queued object. Cancelling an unconsumed control creates no user entry.
 
-`POST /v1/sessions/{id}/steer` accepts legacy `{text}` (empty HTTP 204) or correlated `{text, controlId, acknowledgementId, requestId, images?}` (empty HTTP 202). Correlated identity fields must be supplied together. Images retain their existing SDK input support; Web rejects non-image file steering and preserves the draft and attachment references.
+`steering_consumed` retains the exact acknowledgement identity and adds optional `message: {sourceId, text, images?}`. SDK 1.1 persists a consumed user entry after public `message_end` listeners. The adapter waits for that exact object's real branch entry and emits consumption before subsequent assistant events (or in the post-end microtask). It never guesses IDs, matches text, or creates another SDK user entry/prompt. Its custom entry is metadata only.
 
-HTTP admission does **not** confirm consumption. Previously `ApiClient.request` skipped JSON parsing only for 204, so an admitted empty 202 threw a JSON parse error and appeared as an unknown outcome. The explicit void-response mode is used only by `steer`; non-2xx errors still become `ApiError`. Message submission and other JSON operations still parse 202 response bodies, including throwing on an unexpectedly empty body.
+Authorized session SSE subscribers display the safe projection as a normal user bubble. `sourceId` is the persisted entry ID, corresponding to history's `sourceEntryId`, and deduplicates live/replay/history; equal text with distinct IDs stays distinct. Consumption closes preceding assistant/thinking presentation, not the primary task. Text/image projection reuses export validation and budgets and omits private metadata. Initial optimistic prompts, extension notifications and uncorrelated model-failback steering do not enter this projection; old servers without `message` do not invent bubbles. History does not guess steering classification.
 
-Only session-scoped `steering_consumed` with the exact `controlId`, primary `requestId` and `acknowledgementId` consumes the pending control. This is a nonterminal acknowledgement: the primary run remains active. The SDK adapter associates the actual enqueued user-message object with its immutable identity, not its text or an image/content copy. Duplicate SDK events cannot acknowledge twice. Runtime admissions bind control identity and payload to the actor; another shared-session actor cannot replay or forge that admission. Private-session access remains owner-scoped.
+Only exact session/control/request/ack identity clears local pending or its original draft/attachment snapshot. Another browser's consumption may be visible without clearing local pending. New drafts and newly added attachments are preserved, including after switching away while pending and returning to replay consumption with a retained cursor. Failed/unknown controls are not treated as consumption. Non-image file steering remains rejected with inputs retained; follow-up is unchanged. Replay is bounded by existing SSE retention, not a permanent delivery guarantee.
 
-The Web controller supports HTTP-before-SSE, SSE-before-HTTP and unknown-then-consumed. Wrong identities and events on another session do not clear inputs. Consumption clears only the original attachment IDs and clears text only when the draft revision is unchanged. Newly edited text and newly added attachments survive. The admitted-but-unconsumed status is explicitly `HTTP 已接收，等待消费确认`, not generic completion/waiting.
-
-Public contract exports steering identity/input/consumption types and lists `steering_consumed` in `SSE_EVENT_TYPES`. OpenAPI source and generated `openapi/v1.json` include the request variants, empty 202/204 admission responses and the nonterminal SSE acknowledgement.
-
-## Verification
-
-All three typechecks passed:
-
-```sh
-pnpm exec tsc --noEmit -p tsconfig.json
-pnpm exec tsc --noEmit -p tsconfig.client.json
-pnpm --filter web exec tsc --noEmit -p tsconfig.json
-```
-
-`pnpm run generate:openapi` passed (full backend TypeScript generation followed by the artifact generator). Focused backend/client/contract verification: **10 files, 165 tests passed**:
-
-```sh
-pnpm exec vitest run tests/client tests/public-api tests/server/messages.test.ts tests/agent/pi-agent-adapter.test.ts tests/agent/steering-consumption.test.ts tests/agent/image-input.test.ts tests/runtime/session-runtime.test.ts tests/storage/native-session-index.test.ts
-```
-
-Related Web verification: **3 files, 80 tests passed**:
-
-```sh
-pnpm --filter web exec vitest run src/App.test.tsx src/components/Chat.test.tsx src/attachment-state.test.ts
-```
-
-Isolated real Chrome and SDK 1.0.4: **1 E2E passed**:
-
-```sh
-pnpm --filter web exec playwright test --config playwright.steering-local.config.ts
-```
-
-This fixture uses temporary database/resources/credentials and a synthetic model stream; browser and server fetch guards prohibit non-loopback network access. It uses only local ports 5268/5269, not live 8080/5173. HTTP evidence is 202, consumption occurs exactly once, no primary terminal event occurs, SDK remains streaming and the new draft remains. Artifacts:
-
-- `/tmp/steering-confirmation/submitted-waiting-consumption.png`
-- `/tmp/steering-confirmation/final.png` (actually read after capture; ongoing second tool and retained new draft visible)
-- `/tmp/steering-confirmation/http-sse-evidence.json`
-
-## Broader checks and delivery boundary
-
-Broader backend checks (client/public-api/server/runtime/application plus relevant adapter/image tests): **652 passed, 5 skipped, 3 failed**. The failures are existing unrelated `tests/application/session-service.test.ts` project-create equality expectations missing `canCreateSession: true`.
-
-Full Web: **318 passed, 6 failed**. All failures are unrelated `src/components/StatsBar.test.tsx` expectations without the spaces rendered between counts and units. Neither the relevant service implementation nor StatsBar was changed for this fix; these failures were reported rather than hidden or repaired outside scope. Therefore this delivery does not claim a globally green suite.
-
-Logs are available at `/tmp/steering-contracts-final.log`, `/tmp/steering-web-final.log`, `/tmp/steering-backend-related-final.log`, `/tmp/steering-web-all-final.log`, and `/tmp/steering-chrome.log`. No real home database, auth/session/model files, online provider or live service was used. No git commit/reset or global configuration change was performed. Existing unrelated working-tree changes were preserved.
+Reload automatically restores the recent authorized project/session and history, then deduplicates replay by entry ID. The origin-scoped versioned localStorage hint contains IDs only; metadata validates access before restoring. Transient failures preserve the hint, 403/404 or missing selections clear it, and explicit New session remembers a blank project selection. This does not restore cold-join active-task phase. Separate browser contexts on the same IP exercise the same owner, not cross-owner authorization. Cross-owner access requires the real native session source/index and ordinary shared-session authorization; a fixture visibility flag alone does not grant it.

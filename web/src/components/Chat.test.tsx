@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { render, screen, fireEvent } from "@testing-library/react";
+import { act, render, screen, fireEvent } from "@testing-library/react";
 import { Chat } from "./Chat.js";
 import type { SessionRecord, TimelineItem } from "pi-agent-server/client";
 
@@ -114,7 +114,7 @@ describe("Chat（聊天区）", () => {
     expect(el.scrollTop).toBe(2200);
   });
 
-  it("only unmodified, non-composing End on the body resumes following", () => {
+  it("only unmodified, non-composing Home/End on the body control following", () => {
     const props = setup();
     const { el, grow } = metrics();
     props.update({ timeline: [...timeline] });
@@ -122,11 +122,20 @@ describe("Chat（聊天区）", () => {
     el.scrollTop = 100; fireEvent.scroll(el);
     const input = screen.getByTestId("composer-input");
     const child = screen.getByRole("button", { name: /工具调用 weather/ });
-    expect(fireEvent.keyDown(input, { key: "End" })).toBe(true);
-    expect(fireEvent.keyDown(child, { key: "End" })).toBe(true);
-    for (const modifier of ["altKey", "ctrlKey", "metaKey", "shiftKey", "isComposing"]) {
-      expect(fireEvent.keyDown(el, { key: "End", [modifier]: true })).toBe(true);
+    const descendants = [document.createElement("input"), document.createElement("textarea"), document.createElement("code"), document.createElement("div")];
+    descendants[3]!.contentEditable = "true";
+    for (const descendant of descendants) el.append(descendant);
+    for (const key of ["Home", "End"]) {
+      for (const target of [input, child, ...descendants]) {
+        expect(fireEvent.keyDown(target, { key })).toBe(true);
+        expect(el.scrollTop).toBe(100);
+      }
+      for (const modifier of ["altKey", "ctrlKey", "metaKey", "shiftKey", "isComposing"]) {
+        expect(fireEvent.keyDown(el, { key, [modifier]: true })).toBe(true);
+        expect(el.scrollTop).toBe(100);
+      }
     }
+    for (const descendant of descendants) descendant.remove();
     grow(); props.update({ timeline: [...timeline] });
     expect(el.scrollTop).toBe(100);
     expect(fireEvent.keyDown(el, { key: "End" })).toBe(false);
@@ -134,6 +143,40 @@ describe("Chat（聊天区）", () => {
     for (let i = 0; i < 4; i++) {
       grow(); props.update({ timeline: [...timeline] });
       expect(el.scrollTop).toBe(1400 + i * 200);
+    }
+  });
+
+  it("Home stops follow immediately across resize and growth; End/latest restore it", () => {
+    let resize = () => {};
+    vi.stubGlobal("ResizeObserver", class {
+      constructor(callback: () => void) { resize = callback; }
+      observe() {}
+      disconnect() {}
+    });
+    try {
+      const props = setup();
+      const { el, grow } = metrics();
+      props.update({ timeline: [...timeline] });
+      for (const resume of ["End", "latest"]) {
+        el.focus();
+        expect(document.activeElement).toBe(el);
+        expect(fireEvent.keyDown(el, { key: "Home" })).toBe(false);
+        expect(el.scrollTop).toBe(0);
+        // No scroll event first: resize must not race with the Home intent.
+        act(() => resize());
+        expect(el.scrollTop).toBe(0);
+        grow(); props.update({ timeline: [...timeline] });
+        act(() => resize());
+        expect(el.scrollTop).toBe(0);
+        if (resume === "End") expect(fireEvent.keyDown(el, { key: "End" })).toBe(false);
+        else fireEvent.click(screen.getByRole("button", { name: "回到最新" }));
+        expect(el.scrollTop).toBe(el.scrollHeight);
+        grow(); props.update({ timeline: [...timeline] });
+        act(() => resize());
+        expect(el.scrollTop).toBe(el.scrollHeight);
+      }
+    } finally {
+      vi.unstubAllGlobals();
     }
   });
 

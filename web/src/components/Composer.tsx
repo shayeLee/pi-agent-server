@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Icon } from "./Icon.js";
 
 import type { ModelInfo, Project, SessionRecord } from "pi-agent-server/client";
-import type { SubmissionState, SubmitOutcome, UnsentMessage } from "../attachment-state.js";
+import { EMPTY_MESSAGE, type SubmissionState, type SubmitOutcome, type UnsentMessage } from "../attachment-state.js";
+import type { DraftSource } from "../draft-store.js";
 import { ModelThinkingPicker } from "./ModelThinkingPicker.js";
 import { SelectMenu } from "./SelectMenu.js";
 
@@ -23,6 +24,8 @@ export type ComposerProps = {
   placeholder: string;
   onSend: (text: string) => void | Promise<boolean>;
   draft?: UnsentMessage;
+  draftSource?: DraftSource;
+  draftScope?: string;
   submission?: SubmissionState | null;
   pendingControls?: Array<{ id: string; kind: "steer" | "followUp"; text: string; status: "submitting" | "submitted" | "unknown" | "failed" }>;
   onDraftText?: (text: string) => void;
@@ -42,9 +45,15 @@ export function Composer({
   session, projects, activeProjectId, onSelectProject, canCreateSession, canWrite = true,
   models, thinkingLevels, defaultModel, defaultThinkingLevel,
   streaming, queued, historyLoading = false, placeholder, onSend,
-  draft, submission, pendingControls, onDraftText, onDraftSettings, onAddFile, onRetryFile, onRemoveFile, onRetrySubmit, onConfirmCreation,
+  draft: suppliedDraft, draftSource, draftScope = "", submission, pendingControls, onDraftText, onDraftSettings, onAddFile, onRetryFile, onRemoveFile, onRetrySubmit, onConfirmCreation,
   onSteer, onFollowUp, onAbort, onConfigChange,
 }: ComposerProps) {
+  const subscribeDraft = useCallback((listener: () => void) =>
+    draftSource?.subscribe(draftScope, listener) ?? (() => {}), [draftSource, draftScope]);
+  const getDraft = useCallback(() => draftSource?.getSnapshot(draftScope) ?? suppliedDraft ?? EMPTY_MESSAGE,
+    [draftSource, draftScope, suppliedDraft]);
+  const snapshot = useSyncExternalStore(subscribeDraft, getDraft, getDraft);
+  const draft = draftSource || suppliedDraft ? snapshot : undefined;
   const [localText, setLocalText] = useState("");
   const [localError, setLocalError] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);

@@ -290,7 +290,8 @@ export default function App() {
         stats={controller.chatState.stats}
         modelOutput={controller.chatState.modelOutput}
         activeTools={!!controller.chatState.activeToolCallIds?.length}
-        draft={controller.unsentMessage}
+        draftSource={controller.draftSource}
+        draftScope={controller.draftScope}
         submission={controller.submitState}
         pendingControls={controller.pendingControls}
         onDraftText={controller.setUnsentText}

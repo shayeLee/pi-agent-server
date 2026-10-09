@@ -3791,10 +3791,34 @@
           },
           "requestId": {
             "type": "string"
+          },
+          "message": {
+            "type": "object",
+            "required": [
+              "sourceId",
+              "text"
+            ],
+            "properties": {
+              "sourceId": {
+                "type": "string",
+                "minLength": 1
+              },
+              "text": {
+                "type": "string"
+              },
+              "images": {
+                "type": "array",
+                "maxItems": 4,
+                "items": {
+                  "$ref": "#/components/schemas/ImageInput"
+                }
+              }
+            },
+            "additionalProperties": false
           }
         },
         "additionalProperties": false,
-        "description": "Exact queued SDK user-message object was consumed once. Session-scoped nonterminal control acknowledgement; never acknowledge by matching text."
+        "description": "Exact queued SDK user-message object was consumed once. Optional message projects its persisted user entry, before subsequent assistant deltas; sourceId deduplicates live/replay/export history. Missing message never implies a visible user bubble. Nonterminal; never acknowledge by matching text."
       },
       "TextInput": {
         "type": "object",

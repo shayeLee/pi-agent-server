@@ -59,6 +59,23 @@ export class NativeSessionFd {
     } catch (error) { this.poison(); throw error; }
   }
 
+  /** Bounded positional metadata IO on the already-authorized descriptor. */
+  readRange(position: number, maxBytes: number): Buffer {
+    this.check();
+    if (!Number.isSafeInteger(position) || position < 0 || !Number.isSafeInteger(maxBytes) || maxBytes < 0) throw new Error("invalid native range");
+    const buffer = Buffer.alloc(Math.min(maxBytes, Math.max(0, this.expected.size - position)));
+    let offset = 0;
+    try {
+      while (offset < buffer.length) {
+        const count = readSync(this.fd!, buffer, offset, buffer.length - offset, position + offset);
+        if (!count) throw new Error("native source changed");
+        offset += count;
+      }
+      this.check();
+      return buffer;
+    } catch (error) { this.poison(); throw error; }
+  }
+
   verifiedMetadata() {
     this.check();
     return { ...this.binding, relativeSourcePath: path.relative(this.source.root, this.binding.sourcePath),

@@ -12,6 +12,8 @@ import type { EventLogEntry } from "../types.js";
 import { EMPTY_MESSAGE, validateSelection, type SubmissionState, type SubmitOutcome, type SubmitSnapshot, type UnsentAttachment, type UnsentMessage } from "../attachment-state.js";
 
 import { readMessageImages } from "../message-images.js";
+import { createDraftStore } from "../draft-store.js";
+import { clearRecentSelection, readRecentSelection, writeRecentSelection } from "../recent-selection.js";
 import { toolDurationMs } from "../../../src/shared/tool-duration.js";
 
 function projectExportTimeline(raw: readonly unknown[], messages: readonly unknown[]): TimelineItem[] {
@@ -29,7 +31,7 @@ function projectExportTimeline(raw: readonly unknown[], messages: readonly unkno
       const id = `notification:${row.notificationId}`;
       if (!items.some(item => item.id === id)) items.push({ kind: "notification", id, version: 1, notificationId: row.notificationId, entryId: row.entryId, text: row.text, runIds: row.runIds as string[], timestamp: String(row.timestamp ?? "") });
     } else if (row.type === "message" && (row.role === "user" || row.role === "assistant") && typeof row.text === "string") {
-      items.push({ kind: "message", id: `history-${String(row.id ?? items.length)}`,
+      items.push({ kind: "message", id: row.role === "user" && typeof row.messageId === "string" ? `history-message:${row.messageId}` : `history-${String(row.id ?? items.length)}`,
         role: row.role, text: row.text, streaming: false,
         ...(row.role === "user" && typeof row.messageId === "string" ? { images: imagesBySource.get(row.messageId) } : {}) });
     } else if (row.type === "thinking" && typeof row.text === "string") {
@@ -89,8 +91,7 @@ export function useWebAppController() {
   const [historyReadySessionIds, setHistoryReadySessionIds] = useState<ReadonlySet<string>>(
     () => new Set(),
   );
-  const [unsent, setUnsent] = useState<Record<string, UnsentMessage>>({});
-  const unsentRef = useRef<Record<string, UnsentMessage>>({});
+  const draftStore = useMemo(() => createDraftStore(), []);
   const [submitStates, setSubmitStates] = useState<Record<string, SubmissionState>>({});
   const submitStatesRef = useRef<typeof submitStates>({});
   const submittingScopesRef = useRef(new Set<string>());
@@ -100,6 +101,18 @@ export function useWebAppController() {
   // null/undefined DTO summaries mean unknown, never proof of empty history.
   const emptyHistoryIdsRef = useRef(new Set<string>());
   const explicitTitlesRef = useRef(new Map<string, string>());
+  // Restore is invalidated by edits too; creation ownership changes only on navigation.
+  const selectionRevisionRef = useRef(0);
+  const navigationGenerationRef = useRef(0);
+  const restoreAttemptedRef = useRef(false);
+  const projectsPromiseRef = useRef<Promise<void> | null>(null);
+  const pendingRestoreRef = useRef<{ projectId: string; sessionId: string; revision: number } | null>(null);
+  function rememberSelection(projectId: string, sessionId: string | null): void {
+    ++navigationGenerationRef.current;
+    ++selectionRevisionRef.current;
+    pendingRestoreRef.current = null;
+    writeRecentSelection(projectId, sessionId);
+  }
 
   function mergeTitleMetadata(record: SessionRecord, protectExplicitTitle = false): SessionRecord {
     // Persisted summaries supersede local accepted-send fallbacks.
@@ -143,13 +156,10 @@ export function useWebAppController() {
     return store;
   }
   const currentScope = activeSessionId ? `session:${activeSessionId}` : `new:${activeProjectId ?? "none"}`;
-  const unsentMessage = unsent[currentScope] ?? EMPTY_MESSAGE;
   const submitState = submitStates[currentScope] ?? null;
 
   function updateUnsent(scope: string, change: (previous: UnsentMessage) => UnsentMessage): void {
-    const next = { ...unsentRef.current, [scope]: change(unsentRef.current[scope] ?? EMPTY_MESSAGE) };
-    unsentRef.current = next;
-    setUnsent(next);
+    draftStore.update(scope, change);
   }
   function updateSubmitState(scope: string, value: SubmissionState | null): void {
     const next = { ...submitStatesRef.current };
@@ -160,10 +170,14 @@ export function useWebAppController() {
   }
   const draftTextRevisionsRef = useRef(new Map<string, number>());
   function setUnsentText(text: string): void {
+    ++selectionRevisionRef.current;
+    pendingRestoreRef.current = null;
     draftTextRevisionsRef.current.set(currentScope, (draftTextRevisionsRef.current.get(currentScope) ?? 0) + 1);
     updateUnsent(currentScope, (previous) => ({ ...previous, text }));
   }
   function setNewSessionSettings(config: UnsentMessage["settings"]): void {
+    ++selectionRevisionRef.current;
+    pendingRestoreRef.current = null;
     updateUnsent(currentScope, (previous) => ({ ...previous, settings: { ...previous.settings, ...config } }));
   }
   function removeUnsentAttachment(localId: string): void {
@@ -171,7 +185,12 @@ export function useWebAppController() {
       attachments: previous.attachments.filter((item) => item.localId !== localId) }));
   }
   function updateAttachment(scope: string, localId: string, change: (item: UnsentAttachment) => UnsentAttachment): void {
-    updateUnsent(scope, (previous) => ({ ...previous, attachments: previous.attachments.map((item) =>
+    // An in-flight upload/read may finish after its draft moved to a session.
+    const owner = draftStore.getSnapshot(scope).attachments.some(item => item.localId === localId)
+      ? scope : Object.keys(draftStore.getAll()).find(key =>
+        draftStore.getSnapshot(key).attachments.some(item => item.localId === localId));
+    if (!owner) return; // Removed attachments must not be resurrected.
+    updateUnsent(owner, (previous) => ({ ...previous, attachments: previous.attachments.map((item) =>
       item.localId === localId ? change(item) : item) }));
   }
   function fileBytes(file: File): Promise<Uint8Array> {
@@ -196,8 +215,10 @@ export function useWebAppController() {
     }
   }
   async function addUnsentFile(file: File): Promise<void> {
+    ++selectionRevisionRef.current;
+    pendingRestoreRef.current = null;
     const scope = currentScope;
-    const existing = unsentRef.current[scope]?.attachments ?? [];
+    const existing = draftStore.getSnapshot(scope).attachments;
     const check = validateSelection(existing, file);
     if ("error" in check) {
       const id = crypto.randomUUID();
@@ -231,7 +252,7 @@ export function useWebAppController() {
   }
   async function retryUnsentAttachment(localId: string): Promise<void> {
     const scope = currentScope;
-    const item = unsentRef.current[scope]?.attachments.find((entry) => entry.localId === localId);
+    const item = draftStore.getSnapshot(scope).attachments.find((entry) => entry.localId === localId);
     if (!item?.file || !item.uploadKey || item.kind === "image") return;
     const session = activeSessionId ? sessions?.find((record) => record.id === activeSessionId) : null;
     const projectId = session?.projectId ?? activeProjectId;
@@ -275,9 +296,6 @@ export function useWebAppController() {
     const prev = prevSessionIdRef.current;
     if (prev && prev !== activeSessionId) {
       cancelRetries(prev);
-      for (const key of [...confirmedRequestsRef.current]) {
-        if (key.startsWith(`${prev}:`)) confirmedRequestsRef.current.delete(key);
-      }
     }
     prevSessionIdRef.current = activeSessionId;
     activeSessionIdRef.current = activeSessionId;
@@ -299,7 +317,9 @@ export function useWebAppController() {
     };
   }, []);
 
-  const confirmedRequestsRef = useRef(new Set<string>());
+  // Receipts live only as long as their HTTP send, independently of navigation/cursors.
+  // A pending promise already owns this receipt; no historical confirmation cache is needed.
+  const inflightReceiptsRef = useRef(new Map<string, { sessionId: string; accepted: boolean }>());
   const eventSeqRef = useRef(0);
   // 快速切换项目时，旧会话请求的响应/错误不得覆盖当前项目状态。
   const sessionsRequestSeqRef = useRef(0);
@@ -315,29 +335,81 @@ export function useWebAppController() {
       if (seq !== sessionsRequestSeqRef.current || activeProjectIdRef.current !== projectId) return;
       setSessions(list.map((row) => mergeTitleMetadata(row,
         titlesAtStart.get(row.id) !== explicitTitlesRef.current.get(row.id))));
+      const restore = pendingRestoreRef.current;
+      if (restore?.projectId === projectId && restore.revision === selectionRevisionRef.current) {
+        pendingRestoreRef.current = null;
+        if (list.some(row => row.id === restore.sessionId && row.projectId === projectId)) {
+          getChatStore(restore.sessionId);
+          writeRecentSelection(projectId, restore.sessionId);
+          setActiveSessionId(restore.sessionId);
+        } else {
+          clearRecentSelection();
+        }
+      }
     } catch (err) {
       if (seq !== sessionsRequestSeqRef.current) return;
+      if (err instanceof ApiError && (err.status === 403 || err.status === 404) && pendingRestoreRef.current?.projectId === projectId) {
+        pendingRestoreRef.current = null;
+        clearRecentSelection();
+      }
       setLoadError(err instanceof Error ? err.message : String(err));
     }
   }
 
-  async function refreshProjects(): Promise<void> {
+  function refreshProjects(): Promise<void> {
+    if (projectsPromiseRef.current) return projectsPromiseRef.current;
+    const promise = loadProjects().finally(() => {
+      if (projectsPromiseRef.current === promise) projectsPromiseRef.current = null;
+    });
+    projectsPromiseRef.current = promise;
+    return promise;
+  }
+
+  async function loadProjects(): Promise<void> {
     if (!api) return;
+    const revision = selectionRevisionRef.current;
     try {
       const list = await api.listProjects();
       for (const project of list) draftProjectsRef.current.delete(project.id);
       list.push(...draftProjectsRef.current.values());
       const defaultId = list.find((project) => project.isDefault)?.id ?? list[0]?.id ?? DEFAULT_PROJECT_ID;
+      let restoredProjectId: string | null = null;
+      if (!restoreAttemptedRef.current && revision === selectionRevisionRef.current) {
+        restoreAttemptedRef.current = true;
+        const recent = readRecentSelection();
+        if (recent) {
+          try {
+            // There is no detail GET. One metadata list resolves native session moves;
+            // never probe every history/export or trust the stored project association.
+            const record = recent.sessionId ? (await api.listSessions()).find(row => row.id === recent.sessionId) : null;
+            if (revision === selectionRevisionRef.current) {
+              const projectId = recent.sessionId ? record?.projectId : recent.projectId;
+              if (projectId && list.some(project => project.id === projectId)) {
+                restoredProjectId = projectId;
+                if (recent.sessionId) pendingRestoreRef.current = { projectId, sessionId: recent.sessionId, revision };
+              } else clearRecentSelection();
+            }
+          } catch (error) {
+            // Transient failures preserve the hint; never send or create on restore.
+            if (revision === selectionRevisionRef.current && error instanceof ApiError && (error.status === 403 || error.status === 404)) clearRecentSelection();
+          }
+        }
+      }
       setProjects(list);
       setProjectsError(null);
       setActiveProjectId((prev) =>
-        prev === null || !list.some((project) => project.id === prev) ? defaultId : prev,
+        revision !== selectionRevisionRef.current && prev !== null ? prev :
+        restoredProjectId ?? (prev === null || !list.some((project) => project.id === prev) ? defaultId : prev),
       );
     } catch (err) {
+      if (revision === selectionRevisionRef.current && err instanceof ApiError && (err.status === 403 || err.status === 404)) clearRecentSelection();
+      if (revision !== selectionRevisionRef.current) return;
       ++sessionsRequestSeqRef.current;
       setProjectsError(
         `项目列表加载失败：${err instanceof Error ? err.message : String(err)}。请确认服务可用后重试。`,
       );
+      // Do not erase a newer user choice on an old request failure.
+      if (revision !== selectionRevisionRef.current) return;
       // 默认项目未能确定时，不创建会话或查询特定项目会话。
       setActiveProjectId(null);
       setSessions(null);
@@ -424,14 +496,14 @@ export function useWebAppController() {
         const messages = data?.messages ?? data;
         const legacyHistory = (Array.isArray(messages) ? messages : [])
           .filter(
-            (message): message is { role: string; text: string; images?: unknown } =>
+            (message): message is { role: string; text: string; images?: unknown; sourceId?: string } =>
               typeof message === "object" &&
               message !== null &&
               typeof (message as { text?: unknown }).text === "string",
           )
           .map((message, index) => ({
             kind: "message" as const,
-            id: `hist-${index}`,
+            id: message.role === "user" && typeof message.sourceId === "string" ? `history-message:${message.sourceId}` : `hist-${index}`,
             role: (message.role === "user" ? "user" : "assistant") as "user" | "assistant",
             text: message.text,
             ...(message.role === "user" ? { images: readMessageImages(message.images) } : {}),
@@ -465,8 +537,14 @@ export function useWebAppController() {
         // Returning sessions keep their cached timeline and replay all missed lifecycle/data.
         if (!eventCursorsRef.current.has(sessionId) && untouchedUsage && typeof data?.lastEventId === "number") cursor = data.lastEventId;
         }
-      } catch {
-        // 历史导出失败仅影响历史展示。
+      } catch (error) {
+        if (cancelled) return;
+        if (error instanceof ApiError && (error.status === 403 || error.status === 404)) {
+          clearRecentSelection();
+          setActiveSessionId(null);
+          return;
+        }
+        // Transient export failure must not erase the remembered position.
       }
       if (cancelled) return;
       historyReadySessionIdsRef.current.add(sessionId);
@@ -495,24 +573,28 @@ export function useWebAppController() {
           if (cancelled) return;
           if (Number.isFinite(lastEventId)) eventCursorsRef.current.set(sessionId, lastEventId);
           if (ownsSseEvent(store.getState(), event) && (event.type === "queued" || event.type === "status") && event.requestId) {
-            confirmedRequestsRef.current.add(`${sessionId}:${event.requestId}`);
-            const scope = `session:${sessionId}`;
-            const pending = submitStatesRef.current[scope];
-            if (pending?.snapshot.requestId === event.requestId && pending.phase === "unknown") {
+            // Input ownership can remain in new:<project> after navigation during creation.
+            // Match transport identity, never editor text or the currently selected scope.
+            const match = Object.entries(submitStatesRef.current).find(([, pending]) =>
+              pending.snapshot.sessionId === sessionId && pending.snapshot.requestId === event.requestId &&
+              pending.stage === "send" && (pending.phase === "submitting" || pending.phase === "unknown"));
+            const receipt = inflightReceiptsRef.current.get(event.requestId);
+            if (match && receipt?.sessionId === sessionId) receipt.accepted = true;
+            const [scope, pending] = match ?? [];
+            if (scope && pending?.phase === "unknown") {
               const confirmed = pending.snapshot;
               projectAcceptedImages(store, confirmed);
               rememberAcceptedPrompt(sessionId, confirmed.text);
               store.setError(null);
               updateSubmitState(scope, { ...pending, phase: "accepted", error: undefined });
-              clearSubmittedInputs(scope, confirmed);
-              confirmedRequestsRef.current.delete(`${sessionId}:${event.requestId}`);
+              clearSubmittedInputs(confirmed.scope, confirmed);
             }
           }
           if (ownsSseEvent(store.getState(), event) && (event.type === "usage" || (event.type === "status" && event.phase === "agent_start"))) {
             setUsageSnapshots(previous => ({ ...previous, [sessionId]: undefined }));
             if (event.type === "usage") setInvalidContexts(previous => { const next = new Set(previous); next.delete(sessionId); return next; });
           }
-          if (event.type === "steering_consumed") {
+          if (event.type === "steering_consumed" && ownsSseEvent(store.getState(), event)) {
             setPendingControls(current => {
               const rows = current[sessionId] ?? [];
               const consumed = rows.find(row => row.kind === "steer" && row.id === event.controlId &&
@@ -551,6 +633,7 @@ export function useWebAppController() {
   /** Enter a page-local start state; this action never calls the session creation API. */
   function createSession(): void {
     if (activeProjectId === null || sessions === null || !projectAllowsCreation) return;
+    rememberSelection(activeProjectId, null);
     setActiveSessionId(null);
     setLoadError(null);
   }
@@ -561,7 +644,11 @@ export function useWebAppController() {
 
   async function createProject(name: string, cwd: string): Promise<void> {
     if (!api) return;
+    ++navigationGenerationRef.current;
+    ++selectionRevisionRef.current;
+    pendingRestoreRef.current = null;
     const project = await api.createProject(name, cwd);
+    rememberSelection(project.id, null);
     draftProjectsRef.current.set(project.id, project);
     setActiveProjectId(project.id);
     activeProjectIdRef.current = project.id;
@@ -574,6 +661,7 @@ export function useWebAppController() {
     if (!api) return;
     await api.deleteProject(id);
     draftProjectsRef.current.delete(id);
+    if (readRecentSelection()?.projectId === id) clearRecentSelection();
     await refreshProjects();
   }
 
@@ -586,9 +674,12 @@ export function useWebAppController() {
     historyReadySessionIdsRef.current.delete(id);
     setHistoryReadySessionIds(new Set(historyReadySessionIdsRef.current));
     setSessions((prev) => (prev ?? []).filter((session) => session.id !== id));
-    if (id === activeSessionId) setActiveSessionId(null);
-    for (const key of [...confirmedRequestsRef.current]) {
-      if (key.startsWith(`${id}:`)) confirmedRequestsRef.current.delete(key);
+    if (readRecentSelection()?.sessionId === id) clearRecentSelection();
+    if (id === activeSessionId) {
+      ++navigationGenerationRef.current;
+      ++selectionRevisionRef.current;
+      pendingRestoreRef.current = null;
+      setActiveSessionId(null);
     }
     await refreshProjects();
   }
@@ -639,7 +730,7 @@ export function useWebAppController() {
   }
 
   function captureSnapshot(scope: string, text: string): SubmitSnapshot | null {
-    const draft = unsentRef.current[scope] ?? EMPTY_MESSAGE;
+    const draft = draftStore.getSnapshot(scope);
     const attachments = draft.attachments;
     if (attachments.some((item) => item.status !== "ready")) return null;
     const fileIds = attachments.flatMap((item) => item.server ? [item.server.fileId] : []);
@@ -669,10 +760,12 @@ export function useWebAppController() {
   }
 
   async function runSnapshot(initialScope: string, original: SubmitSnapshot, resumeAt: "create" | "config" | "send" = "create"): Promise<SubmitOutcome> {
+    const navigationGeneration = navigationGenerationRef.current;
     let scope = initialScope;
     let snapshot = original;
     let stage: "create" | "config" | "send" = snapshot.sessionId ? (resumeAt === "create" ? "send" : resumeAt) : "create";
     let messageId: string | null = null;
+    let receipt: { sessionId: string; accepted: boolean } | undefined;
     const update = (phase: SubmissionState["phase"], error?: string) =>
       updateSubmitState(scope, { snapshot, phase, stage, ...(error ? { error } : {}) });
     try {
@@ -687,20 +780,26 @@ export function useWebAppController() {
         emptyHistoryIdsRef.current.add(created.id);
         getChatStore(created.id);
         // The editor moves to the real session without losing input or the immutable submission.
-        const from = unsentRef.current[initialScope] ?? EMPTY_MESSAGE;
-        const sessionDraft = unsentRef.current[sessionScope];
-        updateUnsent(sessionScope, (previous) => previous === EMPTY_MESSAGE ? { ...from } : previous);
-        // The draft has moved to the created session. Clear the page-start scope so
-        // a later New session action cannot resurrect already-submitted attachments.
-        if (sessionDraft === undefined || sessionDraft === EMPTY_MESSAGE) {
+        const from = draftStore.getSnapshot(initialScope);
+        const sessionDraft = draftStore.getAll()[sessionScope];
+        const selectionUnchanged = navigationGeneration === navigationGenerationRef.current &&
+          activeProjectIdRef.current === snapshot.projectId;
+        // Move edited inputs too, never a navigated-away owner or an occupied target.
+        // snapshot.scope tracks input ownership, separately from the receiving session.
+        if (selectionUnchanged && (sessionDraft === undefined || sessionDraft === EMPTY_MESSAGE)) {
+          updateUnsent(sessionScope, () => ({ ...from }));
           updateUnsent(initialScope, () => EMPTY_MESSAGE);
+          snapshot = { ...snapshot, scope: sessionScope };
+          updateSubmitState(initialScope, null);
+          scope = sessionScope;
+          submittingScopesRef.current.add(scope);
         }
-        updateSubmitState(initialScope, null);
-        scope = sessionScope;
-        submittingScopesRef.current.add(scope);
         setSessions((previous) => activeProjectIdRef.current === snapshot.projectId && !previous?.some((row) => row.id === created.id)
           ? [...(previous ?? []), created] : previous);
-        if (activeProjectIdRef.current === snapshot.projectId) setActiveSessionId(created.id);
+        if (selectionUnchanged) {
+          rememberSelection(created.projectId, created.id);
+          setActiveSessionId(created.id);
+        }
       }
       if (resumeAt !== "send" && Object.keys(snapshot.settings).length) {
         stage = "config";
@@ -719,25 +818,25 @@ export function useWebAppController() {
         store.beginRequest(snapshot.requestId);
         imageInsertionRef.current.set(snapshot.requestId, store.getState().timeline.length);
       }
+      receipt = { sessionId: snapshot.sessionId!, accepted: false };
+      inflightReceiptsRef.current.set(snapshot.requestId, receipt);
       await api.sendMessage(snapshot.sessionId!, { requestId: snapshot.requestId, prompt: snapshot.text,
         ...(snapshot.fileIds.length ? { fileIds: snapshot.fileIds } : {}),
         ...(snapshot.images.length ? { images: snapshot.images } : {}) });
       if (snapshot.images.length) projectAcceptedImages(store, snapshot);
       rememberAcceptedPrompt(snapshot.sessionId!, snapshot.text);
       update("accepted");
-      confirmedRequestsRef.current.delete(`${snapshot.sessionId}:${snapshot.requestId}`);
-      clearSubmittedInputs(scope, snapshot);
+      clearSubmittedInputs(snapshot.scope, snapshot);
       return "accepted";
     } catch (error) {
-      if (stage === "send" && messageId && !snapshot.images.length && !confirmedRequestsRef.current.has(`${snapshot.sessionId}:${snapshot.requestId}`)) {
+      if (stage === "send" && messageId && !snapshot.images.length && !receipt?.accepted) {
         getChatStore(snapshot.sessionId!).rollbackUserMessage(messageId, "消息提交结果未确认");
       }
-      if (stage === "send" && confirmedRequestsRef.current.has(`${snapshot.sessionId}:${snapshot.requestId}`)) {
+      if (stage === "send" && receipt?.accepted) {
         if (snapshot.images.length) projectAcceptedImages(getChatStore(snapshot.sessionId!), snapshot);
         rememberAcceptedPrompt(snapshot.sessionId!, snapshot.text);
         update("accepted");
-        confirmedRequestsRef.current.delete(`${snapshot.sessionId}:${snapshot.requestId}`);
-        clearSubmittedInputs(scope, snapshot);
+        clearSubmittedInputs(snapshot.scope, snapshot);
         return "accepted";
       }
       const message = error instanceof Error ? error.message : String(error);
@@ -751,6 +850,9 @@ export function useWebAppController() {
       }
       return unknown ? "unknown" : "failed";
     } finally {
+      if (receipt && inflightReceiptsRef.current.get(snapshot.requestId) === receipt) {
+        inflightReceiptsRef.current.delete(snapshot.requestId);
+      }
       submittingScopesRef.current.delete(initialScope);
       submittingScopesRef.current.delete(scope);
     }
@@ -832,6 +934,7 @@ export function useWebAppController() {
   }
 
   function selectSession(sessionId: string | null): void {
+    if (activeProjectId) rememberSelection(activeProjectId, sessionId);
     if (sessionId !== null) {
       getChatStore(sessionId);
       if (sessionId !== activeSessionId) invalidateContext(sessionId);
@@ -840,6 +943,8 @@ export function useWebAppController() {
   }
 
   function selectProject(projectId: string): void {
+    rememberSelection(projectId, null);
+    setActiveSessionId(null);
     activeProjectIdRef.current = projectId;
     setActiveProjectId(projectId);
   }
@@ -859,7 +964,8 @@ export function useWebAppController() {
     defaultModel,
     defaultThinkingLevel,
     chatState,
-    unsentMessage,
+    draftSource: draftStore,
+    draftScope: currentScope,
     submitState,
     pendingControls: activeSessionId ? pendingControls[activeSessionId] ?? [] : [],
     setUnsentText,

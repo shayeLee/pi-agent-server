@@ -85,6 +85,19 @@ export function applySseEvent(state: ChatState, event: SseEvent, now: () => numb
       const exists = state.timeline.some(row => row.id === item.id);
       return { ...state, timeline: exists ? state.timeline.map(row => row.id === item.id ? item : row) : [...state.timeline, item] };
     }
+    case "steering_consumed": {
+      const message = event.message;
+      // Legacy acknowledgements only clear controller pending state, never invent a bubble.
+      if (!message || typeof message.sourceId !== "string" || !message.sourceId || typeof message.text !== "string") return state;
+      const id = `history-message:${message.sourceId}`;
+      if (state.timeline.some(row => row.id === id)) return state;
+      const timeline = state.timeline.map(row =>
+        (row.kind === "thinking" || (row.kind === "message" && row.role === "assistant")) && row.streaming
+          ? { ...row, streaming: false } : row);
+      return { ...state, timeline: [...timeline, { kind: "message", id,
+        role: "user", text: message.text, streaming: false,
+        ...(message.images?.length ? { images: message.images } : {}) }] };
+    }
     case "model_output_progress":
       return { ...state, modelOutput: !event.replay && event.phase === "delta"
         ? { ...event, receivedAt: now() - Math.max(0, event.activityAgeMs ?? 0) } : null };

@@ -14,7 +14,7 @@ vi.mock("node:fs", async original => {
     },
   };
 });
-import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync, readFileSync, renameSync, symlinkSync, linkSync } from "node:fs";
+import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync, appendFileSync, readFileSync, renameSync, symlinkSync, linkSync } from "node:fs";
 import { NativeSessionSource, nativeProjectDirectory } from "../../src/agent/native-session-source.js";
 import { NativeSessionPolicy, canonicalCwdIdentity } from "../../src/core/native-session-policy.js";
 import { NativeSessionFd, nativeEntries, openNativeSessionManager, readNativeSourceSnapshot } from "../../src/agent/native-session-fd.js";
@@ -133,9 +133,96 @@ describe("native descriptor authority", () => {
     const f = await fixture(); const { manager, descriptor } = openNativeSessionManager(f.source, f.binding);
     manager.appendSessionInfo("old prefix title"); manager.appendCustomEntry("padding", "x".repeat(1024 * 1024)); manager.appendSessionInfo("latest suffix title"); descriptor.close();
     const storage = new NativePiConversationStorage(f.source, { binding: async () => f.binding, claim: async () => null });
+    expect(await storage.readTitle({ agentKind: "pi", conversationFormat: "pi-native-jsonl-v3", conversationRef: f.file }, { sessionId: "server", projectId: "project" })).toBe("latest suffix title");
+    // If the latest name lies outside the inspected suffix, do not reuse an
+    // older prefix name or cache unknown as an authoritative empty title.
+    const writer = openNativeSessionManager(f.source, f.binding);
+    writer.manager.appendCustomEntry("later-padding", "x".repeat(1024 * 1024)); writer.descriptor.close();
     expect(await storage.readTitle({ agentKind: "pi", conversationFormat: "pi-native-jsonl-v3", conversationRef: f.file }, { sessionId: "server", projectId: "project" })).toBeNull();
     const legacy = f.header.replace('"version":3', '"version":2'); writeFileSync(f.file, legacy);
     expect(() => openNativeSessionManager(f.source, f.binding)).toThrow("unavailable"); expect(readFileSync(f.file, "utf8")).toBe(legacy);
+  });
+
+  it.each([0, 512 * 1024])("uses the opened snapshot when CLI appends after path stat (%i padding bytes)", async padding => {
+    const f = await fixture();
+    const writer = openNativeSessionManager(f.source, f.binding);
+    writer.manager.appendMessage({ role: "user", content: "first prompt", timestamp: 1 });
+    if (padding) writer.manager.appendCustomEntry("padding", "x".repeat(padding));
+    writer.manager.appendSessionInfo("old title"); writer.descriptor.close();
+    const storage = new NativePiConversationStorage(f.source, { binding: async () => f.binding, claim: async () => null });
+    const conversation = { agentKind: "pi", conversationFormat: "pi-native-jsonl-v3", conversationRef: f.file };
+    const context = { sessionId: "server", projectId: "project" };
+    const allows = f.source.allowsBinding.bind(f.source);
+    const validate = f.source.validate.bind(f.source);
+    // Arm only after path/header validation; the constructor policy check is
+    // after the old external cache stat but before its path stat/descriptor open.
+    const validation = vi.spyOn(f.source, "validate").mockImplementation(binding => {
+      const result = validate(binding);
+      vi.spyOn(f.source, "allowsBinding").mockImplementationOnce(binding => {
+        appendFileSync(f.file, JSON.stringify({ type: "session_info", id: "latest", parentId: null, name: "latest CLI title" }) + "\n");
+        return allows(binding);
+      });
+      return result;
+    });
+    try { expect(await storage.readTitle(conversation, context)).toBe("latest CLI title"); }
+    finally { validation.mockRestore(); vi.mocked(f.source.allowsBinding).mockRestore(); }
+    expect(await storage.readTitle(conversation, context)).toBe("latest CLI title");
+    expect(await storage.readFirstPrompt(conversation, context)).toBe("first prompt");
+  });
+
+  it("never turns custom attachment metadata or a later user into the first image-only user's title", async () => {
+    const f = await fixture();
+    const writer = openNativeSessionManager(f.source, f.binding);
+    writer.manager.appendCustomMessageEntry("attachment", "附件（1 个）", true);
+    writer.manager.appendMessage({ role: "user", content: [{ type: "image", data: "fixture", mimeType: "image/png" }], timestamp: 1 });
+    writer.manager.appendMessage({ role: "user", content: "later user", timestamp: 2 });
+    writer.descriptor.close();
+    const storage = new NativePiConversationStorage(f.source, { binding: async () => f.binding, claim: async () => null });
+    const conversation = { agentKind: "pi", conversationFormat: "pi-native-jsonl-v3", conversationRef: f.file };
+    expect(await storage.readTitle(conversation, { sessionId: "server", projectId: "project" })).toBeNull();
+    expect(await storage.readFirstPrompt(conversation, { sessionId: "server", projectId: "project" })).toBe("");
+  });
+
+  it("bounds only first-prompt metadata to 512 characters, not exported user content", async () => {
+    const f = await fixture();
+    const writer = openNativeSessionManager(f.source, f.binding);
+    const prompt = "x".repeat(60_000);
+    writer.manager.appendCustomMessageEntry("attachment", "not the first user", true);
+    writer.manager.appendMessage({ role: "user", content: prompt, timestamp: 1 });
+    writer.descriptor.close();
+    const storage = new NativePiConversationStorage(f.source, { binding: async () => f.binding, claim: async () => null });
+    const conversation = { agentKind: "pi", conversationFormat: "pi-native-jsonl-v3", conversationRef: f.file };
+    const context = { sessionId: "server", projectId: "project" };
+    expect(await storage.readFirstPrompt(conversation, context)).toBe(prompt.slice(0, 512));
+    const exported = await storage.readExport(conversation, context);
+    expect(exported.messages.find(m => m.role === "user")?.text).toBe(prompt);
+  });
+
+  it.each(["jsonl", "utf8"])("keeps %s truncated suffix unknown and expires its negative cache", async mode => {
+    const f = await fixture();
+    const writer = openNativeSessionManager(f.source, f.binding);
+    writer.manager.appendMessage({ role: "user", content: "first real user", timestamp: 1 });
+    writer.manager.appendSessionInfo("older name");
+    writer.descriptor.close();
+    const incomplete = mode === "jsonl" ? Buffer.from('{"type":"session_info","name":"unfinished') : Buffer.from([0xe4, 0xb8]);
+    appendFileSync(f.file, incomplete);
+    const storage = new NativePiConversationStorage(f.source, { binding: async () => f.binding, claim: async () => null });
+    const conversation = { agentKind: "pi", conversationFormat: "pi-native-jsonl-v3", conversationRef: f.file };
+    const context = { sessionId: "server", projectId: "project" };
+    const range = vi.spyOn(NativeSessionFd.prototype, "readRange");
+    let now = 100_000;
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+    try {
+      expect(await storage.readTitle(conversation, context)).toBeNull();
+      expect(await storage.readFirstPrompt(conversation, context)).toBe("first real user");
+      const cold = range.mock.calls.length;
+      now += 1999;
+      expect(await storage.readTitle(conversation, context)).toBeNull();
+      expect(range).toHaveBeenCalledTimes(cold);
+      now += 2;
+      expect(await storage.readTitle(conversation, context)).toBeNull();
+      expect(range.mock.calls.length).toBeGreaterThan(cold);
+    } finally { clock.mockRestore(); range.mockRestore(); }
   });
 
   it("provides verified raw bytes, encoded relative path and identity metadata for future archive integration", async () => {

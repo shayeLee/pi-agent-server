@@ -50,7 +50,17 @@ for (const theme of ["light", "dark"] as const) for (const width of [1280, 390])
   }, 160);
   await expect.poll(() => tick).toBeGreaterThan(5);
   await expect(body).toContainText("流式正文 6");
+  // text_delta completes each preceding thinking row; completed rows fold by
+  // default. Explicitly disclose them without scrolling the reader to a button.
+  for (const row of await body.locator('.thinking-row[data-expanded="false"]').evaluateAll(rows => rows.map(row => row.getAttribute("data-testid")!))) {
+    const header = page.getByTestId(row).locator(".thinking-header");
+    await header.dispatchEvent("click");
+    await expect(header).toHaveAttribute("aria-expanded", "true");
+  }
   await expect(body).toContainText("思考更新 6");
+  // Disclosure is intentionally a reading action. Resume follow explicitly
+  // before exercising the original follow -> wheel lock -> Home/End behavior.
+  await page.getByRole("button", { name: "回到最新" }).click();
   await expect.poll(gap).toBeLessThan(2);
   const viewportBefore = await body.evaluate(el => el.clientHeight);
   await body.hover(); await page.mouse.wheel(0, -600);
@@ -83,32 +93,54 @@ for (const theme of ["light", "dark"] as const) for (const width of [1280, 390])
   await latest.click(); await expect.poll(gap).toBeLessThan(2);
   await expect(latest).toHaveCount(0);
   expect(await body.evaluate(el => el.clientHeight)).toBe(viewportBefore);
-  await body.focus(); await page.keyboard.press("Home");
-  await expect.poll(() => body.evaluate(el => el.scrollTop)).toBe(0);
-  const home = await body.evaluate(el => el.scrollTop);
-  const homeStart = tick;
-  await expect.poll(() => tick).toBeGreaterThan(homeStart + 3);
-  expect(await body.evaluate(el => el.scrollTop)).toBeCloseTo(home, 0);
   await body.evaluate(el => {
-    const describe = (node: EventTarget | null) => node instanceof Element ? `${node.tagName}.${node.className}` : String(node);
     document.addEventListener("keydown", event => {
-      if (event.key !== "End") return;
-      el.dataset.endPrevented = String(event.defaultPrevented);
-      console.log(JSON.stringify({ key: event.key, target: describe(event.target), activeElement: describe(document.activeElement), bodyFocused: document.activeElement === el, top: el.scrollTop, height: el.scrollHeight, viewport: el.clientHeight, gap: el.scrollHeight - el.clientHeight - el.scrollTop, prevented: event.defaultPrevented }));
+      if (event.key !== "Home" && event.key !== "End") return;
+      el.setAttribute(`data-${event.key.toLowerCase()}-prevented`, String(event.defaultPrevented));
+      console.log(JSON.stringify({ key: event.key, bodyFocused: document.activeElement === el, targetIsBody: event.target === el, top: el.scrollTop, prevented: event.defaultPrevented }));
     });
   });
-  page.on("console", message => { if (message.text().includes('"key":"End"')) console.log(`keydown ${width}: ${message.text()}`); });
+  page.on("console", message => { if (/"key":"(Home|End)"/.test(message.text())) console.log(`keydown ${width} ${theme}: ${message.text()}`); });
+  await body.focus();
+  await expect(body).toBeFocused();
+  await page.keyboard.press("Home");
+  await expect(body).toHaveAttribute("data-home-prevented", "true");
+  await expect.poll(() => body.evaluate(el => el.scrollTop)).toBe(0);
+  const home = await body.evaluate(el => el.scrollTop);
+  await page.setViewportSize({ width, height: 800 });
+  await expect.poll(() => body.evaluate(el => el.clientHeight)).not.toBe(viewportBefore);
+  expect(await body.evaluate(el => el.scrollTop)).toBe(0);
+  const resizeStart = tick;
+  await expect.poll(() => tick).toBeGreaterThan(resizeStart + 3);
+  expect(await body.evaluate(el => el.scrollTop)).toBe(0);
+  await page.setViewportSize({ width, height: 844 });
+  await expect.poll(() => body.evaluate(el => el.clientHeight)).toBe(viewportBefore);
+  expect(await body.evaluate(el => el.scrollTop)).toBe(0);
+  // Expanding remote completed reasoning while reading Home must not jump down.
+  const remoteRow = await body.locator('.thinking-row[data-expanded="false"]').last().getAttribute("data-testid");
+  const remoteThinking = page.getByTestId(remoteRow!).locator(".thinking-header");
+  await remoteThinking.dispatchEvent("click");
+  await expect(remoteThinking).toHaveAttribute("aria-expanded", "true");
+  expect(await body.evaluate(el => el.scrollTop)).toBe(0);
+  const homeStart = tick;
+  await expect.poll(() => tick).toBeGreaterThan(homeStart + 3);
+  expect(await body.evaluate(el => el.scrollTop)).toBe(0);
   const input = page.getByTestId("composer-input");
   await input.fill("End keeps editing here");
   await input.evaluate(el => (el as HTMLTextAreaElement).setSelectionRange(0, 0));
   await input.press("End");
   expect(await input.evaluate(el => (el as HTMLTextAreaElement).selectionStart)).toBe(22);
+  await expect(input).toBeFocused();
+  await input.press("Home");
+  expect(await input.evaluate(el => (el as HTMLTextAreaElement).selectionStart)).toBe(0);
+  await expect(body).toHaveAttribute("data-home-prevented", "false");
   await expect(body).toHaveAttribute("data-end-prevented", "false");
   const inputStart = tick;
   await expect.poll(() => tick).toBeGreaterThan(inputStart + 3);
-  expect(await body.evaluate(el => el.scrollTop)).toBeCloseTo(home, 0);
+  expect(await body.evaluate(el => el.scrollTop)).toBe(0);
   await expect(latest).toBeVisible();
   await body.focus();
+  await expect(body).toBeFocused();
   await page.keyboard.press("End");
   await expect(body).toHaveAttribute("data-end-prevented", "true");
   console.log(JSON.stringify({ width, phase: "after-End", tick, metrics: await body.evaluate(el => ({ top: el.scrollTop, height: el.scrollHeight, viewport: el.clientHeight, gap: el.scrollHeight - el.clientHeight - el.scrollTop })) }));
@@ -133,7 +165,8 @@ for (const theme of ["light", "dark"] as const) for (const width of [1280, 390])
   // Short viewport + long draft: the same flow slot stays clear of the Composer.
   await page.setViewportSize({ width, height: 390 });
   await input.fill(Array.from({ length: 30 }, (_, i) => `草稿第 ${i} 行，保持输入可编辑。`).join("\n"));
-  await body.focus(); await page.keyboard.press("Home");
+  await body.focus(); await expect(body).toBeFocused(); await page.keyboard.press("Home");
+  await expect(body).toHaveAttribute("data-home-prevented", "true");
   await expect.poll(() => body.evaluate(el => el.scrollTop)).toBe(0);
   await expect(latest).toBeVisible();
   const shortViewport = await body.evaluate(el => el.clientHeight);
@@ -164,7 +197,8 @@ for (const theme of ["light", "dark"] as const) for (const width of [1280, 390])
     buffer: Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aX1sAAAAASUVORK5CYII=", "base64"),
   });
   await expect(page.getByTestId("composer-attachment")).toBeVisible();
-  await body.focus(); await page.keyboard.press("Home");
+  await body.focus(); await expect(body).toBeFocused(); await page.keyboard.press("Home");
+  await expect(body).toHaveAttribute("data-home-prevented", "true");
   await expect.poll(() => body.evaluate(el => el.scrollTop)).toBe(0);
   await expect(latest).toBeVisible();
   const attachmentGeometry = await latest.evaluate(el => {

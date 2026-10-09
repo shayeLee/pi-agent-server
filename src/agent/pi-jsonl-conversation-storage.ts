@@ -314,6 +314,15 @@ export class PiJsonlConversationStorage implements ConversationStorage {
   private readonly firstPrompts = new Map<string, { identity: string; prompt: string | null; expires: number; bytes: number }>();
   private firstPromptCacheBytes = 0;
 
+  async readTitle(conversation: ConversationDescriptor, context: ConversationReadContext): Promise<string | null> {
+    try {
+      // Unified Web-private files retain the managed DTO format but their name
+      // lives in native session_info, just like shared CLI sessions.
+      if (this.isUnified(conversation.conversationRef)) return this.unifiedStorage!.readTitle(await this.unifiedConversation(conversation, context), context);
+      return null;
+    } catch { return null; }
+  }
+
   async readFirstPrompt(conversation: ConversationDescriptor, context: ConversationReadContext): Promise<string | null> {
     try {
       if (this.isUnified(conversation.conversationRef)) return this.unifiedStorage!.readFirstPrompt(await this.unifiedConversation(conversation, context), context);

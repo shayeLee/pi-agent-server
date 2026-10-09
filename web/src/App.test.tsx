@@ -305,21 +305,25 @@ describe("App（顶层流程）", () => {
     await waitFor(() => expect(inst.steer).toHaveBeenCalledOnce());
     const [sessionId, , identity] = inst.steer.mock.calls[0] as unknown as [string, string, { controlId: string; acknowledgementId: string; requestId: string }];
     expect(sessionId).toBe("s1");
-    const ack: SseEvent = { type: "steering_consumed", ...identity };
+    const ack: SseEvent = { type: "steering_consumed", ...identity, message: { sourceId: "actual-entry", text: "consumed same" } };
+    expect(screen.queryByText("consumed same")).not.toBeInTheDocument();
     if (order === "http-first") { await act(async () => finish()); expect(screen.getByTestId("composer-pending-controls")).toHaveTextContent("HTTP 已接收，等待消费确认"); }
     if (order === "unknown") await waitFor(() => expect(screen.getByTestId("composer-pending-controls")).toHaveTextContent("状态未知"));
     act(() => {
-      mocks.sse.onEvent?.({ ...ack, controlId: "foreign" });
-      mocks.sse.onEvent?.({ ...ack, acknowledgementId: "foreign" });
-      mocks.sse.onEvent?.({ ...ack, requestId: "foreign" });
+      mocks.sse.onEvent?.({ ...ack, controlId: "foreign", message: { sourceId: "shared-entry", text: "shared actor consumed" } });
+      mocks.sse.onEvent?.({ ...ack, acknowledgementId: "foreign", message: undefined });
+      mocks.sse.onEvent?.({ ...ack, requestId: "foreign", message: { sourceId: "wrong-request", text: "must not display" } });
     });
     expect(screen.getByTestId("composer-pending-controls")).toBeInTheDocument();
     expect(input).toHaveValue("same");
+    expect(screen.getByText("shared actor consumed")).toBeInTheDocument();
+    expect(screen.queryByText("must not display")).not.toBeInTheDocument();
     fireEvent.change(input, { target: { value: "new draft" } });
     fireEvent.change(screen.getByTestId("composer-file-input"), { target: { files: [new File(["new"], "new.txt", { type: "text/plain" })] } });
     await waitFor(() => expect(screen.getByTestId("composer-attachment")).toHaveAttribute("data-state", "ready"));
     act(() => { mocks.sse.onEvent?.(ack); mocks.sse.onEvent?.(ack); });
     if (order === "sse-first") await act(async () => finish());
+    expect(screen.getAllByText("consumed same")).toHaveLength(1);
     expect(screen.queryByTestId("composer-pending-controls")).not.toBeInTheDocument();
     expect(input).toHaveValue("new draft");
     expect(screen.getByTestId("composer-attachment")).toHaveTextContent("new.txt");

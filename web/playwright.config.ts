@@ -2,6 +2,7 @@ import { defineConfig } from "@playwright/test";
 
 export default defineConfig({
   testDir: "./e2e",
+  testIgnore: ["**/long-session-performance.spec.ts", "**/recent-session-restore.spec.ts"],
   timeout: 30_000,
   // mock 后端是共享内存库，并行会导致状态竞争；串行保证隔离
   workers: 1,

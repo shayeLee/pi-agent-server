@@ -70,7 +70,9 @@ describe("native durable shared index", () => {
       sdk.release(); await vi.waitFor(() => expect(sdk.waits()).toBe(2));
       // SessionEventBus envelopes carry the original, nonterminal payload.
       const acknowledgements = events.map(row => row.event).filter(row => row.type === "steering_consumed");
-      expect(acknowledgements).toEqual([{ type: "steering_consumed", controlId: "one", acknowledgementId: "actor-one-token", requestId: "primary" }]);
+      const consumedEntry = sdk.session.sessionManager.getEntries().filter(entry => entry.type === "message" && entry.message.role === "user").at(-1)!;
+      expect(acknowledgements).toEqual([{ type: "steering_consumed", controlId: "one", acknowledgementId: "actor-one-token", requestId: "primary",
+        message: { sourceId: consumedEntry.id, text: "same" } }]);
       expect(live.runtime.state).toBe("streaming");
       expect(sdk.session.messages.filter(message => message.role === "user")).toHaveLength(2);
     } finally { await sdk.adapter.abort(); await app.close(); registry.dispose(); network.mockRestore(); }

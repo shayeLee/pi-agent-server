@@ -83,6 +83,22 @@ describe("session-local subagent host admission", () => {
     expect(await rf.submitMessage({ requestId: "rejected", userId: "owner", prompt: "new" })).toMatchObject({ kind: "rejected" });
     expect(await full.transport.post(payload())).toMatchObject({ accepted: false, reason: "cancelled" }); rf.dispose();
   });
+  it("background completion after abort remains display-only; its rejected admission cannot attach to the next request", async () => {
+    const s = setup(); const runtime = s.init();
+    await runtime.submitMessage({ requestId: "old", userId: "owner", prompt: "wait" });
+    await runtime.abort("old"); await flush();
+    const p = { ...payload(), text: "Child completed independently", runIds: ["surviving-child"] };
+    s.emit({ type: "entry_appended", entry: { type: "custom", customType: "agent-team:notification", id: "child-entry", timestamp: "2026-01-01T00:00:00Z", data: p } } as any);
+    expect(s.events.at(-1)).toMatchObject({ type: "notification", notificationId: p.notificationId, text: p.text });
+    expect(await s.transport.post(p)).toEqual({ accepted: false, reason: "cancelled" });
+    expect(s.custom).toHaveLength(0);
+    expect(s.events.filter(e => e.type === "aborted")).toEqual([{ type: "aborted", requestId: "old" }]);
+    await runtime.submitMessage({ requestId: "explicit-continue", userId: "owner", prompt: "continue" });
+    expect(await s.transport.post(p)).toEqual({ accepted: false, reason: "cancelled" });
+    expect(s.custom).toHaveLength(0); // Same notification id keeps its cancelled-generation ACK.
+    expect(s.users).toEqual(["wait", "continue"]);
+    s.finish(); await flush(); runtime.dispose();
+  });
   it("deferred old-request storage result after abort cannot reopen notification generation", async () => {
     let release!: () => void;
     const repo: IdempotencyStorePort = { get: async (_sid, rid) => {
