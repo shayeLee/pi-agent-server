@@ -1,0 +1,108 @@
+/* =====================================================================
+   Design tokens — "agent workspace" structure, chat-first minimal style.
+
+   Raw values live in --ui-* custom properties and switch with
+   [data-theme]; Tailwind utilities read them through `@theme inline`
+   (index.css), so a class like `bg-surface` follows the theme without a
+   `dark:` variant. All names avoid the legacy styles.css variables
+   (--bg-*, --text-*, --accent*, --font-*, --shadow-md/lg, --radius-*).
+
+   Neutrals are achromatic zinc steps; the only hue is the accent.
+   Hover/selected fills are translucent so they read on every surface.
+   Text contrast on canvas: fg ≥ 15:1, fg-muted ≥ 7:1, fg-subtle ≥ 4.5:1
+   (AA for small meta text); fg-faint is for placeholders/disabled only.
+   ===================================================================== */
+
+:root {
+  /* Surfaces, back to front */
+  --ui-canvas: #ffffff;          /* conversation column */
+  --ui-sidebar: #f8f8f9;         /* left sidebar, run panel */
+  --ui-surface: #ffffff;         /* composer, cards, step blocks */
+  --ui-raised: #ffffff;          /* popovers, menus, dialogs (with shadow) */
+  --ui-sunken: #f4f4f5;          /* code, inline inputs, tracks */
+  --ui-overlay: rgb(9 9 11 / 0.32);
+
+  /* Interaction fills */
+  --ui-hover: rgb(9 9 11 / 0.045);
+  --ui-selected: rgb(9 9 11 / 0.075);
+  --ui-pressed: rgb(9 9 11 / 0.1);
+
+  /* Borders */
+  --ui-border: #e7e7ea;
+  --ui-border-strong: #d4d4d8;
+
+  /* Text */
+  --ui-fg: #18181b;
+  --ui-fg-muted: #52525b;
+  --ui-fg-subtle: #71717a;
+  --ui-fg-faint: #a1a1aa;
+
+  /* Accent (single hue) */
+  --ui-accent: #3a63d8;
+  --ui-accent-hover: #3256bf;
+  --ui-on-accent: #ffffff;
+  --ui-accent-text: #2f56c6;
+  --ui-accent-soft: #eef2fd;
+  --ui-ring: rgb(58 99 216 / 0.45);
+
+  /* Status */
+  --ui-success: #1f8a4c;
+  --ui-success-soft: #e9f6ee;
+  --ui-warning: #b06a00;
+  --ui-warning-soft: #fdf4e4;
+  --ui-danger: #cf3a32;
+  --ui-danger-solid: #cf3a32;
+  --ui-danger-soft: #fdeeed;
+
+  /* Elevation: hairline + soft drop, only for floating layers */
+  --ui-shadow-popover: 0 0 0 1px rgb(9 9 11 / 0.06), 0 4px 12px -2px rgb(9 9 11 / 0.08), 0 12px 32px -8px rgb(9 9 11 / 0.12);
+  --ui-shadow-dialog: 0 0 0 1px rgb(9 9 11 / 0.06), 0 16px 48px -12px rgb(9 9 11 / 0.22);
+  --ui-shadow-composer: 0 1px 2px rgb(9 9 11 / 0.04), 0 4px 16px -6px rgb(9 9 11 / 0.08);
+}
+
+[data-theme="dark"] {
+  --ui-canvas: #18181a;
+  --ui-sidebar: #131315;
+  --ui-surface: #1f1f22;
+  --ui-raised: #232326;
+  --ui-sunken: #111113;
+  --ui-overlay: rgb(0 0 0 / 0.55);
+
+  --ui-hover: rgb(255 255 255 / 0.05);
+  --ui-selected: rgb(255 255 255 / 0.085);
+  --ui-pressed: rgb(255 255 255 / 0.11);
+
+  --ui-border: #2b2b30;
+  --ui-border-strong: #3b3b42;
+
+  --ui-fg: #ececee;
+  --ui-fg-muted: #a8a8b0;
+  --ui-fg-subtle: #8c8c95;
+  --ui-fg-faint: #5d5d66;
+
+  --ui-accent: #4d72e3;
+  --ui-accent-hover: #5c80ec;
+  --ui-on-accent: #ffffff;
+  --ui-accent-text: #8fa9f6;
+  --ui-accent-soft: rgb(77 114 227 / 0.16);
+  --ui-ring: rgb(143 169 246 / 0.5);
+
+  --ui-success: #4cc38a;
+  --ui-success-soft: rgb(76 195 138 / 0.14);
+  --ui-warning: #f0b453;
+  --ui-warning-soft: rgb(240 180 83 / 0.14);
+  --ui-danger: #f2766d;
+  --ui-danger-solid: #c9443c;
+  --ui-danger-soft: rgb(242 118 109 / 0.14);
+
+  --ui-shadow-popover: 0 0 0 1px rgb(255 255 255 / 0.06), 0 8px 24px -4px rgb(0 0 0 / 0.5);
+  --ui-shadow-dialog: 0 0 0 1px rgb(255 255 255 / 0.07), 0 24px 64px -12px rgb(0 0 0 / 0.65);
+  --ui-shadow-composer: 0 0 0 1px rgb(255 255 255 / 0.02), 0 8px 24px -8px rgb(0 0 0 / 0.45);
+}
+
+/* Layout geometry shared by later phases (shell, conversation, run panel). */
+:root {
+  --ui-sidebar-width: 260px;
+  --ui-run-panel-width: 360px;
+  --ui-header-height: 48px;
+}

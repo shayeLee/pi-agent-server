@@ -5,6 +5,7 @@ import { SessionList } from "./components/SessionList.js";
 import { ProjectSwitcher } from "./components/ProjectSwitcher.js";
 import { Chat } from "./components/Chat.js";
 import { Inspector } from "./components/Inspector.js";
+import { useColorScheme } from "./ui/theme.js";
 
 const SIDEBAR_DEFAULT = 264;
 const SIDEBAR_MIN = 180;
@@ -25,30 +26,8 @@ export default function App() {
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const mobileMenuRef = useRef<HTMLButtonElement>(null);
   const [detailsCollapsed, setDetailsCollapsed] = useState(true);
-  const [theme, setTheme] = useState<"dark" | "light">(() =>
-    window.matchMedia?.("(prefers-color-scheme: dark)").matches ? "dark" : "light",
-  );
-  const themeOverridden = useRef(false);
-  // Follow the system until the user manually chooses a theme in this page session.
-  useEffect(() => {
-    const media = window.matchMedia?.("(prefers-color-scheme: dark)");
-    if (!media) return;
-    const syncTheme = (event: MediaQueryListEvent) => {
-      if (!themeOverridden.current) setTheme(event.matches ? "dark" : "light");
-    };
-    if (media.addEventListener) {
-      media.addEventListener("change", syncTheme);
-      return () => media.removeEventListener("change", syncTheme);
-    }
-    if (media.addListener) {
-      media.addListener(syncTheme);
-      return () => media.removeListener(syncTheme);
-    }
-  }, []);
   // Keep inherited CSS tokens and the page background in sync with the single App theme source.
-  useEffect(() => {
-    document.documentElement.setAttribute("data-theme", theme);
-  }, [theme]);
+  const { theme, toggleTheme } = useColorScheme();
   const [sidebarWidth, setSidebarWidth] = useState(SIDEBAR_DEFAULT);
   const [detailsWidth, setDetailsWidth] = useState(DETAILS_DEFAULT);
   const [dragging, setDragging] = useState<"sidebar" | "details" | null>(null);
@@ -188,10 +167,7 @@ export default function App() {
         </div>
         <button type="button" className="theme-toggle" data-testid="theme-toggle"
           aria-label={theme === "dark" ? "切换为亮色主题" : "切换为暗色主题"}
-          onClick={() => {
-            themeOverridden.current = true;
-            setTheme((current) => current === "dark" ? "light" : "dark");
-          }}><Icon name={theme === "dark" ? "sun" : "moon"} /></button>
+          onClick={toggleTheme}><Icon name={theme === "dark" ? "sun" : "moon"} /></button>
         {controller.projects === null || controller.activeProjectId === null ? (
           controller.projectsError ? (
             <div className="project-error" role="alert" data-testid="projects-error">

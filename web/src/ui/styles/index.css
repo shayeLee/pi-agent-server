@@ -1,0 +1,250 @@
+/* =====================================================================
+   Web UI stylesheet entry.
+
+   Cascade layers, lowest first:
+     legacy     — the pre-redesign styles.css, unchanged, kept until its
+                  screens are rebuilt. Being layered, its global element
+                  rules (button, input, …) can no longer beat new utilities.
+     theme      — token custom properties emitted by Tailwind.
+     base       — a reset scoped to [data-ui] subtrees (Tailwind preflight
+                  is not loaded so legacy screens render as before).
+     components — reserved.
+     utilities  — Tailwind utilities, generated only from new-UI sources.
+   ===================================================================== */
+
+@layer legacy, theme, base, components, utilities;
+
+@import "../../styles.css" layer(legacy);
+@import "@fontsource-variable/inter/index.css";
+@import "tailwindcss/utilities.css" layer(utilities) source(none);
+@import "./tokens.css" layer(theme);
+
+@source "../";
+@source "../../design";
+
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+@layer theme {
+  @theme {
+    --spacing: 0.25rem;
+
+    --breakpoint-sm: 40rem;
+    --breakpoint-md: 48rem;
+    --breakpoint-lg: 64rem;
+    --breakpoint-xl: 80rem;
+
+    /* Inter for Latin/numerals; CJK falls through to the platform UI font. */
+    --font-text: "Inter Variable", Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+      "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", "Noto Sans SC", sans-serif;
+    --font-code: ui-monospace, SFMono-Regular, "SF Mono", "JetBrains Mono", Menlo, Consolas, "Liberation Mono", monospace;
+
+    /* Dense UI scale (14px base) plus a roomier reading size for chat prose. */
+    --text-2xs: 11px;
+    --text-2xs--line-height: 16px;
+    --text-xs: 12px;
+    --text-xs--line-height: 16px;
+    --text-sm: 13px;
+    --text-sm--line-height: 18px;
+    --text-base: 14px;
+    --text-base--line-height: 20px;
+    --text-chat: 15px;
+    --text-chat--line-height: 26px;
+    --text-lg: 16px;
+    --text-lg--line-height: 24px;
+    --text-xl: 18px;
+    --text-xl--line-height: 26px;
+    --text-2xl: 22px;
+    --text-2xl--line-height: 30px;
+
+    --font-weight-normal: 400;
+    --font-weight-medium: 500;
+    --font-weight-semibold: 600;
+
+    --tracking-tight: -0.011em;
+    --tracking-normal: 0em;
+    --tracking-wide: 0.04em;
+
+    --leading-none: 1;
+    --leading-tight: 1.25;
+    --leading-normal: 1.5;
+    --leading-relaxed: 1.7;
+
+    --radius-xs: 3px;
+    --radius-sm: 4px;
+    --radius-md: 6px;
+    --radius-lg: 8px;
+    --radius-xl: 12px;
+
+    --container-conversation: 760px;
+    --container-dialog: 440px;
+    --container-menu: 280px;
+
+    --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+    --ease-in-out: cubic-bezier(0.65, 0, 0.35, 1);
+    --default-transition-duration: 140ms;
+    --default-transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+
+    --animate-spin: spin 0.9s linear infinite;
+    --animate-pulse-dot: pulse-dot 1.6s var(--ease-in-out) infinite;
+    --animate-fade-in: fade-in 140ms var(--ease-out);
+    --animate-fade-out: fade-out 100ms ease-in;
+    --animate-pop-in: pop-in 160ms var(--ease-out);
+    --animate-pop-out: pop-out 100ms ease-in;
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+    @keyframes pulse-dot {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.35; }
+    }
+    @keyframes fade-in {
+      from { opacity: 0; }
+    }
+    @keyframes fade-out {
+      to { opacity: 0; }
+    }
+    @keyframes pop-in {
+      from { opacity: 0; transform: scale(0.97) translateY(2px); }
+    }
+    @keyframes pop-out {
+      to { opacity: 0; transform: scale(0.98); }
+    }
+  }
+}
+
+@theme inline {
+  --color-transparent: transparent;
+  --color-current: currentColor;
+
+  --color-canvas: var(--ui-canvas);
+  --color-sidebar: var(--ui-sidebar);
+  --color-surface: var(--ui-surface);
+  --color-raised: var(--ui-raised);
+  --color-sunken: var(--ui-sunken);
+  --color-overlay: var(--ui-overlay);
+
+  --color-hover: var(--ui-hover);
+  --color-selected: var(--ui-selected);
+  --color-pressed: var(--ui-pressed);
+
+  --color-border: var(--ui-border);
+  --color-border-strong: var(--ui-border-strong);
+
+  --color-fg: var(--ui-fg);
+  --color-fg-muted: var(--ui-fg-muted);
+  --color-fg-subtle: var(--ui-fg-subtle);
+  --color-fg-faint: var(--ui-fg-faint);
+
+  --color-accent: var(--ui-accent);
+  --color-accent-hover: var(--ui-accent-hover);
+  --color-on-accent: var(--ui-on-accent);
+  --color-accent-text: var(--ui-accent-text);
+  --color-accent-soft: var(--ui-accent-soft);
+  --color-ring: var(--ui-ring);
+
+  --color-success: var(--ui-success);
+  --color-success-soft: var(--ui-success-soft);
+  --color-warning: var(--ui-warning);
+  --color-warning-soft: var(--ui-warning-soft);
+  --color-danger: var(--ui-danger);
+  --color-danger-solid: var(--ui-danger-solid);
+  --color-danger-soft: var(--ui-danger-soft);
+
+  --shadow-popover: var(--ui-shadow-popover);
+  --shadow-dialog: var(--ui-shadow-dialog);
+  --shadow-composer: var(--ui-shadow-composer);
+}
+
+/* Translucent interaction fills layered over an element's own background (e.g. bg-surface). */
+@utility overlay-hover {
+  background-image: linear-gradient(var(--ui-hover), var(--ui-hover));
+}
+@utility overlay-pressed {
+  background-image: linear-gradient(var(--ui-pressed), var(--ui-pressed));
+}
+
+/* Preflight equivalent, applied only inside new-UI roots and Radix portals that carry [data-ui]. */
+@layer base {
+  [data-ui] {
+    color-scheme: light;
+    color: var(--ui-fg);
+    font-family: var(--font-text);
+    font-size: var(--text-base);
+    line-height: var(--text-base--line-height);
+    font-feature-settings: "cv11", "calt";
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+  }
+  [data-theme="dark"] [data-ui],
+  [data-ui][data-theme="dark"] {
+    color-scheme: dark;
+  }
+  [data-ui],
+  [data-ui] *,
+  [data-ui] ::before,
+  [data-ui] ::after {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+    border: 0 solid var(--ui-border);
+  }
+  [data-ui] :is(button, input, textarea, select) {
+    font: inherit;
+    letter-spacing: inherit;
+    color: inherit;
+    background: transparent;
+    border-radius: 0;
+    opacity: 1;
+  }
+  [data-ui] button {
+    cursor: pointer;
+  }
+  [data-ui] :is(button, input, textarea, select):disabled {
+    cursor: default;
+  }
+  [data-ui] :is(h1, h2, h3, h4, h5, h6) {
+    font-size: inherit;
+    font-weight: inherit;
+  }
+  [data-ui] :is(ol, ul, menu) {
+    list-style: none;
+  }
+  [data-ui] a {
+    color: inherit;
+    text-decoration: inherit;
+  }
+  [data-ui] :is(img, video) {
+    display: block;
+    max-width: 100%;
+  }
+  [data-ui] svg.lucide {
+    flex-shrink: 0;
+    stroke-width: 1.75;
+  }
+  [data-ui] ::placeholder {
+    color: var(--ui-fg-faint);
+    opacity: 1;
+  }
+  [data-ui] ::selection {
+    background: var(--ui-accent-soft);
+  }
+  [data-ui] :focus-visible {
+    outline: 2px solid var(--ui-ring);
+    outline-offset: 1px;
+  }
+  [data-ui] :focus:not(:focus-visible) {
+    outline: none;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    [data-ui] *,
+    [data-ui] *::before,
+    [data-ui] *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+}
