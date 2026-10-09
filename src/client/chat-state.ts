@@ -10,10 +10,16 @@ export type ChatState = {
   /** Timeline of messages, thinking segments, and tool calls in event order. */
   timeline: TimelineItem[];
   phase: ChatPhase;
+  /** Request owning queued/streaming lifecycle. Legacy events without IDs retain their behavior. */
+  activeRequestId?: string | null;
   /** Display message from the most recent error event. */
   error: string | null;
   /** Current/most recent turn statistics from a usage event. */
   stats: UsageStats | null;
+  /** Ephemeral receipt clock; never restored from history. */
+  modelOutput?: (import("./types.js").ModelOutputProgress & { receivedAt: number }) | null;
+  /** Only observed tool_start lifecycle for the active request, not historical timeline cards. */
+  activeToolCallIds?: string[];
 };
 
 export function createChatState(): ChatState {
@@ -21,7 +27,7 @@ export function createChatState(): ChatState {
 }
 
 /** Append a user message and enter queued phase until the server responds. */
-export function addUserMessage(state: ChatState, text: string, messageId?: string): ChatState {
+export function addUserMessage(state: ChatState, text: string, messageId?: string, requestId?: string): ChatState {
   const message: TimelineItem = {
     kind: "message",
     id: messageId ?? `user-${state.timeline.length}`,
@@ -33,19 +39,60 @@ export function addUserMessage(state: ChatState, text: string, messageId?: strin
     ...state,
     timeline: [...state.timeline, message],
     phase: "queued",
+    activeRequestId: requestId ?? null,
+    modelOutput: null,
+    activeToolCallIds: [],
     error: null,
   };
 }
 
+/** Notifications are display-only. Missing IDs retain the legacy session-stream contract.
+ * A new lifecycle may claim an idle/terminal state, but cannot steal an active request. */
+export function ownsSseEvent(state: ChatState, event: SseEvent): boolean {
+  if (event.type === "notification") return false;
+  if (!event.requestId || !state.activeRequestId) return true;
+  if (event.requestId === state.activeRequestId) return true;
+  return state.phase !== "queued" && state.phase !== "streaming" &&
+    (event.type === "status" || event.type === "queued" || event.type === "text_delta" || event.type === "thinking_delta" || event.type === "tool_start");
+}
+
+/** Counts are snapshots, never increments. Replayed/stale snapshots cannot roll back a session. */
+export function mergeExecution(previous: import("./types.js").ExecutionSnapshot | null | undefined, incoming: import("./types.js").ExecutionSnapshot | null | undefined) {
+  if (incoming === undefined) return previous;
+  if (previous && incoming && previous.recordedLoops !== null && previous.recordedTurns !== null &&
+      incoming.recordedLoops !== null && incoming.recordedTurns !== null &&
+      (incoming.recordedLoops < previous.recordedLoops || incoming.recordedTurns < previous.recordedTurns)) return previous;
+  return incoming;
+}
+
 /** Map one SSE event to a new ChatState without mutating the previous state. */
-export function applySseEvent(state: ChatState, event: SseEvent): ChatState {
+export function applySseEvent(state: ChatState, event: SseEvent, now: () => number = () => performance.now()): ChatState {
+  if (event.type !== "notification") {
+    if (!ownsSseEvent(state, event)) {
+      // Record a foreign failure, without ending the active answer or clearing its progress.
+      return event.type === "error" ? { ...state, error: event.message } : state;
+    }
+    if (event.requestId && (event.type === "status" || event.type === "queued" ||
+        event.type === "text_delta" || event.type === "thinking_delta" || event.type === "tool_start")) {
+      state = { ...state, activeRequestId: event.requestId };
+    }
+  }
   switch (event.type) {
+    case "notification": {
+      const { type: _type, ...notification } = event;
+      const item: TimelineItem = { ...notification, kind: "notification", id: `notification:${event.notificationId}` };
+      const exists = state.timeline.some(row => row.id === item.id);
+      return { ...state, timeline: exists ? state.timeline.map(row => row.id === item.id ? item : row) : [...state.timeline, item] };
+    }
+    case "model_output_progress":
+      return { ...state, modelOutput: !event.replay && event.phase === "delta"
+        ? { ...event, receivedAt: now() - Math.max(0, event.activityAgeMs ?? 0) } : null };
     case "text_delta":
       return appendAssistantText(state, event.text);
     case "thinking_delta":
       return appendThinking(state, event.text);
     case "tool_start":
-      return appendToolCall(state, {
+      return appendToolCall({ ...state, activeToolCallIds: [...new Set([...(state.activeToolCallIds ?? []), event.toolCallId])] }, {
         toolCallId: event.toolCallId,
         toolName: event.toolName,
         args: event.args,
@@ -57,15 +104,20 @@ export function applySseEvent(state: ChatState, event: SseEvent): ChatState {
         partialResult: event.partialResult,
       });
     case "tool_end":
-      return upsertToolCall(state, {
+      return upsertToolCall({ ...state, activeToolCallIds: state.activeToolCallIds?.filter(id => id !== event.toolCallId) }, {
         toolCallId: event.toolCallId,
         toolName: event.toolName,
         result: event.result,
         isError: event.isError,
         done: true,
       });
-    case "status":
-      return { ...state, phase: "streaming" };
+    case "status": {
+      const stats = event.phase === "agent_start" && state.stats ? { ...state.stats, lastResponse: null, context: null } : state.stats;
+      return { ...state, activeToolCallIds: event.phase === "agent_start" ? [] : state.activeToolCallIds, modelOutput: event.phase === "agent_start" ? null : state.modelOutput, phase: "streaming", stats: event.execution === undefined ? stats : {
+        durationMs: NaN, ttftMs: NaN, promptTokens: null, completionTokens: null, totalTokens: null,
+        ...stats, execution: mergeExecution(stats?.execution, event.execution),
+      } };
+    }
     case "queued":
       return { ...state, phase: "queued" };
     case "usage":
@@ -77,18 +129,22 @@ export function applySseEvent(state: ChatState, event: SseEvent): ChatState {
           promptTokens: event.promptTokens,
           completionTokens: event.completionTokens,
           totalTokens: event.totalTokens,
+          ...(event.lastResponse !== undefined ? { lastResponse: event.lastResponse } : {}),
+          ...(event.sessionTotals !== undefined ? { sessionTotals: event.sessionTotals } : {}),
+          ...(event.context !== undefined ? { context: event.context } : {}),
+          ...(event.execution !== undefined || state.stats?.execution !== undefined ? { execution: mergeExecution(state.stats?.execution, event.execution) } : {}),
         },
       };
     case "model_failback":
       // Failback metadata is informational and does not change conversation state.
       return state;
     case "completed":
-      return closeCurrentAssistant({ ...state, phase: "completed", error: null });
+      return closeCurrentAssistant({ ...state, modelOutput: null, activeToolCallIds: [], phase: "completed", error: null });
     case "aborted":
-      return closeCurrentAssistant({ ...state, phase: "aborted" });
+      return closeCurrentAssistant({ ...state, modelOutput: null, activeToolCallIds: [], phase: "aborted" });
     case "error":
       // An error ends this answer; subsequent text_delta starts a new message.
-      return closeCurrentAssistant({ ...state, phase: "idle", error: event.message });
+      return closeCurrentAssistant({ ...state, modelOutput: null, activeToolCallIds: [], phase: "idle", error: event.message });
     default:
       // Ignore future or malformed events without corrupting the current state.
       return state;

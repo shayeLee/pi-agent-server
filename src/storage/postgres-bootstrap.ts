@@ -104,17 +104,16 @@ export async function initializePostgresDatabaseVerifyOnly(pool: Pool): Promise<
  * （按当前数据库名前缀键控，不跨库互锁），把并发 bootstrap 串行化：后到者等待前者
  * COMMIT/ROLLBACK（xact 锁自动释放）之后再 preflight，看到完整 schema 即跳过 DDL。
  *
- * new-baseline ledger 门禁（与 SQLite bootstrap 同一边界，先于任何 DDL）：
- * - 库中已存在 schema_migrations：只接受**恰好一条** canonical 基线行（version=0 /
- *   initial-schema / 当前 golden checksum）；旧 v0/v1 注册表的多行/旧 checksum ledger
- *   一律 fail-fast（专有 legacy 消息），绝不采用；
+ * migration-head ledger 门禁（与 SQLite bootstrap 同一边界，先于任何 DDL）：
+ * - 库中已存在 schema_migrations：只接受所有已发布迁移的完整 canonical ledger；落后于 head
+ *   或带未知版本/错误 checksum 的 ledger 一律 fail-fast，历史升级由 offline migrate 完成；
  * - 无 ledger 但已含任一 managed 表 → legacy 库 fail-fast（专有消息），绝不采用；
- * - 全新 schema（无 ledger、无 managed 表）→ bootstrap 建全部表/索引，并在**同一事务**写入
- *   基线 ledger 行（与迁移引擎 apply 的产物完全一致，后续 verify/apply 均可直接通过）。
+ * - 全新 schema（无 ledger、无 managed 表）→ bootstrap 建最新 manifest 的全部表/索引，并在**同一事务**
+ *   写入完整 canonical migration ledger（后续 verify/apply 均可直接通过）。
  *
  * 启动路径（strict schema preflight，**在任何建表/建索引 DDL 之前**）：
  * 1. assertSchemaCompatible 检查数据库现状：
- *    - 无任何 managed 表（全新 schema / 只有无关表）→ bootstrap 正常建库 + 基线 ledger；
+ *    - 无任何 managed 表（全新 schema / 只有无关表）→ bootstrap 正常建库 + 完整 migration-head ledger；
  *    - 已含任一 managed 表 → 要求完整 schema 与 Manifest 物理契约一致（列名/物理类型/
  *      nullable/DEFAULT/PK/FK/显式索引），否则 fail-fast，不执行任何 ALTER/补列/建索引；
  *    - 已完整一致 → 跳过 DDL（不重建）。
@@ -124,19 +123,19 @@ export async function initializePostgresDatabase(pool: Pool, options: SchemaBoot
   const kysely = createPostgresKysely(pool);
   try {
     const manifest = options.manifest ?? schemaManifest;
-    const baseline = migrationDefinitions[0]!;
+    const migrations = migrationDefinitions;
     await kysely.transaction().execute(async (transaction) => {
       const trx = transaction as unknown as Kysely<DatabaseSchema>;
       // Validate the effective schema before any application advisory lock, ledger/catalog
       // lookup, or DDL. public and PostgreSQL system schemas are never business targets.
       await assertPostgresApplicationSchema(trx);
       await sql`SELECT pg_advisory_xact_lock(hashtext(${POSTGRES_BOOTSTRAP_LOCK_SCOPE} || current_database()))`.execute(trx);
-      // new-baseline ledger 门禁：先于任何 DDL 判定 legacy / 旧注册表 ledger / 正常状态。
+      // migration-head ledger 门禁：先于任何 DDL 判定 legacy / incomplete ledger / 正常状态。
       const ledgerExists = await pgTableExists(trx, "schema_migrations");
       if (ledgerExists) {
         // Reuse migration-engine's strict physical ledger contract before reading/adopting its row.
         await assertPostgresMigrationLedgerContract(trx);
-        await assertCanonicalBaselineLedger(trx, baseline);
+        await assertCanonicalMigrationLedger(trx, migrations);
         const verdict = await assertSchemaCompatible(trx, "PostgreSQL", POSTGRES_LOGICAL_TYPE, manifest);
         if (verdict === "empty") {
           throw new Error("schema migration ledger: ledger exists but no managed table is present; refusing to adopt a corrupt legacy state");
@@ -145,14 +144,14 @@ export async function initializePostgresDatabase(pool: Pool, options: SchemaBoot
       } else if (await pgManagedTableExists(trx, manifest)) {
         throw new Error(
           "schema migration ledger: managed tables exist without the migration ledger; this is a legacy database and bootstrap adoption is forbidden — " +
-          "start from an empty database/schema and apply the single baseline (pnpm migrate -- --apply)",
+          "start from an empty database/schema and apply migrations (pnpm migrate -- --apply)",
         );
       } else {
         const verdict = await assertSchemaCompatible(trx, "PostgreSQL", POSTGRES_LOGICAL_TYPE, manifest);
         if (verdict === "empty") {
           await bootstrapSchemaFromManifest(trx, POSTGRES_LOGICAL_TYPE, manifest);
           await createPostgresLedgerTable(trx);
-          await insertPostgresLedgerRow(trx, baseline);
+          for (const migration of migrations) await insertPostgresLedgerRow(trx, migration);
         }
       }
     });
@@ -181,22 +180,18 @@ async function pgManagedTableExists(kysely: Kysely<DatabaseSchema>, manifest: Sc
 }
 
 /** 只接受恰好一条 canonical 基线行（version=0 / initial-schema / 当前 golden checksum）。 */
-async function assertCanonicalBaselineLedger(kysely: Kysely<DatabaseSchema>, baseline: (typeof migrationDefinitions)[number]): Promise<void> {
+async function assertCanonicalMigrationLedger(kysely: Kysely<DatabaseSchema>, migrations: typeof migrationDefinitions): Promise<void> {
   const result = await sql<{ version: number; name: string; checksum: string }>`
     SELECT version, name, checksum FROM schema_migrations ORDER BY version
   `.execute(kysely);
-  const rows = result.rows;
-  const canonical = rows.length === 1 &&
-    rows[0]!.version === 0 &&
-    rows[0]!.name === baseline.name &&
-    rows[0]!.checksum === migrationChecksum(baseline);
+  const canonical = result.rows.length === migrations.length && migrations.every((migration, index) => {
+    const row = result.rows[index];
+    return row?.version === migration.version && row.name === migration.name && row.checksum === migrationChecksum(migration);
+  });
   if (!canonical) {
-    const detail = rows.length === 0
-      ? "ledger exists but is empty"
-      : `${rows.length} ledger row(s) do not match the single canonical baseline (version 0 / ${baseline.name} / current golden checksum)`;
     throw new Error(
-      `schema migration ledger: legacy migration ledger (${detail}) from the removed v0/v1 registry; ` +
-      `bootstrap adoption is forbidden — start from an empty database/schema and apply the single baseline`,
+      "schema migration ledger: bootstrap only accepts a complete canonical migration head; " +
+      "apply pending migrations with the offline migration runner before bootstrap",
     );
   }
 }
@@ -213,9 +208,9 @@ async function createPostgresLedgerTable(kysely: Kysely<DatabaseSchema>): Promis
   `.execute(kysely);
 }
 
-async function insertPostgresLedgerRow(kysely: Kysely<DatabaseSchema>, baseline: (typeof migrationDefinitions)[number]): Promise<void> {
+async function insertPostgresLedgerRow(kysely: Kysely<DatabaseSchema>, migration: (typeof migrationDefinitions)[number]): Promise<void> {
   await sql`
     INSERT INTO schema_migrations (version, name, checksum, applied_at)
-    VALUES (${0}, ${baseline.name}, ${migrationChecksum(baseline)}, ${Date.now()})
+    VALUES (${migration.version}, ${migration.name}, ${migrationChecksum(migration)}, ${Date.now()})
   `.execute(kysely);
 }

@@ -25,17 +25,51 @@ function setup(overrides: Partial<Parameters<typeof ProjectSwitcher>[0]> = {}) {
 }
 
 describe("ProjectSwitcher（项目切换器）", () => {
-  it("渲染项目下拉列表，当前选中项目", () => {
+  it("渲染自绘项目列表并在触发按钮标记当前项目", () => {
     setup();
-    const select = screen.getByTestId("project-select") as HTMLSelectElement;
-    expect(select.value).toBe(DEFAULT_PROJECT_ID);
-    expect(screen.getByText("默认项目")).toBeInTheDocument();
-    expect(screen.getByText("我的仓库")).toBeInTheDocument();
+    const trigger = screen.getByTestId("project-select");
+    expect(trigger).toHaveAttribute("data-value", DEFAULT_PROJECT_ID);
+    expect(trigger).toHaveTextContent("默认项目");
+    expect(document.querySelector("select")).not.toBeInTheDocument();
+
+    fireEvent.click(trigger);
+    expect(screen.getByRole("option", { name: "默认项目" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("option", { name: "我的仓库" })).toBeInTheDocument();
+  });
+
+  it("长项目名仍位于可收缩标签中，箭头保留在整块可点击触发器内", () => {
+    const longName = "很长的项目名称用于验证箭头不会被挤出选择框右侧";
+    setup({
+      projects: [{ ...projects[0]!, name: longName }],
+      activeId: DEFAULT_PROJECT_ID,
+    });
+
+    const trigger = screen.getByTestId("project-select");
+    expect(trigger.closest(".workbench-project-select")).toBeInTheDocument();
+    expect(trigger.querySelector(".select-menu-label")).toHaveTextContent(longName);
+    expect(trigger.querySelector("svg")).toBeInTheDocument();
+    fireEvent.click(trigger);
+    expect(trigger).toHaveAttribute("aria-expanded", "true");
+  });
+
+  it("同名项目按 id 切换，完整 cwd 可悬停查看，系统共享项目不显示删除", () => {
+    const { onSelect } = setup({ projects: [
+      { id: "one", name: "repo", cwd: "/one/repo", isDefault: false, canDelete: false },
+      { id: "two", name: "repo", cwd: "/two/repo", isDefault: false, canDelete: false },
+    ], activeId: "one" });
+    expect(screen.getByTestId("project-select")).toHaveAttribute("title", "/one/repo");
+    expect(screen.queryByTestId("delete-project")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("project-select"));
+    const options = screen.getAllByRole("option", { name: "repo" });
+    expect(options[1]).toHaveAttribute("title", "/two/repo");
+    fireEvent.click(options[1]!);
+    expect(onSelect).toHaveBeenCalledWith("two");
   });
 
   it("切换项目触发 onSelect(id)", () => {
     const { onSelect } = setup();
-    fireEvent.change(screen.getByTestId("project-select"), { target: { value: "p1" } });
+    fireEvent.click(screen.getByTestId("project-select"));
+    fireEvent.click(screen.getByRole("option", { name: "我的仓库" }));
     expect(onSelect).toHaveBeenCalledWith("p1");
   });
 

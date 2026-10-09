@@ -91,6 +91,49 @@ async function makeApp(role?: "admin" | "user" | "viewer" | "operator") {
   });
 }
 
+it("steering contract declares empty admission and exact nonterminal consumption acknowledgement", () => {
+  const operation = document.paths["/v1/sessions/{id}/steer"]!.post!;
+  const responses = operation.responses as Record<string, Record<string, unknown>>;
+  expect(responses["202"]).toBeDefined();
+  expect(responses["202"]).not.toHaveProperty("content");
+  expect(responses["204"]).not.toHaveProperty("content");
+  expect(operation.requestBody).toMatchObject({ content: { "application/json": { schema: { $ref: "#/components/schemas/SteeringInput" } } } });
+  expect(document.components.schemas.SteeringInput).toMatchObject({ required: ["text"], properties: { images: { maxItems: 4 } }, anyOf: [{ required: ["controlId", "acknowledgementId", "requestId"] }, { not: expect.any(Object) }] });
+  const ack = { type: "steering_consumed", controlId: "c", acknowledgementId: "token", requestId: "primary" };
+  expect(schemaMatches(ack, document.components.schemas.SseEvent!)).toBe(true);
+  for (const key of ["controlId", "acknowledgementId", "requestId"]) {
+    const missing: Record<string, unknown> = { ...ack }; delete missing[key];
+    expect(schemaMatches(missing, document.components.schemas.SseEvent!)).toBe(false);
+  }
+});
+
+it("usage schema keeps fields required and permits unknown null alongside measured zero", () => {
+  const usage = { type: "usage", promptTokens: 120, completionTokens: 8, totalTokens: 160, durationMs: 10, ttftMs: 1 };
+  const schema = document.components.schemas.SseEvent!;
+  expect(schemaMatches(usage, schema)).toBe(true);
+  expect(schemaMatches({ ...usage, promptTokens: 0, completionTokens: 0, totalTokens: 0 }, schema)).toBe(true);
+  expect(schemaMatches({ ...usage, promptTokens: null, completionTokens: null, totalTokens: null }, schema)).toBe(true);
+  const { promptTokens: _omitted, ...missing } = usage;
+  expect(schemaMatches(missing, schema)).toBe(false);
+});
+
+it("additive usage snapshots validate through SSE and export; legacy omission stays valid", () => {
+  const tokens = { input: 120, output: 8, cacheRead: 20, cacheWrite: 12, totalTokens: 160, costUsdEstimate: 0 };
+  const snapshot = { lastResponse: { ...tokens, ordinal: 2, cacheHitPercent: 20 / 152 * 100,
+    speed: { outputTokens: 8, generationDurationMs: 500, tokensPerSecond: 16 } },
+    sessionTotals: { ...tokens, scope: "allEntries" },
+    context: { tokens: null, window: 1000, percent: null, estimate: true } };
+  const usage = { type: "usage", promptTokens: 120, completionTokens: 8, totalTokens: 160, durationMs: 10000, ttftMs: 1 };
+  expect(schemaMatches({ ...usage, ...snapshot }, document.components.schemas.SseEvent!)).toBe(true);
+  expect(schemaMatches({ ...usage, lastResponse: null, sessionTotals: null, context: null }, document.components.schemas.SseEvent!)).toBe(true);
+  const exported = { messages: [], timeline: [], lastEventId: 0 };
+  expect(schemaMatches(exported, document.components.schemas.Export!)).toBe(true);
+  expect(schemaMatches({ ...exported, usageSnapshot: snapshot }, document.components.schemas.Export!)).toBe(true);
+  expect(schemaMatches({ ...snapshot.sessionTotals, scope: "branch" }, document.components.schemas.SessionUsageTotals!)).toBe(false);
+  expect(schemaMatches({ ...snapshot.context, estimate: false }, document.components.schemas.ContextUsage!)).toBe(false);
+  expect(schemaMatches({ ...snapshot.lastResponse, speed: {} }, document.components.schemas.LastResponseUsage!)).toBe(false);
+});
+
 function schemaMatches(value: unknown, schema: Record<string, unknown>): boolean {
   if (typeof schema.$ref === "string") {
     return schemaMatches(value, document.components.schemas[schema.$ref.split("/").at(-1)!]!);
@@ -179,7 +222,7 @@ describe("public host API v1 contract", () => {
     }
   });
 
-  it("is OpenAPI 3.1.1 with unique fixed operations, no capabilities, and eleven SSE data variants", () => {
+  it("is OpenAPI 3.1.1 with unique fixed operations, no capabilities, and additive SSE data variants", () => {
     expect(document.openapi).toBe("3.1.1");
     const operations = Object.entries(document.paths).flatMap(([path, item]) =>
       Object.entries(item).map(([method, operation]) => ({ path, method, operation })),
@@ -202,8 +245,13 @@ describe("public host API v1 contract", () => {
     }
     expect(Object.keys(document.paths)).not.toContain("/v1/capabilities");
     expect(JSON.stringify(document)).not.toContain("/v1/capabilities");
-    expect(SSE_EVENT_TYPES).toHaveLength(12);
-    expect(document.components.schemas.SseEvent!.oneOf).toHaveLength(12);
+    expect(SSE_EVENT_TYPES).toHaveLength(15);
+    expect(document.components.schemas.SseEvent!.oneOf).toHaveLength(15);
+    const discriminants = (document.components.schemas.SseEvent!.oneOf as Record<string, any>[]).map(schema => {
+      const resolved = schema.$ref ? document.components.schemas[schema.$ref.split("/").at(-1)!]! : schema;
+      return (resolved.properties as Record<string, any>).type.const;
+    });
+    expect(discriminants.sort()).toEqual([...SSE_EVENT_TYPES].sort());
   });
 
   it("exports the stable runTurn budget error codes from the public contract", () => {
@@ -316,8 +364,9 @@ describe("public host API v1 contract", () => {
         .filter(([, operation]) => operation.requestBody !== undefined)
         .map(([method, operation]) => [`${method.toUpperCase()} ${path}`, operation] as const),
     );
-    // Abort is the one documented exception: a hand-written strict parser, not AJV.
-    const ajvBodyOperations = bodyOperations.filter(([label]) => label !== "POST /v1/sessions/{id}/abort");
+    // Abort is hand-validated; raw octet-stream upload uses a bounded buffer parser, not JSON AJV.
+    const ajvBodyOperations = bodyOperations.filter(([label]) =>
+      label !== "POST /v1/sessions/{id}/abort" && label !== "POST /v1/files");
     expect(ajvBodyOperations.map(([label]) => label).sort()).toEqual([
       "PATCH /v1/sessions/{id}",
       "PATCH /v1/sessions/{id}/config",
@@ -338,6 +387,9 @@ describe("public host API v1 contract", () => {
     const abort = document.paths["/v1/sessions/{id}/abort"]!.post!;
     expect(abort["x-pi-request-validation"]).toBeUndefined();
     expect(abort.description as string).toContain("hand-written strict validator");
+    const upload = document.paths["/v1/files"]!.post!;
+    expect(upload["x-pi-request-validation"]).toBeUndefined();
+    expect((upload.requestBody as { content?: Record<string, unknown> })?.content).toHaveProperty("application/octet-stream");
 
     const app = await makeApp();
     try {
@@ -442,6 +494,7 @@ describe("public host API v1 contract", () => {
       expect(schemaMatches(exported.json(), document.components.schemas.Export!)).toBe(true);
       const timeline = document.components.schemas.TimelineItem!;
       expect(schemaMatches(exported.json().timeline[0], timeline)).toBe(true);
+      expect(schemaMatches({ id: "thinking:a1:0", type: "thinking", messageId: "a1", turnId: "u1", text: "verbatim", order: 1 }, timeline)).toBe(true);
       expect(schemaMatches({ id: "unknown", type: "system_event", event: "unexpected", from: "a", to: "b", reason: "x", order: 0 }, timeline)).toBe(false);
       expect(schemaMatches({ id: "unknown", type: "unknown", order: 0 }, timeline)).toBe(false);
       adapter!.finish();

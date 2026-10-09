@@ -24,6 +24,10 @@ function toRecord(row: SessionRow): SessionRecord {
   return {
     id: row.id,
     ownerKey: row.owner_key,
+    ...(row.origin === "native" || row.visibility === "shared" ? {
+      visibility: row.visibility === "shared" ? "shared" as const : "private" as const,
+      origin: row.origin === "native" ? "native" as const : "managed" as const,
+    } : {}),
     projectId: row.project_id,
     title: row.title,
     createdAt: row.created_at,
@@ -76,6 +80,8 @@ export class KyselySessionRepository implements SessionStorePort {
           .values({
             id: record.id,
             owner_key: record.ownerKey,
+            visibility: record.visibility ?? "private",
+            origin: record.origin ?? "managed",
             project_id: record.projectId,
             title: record.title,
             created_at: record.createdAt,
@@ -114,7 +120,7 @@ export class KyselySessionRepository implements SessionStorePort {
     const rows = await this.db
       .selectFrom("sessions")
       .selectAll()
-      .where("owner_key", "=", ownerKey)
+      .where(eb => eb.or([eb("owner_key", "=", ownerKey), eb.and([eb("visibility", "=", "shared"), eb("origin", "=", "native")])]))
       .orderBy("updated_at", "desc")
       .orderBy("id", "desc")
       .execute();
@@ -125,7 +131,7 @@ export class KyselySessionRepository implements SessionStorePort {
     const rows = await this.db
       .selectFrom("sessions")
       .selectAll()
-      .where("owner_key", "=", ownerKey)
+      .where(eb => eb.or([eb("owner_key", "=", ownerKey), eb.and([eb("visibility", "=", "shared"), eb("origin", "=", "native")])]))
       .where("project_id", "=", projectId)
       .orderBy("updated_at", "desc")
       .orderBy("id", "desc")
@@ -139,6 +145,8 @@ export class KyselySessionRepository implements SessionStorePort {
         .updateTable("sessions")
         .set({ system_prompt: systemPrompt })
         .where("system_prompt", "is", null)
+        .where("origin", "=", "managed")
+        .where("visibility", "=", "private")
         .executeTakeFirst();
       return Number(result.numUpdatedRows);
     });
@@ -307,6 +315,7 @@ export class KyselySessionRepository implements SessionStorePort {
           });
         }
       }
+      await tx.updateTable("native_session_sources").set({ deleted: 1 }).where("session_id", "=", id).execute();
       const result = await tx.deleteFrom("sessions").where("id", "=", id).executeTakeFirst();
       return Number(result?.numDeletedRows ?? 0) > 0;
     }));

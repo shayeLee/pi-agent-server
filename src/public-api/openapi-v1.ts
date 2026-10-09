@@ -3,6 +3,19 @@
 
 export const OPENAPI_V1_VERSION = "1.0.0";
 
+const measurementNumber = { type: ["number", "null"], minimum: 0 } as const;
+const usageTokenProperties = {
+  input: measurementNumber, output: measurementNumber, cacheRead: measurementNumber,
+  cacheWrite: measurementNumber, totalTokens: measurementNumber,
+  costUsdEstimate: { ...measurementNumber, description: "SDK model-price estimate in USD, not an invoice; zero does not establish free service." },
+} as const;
+const snapshotProperties = {
+  execution: { oneOf: [{ $ref: "#/components/schemas/ExecutionSnapshot" }, { type: "null" }] },
+  lastResponse: { oneOf: [{ $ref: "#/components/schemas/LastResponseUsage" }, { type: "null" }] },
+  sessionTotals: { oneOf: [{ $ref: "#/components/schemas/SessionUsageTotals" }, { type: "null" }] },
+  context: { oneOf: [{ $ref: "#/components/schemas/ContextUsage" }, { type: "null" }] },
+} as const;
+
 // Explicit application operations registered by the host. Fastify exposes the GET
 // operations listed in PUBLIC_API_AUTOMATIC_HEAD_OPERATIONS below as HEAD routes too.
 export const PUBLIC_API_OPERATIONS = [
@@ -14,6 +27,7 @@ export const PUBLIC_API_OPERATIONS = [
   ["/v1/projects", "get", "projects:list"],
   ["/v1/projects", "post", "projects:create"],
   ["/v1/projects/{id}", "delete", "projects:delete"],
+  ["/v1/files", "post", "files:upload"],
   ["/v1/sessions", "get", "sessions:list"],
   ["/v1/sessions", "post", "sessions:create"],
   ["/v1/sessions/{id}", "delete", "sessions:delete"],
@@ -89,6 +103,7 @@ const roles: Record<Permission, readonly string[]> = {
   "projects:list": ["admin", "user", "viewer"],
   "projects:create": ["admin", "user"],
   "projects:delete": ["admin", "user"],
+  "files:upload": ["admin", "user"],
   "sessions:list": ["admin", "user", "viewer"],
   "sessions:create": ["admin", "user"],
   "sessions:delete": ["admin", "user"],
@@ -152,6 +167,10 @@ function automaticHeadOperation(
   };
 }
 const sessionParameters = [id];
+const nativeScanHeaders = { "X-Pi-Native-Scan-Warnings": {
+  description: "Optional comma-separated fixed warning codes: native-source-unavailable, native-source-skipped, native-scan-truncated; no paths or content.",
+  schema: { type: "string", maxLength: 100 },
+} };
 
 export const openapiV1 = {
   openapi: "3.1.1",
@@ -202,7 +221,8 @@ export const openapiV1 = {
       head: automaticHeadOperation("listProjectsHead", "projects:list", { "200": headJson("Projects; the GET response body is suppressed.") }),
       post: operation("createProject", "projects:create", {
         "201": { description: "Created.", ...json(ref("Project")) },
-        "400": error(400, "Invalid project input."),
+        "400": error(400, "Invalid project input or unavailable cwd."),
+        "409": error(409, "Canonical project cwd already registered, including the default project."),
       }, { requestBody: request(ref("CreateProject")), ...requestValidation }),
     },
     "/v1/projects/{id}": {
@@ -212,15 +232,34 @@ export const openapiV1 = {
         "404": error(404, "Project not found."),
       }, { parameters: [id] }),
     },
+    "/v1/files": {
+      post: operation("uploadFile", "files:upload", {
+        "201": { description: "Validated original stored; a repeated upload key returns the same file.", ...json(ref("UploadedFile")) },
+        "400": error(400, "Invalid name, type, bytes, or upload metadata."),
+        "404": error(404, "Project not found or not owned."),
+        "409": error(409, "Upload key reused for different bytes."),
+        "413": error(413, "File exceeds 20 MiB."),
+        "503": error(503, "Storage is not configured or available."),
+        "507": error(507, "Configured owner or global upload storage budget reached."),
+      }, { parameters: [
+        { name: "x-upload-project-id", in: "header", required: true, schema: { type: "string" } },
+        { name: "x-upload-key", in: "header", required: true, schema: { type: "string" } },
+        { name: "x-upload-name", in: "header", required: true, schema: { type: "string" }, description: "URI-encoded display basename." },
+        { name: "x-upload-kind", in: "header", required: true, schema: { enum: ["text", "code", "csv", "json", "pdf", "docx", "xlsx", "pptx"] } },
+        { name: "x-upload-type", in: "header", schema: { type: "string" }, description: "Claimed MIME; actual bytes are checked separately." },
+      ], requestBody: { required: true, content: { "application/octet-stream": { schema: { type: "string", format: "binary" } } } } }),
+    },
     "/v1/sessions": {
-      get: operation("listSessions", "sessions:list", { "200": { description: "Sessions.", ...json({ type: "array", items: ref("Session") }) } }, {
+      get: operation("listSessions", "sessions:list", { "200": { description: "Sessions.", headers: nativeScanHeaders, ...json({ type: "array", items: ref("Session") }) } }, {
         parameters: [{ name: "projectId", in: "query", schema: { type: "string" } }],
       }),
-      head: automaticHeadOperation("listSessionsHead", "sessions:list", { "200": headJson("Sessions; the GET response body is suppressed.") }, {
+      head: automaticHeadOperation("listSessionsHead", "sessions:list", { "200": { ...headJson("Sessions; the GET response body is suppressed."), headers: { ...headJsonHeaders, ...nativeScanHeaders } } }, {
         parameters: [{ name: "projectId", in: "query", schema: { type: "string" } }],
       }),
       post: operation("createSession", "sessions:create", {
         "201": { description: "Created.", ...json(ref("Session")) },
+        "200": { description: "Idempotent creation-key replay.", ...json(ref("Session")) },
+        "409": error(409, "Creation key reused for different session configuration."),
         "400": error(400, "Invalid model or thinking level."),
         "404": error(404, "Project not found."),
         "503": error(503, "Model availability check failed."),
@@ -241,7 +280,7 @@ export const openapiV1 = {
       post: operation("submitMessage", "sessions:send-message", {
         "200": { description: "Idempotent terminal result.", ...json({}) },
         "202": { description: "Accepted or queued.", ...json(ref("SubmitResult")) },
-        "400": error(400, "Invalid message input."), "404": error(404, "Session not found."), "409": error(409, "Session conflict or requestId payload mismatch."), "429": error(429, "Queue limit reached."),
+        "400": error(400, "Invalid message or file count/size."), "404": error(404, "Session or file not found."), "409": error(409, "Session/file conflict, payload mismatch, or REQUEST_STATUS_UNKNOWN reservation (do not resubmit automatically)."), "429": error(429, "Queue limit reached."), "503": error(503, "Uploaded bytes could not be verified."),
       }, { parameters: sessionParameters, requestBody: request(ref("MessageInput")), ...requestValidation }),
     },
     "/v1/sessions/{id}/export": {
@@ -264,7 +303,7 @@ export const openapiV1 = {
       }, { parameters: [...sessionParameters, { name: "path", in: "query", required: true, schema: { type: "string", minLength: 1 }, description: "Project-relative file path; absolute paths and traversal are rejected." }, { name: "line", in: "query", required: false, schema: { type: "integer", minimum: 1 }, description: "Optional 1-based line for a client-side scroll target." }] }),
     },
     "/v1/sessions/{id}/steer": {
-      post: operation("steerSession", "sessions:control", { "204": noContent, "404": error(404, "Session not found."), "409": error(409, "No active task.") }, { parameters: sessionParameters, requestBody: request(ref("TextInput")), ...requestValidation }),
+      post: operation("steerSession", "sessions:control", { "202": { description: "Correlated control admitted, empty body. Not consumption: only steering_consumed SSE with the exact session/controlId/requestId/acknowledgementId confirms it; the primary task stays active." }, "204": { description: "Legacy text-only control admitted, empty body; no consumption acknowledgement." }, "400": error(400, "Invalid or incomplete steering identity or images."), "404": error(404, "Session not found."), "409": error(409, "No active task, primary request mismatch, or conflicting control identity/payload/actor.") }, { parameters: sessionParameters, requestBody: request(ref("SteeringInput")), ...requestValidation }),
     },
     "/v1/sessions/{id}/follow-ups": {
       post: operation("followUpSession", "sessions:control", { "204": noContent, "404": error(404, "Session not found."), "409": error(409, "No active task.") }, { parameters: sessionParameters, requestBody: request(ref("TextInput")), ...requestValidation }),
@@ -312,35 +351,63 @@ export const openapiV1 = {
       Access: { type: "object", required: ["canRead", "canWrite"], properties: { canRead: { type: "boolean" }, canWrite: { type: "boolean" } }, additionalProperties: false },
       Model: { type: "object", required: ["provider", "id", "name"], properties: { provider: { type: "string" }, id: { type: "string" }, name: { type: "string" } }, additionalProperties: false },
       ModelList: { type: "object", required: ["models", "thinkingLevels", "defaultModel", "defaultThinkingLevel"], properties: { models: { type: "array", items: ref("Model") }, thinkingLevels: { type: "array", items: { type: "string" } }, defaultModel: { anyOf: [ref("Model"), { type: "null" }] }, defaultThinkingLevel: { type: "string" } }, additionalProperties: false },
-      Project: { type: "object", required: ["id", "name", "cwd", "isDefault"], properties: { id: { type: "string" }, name: { type: "string" }, cwd: { type: "string" }, isDefault: { type: "boolean" } }, additionalProperties: false },
-      Session: { type: "object", required: ["id", "ownerKey", "projectId", "title", "createdAt", "updatedAt", "modelProvider", "modelId", "thinkingLevel", "systemPrompt", "capabilityVersions"], properties: { id: { type: "string" }, ownerKey: { type: "string" }, projectId: { type: "string" }, title: { type: "string" }, createdAt: { type: "number" }, updatedAt: { type: "number" }, modelProvider: { type: ["string", "null"] }, modelId: { type: ["string", "null"] }, thinkingLevel: { type: ["string", "null"] }, systemPrompt: { type: ["string", "null"] }, capabilityVersions: { type: ["string", "null"] } }, additionalProperties: false },
+      Project: { type: "object", required: ["id", "name", "cwd", "isDefault"], properties: { id: { type: "string" }, name: { type: "string" }, cwd: { type: "string" }, isDefault: { type: "boolean" }, canDelete: { type: "boolean", description: "Current actor owns this non-default project; shared automatic projects are system-administered." }, canCreateSession: { type: "boolean", description: "Current route RBAC and project access allow creating an actor-owned private session; does not grant project mutation or access to other actors' private resources." } }, additionalProperties: false },
+      Session: { type: "object", required: ["id", "ownerKey", "projectId", "title", "createdAt", "updatedAt", "modelProvider", "modelId", "thinkingLevel", "systemPrompt", "capabilityVersions"], properties: { id: { type: "string" }, ownerKey: { type: "string" }, visibility: { type: "string", enum: ["private", "shared"], description: "Native shared sessions are available to admitted users subject to RBAC and cwd exclusions; absent means private." }, origin: { type: "string", enum: ["managed", "native"], description: "Absent means managed." }, projectId: { type: "string" }, title: { type: "string" }, firstPrompt: { type: ["string", "null"], description: "Read-only first persisted user prompt for display; never a rename payload." }, createdAt: { type: "number" }, updatedAt: { type: "number" }, modelProvider: { type: ["string", "null"] }, modelId: { type: ["string", "null"] }, thinkingLevel: { type: ["string", "null"] }, systemPrompt: { type: ["string", "null"] }, capabilityVersions: { type: ["string", "null"] } }, additionalProperties: false },
       CreateProject: { type: "object", required: ["name", "cwd"], properties: { name: { type: "string" }, cwd: { type: "string" } }, additionalProperties: false },
-      CreateSession: { type: "object", properties: { title: { type: "string" }, projectId: { type: "string" }, modelProvider: { type: "string", minLength: 1 }, modelId: { type: "string", minLength: 1 }, thinkingLevel: { type: "string", enum: ["off", "minimal", "low", "medium", "high", "xhigh", "max"] } }, dependentRequired: { modelProvider: ["modelId"], modelId: ["modelProvider"] }, additionalProperties: false },
+      UploadedFile: { type: "object", required: ["fileId", "name", "mediaType", "size", "status", "agentPath"], properties: { fileId: { type: "string" }, name: { type: "string" }, mediaType: { type: "string" }, size: { type: "integer" }, status: { const: "ready" }, agentPath: { type: "string" } }, additionalProperties: false },
+      CreateSession: { type: "object", properties: { createRequestId: { type: "string", minLength: 1, maxLength: 128 }, title: { type: "string" }, projectId: { type: "string" }, modelProvider: { type: "string", minLength: 1 }, modelId: { type: "string", minLength: 1 }, thinkingLevel: { type: "string", enum: ["off", "minimal", "low", "medium", "high", "xhigh", "max"] } }, dependentRequired: { modelProvider: ["modelId"], modelId: ["modelProvider"] }, additionalProperties: false },
       RenameSession: { type: "object", required: ["title"], properties: { title: { type: "string" } }, additionalProperties: false },
       SessionConfig: { type: "object", properties: { modelProvider: { type: "string", minLength: 1 }, modelId: { type: "string", minLength: 1 }, thinkingLevel: { type: "string", enum: ["off", "minimal", "low", "medium", "high", "xhigh", "max"] } }, additionalProperties: false },
       ImageInput: { type: "object", required: ["mediaType", "base64"], properties: { mediaType: { type: "string", enum: ["image/png", "image/jpeg", "image/webp"] }, base64: { type: "string", maxLength: 5592408 } }, additionalProperties: false },
-      MessageInput: { type: "object", required: ["requestId", "prompt"], properties: { requestId: { type: "string", maxLength: 128 }, prompt: { type: "string", maxLength: 32768 }, parentId: { type: "string" }, images: { type: "array", maxItems: 4, items: ref("ImageInput") } }, additionalProperties: false },
+      MessageInput: { type: "object", required: ["requestId", "prompt"], properties: { requestId: { type: "string", maxLength: 128 }, prompt: { type: "string", maxLength: 32768 }, parentId: { type: "string" }, images: { type: "array", maxItems: 4, items: ref("ImageInput") }, fileIds: { type: "array", maxItems: 5, items: { type: "string" } } }, additionalProperties: false },
       SubmitResult: { oneOf: [{ type: "object", required: ["status"], properties: { status: { const: "accepted" } }, additionalProperties: false }, { type: "object", required: ["status"], properties: { status: { const: "queued" }, position: { type: "integer" } }, additionalProperties: false }] },
       FilePreview: { type: "object", required: ["path", "content", "lineCount"], properties: { path: { type: "string", description: "Normalized project-relative path." }, content: { type: "string", description: "Complete UTF-8 content; maximum 262144 bytes." }, lineCount: { type: "integer", minimum: 1 }, requestedLine: { type: "integer", minimum: 1 } }, additionalProperties: false },
       ExportMessage: { type: "object", required: ["role", "text"], properties: { id: { type: "string", description: "Preserved legacy host message id, if any." }, sourceId: { type: "string", description: "Pi JSONL message-entry id. When present, exactly matches timeline.messageId; image-only messages have one too." }, role: { enum: ["user", "assistant"] }, text: { type: "string" }, images: { type: "array", items: ref("ImageInput") } }, additionalProperties: false },
-      Export: { type: "object", required: ["messages", "timeline", "lastEventId"], properties: { messages: { type: "array", items: ref("ExportMessage"), description: "Legacy message projection. Pi transcripts include sourceId; no text-based timeline association is permitted." }, timeline: { type: "array", items: ref("TimelineItem"), description: "Current-branch, block-ordered history. Thinking is never exported; tool text/JSON is not host-truncated." }, lastEventId: { type: "integer", minimum: 0 } }, additionalProperties: false },
+      ExecutionSnapshot: { type: "object", required: ["scope", "coverage", "totalLoops", "totalTurns", "recordedLoops", "recordedTurns"], properties: {
+        scope: { const: "allEntries" }, coverage: { enum: ["complete", "recorded", "unknown"] },
+        totalLoops: { type: ["integer", "null"], minimum: 0 }, totalTurns: { type: ["integer", "null"], minimum: 0 },
+        recordedLoops: { type: ["integer", "null"], minimum: 0 }, recordedTurns: { type: ["integer", "null"], minimum: 0 },
+      }, additionalProperties: false, description: "Durable host-task loops and real SDK turns, deduplicated across all entries. Partial legacy histories have null totals and recorded-only counts." },
+      UsageSnapshot: { type: "object", properties: snapshotProperties, additionalProperties: false },
+      LastResponseUsage: { type: "object", required: [...Object.keys(usageTokenProperties), "ordinal", "cacheHitPercent", "speed"], properties: {
+        ...usageTokenProperties, ordinal: { type: ["integer", "null"], minimum: 1 }, cacheHitPercent: measurementNumber,
+        speed: { type: "object", required: ["outputTokens", "generationDurationMs", "tokensPerSecond"], properties: {
+          outputTokens: measurementNumber, generationDurationMs: measurementNumber,
+          tokensPerSecond: { ...measurementNumber, description: "SDK output / first nonempty text, thinking or toolcall delta to message_end seconds; null below 10ms. No clamp." },
+        }, additionalProperties: false },
+      }, additionalProperties: false },
+      SessionUsageTotals: { type: "object", required: [...Object.keys(usageTokenProperties), "scope"], properties: { ...usageTokenProperties, scope: { const: "allEntries" } }, additionalProperties: false },
+      ContextUsage: { type: "object", required: ["tokens", "window", "percent", "estimate"], properties: { tokens: measurementNumber, window: { type: ["number", "null"], exclusiveMinimum: 0 }, percent: measurementNumber, estimate: { const: true } }, additionalProperties: false },
+      Export: { type: "object", required: ["messages", "timeline", "lastEventId"], properties: { messages: { type: "array", items: ref("ExportMessage"), description: "Legacy message projection. Pi transcripts include sourceId; no text-based timeline association is permitted." }, timeline: { type: "array", items: ref("TimelineItem"), description: "Current-branch, block-ordered history. Thinking content is preserved verbatim; tool text/JSON is not host-truncated." }, lastEventId: { type: "integer", minimum: 0 }, usageSnapshot: ref("UsageSnapshot") }, additionalProperties: false },
       TimelineItem: { oneOf: [
+        { type: "object", required: ["id", "type", "version", "notificationId", "runIds", "text", "entryId", "timestamp", "order"], properties: { id: { type: "string" }, type: { const: "notification" }, version: { const: 1 }, notificationId: { type: "string", format: "uuid" }, runIds: { type: "array", minItems: 1, items: { type: "string", minLength: 1 } }, text: { type: "string" }, entryId: { type: "string" }, timestamp: { type: "string" }, order: { type: "integer", minimum: 0 } }, additionalProperties: false },
         { type: "object", required: ["id", "type", "role", "messageId", "turnId", "text", "order"], properties: { id: { type: "string" }, type: { const: "message" }, role: { enum: ["user", "assistant"] }, messageId: { type: "string" }, turnId: { type: ["string", "null"] }, text: { type: "string" }, order: { type: "integer", minimum: 0 }, timestamp: { type: "string" } }, additionalProperties: false },
+        { type: "object", required: ["id", "type", "messageId", "turnId", "text", "order"], properties: { id: { type: "string" }, type: { const: "thinking" }, messageId: { type: "string" }, turnId: { type: ["string", "null"] }, text: { type: "string", description: "Exact persisted assistant thinking text; no summary substitution." }, order: { type: "integer", minimum: 0 }, timestamp: { type: "string" } }, additionalProperties: false },
         { type: "object", required: ["id", "type", "messageId", "turnId", "callId", "toolCallId", "toolName", "args", "status", "order"], properties: { id: { type: "string" }, type: { const: "tool_call" }, messageId: { type: "string" }, turnId: { type: ["string", "null"] }, callId: { type: "string", description: "SDK tool-call id; use as the SSE deduplication key." }, toolCallId: { type: "string" }, toolName: { type: "string" }, args: {}, status: { enum: ["completed", "error", "no_result"] }, order: { type: "integer", minimum: 0 }, timestamp: { type: "string" } }, additionalProperties: false },
         { type: "object", required: ["id", "type", "messageId", "turnId", "callId", "toolCallId", "toolName", "result", "isError", "order"], properties: { id: { type: "string" }, type: { const: "tool_result" }, messageId: { type: ["string", "null"] }, turnId: { type: ["string", "null"] }, callId: { type: "string" }, toolCallId: { type: "string" }, toolName: { type: "string" }, result: {}, isError: { type: "boolean" }, order: { type: "integer", minimum: 0 }, timestamp: { type: "string" } }, additionalProperties: false },
         { type: "object", required: ["id", "type", "event", "from", "to", "reason", "order"], properties: { id: { type: "string" }, type: { const: "system_event" }, event: { const: "model_failback" }, from: { type: "string" }, to: { type: "string" }, reason: { type: "string" }, order: { type: "integer", minimum: 0 }, timestamp: { type: "string" } }, additionalProperties: false },
       ] },
+      SteeringIdentity: { type: "object", required: ["controlId", "acknowledgementId", "requestId"], properties: { controlId: { type: "string", minLength: 1, maxLength: 128 }, acknowledgementId: { type: "string", minLength: 1, maxLength: 128 }, requestId: { type: "string", maxLength: 128 } }, additionalProperties: false },
+      SteeringInput: { type: "object", required: ["text"], properties: { text: { type: "string", maxLength: 32768 }, controlId: { type: "string", minLength: 1, maxLength: 128 }, acknowledgementId: { type: "string", minLength: 1, maxLength: 128 }, requestId: { type: "string", maxLength: 128 }, images: { type: "array", maxItems: 4, items: ref("ImageInput") } }, anyOf: [{ required: ["controlId", "acknowledgementId", "requestId"] }, { not: { anyOf: [{ required: ["controlId"] }, { required: ["acknowledgementId"] }, { required: ["requestId"] }, { required: ["images"] }] } }], additionalProperties: false, description: "Legacy text-only or complete correlated identity, optionally with images. File attachments are not supported. Admission is not consumption." },
+      SteeringConsumed: { type: "object", required: ["type", "controlId", "acknowledgementId", "requestId"], properties: { type: { const: "steering_consumed" }, controlId: { type: "string" }, acknowledgementId: { type: "string" }, requestId: { type: "string" } }, additionalProperties: false, description: "Exact queued SDK user-message object was consumed once. Session-scoped nonterminal control acknowledgement; never acknowledge by matching text." },
       TextInput: { type: "object", required: ["text"], properties: { text: { type: "string" } }, additionalProperties: false },
       AbortInput: { type: "object", required: ["requestId"], properties: { requestId: { type: "string", maxLength: 128 } }, additionalProperties: false },
       SseEvent: { oneOf: [
+        ref("SteeringConsumed"),
+        { type: "object", required: ["type", "version", "notificationId", "runIds", "text", "entryId", "timestamp"], properties: { type: { const: "notification" }, version: { const: 1 }, notificationId: { type: "string", format: "uuid" }, runIds: { type: "array", minItems: 1, items: { type: "string", minLength: 1 } }, text: { type: "string" }, entryId: { type: "string" }, timestamp: { type: "string" } }, additionalProperties: false },
         { type: "object", required: ["type", "text"], properties: { type: { const: "text_delta" }, text: { type: "string" }, requestId: { type: "string" } }, additionalProperties: false },
         { type: "object", required: ["type", "text"], properties: { type: { const: "thinking_delta" }, text: { type: "string" }, requestId: { type: "string" } }, additionalProperties: false },
+        { type: "object", required: ["type", "ordinal", "phase", "tokensPerSecondEstimate", "includesThinking"], properties: {
+          type: { const: "model_output_progress" }, ordinal: { type: "integer", minimum: 1 },
+          phase: { enum: ["start", "delta", "end"] }, tokensPerSecondEstimate: { type: ["number", "null"], minimum: 0 },
+          includesThinking: { type: "boolean" }, activityAgeMs: { type: "number", minimum: 0 }, replay: { type: "boolean" }, requestId: { type: "string" },
+        }, additionalProperties: false },
         { type: "object", required: ["type", "toolCallId", "toolName", "args"], properties: { type: { const: "tool_start" }, toolCallId: { type: "string" }, toolName: { type: "string" }, args: {}, requestId: { type: "string" } }, additionalProperties: false },
         { type: "object", required: ["type", "toolCallId", "toolName", "partialResult"], properties: { type: { const: "tool_update" }, toolCallId: { type: "string" }, toolName: { type: "string" }, partialResult: {}, requestId: { type: "string" } }, additionalProperties: false },
         { type: "object", required: ["type", "toolCallId", "toolName", "result", "isError"], properties: { type: { const: "tool_end" }, toolCallId: { type: "string" }, toolName: { type: "string" }, result: {}, isError: { type: "boolean" }, requestId: { type: "string" } }, additionalProperties: false },
-        { type: "object", required: ["type", "phase"], properties: { type: { const: "status" }, phase: { type: "string", enum: ["agent_start", "turn_start"] }, requestId: { type: "string" } }, additionalProperties: false },
+        { type: "object", required: ["type", "phase"], properties: { type: { const: "status" }, phase: { type: "string", enum: ["agent_start", "turn_start"] }, execution: snapshotProperties.execution, requestId: { type: "string" } }, additionalProperties: false },
         { type: "object", required: ["type"], properties: { type: { const: "queued" }, position: { type: "integer" }, requestId: { type: "string" } }, additionalProperties: false },
-        { type: "object", required: ["type", "promptTokens", "completionTokens", "totalTokens", "durationMs", "ttftMs"], properties: { type: { const: "usage" }, promptTokens: { type: "number" }, completionTokens: { type: "number" }, totalTokens: { type: "number" }, durationMs: { type: "number" }, ttftMs: { type: "number" }, requestId: { type: "string" } }, additionalProperties: false },
+        { type: "object", required: ["type", "promptTokens", "completionTokens", "totalTokens", "durationMs", "ttftMs"], properties: { ...snapshotProperties, type: { const: "usage" }, promptTokens: { type: ["number", "null"], description: "SDK input (excluding cache); null when unavailable, zero when measured." }, completionTokens: { type: ["number", "null"] }, totalTokens: { type: ["number", "null"], description: "SDK totalTokens, not a locally reconstructed sum." }, durationMs: { type: "number" }, ttftMs: { type: "number" }, requestId: { type: "string" } }, additionalProperties: false },
         { type: "object", required: ["type", "phase", "attemptId"], properties: { type: { const: "model_failback" }, phase: { type: "string", enum: ["start", "end"] }, attemptId: { type: "string" }, outcome: { type: "string", enum: ["switched", "no-target", "failed", "cancelled"] }, from: { type: "string" }, to: { type: "string" }, reason: { type: "string" }, requestId: { type: "string" } }, additionalProperties: false },
         { type: "object", required: ["type", "message"], properties: { type: { const: "error" }, message: { type: "string" }, requestId: { type: "string" } }, additionalProperties: false },
         { type: "object", required: ["type"], properties: { type: { const: "completed" }, requestId: { type: "string" } }, additionalProperties: false },

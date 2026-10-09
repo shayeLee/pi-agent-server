@@ -4,7 +4,7 @@
 
 import type { AgentSdkEvent, SseEvent } from "./events.js";
 
-export function translateSdkEvent(event: AgentSdkEvent): SseEvent | null {
+export function translateSdkEvent(event: AgentSdkEvent): Exclude<SseEvent, { type: "notification" | "steering_consumed" }> | null {
   switch (event.type) {
     case "message_update":
       // thinking_delta 映射为 SSE thinking_delta

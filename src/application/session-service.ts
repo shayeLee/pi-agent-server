@@ -11,9 +11,14 @@ import type {
   SessionTurnResult,
   SystemPromptPort,
 } from "./ports/index.js";
+import { getProjectAccess } from "./project-access.js";
 import { PLUGIN_RUN_TURN_LIMITS } from "../plugin/contract.js";
 import { readPiSessionCwdIdentity } from "../agent/pi-jsonl-conversation-storage.js";
 import type { ImageInput } from "../agent/agent-adapter.js";
+import { canonicalCwdIdentity } from "../core/native-session-policy.js";
+import { InvalidProjectCwdError } from "../core/project-cwd-error.js";
+import { payloadFingerprint } from "../core/payload-fingerprint.js";
+import type { UploadService, FileMessageOutcome } from "./upload-service.js";
 import {
   DEFAULT_PROJECT_ID,
   DuplicateIdError,
@@ -29,11 +34,18 @@ import {
 
 export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 
+class FileAdmissionError extends Error {
+  constructor(readonly kind: Exclude<FileMessageOutcome["kind"], "prepared">, message: string) {
+    super(message);
+  }
+}
+
 /** Accept legacy adapters/readers while exposing the additive timeline field on every HTTP export. */
-function normalizeExportSnapshot(value: unknown): { messages: unknown; timeline: unknown[] } {
+function normalizeExportSnapshot(value: unknown): { messages: unknown; timeline: unknown[]; usageSnapshot?: import("../core/usage-snapshot.js").UsageSnapshot } {
   if (typeof value === "object" && value !== null && !Array.isArray(value)) {
-    const record = value as { messages?: unknown; timeline?: unknown };
-    if ("messages" in record) return { messages: record.messages, timeline: Array.isArray(record.timeline) ? record.timeline : [] };
+    const record = value as { messages?: unknown; timeline?: unknown; usageSnapshot?: import("../core/usage-snapshot.js").UsageSnapshot };
+    if ("messages" in record) return { messages: record.messages, timeline: Array.isArray(record.timeline) ? record.timeline : [],
+      ...(record.usageSnapshot !== undefined ? { usageSnapshot: record.usageSnapshot } : {}) };
   }
   return { messages: value, timeline: [] };
 }
@@ -50,12 +62,12 @@ const SYSTEM_PROMPT_APPEND_SEPARATOR = "\n\n";
  */
 export const MAX_ID_RETRIES = 3;
 
-export type SessionDto = Omit<SessionRecord, "agentKind" | "conversationFormat" | "conversationRef">;
-/** 项目 DTO：仅默认项目（id = DEFAULT_PROJECT_ID）为 isDefault: true，其余项目为 false。 */
-export type ProjectDto = { id: string; name: string; cwd: string; isDefault: boolean };
+import type { SessionDto, ProjectDto } from "../shared/api-types.js";
+export type { SessionDto, ProjectDto } from "../shared/api-types.js";
 
 export type SessionServiceDeps = {
   sessions: SessionStorePort;
+  nativeSessions?: import("./ports/native-session-port.js").NativeSessionPort;
   projects: ProjectStorePort;
   registry: RuntimeRegistry;
   defaultProjectCwd: string;
@@ -69,6 +81,9 @@ export type SessionServiceDeps = {
   capabilityVersions?: Readonly<Record<string, number>>;
   /** 按 agent kind/format 分派未实例化会话的只读导出；缺省仅允许空引用返回空历史。 */
   conversationStorage?: ConversationStorageRegistry;
+  /** Optional only for hosts that have not enabled non-image uploads. */
+  uploads?: UploadService;
+  idempotencyRepo?: IdempotencyStorePort;
   /** 由 composition root 提供，便于隔离 ID 生成策略。 */
   createId: () => string;
   /** 由 composition root 提供，便于测试并隔离时钟。 */
@@ -94,10 +109,8 @@ export type CreateSessionResult =
 
 export type SubmitResult =
   | { found: false }
-  | {
-      found: true;
-      decision: Awaited<ReturnType<SessionEntry["runtime"]["submitMessage"]>>;
-    };
+  | { found: true; fileError: "invalid" | "not-found" | "conflict" | "unavailable"; message: string }
+  | { found: true; decision: Awaited<ReturnType<SessionEntry["runtime"]["submitMessage"]>>; };
 
 /**
  * 插件同步轮次结果（宿主内部）：与公开 `PluginTurnResult` 一致；
@@ -108,8 +121,15 @@ export type RunTurnResult = SessionTurnResult;
 export class SessionService {
   /** 删除进行中的项目墓碑：拒绝并发创建会话到正在删除的项目（避免留下孤儿会话）。 */
   private readonly deletingProjects = new Set<string>();
+  /** Service-level preflight prevents a mismatched retry from binding extra files before runtime rejects it. */
+  private readonly requestFingerprints = new Map<string, string>();
 
-  constructor(private readonly deps: SessionServiceDeps) {}
+  constructor(private readonly deps: SessionServiceDeps) {
+    deps.nativeSessions?.onRevoked?.(id => {
+      deps.registry.get(id)?.events.closeAll();
+      void deps.registry.delete(id).catch(() => {});
+    });
+  }
 
   async models(): Promise<{
     models: readonly ModelDescriptor[];
@@ -126,16 +146,39 @@ export class SessionService {
   }
 
   async listProjects(ownerKey: string): Promise<ProjectDto[]> {
-    return [
-      this.defaultProject(),
-      ...(await this.deps.projects.listByOwner(ownerKey)).map(toProjectDto),
-    ];
+    // The Web first lists projects, then sessions for the selected/default project.
+    // Break that discovery cycle here too, without exposing private project rows.
+    await this.deps.nativeSessions?.discoverProjects?.();
+    if (this.deps.nativeSessions && !this.deps.nativeSessions.discoverProjects && this.deps.projects.listRegistered) {
+      for (const project of await this.deps.projects.listRegistered()) {
+        await this.deps.nativeSessions.discover(project.id === DEFAULT_PROJECT_ID ? this.defaultProject() : project);
+      }
+    }
+    const projects = [this.defaultProject(), ...(await this.deps.projects.listByOwner(ownerKey)).map(toProjectDto)];
+    const visibleProjects = new Set<string>();
+    for (const record of await this.deps.sessions.listByOwner(ownerKey)) {
+      if (!(await this.canAccess(ownerKey, record))) continue;
+      visibleProjects.add(record.projectId);
+      if (projects.some(project => project.id === record.projectId)) continue;
+      const project = await this.deps.projects.get(record.projectId);
+      if (project) projects.push(toProjectDto(project));
+    }
+    const result = projects.filter(project => visibleProjects.has(project.id));
+    for (const project of result) {
+      const record = await this.deps.projects.get(project.id);
+      project.canDelete = !project.isDefault && record?.ownerKey === ownerKey;
+      project.canCreateSession = !!(await this.resolveProject(ownerKey, project.id));
+    }
+    return result;
   }
 
   async createProject(ownerKey: string, input: { name: string; cwd: string }): Promise<ProjectDto | null> {
     const name = input.name.trim();
-    const cwd = input.cwd.trim();
+    let cwd = input.cwd.trim();
     if (!name || !cwd) return null;
+    if (this.deps.nativeSessions) {
+      try { cwd = canonicalCwdIdentity(cwd).cwd; } catch { throw new InvalidProjectCwdError(); }
+    }
     // 撞库是极低概率事件；仅对存储无关的 DuplicateIdError（仓库层已转换）用新 ID 有界重试，
     // 其余错误（仓库守卫/约束）原样抛出，不静默吞掉。createdAt 在重试循环外冻结（与 createSession 一致）。
     const createdAt = this.deps.now();
@@ -149,7 +192,7 @@ export class SessionService {
       };
       try {
         await this.deps.projects.create(record);
-        return toProjectDto(record);
+        return { ...toProjectDto(record), canCreateSession: true };
       } catch (error) {
         if (!(error instanceof DuplicateIdError)) throw error;
         if (attempt >= MAX_ID_RETRIES) {
@@ -167,6 +210,9 @@ export class SessionService {
     if (projectId === DEFAULT_PROJECT_ID) return "default";
     const project = await this.deps.projects.get(projectId);
     if (!project || project.ownerKey !== ownerKey) return "not-found";
+    for (const record of await this.deps.sessions.listByProject(ownerKey, projectId)) {
+      if (record.origin === "native" && !(await this.canAccess(ownerKey, record))) return "not-found";
+    }
 
     // 墓碑：删除期间拒绝并发创建会话到本项目
     this.deletingProjects.add(projectId);
@@ -310,11 +356,46 @@ export class SessionService {
     }
   }
 
-  async listSessions(ownerKey: string, projectId?: string): Promise<SessionDto[]> {
+  /** Read an owned session without instantiating its runtime (for idempotent creation retries). */
+  async getSession(ownerKey: string, id: string): Promise<SessionDto | null> {
+    const record = await this.findOwned(ownerKey, id);
+    return record ? toSessionDto(record) : null;
+  }
+
+  async listSessions(ownerKey: string, projectId?: string, onScanWarnings?: (warnings: readonly string[]) => void): Promise<SessionDto[]> {
+    if (this.deps.nativeSessions) {
+      await this.deps.nativeSessions.discoverProjects?.();
+      const warnings = new Set<string>();
+      // Discover from registered projects, not the request owner's already-visible
+      // list: otherwise owner B can never be the first discoverer of A's native file.
+      const projects = this.deps.projects.listRegistered
+        ? [this.defaultProject(), ...(await this.deps.projects.listRegistered()).filter(project => project.id !== DEFAULT_PROJECT_ID)]
+        : await this.listProjects(ownerKey);
+      for (const project of projects) {
+        if ((!this.deps.nativeSessions.discoverProjects && !projectId) || project.id === projectId) {
+          for (const warning of await this.deps.nativeSessions.discover(project)) warnings.add(warning);
+        }
+      }
+      onScanWarnings?.([...warnings]);
+    }
     const records = projectId
       ? await this.deps.sessions.listByProject(ownerKey, projectId)
       : await this.deps.sessions.listByOwner(ownerKey);
-    return records.map(toSessionDto);
+    const result: SessionDto[] = [];
+    // Ownership/project filtering happens in the index query before any transcript access.
+    // Read only a prefix summary, never N full exports or runtime instantiations.
+    for (const record of records) {
+      if (!(await this.canAccess(ownerKey, record))) continue;
+      const dto = toSessionDto(record);
+      if (!record.title.trim()) {
+        const storage = this.deps.conversationStorage?.get(record);
+        const context = { sessionId: record.id, projectId: record.projectId };
+        dto.title = await storage?.readTitle?.(record, context) ?? "";
+        if (!dto.title) dto.firstPrompt = await storage?.readFirstPrompt?.(record, context) ?? null;
+      }
+      result.push(dto);
+    }
+    return result;
   }
 
   /**
@@ -341,7 +422,9 @@ export class SessionService {
     if (options?.onlyIfEmpty) {
       // 条件写入必须由存储层在同一 SQL 条件更新中完成，不能先读 title 再写，
       // 否则插件自动标题可能覆盖并发的用户改名。
-      const current = await this.deps.sessions.updateTitleIfEmpty(ownerKey, id, title, this.deps.now());
+      const record = await this.findOwned(ownerKey, id);
+      if (!record) return null;
+      const current = await this.deps.sessions.updateTitleIfEmpty(record.ownerKey, id, title, this.deps.now());
       return current ? toSessionDto(current) : null;
     }
     if (!(await this.findOwned(ownerKey, id))) return null;
@@ -398,14 +481,64 @@ export class SessionService {
   async submitMessage(
     ownerKey: string,
     id: string,
-    input: { requestId: string; prompt: string; parentId?: string; images?: ImageInput[] },
+    input: { requestId: string; prompt: string; parentId?: string; images?: ImageInput[]; fileIds?: string[] },
   ): Promise<SubmitResult> {
-    const entry = await this.findEntry(ownerKey, id);
-    if (!entry) return { found: false };
-    return {
-      found: true,
-      decision: await entry.runtime.submitMessage({ ...input, userId: ownerKey }),
-    };
+    // No runtime/adapter is created until ownership and the whole attachment batch are verified.
+    const owned = await this.findOwned(ownerKey, id);
+    if (!owned) return { found: false };
+    let prompt = input.prompt;
+    const fileIds = input.fileIds?.length ? input.fileIds : undefined;
+    if (fileIds) {
+      if (!this.deps.uploads) return { found: true, fileError: "unavailable", message: "文件上传尚未配置" };
+      // First check all metadata and derived prompt without binding anything; a conflicting
+      // requestId must not claim otherwise valid files as a side effect.
+      const prepared = await this.deps.uploads.prepareForMessage({ ownerKey, projectId: owned.projectId,
+        sessionId: id, prompt, fileIds }, false);
+      if (prepared.kind !== "prepared") {
+        return { found: true, fileError: prepared.kind, message: prepared.message };
+      }
+      prompt = prepared.prompt;
+    }
+    const idempotencyActor = owned.origin === "native" ? ownerKey : undefined;
+    const fingerprint = payloadFingerprint({ prompt, parentId: input.parentId, images: input.images, fileIds, idempotencyActor });
+    const key = `${id}:${input.requestId}`;
+    const previous = this.requestFingerprints.get(key);
+    if (previous !== undefined && previous !== fingerprint) {
+      return { found: true, fileError: "conflict", message: "同一 requestId 不能用于不同内容" };
+    }
+    // The runtime's durable atomic reservation checks both completed and unknown requests
+    // before invoking beforeAccept; do not use getWithFingerprint here (it fails closed on
+    // an unknown reservation) and never claim files before that reservation check.
+    const latest = this.requestFingerprints.get(key);
+    if (latest !== undefined && latest !== fingerprint) {
+      return { found: true, fileError: "conflict", message: "同一 requestId 不能用于不同内容" };
+    }
+    const added = latest === undefined;
+    if (added) this.requestFingerprints.set(key, fingerprint);
+    try {
+      const entry = await this.findEntry(ownerKey, id);
+      if (!entry) {
+        if (added) this.requestFingerprints.delete(key);
+        return { found: false };
+      }
+      const beforeAccept = fileIds ? async () => {
+        const claimed = await this.deps.uploads!.prepareForMessage({ ownerKey, projectId: owned.projectId,
+          sessionId: id, prompt: input.prompt, fileIds });
+        if (claimed.kind !== "prepared") throw new FileAdmissionError(claimed.kind, claimed.message);
+      } : undefined;
+      const decision = await entry.runtime.submitMessage({ ...input, prompt, fileIds, userId: ownerKey, idempotencyActor,
+        ...(beforeAccept ? { beforeAccept } : {}) });
+      if (added && (decision.kind === "rejected" || decision.kind === "conflict")) {
+        this.requestFingerprints.delete(key);
+      }
+      return { found: true, decision };
+    } catch (error) {
+      if (added) this.requestFingerprints.delete(key);
+      if (error instanceof FileAdmissionError) {
+        return { found: true, fileError: error.kind, message: error.message };
+      }
+      throw error;
+    }
   }
 
   /**
@@ -448,7 +581,7 @@ export class SessionService {
    * ConversationStorage 只读解析（与活会话导出同一 role/text 投影），绝不
    * createAdapter / 写 DB / 改写会话历史。
    */
-  async exportSession(ownerKey: string, id: string): Promise<{ messages: unknown; timeline: unknown[]; lastEventId: number } | null> {
+  async exportSession(ownerKey: string, id: string): Promise<{ messages: unknown; timeline: unknown[]; lastEventId: number; usageSnapshot?: import("../core/usage-snapshot.js").UsageSnapshot } | null> {
     const record = await this.findOwned(ownerKey, id);
     if (!record) return null;
     // 已实例化 runtime：活会话导出（registry.get 仅读取，绝不因导出触发创建）。
@@ -485,7 +618,11 @@ export class SessionService {
   /** Resolve only the creation-time JSONL root identity; mutable project/AGENT_CWD is never a preview fallback. */
   async sessionProjectCwd(ownerKey: string, id: string): Promise<{ cwd: string; dev: number; ino: number } | null> {
     const record = await this.findOwned(ownerKey, id);
-    if (!record || record.conversationRef === null || record.agentKind !== PI_AGENT_KIND || record.conversationFormat !== PI_CONVERSATION_FORMAT) return null;
+    if (!record) return null;
+    if (record.origin === "native" || await this.deps.nativeSessions?.hasSourceClaim?.(record)) {
+      return await this.deps.nativeSessions?.cwdIdentity(record) ?? null;
+    }
+    if (record.conversationRef === null || record.agentKind !== PI_AGENT_KIND || record.conversationFormat !== PI_CONVERSATION_FORMAT) return null;
     return readPiSessionCwdIdentity(record.conversationRef);
   }
 
@@ -495,11 +632,12 @@ export class SessionService {
     operation: "steer" | "follow-up" | "abort",
     text?: string,
     expectedRequestId?: string,
+    steering?: import("../shared/steering.js").SteeringInput,
   ): Promise<"not-found" | import("./ports/index.js").ControlDecision> {
     const entry = await this.findEntry(ownerKey, id);
     if (!entry) return "not-found";
     const decision = operation === "steer"
-      ? await entry.runtime.steer(text!)
+      ? await entry.runtime.steer(text!, steering, ownerKey)
       : operation === "follow-up"
         ? await entry.runtime.followUp(text!)
         : await entry.runtime.abort(expectedRequestId);
@@ -508,7 +646,32 @@ export class SessionService {
 
   /** SSE transport uses the event bus, but ownership/runtime lookup remains application logic. */
   async getEntry(ownerKey: string, id: string): Promise<SessionEntry | null> {
-    return this.findEntry(ownerKey, id);
+    const entry = await this.findEntry(ownerKey, id);
+    return entry ? this.guardOutput(ownerKey, id, entry) : null;
+  }
+
+  /** Transport must also call this synchronous capability before heartbeat writes. */
+  async prepareOutputGuard(ownerKey: string, id: string): Promise<() => boolean> {
+    const record = await this.findOwned(ownerKey, id);
+    if (!record) return () => false;
+    if (record.origin !== "native" && !(await this.deps.nativeSessions?.hasSourceClaim?.(record))) return () => true;
+    return await this.deps.nativeSessions?.outputGuard?.(record) ?? (() => false);
+  }
+
+  private async guardOutput(ownerKey: string, id: string, entry: SessionEntry): Promise<SessionEntry> {
+    const allowed = await this.prepareOutputGuard(ownerKey, id);
+    return { runtime: entry.runtime, events: new Proxy(entry.events, {
+      get(target, property) {
+        if (property === "subscribe") return (listener: Parameters<typeof target.subscribe>[0], cursor?: number) =>
+          target.subscribe(item => { if (allowed()) listener(item); }, cursor);
+        if (property === "registerClose") return (handler: () => void) => {
+          if (!allowed()) { handler(); return () => {}; }
+          return target.registerClose(handler);
+        };
+        const value = Reflect.get(target, property);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    }) };
   }
 
   /**
@@ -524,7 +687,7 @@ export class SessionService {
     if (!record) return { kind: "not-found" };
     const existing = this.deps.registry.get(id);
     if (!existing) return { kind: "no-runtime" };
-    return { kind: "entry", entry: existing };
+    return { kind: "entry", entry: await this.guardOutput(ownerKey, id, existing) };
   }
 
   /**
@@ -581,18 +744,25 @@ export class SessionService {
   }
 
   private async resolveProject(ownerKey: string, projectId: string): Promise<ProjectDto | null> {
-    const project = await this.deps.projects.get(projectId);
+    const project = await getProjectAccess(this.deps.projects, this.deps.sessions, this.deps.nativeSessions, ownerKey, projectId);
     if (!project) return null;
     if (projectId === DEFAULT_PROJECT_ID) {
       // 默认项目：共享（owner_key 空串），cwd/name 用运行时配置（表里存的是启动快照）
       return this.defaultProject();
     }
-    return project.ownerKey === ownerKey ? toProjectDto(project) : null;
+    return toProjectDto(project);
   }
 
   private async findOwned(ownerKey: string, id: string): Promise<SessionRecord | null> {
     const record = await this.deps.sessions.get(id);
-    return record && record.ownerKey === ownerKey ? record : null;
+    return record && await this.canAccess(ownerKey, record) ? record : null;
+  }
+
+  private async canAccess(ownerKey: string, record: SessionRecord): Promise<boolean> {
+    if (record.visibility === "shared" || record.origin === "native") {
+      return await this.deps.nativeSessions?.allows(record) ?? false;
+    }
+    return record.ownerKey === ownerKey;
   }
 
   private async findEntry(ownerKey: string, id: string): Promise<SessionEntry | null> {

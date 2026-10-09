@@ -692,7 +692,7 @@
             }
           },
           "400": {
-            "description": "Invalid project input.",
+            "description": "Invalid project input or unavailable cwd.",
             "content": {
               "application/json": {
                 "schema": {
@@ -713,6 +713,16 @@
           },
           "403": {
             "description": "IP admission or RBAC denied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Canonical project cwd already registered, including the default project.",
             "content": {
               "application/json": {
                 "schema": {
@@ -815,6 +825,182 @@
         ]
       }
     },
+    "/v1/files": {
+      "post": {
+        "operationId": "uploadFile",
+        "security": [
+          {
+            "IpAdmission": []
+          },
+          {
+            "IpAdmission": [],
+            "BearerAuth": []
+          }
+        ],
+        "x-pi-rbac": {
+          "permission": "files:upload",
+          "roles": [
+            "admin",
+            "user"
+          ]
+        },
+        "responses": {
+          "201": {
+            "description": "Validated original stored; a repeated upload key returns the same file.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UploadedFile"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid name, type, bytes, or upload metadata.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer token required for this admitted IP profile.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "IP admission or RBAC denied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Project not found or not owned.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Upload key reused for different bytes.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "File exceeds 20 MiB.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Storage is not configured or available.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "507": {
+            "description": "Configured owner or global upload storage budget reached.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "x-upload-project-id",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-upload-key",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "x-upload-name",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "URI-encoded display basename."
+          },
+          {
+            "name": "x-upload-kind",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "enum": [
+                "text",
+                "code",
+                "csv",
+                "json",
+                "pdf",
+                "docx",
+                "xlsx",
+                "pptx"
+              ]
+            }
+          },
+          {
+            "name": "x-upload-type",
+            "in": "header",
+            "schema": {
+              "type": "string"
+            },
+            "description": "Claimed MIME; actual bytes are checked separately."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "type": "string",
+                "format": "binary"
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/sessions": {
       "get": {
         "operationId": "listSessions",
@@ -838,6 +1024,15 @@
         "responses": {
           "200": {
             "description": "Sessions.",
+            "headers": {
+              "X-Pi-Native-Scan-Warnings": {
+                "description": "Optional comma-separated fixed warning codes: native-source-unavailable, native-source-skipped, native-scan-truncated; no paths or content.",
+                "schema": {
+                  "type": "string",
+                  "maxLength": 100
+                }
+              }
+            },
             "content": {
               "application/json": {
                 "schema": {
@@ -915,6 +1110,13 @@
                 "schema": {
                   "type": "string",
                   "pattern": "^[0-9]+$"
+                }
+              },
+              "X-Pi-Native-Scan-Warnings": {
+                "description": "Optional comma-separated fixed warning codes: native-source-unavailable, native-source-skipped, native-scan-truncated; no paths or content.",
+                "schema": {
+                  "type": "string",
+                  "maxLength": 100
                 }
               }
             }
@@ -994,6 +1196,16 @@
           ]
         },
         "responses": {
+          "200": {
+            "description": "Idempotent creation-key replay.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Session"
+                }
+              }
+            }
+          },
           "201": {
             "description": "Created.",
             "content": {
@@ -1036,6 +1248,16 @@
           },
           "404": {
             "description": "Project not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Creation key reused for different session configuration.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1371,7 +1593,7 @@
             }
           },
           "400": {
-            "description": "Invalid message input.",
+            "description": "Invalid message or file count/size.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1401,7 +1623,7 @@
             }
           },
           "404": {
-            "description": "Session not found.",
+            "description": "Session or file not found.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1411,7 +1633,7 @@
             }
           },
           "409": {
-            "description": "Session conflict or requestId payload mismatch.",
+            "description": "Session/file conflict, payload mismatch, or REQUEST_STATUS_UNKNOWN reservation (do not resubmit automatically).",
             "content": {
               "application/json": {
                 "schema": {
@@ -1422,6 +1644,16 @@
           },
           "429": {
             "description": "Queue limit reached.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Uploaded bytes could not be verified.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1800,8 +2032,21 @@
           ]
         },
         "responses": {
+          "202": {
+            "description": "Correlated control admitted, empty body. Not consumption: only steering_consumed SSE with the exact session/controlId/requestId/acknowledgementId confirms it; the primary task stays active."
+          },
           "204": {
-            "description": "Completed without a response body."
+            "description": "Legacy text-only control admitted, empty body; no consumption acknowledgement."
+          },
+          "400": {
+            "description": "Invalid or incomplete steering identity or images.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
           },
           "401": {
             "description": "Bearer token required for this admitted IP profile.",
@@ -1834,7 +2079,7 @@
             }
           },
           "409": {
-            "description": "No active task.",
+            "description": "No active task, primary request mismatch, or conflicting control identity/payload/actor.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1859,7 +2104,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/TextInput"
+                "$ref": "#/components/schemas/SteeringInput"
               }
             }
           }
@@ -2413,6 +2658,14 @@
           },
           "isDefault": {
             "type": "boolean"
+          },
+          "canDelete": {
+            "type": "boolean",
+            "description": "Current actor owns this non-default project; shared automatic projects are system-administered."
+          },
+          "canCreateSession": {
+            "type": "boolean",
+            "description": "Current route RBAC and project access allow creating an actor-owned private session; does not grant project mutation or access to other actors' private resources."
           }
         },
         "additionalProperties": false
@@ -2439,11 +2692,34 @@
           "ownerKey": {
             "type": "string"
           },
+          "visibility": {
+            "type": "string",
+            "enum": [
+              "private",
+              "shared"
+            ],
+            "description": "Native shared sessions are available to admitted users subject to RBAC and cwd exclusions; absent means private."
+          },
+          "origin": {
+            "type": "string",
+            "enum": [
+              "managed",
+              "native"
+            ],
+            "description": "Absent means managed."
+          },
           "projectId": {
             "type": "string"
           },
           "title": {
             "type": "string"
+          },
+          "firstPrompt": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Read-only first persisted user prompt for display; never a rename payload."
           },
           "createdAt": {
             "type": "number"
@@ -2500,9 +2776,46 @@
         },
         "additionalProperties": false
       },
+      "UploadedFile": {
+        "type": "object",
+        "required": [
+          "fileId",
+          "name",
+          "mediaType",
+          "size",
+          "status",
+          "agentPath"
+        ],
+        "properties": {
+          "fileId": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "mediaType": {
+            "type": "string"
+          },
+          "size": {
+            "type": "integer"
+          },
+          "status": {
+            "const": "ready"
+          },
+          "agentPath": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
       "CreateSession": {
         "type": "object",
         "properties": {
+          "createRequestId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
           "title": {
             "type": "string"
           },
@@ -2624,6 +2937,13 @@
             "items": {
               "$ref": "#/components/schemas/ImageInput"
             }
+          },
+          "fileIds": {
+            "type": "array",
+            "maxItems": 5,
+            "items": {
+              "type": "string"
+            }
           }
         },
         "additionalProperties": false
@@ -2719,6 +3039,309 @@
         },
         "additionalProperties": false
       },
+      "ExecutionSnapshot": {
+        "type": "object",
+        "required": [
+          "scope",
+          "coverage",
+          "totalLoops",
+          "totalTurns",
+          "recordedLoops",
+          "recordedTurns"
+        ],
+        "properties": {
+          "scope": {
+            "const": "allEntries"
+          },
+          "coverage": {
+            "enum": [
+              "complete",
+              "recorded",
+              "unknown"
+            ]
+          },
+          "totalLoops": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "totalTurns": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "recordedLoops": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "recordedTurns": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false,
+        "description": "Durable host-task loops and real SDK turns, deduplicated across all entries. Partial legacy histories have null totals and recorded-only counts."
+      },
+      "UsageSnapshot": {
+        "type": "object",
+        "properties": {
+          "execution": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ExecutionSnapshot"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "lastResponse": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/LastResponseUsage"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "sessionTotals": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SessionUsageTotals"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "context": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/ContextUsage"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "LastResponseUsage": {
+        "type": "object",
+        "required": [
+          "input",
+          "output",
+          "cacheRead",
+          "cacheWrite",
+          "totalTokens",
+          "costUsdEstimate",
+          "ordinal",
+          "cacheHitPercent",
+          "speed"
+        ],
+        "properties": {
+          "input": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "output": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "cacheRead": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "cacheWrite": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "totalTokens": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "costUsdEstimate": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0,
+            "description": "SDK model-price estimate in USD, not an invoice; zero does not establish free service."
+          },
+          "ordinal": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 1
+          },
+          "cacheHitPercent": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "speed": {
+            "type": "object",
+            "required": [
+              "outputTokens",
+              "generationDurationMs",
+              "tokensPerSecond"
+            ],
+            "properties": {
+              "outputTokens": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "minimum": 0
+              },
+              "generationDurationMs": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "minimum": 0
+              },
+              "tokensPerSecond": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "minimum": 0,
+                "description": "SDK output / first nonempty text, thinking or toolcall delta to message_end seconds; null below 10ms. No clamp."
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      },
+      "SessionUsageTotals": {
+        "type": "object",
+        "required": [
+          "input",
+          "output",
+          "cacheRead",
+          "cacheWrite",
+          "totalTokens",
+          "costUsdEstimate",
+          "scope"
+        ],
+        "properties": {
+          "input": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "output": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "cacheRead": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "cacheWrite": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "totalTokens": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "costUsdEstimate": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0,
+            "description": "SDK model-price estimate in USD, not an invoice; zero does not establish free service."
+          },
+          "scope": {
+            "const": "allEntries"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ContextUsage": {
+        "type": "object",
+        "required": [
+          "tokens",
+          "window",
+          "percent",
+          "estimate"
+        ],
+        "properties": {
+          "tokens": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "window": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "exclusiveMinimum": 0
+          },
+          "percent": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "estimate": {
+            "const": true
+          }
+        },
+        "additionalProperties": false
+      },
       "Export": {
         "type": "object",
         "required": [
@@ -2739,17 +3362,71 @@
             "items": {
               "$ref": "#/components/schemas/TimelineItem"
             },
-            "description": "Current-branch, block-ordered history. Thinking is never exported; tool text/JSON is not host-truncated."
+            "description": "Current-branch, block-ordered history. Thinking content is preserved verbatim; tool text/JSON is not host-truncated."
           },
           "lastEventId": {
             "type": "integer",
             "minimum": 0
+          },
+          "usageSnapshot": {
+            "$ref": "#/components/schemas/UsageSnapshot"
           }
         },
         "additionalProperties": false
       },
       "TimelineItem": {
         "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "id",
+              "type",
+              "version",
+              "notificationId",
+              "runIds",
+              "text",
+              "entryId",
+              "timestamp",
+              "order"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "type": {
+                "const": "notification"
+              },
+              "version": {
+                "const": 1
+              },
+              "notificationId": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "runIds": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "text": {
+                "type": "string"
+              },
+              "entryId": {
+                "type": "string"
+              },
+              "timestamp": {
+                "type": "string"
+              },
+              "order": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "additionalProperties": false
+          },
           {
             "type": "object",
             "required": [
@@ -2785,6 +3462,46 @@
               },
               "text": {
                 "type": "string"
+              },
+              "order": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "timestamp": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "required": [
+              "id",
+              "type",
+              "messageId",
+              "turnId",
+              "text",
+              "order"
+            ],
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "type": {
+                "const": "thinking"
+              },
+              "messageId": {
+                "type": "string"
+              },
+              "turnId": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "text": {
+                "type": "string",
+                "description": "Exact persisted assistant thinking text; no summary substitution."
               },
               "order": {
                 "type": "integer",
@@ -2952,6 +3669,126 @@
           }
         ]
       },
+      "SteeringIdentity": {
+        "type": "object",
+        "required": [
+          "controlId",
+          "acknowledgementId",
+          "requestId"
+        ],
+        "properties": {
+          "controlId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "acknowledgementId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "requestId": {
+            "type": "string",
+            "maxLength": 128
+          }
+        },
+        "additionalProperties": false
+      },
+      "SteeringInput": {
+        "type": "object",
+        "required": [
+          "text"
+        ],
+        "properties": {
+          "text": {
+            "type": "string",
+            "maxLength": 32768
+          },
+          "controlId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "acknowledgementId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "requestId": {
+            "type": "string",
+            "maxLength": 128
+          },
+          "images": {
+            "type": "array",
+            "maxItems": 4,
+            "items": {
+              "$ref": "#/components/schemas/ImageInput"
+            }
+          }
+        },
+        "anyOf": [
+          {
+            "required": [
+              "controlId",
+              "acknowledgementId",
+              "requestId"
+            ]
+          },
+          {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "controlId"
+                  ]
+                },
+                {
+                  "required": [
+                    "acknowledgementId"
+                  ]
+                },
+                {
+                  "required": [
+                    "requestId"
+                  ]
+                },
+                {
+                  "required": [
+                    "images"
+                  ]
+                }
+              ]
+            }
+          }
+        ],
+        "additionalProperties": false,
+        "description": "Legacy text-only or complete correlated identity, optionally with images. File attachments are not supported. Admission is not consumption."
+      },
+      "SteeringConsumed": {
+        "type": "object",
+        "required": [
+          "type",
+          "controlId",
+          "acknowledgementId",
+          "requestId"
+        ],
+        "properties": {
+          "type": {
+            "const": "steering_consumed"
+          },
+          "controlId": {
+            "type": "string"
+          },
+          "acknowledgementId": {
+            "type": "string"
+          },
+          "requestId": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false,
+        "description": "Exact queued SDK user-message object was consumed once. Session-scoped nonterminal control acknowledgement; never acknowledge by matching text."
+      },
       "TextInput": {
         "type": "object",
         "required": [
@@ -2979,6 +3816,51 @@
       },
       "SseEvent": {
         "oneOf": [
+          {
+            "$ref": "#/components/schemas/SteeringConsumed"
+          },
+          {
+            "type": "object",
+            "required": [
+              "type",
+              "version",
+              "notificationId",
+              "runIds",
+              "text",
+              "entryId",
+              "timestamp"
+            ],
+            "properties": {
+              "type": {
+                "const": "notification"
+              },
+              "version": {
+                "const": 1
+              },
+              "notificationId": {
+                "type": "string",
+                "format": "uuid"
+              },
+              "runIds": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "text": {
+                "type": "string"
+              },
+              "entryId": {
+                "type": "string"
+              },
+              "timestamp": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          },
           {
             "type": "object",
             "required": [
@@ -3010,6 +3892,53 @@
               },
               "text": {
                 "type": "string"
+              },
+              "requestId": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "required": [
+              "type",
+              "ordinal",
+              "phase",
+              "tokensPerSecondEstimate",
+              "includesThinking"
+            ],
+            "properties": {
+              "type": {
+                "const": "model_output_progress"
+              },
+              "ordinal": {
+                "type": "integer",
+                "minimum": 1
+              },
+              "phase": {
+                "enum": [
+                  "start",
+                  "delta",
+                  "end"
+                ]
+              },
+              "tokensPerSecondEstimate": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "minimum": 0
+              },
+              "includesThinking": {
+                "type": "boolean"
+              },
+              "activityAgeMs": {
+                "type": "number",
+                "minimum": 0
+              },
+              "replay": {
+                "type": "boolean"
               },
               "requestId": {
                 "type": "string"
@@ -3113,6 +4042,16 @@
                   "turn_start"
                 ]
               },
+              "execution": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/ExecutionSnapshot"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
               "requestId": {
                 "type": "string"
               }
@@ -3148,17 +4087,68 @@
               "ttftMs"
             ],
             "properties": {
+              "execution": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/ExecutionSnapshot"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "lastResponse": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/LastResponseUsage"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "sessionTotals": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/SessionUsageTotals"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "context": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/ContextUsage"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
               "type": {
                 "const": "usage"
               },
               "promptTokens": {
-                "type": "number"
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "description": "SDK input (excluding cache); null when unavailable, zero when measured."
               },
               "completionTokens": {
-                "type": "number"
+                "type": [
+                  "number",
+                  "null"
+                ]
               },
               "totalTokens": {
-                "type": "number"
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "description": "SDK totalTokens, not a locally reconstructed sum."
               },
               "durationMs": {
                 "type": "number"

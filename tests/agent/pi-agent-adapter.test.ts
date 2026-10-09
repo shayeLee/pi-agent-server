@@ -50,6 +50,83 @@ class FakeSession implements AgentSessionLike {
 }
 
 describe("PiAgentAdapter（接入真实 AgentSession 的适配层）", () => {
+  it("acknowledges only the exact queued user object, not equal text, copied images or duplicate events", async () => {
+    const session = new FakeSession();
+    const queued: any[] = [];
+    const agent = { streamFunction: () => {}, steer: (message: object) => { queued.push(message); } };
+    Object.assign(session, { agent, steer: async (text: string, images?: SdkImageContent[]) => {
+      await Promise.resolve();
+      agent.steer({ role: "user", content: [{ type: "text", text }, ...(images ?? [])] });
+    } });
+    const adapter = new PiAgentAdapter(session);
+    const consumed: unknown[] = [];
+    adapter.subscribeSteeringConsumed(identity => consumed.push(identity));
+    const first = { controlId: "one", acknowledgementId: "token", requestId: "primary", images: [{ mediaType: "image/png", base64: "aGVsbG8=" }] };
+    await adapter.steer("same", first);
+    await session.steer("same"); // An unrelated SDK/user submission with identical text.
+    session.emit({ type: "message_start", message: queued[1] });
+    session.emit({ type: "message_start", message: { ...queued[0] } });
+    session.emit({ type: "message_start", message: { role: "assistant", content: queued[0].content } });
+    expect(consumed).toHaveLength(0);
+    session.emit({ type: "message_start", message: queued[0] });
+    session.emit({ type: "message_start", message: queued[0] });
+    expect(consumed).toEqual([{ controlId: "one", acknowledgementId: "token", requestId: "primary" }]);
+    expect(queued[0].content[1]).toEqual({ type: "image", data: "aGVsbG8=", mimeType: "image/png" });
+    adapter.dispose();
+  });
+  it("dedicated entry subscription survives abort discard and rejects malformed/unknown/disposed entries", async () => {
+    const session = new FakeSession();
+    const adapter = new PiAgentAdapter(session);
+    const received: unknown[] = [];
+    adapter.subscribeNotifications(event => received.push(event));
+    const entry = { type: "custom", customType: "agent-team:notification", id: "marker", timestamp: "2026-01-01T00:00:00Z", data: { version: 1, notificationId: "8b58f83a-b77d-4e31-99de-47753962fb0f", runIds: ["run"], text: "stopped" } };
+    await adapter.abort();
+    session.emit({ type: "entry_appended", entry } as any);
+    session.emit({ type: "entry_appended", entry: { ...entry, customType: "unknown" } } as any);
+    session.emit({ type: "entry_appended", entry: { ...entry, data: {} } } as any);
+    expect(received).toHaveLength(1);
+    adapter.dispose(); session.emit({ type: "entry_appended", entry } as any);
+    expect(received).toHaveLength(1);
+  });
+  it("maps real SDK usage and preserves total including cache without guessing", async () => {
+    const session = new FakeSession();
+    const adapter = new PiAgentAdapter(session);
+    await adapter.prompt("usage");
+    session.messages.push({ role: "assistant", usage: { input: 120, output: 8, cacheRead: 20, cacheWrite: 12, totalTokens: 160 } });
+    expect(await adapter.getLastUsage()).toEqual({ promptTokens: 120, completionTokens: 8, totalTokens: 160 });
+  });
+
+  it("returns measured zero, never historical or earlier assistant usage", async () => {
+    const session = new FakeSession();
+    const adapter = new PiAgentAdapter(session);
+    session.messages.push({ role: "assistant", usage: { input: 120, output: 8, totalTokens: 160 } });
+    expect(await adapter.getLastUsage()).toBeNull();
+    await adapter.prompt("zero");
+    session.messages.push({ role: "assistant", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0 } });
+    expect(await adapter.getLastUsage()).toEqual({ promptTokens: 0, completionTokens: 0, totalTokens: 0 });
+    session.messages.push({ role: "assistant" });
+    expect(await adapter.getLastUsage()).toBeNull();
+    await adapter.prompt("no assistant");
+    expect(await adapter.getLastUsage()).toBeNull();
+  });
+
+  it("does not read a shifted historical message after the request boundary is replaced", async () => {
+    const session = new FakeSession();
+    session.messages = [{ role: "user", content: "history" }];
+    const adapter = new PiAgentAdapter(session);
+    await adapter.prompt("current");
+    session.messages = [{ role: "user", content: "other branch" }, { role: "assistant", usage: { input: 120, output: 8, totalTokens: 160 } }];
+    expect(await adapter.getLastUsage()).toBeNull();
+  });
+
+  it.each([undefined, { promptTokens: 120, completionTokens: 8, totalTokens: 160 }, { input: NaN, output: 8, totalTokens: 160 }, { input: 120, output: 8 }])("missing or invalid SDK measurement is unknown: %j", async (usage) => {
+    const session = new FakeSession();
+    const adapter = new PiAgentAdapter(session);
+    await adapter.prompt("unknown");
+    session.messages.push({ role: "assistant", usage });
+    expect(await adapter.getLastUsage()).toBeNull();
+  });
+
   it("prompt 转发到 session", async () => {
     const session = new FakeSession();
     const adapter = new PiAgentAdapter(session);

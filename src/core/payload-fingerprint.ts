@@ -7,10 +7,8 @@
 //
 // 边界（诚实的保证范围）：
 // - 进程内可完整识别：本轮运行期内存幂等表同时保存载荷指纹，命中 done/processing 时比对。
-// - 跨重启**无法**识别：持久化表 `idempotency(result TEXT)` 不含指纹；新增列属于 schema 变更
-//   （canonical baseline 不可变 + 备份/恢复 golden checksum），本任务不做，见
-//   README.zh-CN.md §公共 API 契约 v1。因此跨重启的同 requestId 重放仍返回旧结果，
-//   此为已知且明确记录的限制，不伪装成已修复。
+// - 新迁移的 fingerprint 列用于已结算请求跨重启校验；旧记录没有指纹，
+//   带 fileIds 的请求必须拒绝与这种旧记录重放。运行中崩溃窗口不承诺 exactly-once。
 
 import { createHash } from "node:crypto";
 import type { ImageInput } from "../agent/agent-adapter.js";
@@ -20,6 +18,9 @@ export function payloadFingerprint(input: {
   prompt: string;
   parentId?: string;
   images?: readonly ImageInput[];
+  fileIds?: readonly string[];
+  /** Host-only native shared-session actor binding; preserves legacy private fingerprints. */
+  idempotencyActor?: string;
 }): string {
   const images = input.images?.map((image) => ({ mediaType: image.mediaType, base64: image.base64 })) ?? [];
   const hash = createHash("sha256");
@@ -33,5 +34,21 @@ export function payloadFingerprint(input: {
     hash.update(`|${image.mediaType}:`);
     hash.update(image.base64, "utf8");
   }
-  return hash.digest("hex");
+  // Preserve legacy fingerprints for messages without files. File identity and order are
+  // part of the submitted payload; repeated IDs are rejected at the HTTP boundary.
+  if (input.fileIds?.length) {
+    hash.update(`|fileIds:${input.fileIds.length}`);
+    for (const id of input.fileIds) {
+      hash.update(`|${Buffer.byteLength(id, "utf8")}:`);
+      hash.update(id, "utf8");
+    }
+  }
+  if (input.idempotencyActor !== undefined) {
+    hash.update(`|actor:${Buffer.byteLength(input.idempotencyActor, "utf8")}:`);
+    hash.update(input.idempotencyActor, "utf8");
+  }
+  const digest = hash.digest("hex");
+  // File-bearing submissions remain de-duplicable for the life of their retained originals;
+  // the storage prune operation preserves fingerprints with this explicit marker.
+  return input.fileIds?.length ? `file-${digest}` : digest;
 }

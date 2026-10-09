@@ -152,7 +152,7 @@ describe("端口类型约束（编译型）", () => {
     expectTypeOf<RunTurnInput["maxToolCallsPerTurn"]>().toEqualTypeOf<number | undefined>();
     expectTypeOf<RunTurnInput["maxTurnDurationMs"]>().toEqualTypeOf<number | undefined>();
     expectTypeOf<keyof SubmitInput>().toEqualTypeOf<
-      "requestId" | "userId" | "prompt" | "parentId" | "images"
+      "requestId" | "userId" | "prompt" | "parentId" | "images" | "fileIds" | "beforeAccept" | "idempotencyActor"
     >();
   });
 

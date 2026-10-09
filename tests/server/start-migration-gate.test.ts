@@ -2,7 +2,7 @@
 //   空库 / legacy 无 ledger 库 / 落后库 fail-fast，明确提示运行离线 migrate；
 // - `PI_MIGRATION_GATE=off`（包括 rc+off）已删除：在资源创建前拒绝，服务绝不 bootstrap baseline。
 import { DatabaseSync } from "node:sqlite";
-import { chmodSync, copyFileSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdtempSync, realpathSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -15,7 +15,7 @@ const cleanups: string[] = [];
 afterEach(() => { for (const directory of cleanups.splice(0)) rmSync(directory, { recursive: true, force: true }); });
 
 function makeTempDir(): string {
-  const dir = mkdtempSync(join(tmpdir(), "pi-start-migration-gate-"));
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "pi-start-migration-gate-")));
   cleanups.push(dir);
   return dir;
 }
@@ -26,6 +26,7 @@ function baseConfig(overrides: Partial<StartConfig> = {}): StartConfig {
     port: 0,
     ipAccess: makeTestIpAccess(),
     dataDir: dir,
+    nativeSessionSourceDir: join(dir, "native-fixture"),
     authPath: join(dir, "auth.json"),
     ...overrides,
   };

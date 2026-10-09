@@ -2,7 +2,7 @@ import { DatabaseSync } from "node:sqlite";
 import { createHash } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import { EventEmitter } from "node:events";
-import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Readable } from "node:stream";
@@ -11,6 +11,7 @@ import { createSqliteBackup } from "../../src/backup/backup-core.js";
 import { decryptAgeBinary, InvalidSessionHistoryError, parseJsonl, restoreSqliteBackup } from "../../src/backup/restore-core.js";
 import { runSqliteMigrations } from "../../src/storage/migration-engine.js";
 import { migrationDefinitions, stableSerialize } from "../../src/storage/migration-manifest.js";
+import { createCanonicalSqlitePrefix } from "./sqlite-fixture.js";
 
 const canRunAge = process.env.PI_RUN_REAL_AGE_RESTORE === "1" &&
   spawnSync("age", ["--version"], { stdio: "ignore" }).status === 0 &&
@@ -18,7 +19,7 @@ const canRunAge = process.env.PI_RUN_REAL_AGE_RESTORE === "1" &&
 const cleanups: string[] = [];
 afterEach(() => { for (const directory of cleanups.splice(0)) rmSync(directory, { recursive: true, force: true }); });
 
-async function fixture(realAge = true, options: { customAgentDir?: boolean; externalDb?: boolean } = {}): Promise<{ root: string; dataDir: string; agentDir: string; dbPath: string; backupRoot: string; recipient: string; identity: string }> {
+async function fixture(realAge = true, options: { customAgentDir?: boolean; externalDb?: boolean; migrationVersion?: number } = {}): Promise<{ root: string; dataDir: string; agentDir: string; dbPath: string; backupRoot: string; recipient: string; identity: string }> {
   const root = mkdtempSync(path.join(tmpdir(), "pi-restore-test-"));
   cleanups.push(root);
   const dataDir = path.join(root, "source-data");
@@ -32,8 +33,10 @@ async function fixture(realAge = true, options: { customAgentDir?: boolean; exte
   if (options.externalDb) mkdirSync(path.dirname(dbPath), { recursive: true, mode: 0o700 });
   if (options.customAgentDir) writeFileSync(path.join(agentDir, "models.json"), '{"models":["custom"]}\n', { mode: 0o600 });
   const db = new DatabaseSync(dbPath);
-  // Current single-baseline world: the canonical v0 baseline builds the full schema.
-  await runSqliteMigrations(db, { mode: "apply" });
+  // Normal fixtures use the real head; a dedicated recovery test may request
+  // an authenticated historical prefix such as the immutable v0 baseline.
+  if (options.migrationVersion === undefined) await runSqliteMigrations(db, { mode: "apply" });
+  else createCanonicalSqlitePrefix(db, options.migrationVersion);
   db.prepare("INSERT INTO projects (id,name,cwd,owner_key,created_at) VALUES (?,?,?,?,?)").run("p", "project", "/source/project", "owner", 1);
   const sessionFile = path.join(dataDir, "projects", "p", "sessions", "db-session", "history.jsonl");
   db.prepare("INSERT INTO sessions (id,owner_key,project_id,title,created_at,updated_at,conversation_ref,capability_versions) VALUES (?,?,?,?,?,?,?,?)").run("db-session", "owner", "p", "session", 1, 1, sessionFile, JSON.stringify({ schema: 1 }));
@@ -274,11 +277,151 @@ describe("SQLite restore drill", () => {
     expect(existsSync(path.join(result.finalPath!, ".manifest.json"))).toBe(false);
   });
 
-  it("restores the canonical single baseline without auto-migrating and reports the physical outbox contract", async () => {
+  it("roundtrips exact unassociated and session-associated uploaded originals with target Pi paths", async () => {
+    const f = await fixture(false);
+    const uploadDir = path.join(f.root, "originals");
+    mkdirSync(uploadDir, { mode: 0o700 });
+    const uploadRoot = realpathSync(uploadDir);
+    const firstKey = "00000000-0000-4000-8000-000000000011";
+    const secondKey = "00000000-0000-4000-8000-000000000012";
+    const projectId = "00000000-0000-4000-8000-000000000021";
+    const sessionId = "00000000-0000-4000-8000-000000000031";
+    const originals = [Buffer.from("unassociated original"), Buffer.from("session original")];
+    const db = new DatabaseSync(f.dbPath);
+    try {
+      db.prepare("INSERT INTO projects (id,name,cwd,owner_key,created_at) VALUES (?,?,?,?,?)").run(projectId, "Uploads", "/source/work", "owner", 1);
+      db.prepare("INSERT INTO sessions (id,owner_key,project_id,title,created_at,updated_at) VALUES (?,?,?,?,?,?)").run(sessionId, "owner", projectId, "Associated", 1, 1);
+      const insert = db.prepare("INSERT INTO uploaded_files (id,owner_key,project_id,upload_key,name,media_type,size,checksum,storage_key,agent_path,status,created_at,session_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)");
+      for (const [index, bytes] of originals.entries()) {
+        const key = index === 0 ? firstKey : secondKey;
+        writeFileSync(path.join(uploadRoot, key), bytes, { mode: 0o600 });
+        insert.run(key, "owner", projectId, `upload-${index}`, `document-${index}.txt`, "text/plain", bytes.length,
+          createHash("sha256").update(bytes).digest("hex"), key, `/source/agent/${key}`, index === 0 ? "uploading" : "ready", 1, index === 0 ? null : sessionId);
+      }
+    } finally { db.close(); }
+    const backup = await createSqliteBackup({ paths: { dataDir: f.dataDir, dbPath: f.dbPath, uploadRoot, backupRoot: f.backupRoot, ageRecipientFile: f.recipient }, age: fakeAge() });
+    expect(backup.manifest?.format).toBe("pi-agent-server.backup-manifest.v2");
+    expect(backup.manifest?.attachments).toHaveLength(2);
+    const target = path.join(f.root, "target-uploaded");
+    const agentBase = path.join(f.root, "mapped-agent");
+    const restored = await restoreSqliteBackup({ paths: { inputBackup: backup.finalPath!, targetRoot: target,
+      ageIdentityFile: f.identity, uploadAgentRoot: agentBase }, age: fakeAge() });
+    const reader = new DatabaseSync(path.join(restored.finalPath!, "pi-agent-server.db"), { readOnly: true });
+    try {
+      const rows = reader.prepare("SELECT id,session_id,storage_key,agent_path,size,checksum,status FROM uploaded_files ORDER BY id").all() as Array<{
+        id: string; session_id: string | null; storage_key: string; agent_path: string; size: number; checksum: string; status: string;
+      }>;
+      expect(rows).toHaveLength(2);
+      expect(rows.map((row) => row.session_id)).toEqual([null, sessionId]);
+      expect(rows.map((row) => row.status)).toEqual(["uploading", "ready"]);
+      for (const [index, row] of rows.entries()) {
+        expect(readFileSync(path.join(restored.finalPath!, "uploads", row.storage_key))).toEqual(originals[index]);
+        expect(row.agent_path).toBe(path.join(realpathSync(f.root), "mapped-agent", path.basename(restored.finalPath!), "uploads", row.storage_key));
+        expect(row.agent_path).not.toContain("/source/agent/");
+        expect(row.checksum).toBe(createHash("sha256").update(originals[index]!).digest("hex"));
+      }
+    } finally { reader.close(); }
+  });
+
+  it("preserves an existing target byte-for-byte when attachment decryption fails after DB staging", async () => {
+    const f = await fixture(false);
+    const directory = path.join(f.root, "originals");
+    mkdirSync(directory, { mode: 0o700 });
+    const uploadRoot = realpathSync(directory);
+    const key = "00000000-0000-4000-8000-000000000081";
+    const original = Buffer.from("FAIL_AT_ATTACHMENT_DECRYPT");
+    writeFileSync(path.join(uploadRoot, key), original, { mode: 0o600 });
+    const db = new DatabaseSync(f.dbPath);
+    try {
+      db.prepare("INSERT INTO uploaded_files (id,owner_key,project_id,upload_key,name,media_type,size,checksum,storage_key,agent_path,status,created_at,session_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)")
+        .run(key, "owner", "00000000-0000-4000-8000-000000000021", "test-key", "file.txt", "text/plain", original.length,
+          createHash("sha256").update(original).digest("hex"), key, `/source/uploads/${key}`, "ready", 1, null);
+    } finally { db.close(); }
+    const backup = await createSqliteBackup({ paths: { dataDir: f.dataDir, dbPath: f.dbPath, uploadRoot,
+      backupRoot: f.backupRoot, ageRecipientFile: f.recipient }, age: fakeAge() });
+    const target = path.join(f.root, "existing-target");
+    mkdirSync(target, { mode: 0o700 });
+    const sentinel = Buffer.from([0, 255, 42, 10, 0, 99]);
+    writeFileSync(path.join(target, "sentinel.bin"), sentinel, { mode: 0o600 });
+    const age = { ...fakeAge(), decrypt(ciphertext: Buffer) {
+      const plain = fakeAge().decrypt(ciphertext);
+      if (plain.equals(original)) throw new Error("injected attachment decryption failure");
+      return plain;
+    } };
+    await expect(restoreSqliteBackup({ paths: { inputBackup: backup.finalPath!, targetRoot: target,
+      ageIdentityFile: f.identity, uploadAgentRoot: path.join(f.root, "agent-target") }, age }))
+      .rejects.toThrow(/injected attachment decryption failure/);
+    expect(readdirSync(target)).toEqual(["sentinel.bin"]);
+    expect(readFileSync(path.join(target, "sentinel.bin"))).toEqual(sentinel);
+    expect(readdirSync(f.root).filter((name) => name.startsWith(".pi-agent-restore-staging-") || name.startsWith("restore-"))).toEqual([]);
+  });
+
+  it("rejects symlinked or traversal attachment archive entries before publishing a target", async () => {
+    const f = await fixture(false);
+    const uploadDir = path.join(f.root, "originals");
+    mkdirSync(uploadDir, { mode: 0o700 });
+    const uploadRoot = realpathSync(uploadDir);
+    const key = "00000000-0000-4000-8000-000000000061";
+    const bytes = Buffer.from("private original");
+    writeFileSync(path.join(uploadRoot, key), bytes, { mode: 0o600 });
+    const db = new DatabaseSync(f.dbPath);
+    try {
+      db.prepare("INSERT INTO uploaded_files (id,owner_key,project_id,upload_key,name,media_type,size,checksum,storage_key,agent_path,status,created_at,session_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)")
+        .run(key, "owner", "00000000-0000-4000-8000-000000000021", "key", "file.txt", "text/plain", bytes.length,
+          createHash("sha256").update(bytes).digest("hex"), key, `/agent/${key}`, "ready", 1, null);
+    } finally { db.close(); }
+    const paths = { dataDir: f.dataDir, dbPath: f.dbPath, uploadRoot, backupRoot: f.backupRoot, ageRecipientFile: f.recipient };
+    const first = await createSqliteBackup({ paths, age: fakeAge() });
+    const payload = path.join(first.finalPath!, "payload", "attachments", `${key}.age`);
+    const outside = path.join(f.root, "outside.age");
+    writeFileSync(outside, "not a payload");
+    rmSync(payload);
+    symlinkSync(outside, payload);
+    const target = path.join(f.root, "symlink-target");
+    await expect(restoreSqliteBackup({ paths: { inputBackup: first.finalPath!, targetRoot: target,
+      ageIdentityFile: f.identity, uploadAgentRoot: path.join(f.root, "pi-target") }, age: fakeAge() })).rejects.toThrow(/symbolic link/);
+    expectNoTargetStaging(target);
+
+    const second = await createSqliteBackup({ paths, age: fakeAge() });
+    rewriteManifest(second.finalPath!, (manifest) => {
+      manifest.files.find((record: { kind: string }) => record.kind === "attachment").path = "payload/attachments/../escape.age";
+    });
+    const traversalTarget = path.join(f.root, "traversal-target");
+    await expect(restoreSqliteBackup({ paths: { inputBackup: second.finalPath!, targetRoot: traversalTarget,
+      ageIdentityFile: f.identity, uploadAgentRoot: path.join(f.root, "pi-target") }, age: fakeAge() })).rejects.toThrow(/path traversal/);
+    expectNoTargetStaging(traversalTarget);
+
+    const third = await createSqliteBackup({ paths, age: fakeAge() });
+    rewriteManifest(third.finalPath!, (manifest) => {
+      const attachment = manifest.files.find((record: { kind: string }) => record.kind === "attachment");
+      manifest.files.push({ ...attachment }); // duplicate authenticated ciphertext path
+    });
+    const duplicateTarget = path.join(f.root, "duplicate-target");
+    await expect(restoreSqliteBackup({ paths: { inputBackup: third.finalPath!, targetRoot: duplicateTarget,
+      ageIdentityFile: f.identity, uploadAgentRoot: path.join(f.root, "pi-target") }, age: fakeAge() })).rejects.toThrow(/duplicate or non-payload path/);
+    expectNoTargetStaging(duplicateTarget);
+  });
+
+  it("restores a durable unknown request reservation without discarding its de-duplication barrier", async () => {
+    const f = await fixture(false);
+    const reserved = "PI-IDEMPOTENCY-RESERVATION-V1:00000000-0000-4000-8000-000000000001";
+    const db = new DatabaseSync(f.dbPath);
+    try { db.prepare("UPDATE idempotency SET result = ?, fingerprint = ? WHERE request_id = 'request'").run(reserved, "a".repeat(64)); }
+    finally { db.close(); }
+    const backup = await createSqliteBackup({ paths: { dataDir: f.dataDir, dbPath: f.dbPath, backupRoot: f.backupRoot, ageRecipientFile: f.recipient }, age: fakeAge() });
+    const result = await restoreSqliteBackup({ paths: { inputBackup: backup.finalPath!, targetRoot: path.join(f.root, "reservation-target"), ageIdentityFile: f.identity }, age: fakeAge() });
+    const restored = new DatabaseSync(path.join(result.finalPath!, "pi-agent-server.db"), { readOnly: true });
+    try {
+      expect(restored.prepare("SELECT result, fingerprint FROM idempotency WHERE request_id = 'request'").get())
+        .toEqual({ result: reserved, fingerprint: "a".repeat(64) });
+    } finally { restored.close(); }
+  });
+
+  it("restores the canonical v1 migration head without auto-migrating and reports the physical outbox contract", async () => {
     const f = await fixture(false);
     const backup = await createSqliteBackup({ paths: { dataDir: f.dataDir, dbPath: f.dbPath, backupRoot: f.backupRoot, ageRecipientFile: f.recipient }, age: fakeAge() });
     const result = await restoreSqliteBackup({ paths: { inputBackup: backup.finalPath!, targetRoot: path.join(f.root, "restore-baseline"), ageIdentityFile: f.identity }, age: fakeAge() });
-    expect(result.report.migration).toEqual({ version: 0, pending: 0 });
+    expect(result.report.migration).toEqual({ version: migrationDefinitions.at(-1)!.version, pending: 0 });
     expect(result.report.counts.fileOperations).toBe(0);
     const restoredPath = path.join(result.finalPath!, "pi-agent-server.db");
     const restoredDb = new DatabaseSync(restoredPath);
@@ -286,13 +429,25 @@ describe("SQLite restore drill", () => {
       const tables = (restoredDb.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all() as Array<{ name: string }>).map((row) => row.name);
       expect(tables.includes("file_operations")).toBe(true);
       expect(tables.includes("schema_migrations")).toBe(true);
-      // Migration is an independent, explicit operation after restore; with the
-      // single baseline this is a no-op that must keep the outbox table empty.
+      // Migration is an independent, explicit operation after restore; at the
+      // current head this is a no-op that must keep the outbox table empty.
       await runSqliteMigrations(restoredDb, { mode: "apply" });
       expect(restoredDb.prepare("SELECT count(*) AS n FROM file_operations").get()).toEqual({ n: 0 });
     } finally {
       restoredDb.close();
     }
+  });
+
+  it("restores an authenticated immutable v0 prefix without auto-migrating it", async () => {
+    const f = await fixture(false, { migrationVersion: 0 });
+    const backup = await createSqliteBackup({ paths: { dataDir: f.dataDir, dbPath: f.dbPath, backupRoot: f.backupRoot, ageRecipientFile: f.recipient }, age: fakeAge() });
+    const result = await restoreSqliteBackup({ paths: { inputBackup: backup.finalPath!, targetRoot: path.join(f.root, "restore-v0"), ageIdentityFile: f.identity }, age: fakeAge() });
+    expect(result.report.migration).toEqual({ version: 0, pending: 0 });
+    const restoredDb = new DatabaseSync(path.join(result.finalPath!, "pi-agent-server.db"), { readOnly: true });
+    try {
+      expect(restoredDb.prepare("SELECT version, name FROM schema_migrations ORDER BY version").all()).toEqual([{ version: 0, name: "initial-schema" }]);
+      expect(restoredDb.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'uploaded_files'").all()).toEqual([]);
+    } finally { restoredDb.close(); }
   });
 
   it.skipIf(!canRunAge)("restores a complete backup, remaps source JSONL paths, and emits safe counts", async () => {
@@ -376,6 +531,52 @@ describe("SQLite restore drill", () => {
   });
 
   it.each([
+    ["altered v1 head checksum", (manifest: Record<string, any>) => {
+      manifest.migrationLedger.rows[1].checksum = "0".repeat(64);
+      manifest.migrationLedger.checksums[1] = "0".repeat(64);
+    }],
+    ["unknown future migration", (manifest: Record<string, any>) => {
+      const version = manifest.migrationLedger.appliedVersion + 1;
+      manifest.migrationLedger.rows.push({ version, name: "unknown-future", checksum: "b".repeat(64), applied_at: 2 });
+      manifest.migrationLedger.checksums.push("b".repeat(64));
+      manifest.migrationLedger.appliedCount = manifest.migrationLedger.rows.length;
+      manifest.migrationLedger.appliedVersion = version;
+    }],
+    ["truncated migration prefix", (manifest: Record<string, any>) => {
+      manifest.migrationLedger.rows.splice(1);
+      manifest.migrationLedger.checksums.splice(1);
+      manifest.migrationLedger.appliedCount = 1;
+      manifest.migrationLedger.appliedVersion = 0;
+    }],
+  ])("rejects %s before payload staging", async (_label, change) => {
+    const f = await fixture(false);
+    const backup = await createSqliteBackup({ paths: { dataDir: f.dataDir, dbPath: f.dbPath, backupRoot: f.backupRoot, ageRecipientFile: f.recipient }, age: fakeAge() });
+    rewriteManifest(backup.finalPath!, change);
+    const target = path.join(f.root, `history-${String(_label).replaceAll(" ", "-")}`);
+    await expect(restoreSqliteBackup({ paths: { inputBackup: backup.finalPath!, targetRoot: target, ageIdentityFile: f.identity }, age: fakeAge() })).rejects.toThrow(/backup history\/checksum|unknown migration version|Manifest 物理契约/);
+    expectNoTargetStaging(target);
+  });
+
+  it("rejects legacy packages with forged uploaded_files metadata and no attachment payload", async () => {
+    const f = await fixture(false);
+    const backup = await createSqliteBackup({ paths: { dataDir: f.dataDir, dbPath: f.dbPath, backupRoot: f.backupRoot, ageRecipientFile: f.recipient }, age: fakeAge() });
+    rewritePayload(backup.finalPath!, "payload/database.sqlite.age", (bytes) => {
+      const testDbPath = path.join(f.root, "upload-metadata.db");
+      writeFileSync(testDbPath, bytes, { mode: 0o600 });
+      const db = new DatabaseSync(testDbPath);
+      db.prepare("INSERT INTO uploaded_files (id, owner_key, project_id, upload_key, name, media_type, size, checksum, storage_key, agent_path, status, created_at, session_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+        .run("00000000-0000-4000-8000-000000000051", "owner", "00000000-0000-4000-8000-000000000021", "upload-key", "document.pdf", "application/pdf", 1, "a".repeat(64), "00000000-0000-4000-8000-000000000052", "/agent/00000000-0000-4000-8000-000000000052", "ready", 1, null);
+      db.close();
+      const changed = readFileSync(testDbPath);
+      rmSync(testDbPath, { force: true });
+      return changed;
+    });
+    const target = path.join(f.root, "upload-metadata-target");
+    await expect(restoreSqliteBackup({ paths: { inputBackup: backup.finalPath!, targetRoot: target, ageIdentityFile: f.identity }, age: fakeAge() })).rejects.toThrow(/legacy package has unbundled attachment metadata/);
+    expectNoTargetStaging(target);
+  });
+
+  it.each([
     ["SQLite corruption", (bytes: Buffer) => Buffer.from("not a SQLite database")],
     ["SQLite foreign-key violation", (bytes: Buffer) => {
       const file = path.join(mkdtempSync(path.join(tmpdir(), "pi-restore-db-fixture-")), "db");
@@ -445,7 +646,7 @@ describe("SQLite restore drill", () => {
     expect(row.conversation_ref).toBeNull();
   });
 
-  it("rejects a package without the canonical single-baseline migration ledger before payload staging", async () => {
+  it("rejects a package without the authenticated current-head migration ledger before payload staging", async () => {
     const f = await fixture(false);
     const backup = await createSqliteBackup({ paths: { dataDir: f.dataDir, dbPath: f.dbPath, backupRoot: f.backupRoot, ageRecipientFile: f.recipient }, age: fakeAge() });
     // Legacy RC packages carry no ledger at all; they are not recoverable.

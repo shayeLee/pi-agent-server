@@ -1,9 +1,9 @@
 // Offline Manifest-driven migration runner (WP1).
 // Service startup always requires an already migrated, verified database. It never
 // bootstraps a baseline; offline `migrate` is the only writer that establishes it.
-// The registry is a single immutable baseline (version 0 = the complete schemaManifest). Legacy
-// ledgers from the removed v0/v1 registry and managed tables without any ledger fail fast in
-// every mode and are never adopted by the runner or by server bootstrap.
+// The published migration registry is an immutable contiguous history: v0 is frozen and
+// additive schema changes are appended. Managed tables without a ledger fail fast in every
+// mode and are never adopted by the runner or by server bootstrap.
 
 import { DatabaseSync } from "node:sqlite";
 import { Kysely, SqliteDialect, sql } from "kysely";
@@ -112,10 +112,10 @@ function validInteger(value: unknown): value is number {
 
 function validateLedgerRows(rows: LedgerRow[], migrations: readonly MigrationDefinition[]): number {
   if (rows.length === 0) throw ledgerError("ledger exists but is empty/incomplete; refusing empty bootstrap");
-  // The current registry is exactly one immutable baseline. Any additional
-  // applied row belongs to an unsupported database and is never adopted.
+  // Rows must be a prefix of the immutable published registry. Unknown future
+  // rows are never adopted.
   if (rows.length > migrations.length) {
-    throw ledgerError(`applied ledger has ${rows.length} row(s), but the single-baseline registry has ${migrations.length}; recreate the database`);
+    throw ledgerError(`applied ledger has ${rows.length} row(s), but the published registry has ${migrations.length}; recreate the database`);
   }
   for (let index = 0; index < rows.length; index++) {
     const row = rows[index]!;
@@ -130,7 +130,7 @@ function validateLedgerRows(rows: LedgerRow[], migrations: readonly MigrationDef
       throw ledgerError(`version ${row.version} checksum mismatch: malformed (expected lowercase SHA-256 hex)`);
     }
     if (row.checksum !== migrationChecksum(expected)) {
-      throw ledgerError(`version ${row.version} checksum mismatch; recreate the database from the single baseline`);
+      throw ledgerError(`version ${row.version} checksum mismatch; recreate the database from the canonical migration history`);
     }
     if (!validInteger(row.applied_at) || row.applied_at < 0) {
       throw ledgerError(`version ${row.version} applied_at is malformed (expected an integer)`);
@@ -287,7 +287,7 @@ async function inspectSqlite(
   const state = readSqliteLedger(db);
   if (!state.ledgerExists) {
     if (sqliteManagedTableExists(db, migrations.map((migration) => migration.manifest))) {
-      throw ledgerError("managed tables exist without the migration ledger; this is a legacy database and adoption is forbidden — start from an empty database and apply the single baseline");
+      throw ledgerError("managed tables exist without the migration ledger; this is a legacy database and adoption is forbidden — start from an empty database and apply the canonical migration history");
     }
     if (mode === "verify") throw ledgerError("database has not been initialized by the migration runner");
     return { state, appliedVersion: null };
@@ -603,7 +603,7 @@ async function inspectPostgres(
     `.execute(kysely);
     const managed = new Set(migrations.flatMap((migration) => migration.manifest.tables.map((table) => table.name)));
     if (tables.rows.some((table) => managed.has(table.table_name))) {
-      throw ledgerError("managed tables exist without the migration ledger; this is a legacy database and adoption is forbidden — start from an empty database and apply the single baseline");
+      throw ledgerError("managed tables exist without the migration ledger; this is a legacy database and adoption is forbidden — start from an empty database and apply the canonical migration history");
     }
     if (mode === "verify") throw ledgerError("database has not been initialized by the migration runner");
     return { state, appliedVersion: null };
@@ -693,7 +693,7 @@ async function runPostgresMigrationsInternal(
   });
 }
 
-/** Production/offline runner: the checked-in one-row baseline is immutable and cannot be injected. */
+/** Production/offline runner: the checked-in immutable migration history cannot be injected. */
 export function runSqliteMigrations(
   db: DatabaseSync,
   options: MigrationRunOptions = {},
@@ -709,7 +709,7 @@ export function runSqliteMigrationsForTest(
   return runSqliteMigrationsInternal(db, options);
 }
 
-/** Production/offline runner: the checked-in one-row baseline is immutable and cannot be injected. */
+/** Production/offline runner: the checked-in immutable migration history cannot be injected. */
 export function runPostgresMigrations(
   kysely: Kysely<DatabaseSchema>,
   options: MigrationRunOptions = {},

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Icon } from "./Icon.js";
 import type { TimelineItem } from "pi-agent-server/client";
 
 export type ThinkingRowProps = {
@@ -6,29 +7,32 @@ export type ThinkingRowProps = {
 };
 
 export function ThinkingRow({ thinking }: ThinkingRowProps) {
-  const [expanded, setExpanded] = useState(false);
-  const summary = thinking.text.slice(0, 60).replace(/\n/g, " ");
+  // Streaming opens by default, but an explicit user choice can still collapse it.
+  const [manualExpanded, setManualExpanded] = useState<boolean | null>(null);
+  const visible = manualExpanded ?? thinking.streaming;
+  // Keep hooks and manual state mounted for this id, even before useful text arrives.
+  if (!thinking.text.trim()) return null;
 
   return (
     <div
       className={`message-row thinking-row ${thinking.streaming ? "streaming" : ""}`}
-      data-expanded={expanded}
+      data-expanded={visible}
       data-testid={`thinking-${thinking.id}`}
     >
       <button
         type="button"
-        className="thinking-header"
-        onClick={() => setExpanded((v) => !v)}
-        aria-expanded={expanded}
+        className="thinking-header chevron-trigger"
+        onClick={() => setManualExpanded(!visible)}
+        aria-expanded={visible}
+        aria-label="思考过程"
       >
-        <span className="thinking-chevron">▶</span>
-        <span className="thinking-label">Think</span>
-        {!expanded && <span className="thinking-summary">{summary || "思考中…"}</span>}
+        <span className="thinking-label">{thinking.streaming ? "Thinking" : "Thought"}</span>
+        <Icon name="chevron" className="disclosure-chevron thinking-chevron" />
       </button>
-      {expanded && (
+      {visible && (
         <div className="thinking-body" data-testid={`thinking-body-${thinking.id}`}>
           {thinking.text}
-          {thinking.streaming && <span className="streaming-cursor">▍</span>}
+          {thinking.streaming && <Icon name="dot" className="streaming-cursor" />}
         </div>
       )}
     </div>

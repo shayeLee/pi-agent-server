@@ -6,7 +6,7 @@ const legacyFailbackFixture = JSON.parse(readFileSync(new URL("../fixtures/model
 const entry = (id: string, parentId: string | null, message: unknown) => ({ type: "message", id, parentId, timestamp: "2026-01-01T00:00:00.000Z", message });
 
 describe("Pi export tool timeline", () => {
-  it("keeps assistant block order, parallel same-name calls, full output, errors, abort gaps, and excludes thinking", () => {
+  it("keeps assistant block order, exact thinking, parallel same-name calls, full output, errors, and abort gaps", () => {
     const branch = [
       entry("u1", null, { role: "user", content: "run" }),
       entry("a1", "u1", { role: "assistant", content: [
@@ -22,12 +22,28 @@ describe("Pi export tool timeline", () => {
     ] as any;
     const snapshot = projectExportSnapshot([], branch);
 
-    expect(snapshot.timeline.map((item) => item.type === "tool_call" ? `${item.type}:${item.callId}:${item.status}` : item.type === "tool_result" ? `${item.type}:${item.callId}` : item.type === "message" ? `${item.type}:${item.text}` : `${item.type}:${item.event}`)).toEqual([
-      "message:run", "message:before", "tool_call:call-a:error", "message:between", "tool_call:call-b:completed", "tool_result:call-b", "tool_result:call-a", "tool_call:call-aborted:no_result",
+    expect(snapshot.timeline.map((item) => item.type === "tool_call" ? `${item.type}:${item.callId}:${item.status}` : item.type === "tool_result" ? `${item.type}:${item.callId}` : item.type === "message" || item.type === "thinking" ? `${item.type}:${item.text}` : item.type === "system_event" ? `${item.type}:${item.event}` : `${item.type}:${item.notificationId}`)).toEqual([
+      "message:run", "message:before", "thinking:private", "tool_call:call-a:error", "message:between", "tool_call:call-b:completed", "tool_result:call-b", "tool_result:call-a", "tool_call:call-aborted:no_result",
     ]);
-    expect(snapshot.timeline).not.toContainEqual(expect.objectContaining({ text: "private" }));
+    expect(snapshot.timeline).toContainEqual(expect.objectContaining({ type: "thinking", text: "private", messageId: "a1", turnId: "u1", order: 2 }));
     expect(snapshot.timeline).toContainEqual(expect.objectContaining({ callId: "call-a", args: { path: "a", apiKey: "[REDACTED]" }, messageId: "a1", turnId: "u1" }));
     expect(snapshot.timeline).toContainEqual(expect.objectContaining({ callId: "call-a", result: { content: [{ type: "text", text: "A" }], details: { exitCode: 7, authorization: "[REDACTED]" } }, isError: true }));
+  });
+
+  it("exports persisted thinking-only assistant messages without inventing legacy assistant text", () => {
+    const rawThinking = "第一行原文\n第二行与标点 !?";
+    const selected = [
+      entry("u1", null, { role: "user", content: [{ type: "text", text: "请推理" }] }),
+      entry("a1", "u1", { role: "assistant", content: [{ type: "thinking", thinking: rawThinking }] }),
+    ] as any;
+    const snapshot = projectExportSnapshot([], selected);
+
+    expect(snapshot.messages).toEqual([expect.objectContaining({ sourceId: "u1", role: "user", text: "请推理" })]);
+    expect(snapshot.timeline).toHaveLength(2);
+    expect(snapshot.timeline[1]).toMatchObject({
+      type: "thinking", id: "thinking:a1:0", messageId: "a1", turnId: "u1",
+      text: rawThinking, order: 1, timestamp: "2026-01-01T00:00:00.000Z",
+    });
   });
 
   it("does not include an orphaned branch when the selected branch does not contain it", () => {

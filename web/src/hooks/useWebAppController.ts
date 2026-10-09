@@ -6,31 +6,130 @@ import {
   useState,
   useSyncExternalStore,
 } from "react";
-import { ApiClient, ApiError, createChatStore, createSseConnection } from "pi-agent-server/client";
-import type { ChatStore, ModelInfo, Project, SessionRecord, SseEvent } from "pi-agent-server/client";
+import { DEFAULT_PROJECT_ID, ApiClient, ApiError, createChatStore, createSseConnection, firstUserPrompt, ownsSseEvent } from "pi-agent-server/client";
+import type { AccessCapabilities, ChatStore, ModelInfo, Project, SessionRecord, SseEvent, TimelineItem, UsageSnapshot } from "pi-agent-server/client";
 import type { EventLogEntry } from "../types.js";
+import { EMPTY_MESSAGE, validateSelection, type SubmissionState, type SubmitOutcome, type SubmitSnapshot, type UnsentAttachment, type UnsentMessage } from "../attachment-state.js";
+
+import { readMessageImages } from "../message-images.js";
+
+function projectExportTimeline(raw: readonly unknown[], messages: readonly unknown[]): TimelineItem[] {
+  const imagesBySource = new Map<string, ReturnType<typeof readMessageImages>>();
+  for (const value of messages) {
+    if (!value || typeof value !== "object") continue;
+    const row = value as Record<string, unknown>;
+    if (row.role === "user" && typeof row.sourceId === "string") imagesBySource.set(row.sourceId, readMessageImages(row.images));
+  }
+  const items: TimelineItem[] = [];
+  for (const value of raw) {
+    if (!value || typeof value !== "object") continue;
+    const row = value as Record<string, unknown>;
+    if (row.type === "notification" && row.version === 1 && typeof row.notificationId === "string" && typeof row.entryId === "string" && typeof row.text === "string" && Array.isArray(row.runIds) && row.runIds.every(id => typeof id === "string")) {
+      const id = `notification:${row.notificationId}`;
+      if (!items.some(item => item.id === id)) items.push({ kind: "notification", id, version: 1, notificationId: row.notificationId, entryId: row.entryId, text: row.text, runIds: row.runIds as string[], timestamp: String(row.timestamp ?? "") });
+    } else if (row.type === "message" && (row.role === "user" || row.role === "assistant") && typeof row.text === "string") {
+      items.push({ kind: "message", id: `history-${String(row.id ?? items.length)}`,
+        role: row.role, text: row.text, streaming: false,
+        ...(row.role === "user" && typeof row.messageId === "string" ? { images: imagesBySource.get(row.messageId) } : {}) });
+    } else if (row.type === "thinking" && typeof row.text === "string") {
+      items.push({ kind: "thinking", id: `history-${String(row.id ?? items.length)}`,
+        text: row.text, streaming: false });
+    } else if (row.type === "tool_call" && typeof row.toolCallId === "string" && typeof row.toolName === "string") {
+      items.push({ kind: "tool", id: `history-${String(row.id ?? items.length)}`, call: {
+        toolCallId: row.toolCallId, toolName: row.toolName, args: row.args,
+        partialResult: undefined, result: undefined, isError: row.status === "error", done: false,
+      } });
+    } else if (row.type === "tool_result" && typeof row.toolCallId === "string") {
+      let index = -1;
+      for (let i = items.length - 1; i >= 0; i--) {
+        const item = items[i];
+        if (item?.kind === "tool" && item.call.toolCallId === row.toolCallId) { index = i; break; }
+      }
+      if (index >= 0) {
+        const previous = items[index];
+        if (previous?.kind === "tool") items[index] = { ...previous, call: {
+          ...previous.call, result: row.result, isError: row.isError === true, done: true,
+        } };
+      } else {
+        items.push({ kind: "tool", id: `history-${String(row.id ?? items.length)}`, call: {
+          toolCallId: row.toolCallId, toolName: String(row.toolName ?? "工具"), args: undefined,
+          partialResult: undefined, result: row.result, isError: row.isError === true, done: true,
+        } });
+      }
+    }
+  }
+  return items;
+}
 
 /** Web 页面专属服务端状态适配层：封装 API 编排与 SSE 聊天状态。 */
 export function useWebAppController() {
   const [sessions, setSessions] = useState<SessionRecord[] | null>(null);
+  const [access, setAccess] = useState<AccessCapabilities | null>(null);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [projects, setProjects] = useState<Project[] | null>(null);
+  // Explicitly created, still-empty projects remain selectable in this browser.
+  const draftProjectsRef = useRef(new Map<string, Project>());
   // 项目列表加载前不选项目；默认项目完全由服务端 isDefault 字段推导。
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   const [models, setModels] = useState<ModelInfo[]>([]);
   const [thinkingLevels, setThinkingLevels] = useState<string[]>([]);
   const [defaultModel, setDefaultModel] = useState<ModelInfo | null>(null);
-  const [defaultThinkingLevel, setDefaultThinkingLevel] = useState("medium");
+  const [defaultThinkingLevel, setDefaultThinkingLevel] = useState("");
   const [loadError, setLoadError] = useState<string | null>(null);
   const [projectsError, setProjectsError] = useState<string | null>(null);
   const [eventLog, setEventLog] = useState<EventLogEntry[]>([]);
+  const [pendingControls, setPendingControls] = useState<Record<string, Array<{
+    id: string; kind: "steer" | "followUp"; text: string; requestId?: string; acknowledgementId?: string; snapshot?: SubmitSnapshot; status: "submitting" | "submitted" | "unknown" | "failed";
+  }>>>({});
   const [connected, setConnected] = useState(false);
+  const [historyNotice, setHistoryNotice] = useState<string | null>(null);
   const [historyReadySessionIds, setHistoryReadySessionIds] = useState<ReadonlySet<string>>(
     () => new Set(),
   );
+  const [unsent, setUnsent] = useState<Record<string, UnsentMessage>>({});
+  const unsentRef = useRef<Record<string, UnsentMessage>>({});
+  const [submitStates, setSubmitStates] = useState<Record<string, SubmissionState>>({});
+  const submitStatesRef = useRef<typeof submitStates>({});
+  const submittingScopesRef = useRef(new Set<string>());
+  const newlyCreatedIdsRef = useRef(new Set<string>());
+  const imageInsertionRef = useRef(new Map<string, number>());
+  const firstPromptsRef = useRef(new Map<string, string>());
+  // null/undefined DTO summaries mean unknown, never proof of empty history.
+  const emptyHistoryIdsRef = useRef(new Set<string>());
+  const explicitTitlesRef = useRef(new Map<string, string>());
+
+  function mergeTitleMetadata(record: SessionRecord, protectExplicitTitle = false): SessionRecord {
+    // Persisted summaries supersede local accepted-send fallbacks.
+    if (record.firstPrompt != null) firstPromptsRef.current.set(record.id, record.firstPrompt);
+    return { ...record, firstPrompt: firstPromptsRef.current.get(record.id) ?? record.firstPrompt,
+      title: protectExplicitTitle ? explicitTitlesRef.current.get(record.id) ?? record.title : record.title };
+  }
+  function rememberAcceptedPrompt(sessionId: string, prompt: string): void {
+    if (!emptyHistoryIdsRef.current.delete(sessionId)) return;
+    rememberFirstPrompt(sessionId, prompt);
+  }
+  function rememberFirstPrompt(sessionId: string, prompt: string | null): void {
+    if (prompt === null || firstPromptsRef.current.has(sessionId)) return;
+    firstPromptsRef.current.set(sessionId, prompt);
+    setSessions((previous) => previous?.map((row) => row.id === sessionId ? mergeTitleMetadata(row) : row) ?? null);
+  }
+
+  function projectAcceptedImages(store: ChatStore, snapshot: SubmitSnapshot): void {
+    const current = store.getState().timeline;
+    const id = `confirmed-${snapshot.requestId}`;
+    if (current.some((item) => item.id === id)) return;
+    const index = imageInsertionRef.current.get(snapshot.requestId) ?? current.length;
+    store.restoreHistory([...current.slice(0, index), { kind: "message", id, role: "user",
+      text: snapshot.text || (snapshot.fileIds.length ? `附件（${snapshot.fileIds.length} 个）` : ""),
+      images: snapshot.images, streaming: false }, ...current.slice(index)]);
+    imageInsertionRef.current.delete(snapshot.requestId);
+  }
 
   const historyReadySessionIdsRef = useRef(new Set<string>());
   const chatStoresRef = useRef(new Map<string, ChatStore>());
+  // A cached timeline must resume from its consumed cursor, not a newer export cursor:
+  // events missed while deselected also close the old owner before a host follow-up starts.
+  const eventCursorsRef = useRef(new Map<string, number>());
   const emptyChatStore = useMemo(() => createChatStore(), []);
   function getChatStore(sessionId: string): ChatStore {
     let store = chatStoresRef.current.get(sessionId);
@@ -40,6 +139,104 @@ export function useWebAppController() {
     }
     return store;
   }
+  const currentScope = activeSessionId ? `session:${activeSessionId}` : `new:${activeProjectId ?? "none"}`;
+  const unsentMessage = unsent[currentScope] ?? EMPTY_MESSAGE;
+  const submitState = submitStates[currentScope] ?? null;
+
+  function updateUnsent(scope: string, change: (previous: UnsentMessage) => UnsentMessage): void {
+    const next = { ...unsentRef.current, [scope]: change(unsentRef.current[scope] ?? EMPTY_MESSAGE) };
+    unsentRef.current = next;
+    setUnsent(next);
+  }
+  function updateSubmitState(scope: string, value: SubmissionState | null): void {
+    const next = { ...submitStatesRef.current };
+    if (value) next[scope] = value;
+    else delete next[scope];
+    submitStatesRef.current = next;
+    setSubmitStates(next);
+  }
+  const draftTextRevisionsRef = useRef(new Map<string, number>());
+  function setUnsentText(text: string): void {
+    draftTextRevisionsRef.current.set(currentScope, (draftTextRevisionsRef.current.get(currentScope) ?? 0) + 1);
+    updateUnsent(currentScope, (previous) => ({ ...previous, text }));
+  }
+  function setNewSessionSettings(config: UnsentMessage["settings"]): void {
+    updateUnsent(currentScope, (previous) => ({ ...previous, settings: { ...previous.settings, ...config } }));
+  }
+  function removeUnsentAttachment(localId: string): void {
+    updateUnsent(currentScope, (previous) => ({ ...previous,
+      attachments: previous.attachments.filter((item) => item.localId !== localId) }));
+  }
+  function updateAttachment(scope: string, localId: string, change: (item: UnsentAttachment) => UnsentAttachment): void {
+    updateUnsent(scope, (previous) => ({ ...previous, attachments: previous.attachments.map((item) =>
+      item.localId === localId ? change(item) : item) }));
+  }
+  function fileBytes(file: File): Promise<Uint8Array> {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => reader.result instanceof ArrayBuffer ? resolve(new Uint8Array(reader.result)) : reject(new Error("文件读取失败"));
+      reader.onerror = () => reject(new Error("文件读取失败"));
+      reader.readAsArrayBuffer(file);
+    });
+  }
+  async function uploadSelectedFile(scope: string, projectId: string, localId: string, file: File, kind: Exclude<UnsentAttachment["kind"], "image">, uploadKey: string): Promise<void> {
+    try {
+      const bytes = await fileBytes(file);
+      const server = await api.uploadFile({ projectId, uploadKey, name: file.name, mediaType: file.type,
+        kind, bytes });
+      updateAttachment(scope, localId, (item) => ({ ...item, status: "ready", file: undefined, error: undefined, server }));
+    } catch (error) {
+      const interrupted = !(error instanceof ApiError);
+      updateAttachment(scope, localId, (item) => ({ ...item, status: interrupted ? "interrupted" : "error",
+        file: interrupted ? undefined : file,
+        error: interrupted ? "上传中断；请重新选择文件" : error instanceof Error ? error.message : "上传失败" }));
+    }
+  }
+  async function addUnsentFile(file: File): Promise<void> {
+    const scope = currentScope;
+    const existing = unsentRef.current[scope]?.attachments ?? [];
+    const check = validateSelection(existing, file);
+    if ("error" in check) {
+      const id = crypto.randomUUID();
+      updateUnsent(scope, (previous) => ({ ...previous, attachments: [...previous.attachments,
+        { localId: id, name: file.name, size: file.size, mediaType: file.type,
+          kind: "text", status: "error", error: check.error }] }));
+      return;
+    }
+    const localId = crypto.randomUUID();
+    const session = activeSessionId ? sessions?.find((record) => record.id === activeSessionId) : null;
+    const projectId = session?.projectId ?? activeProjectId;
+    const item: UnsentAttachment = { localId, name: file.name, size: file.size, mediaType: file.type,
+      kind: check.kind, status: check.kind === "image" ? "processing" : "uploading",
+      ...(check.kind === "image" ? {} : { file, uploadKey: crypto.randomUUID() }) };
+    updateUnsent(scope, (previous) => ({ ...previous, attachments: [...previous.attachments, item] }));
+    if (check.kind === "image") {
+      try {
+        const bytes = await fileBytes(file);
+        const base64 = btoa(Array.from({ length: Math.ceil(bytes.length / 8192) }, (_, chunk) =>
+          String.fromCharCode(...bytes.subarray(chunk * 8192, (chunk + 1) * 8192))).join(""));
+        updateAttachment(scope, localId, (current) => ({ ...current, status: "ready",
+          image: { mediaType: file.type, base64, preview: `data:${file.type};base64,${base64}` } }));
+      } catch {
+        updateAttachment(scope, localId, (current) => ({ ...current, status: "error", error: "图片读取失败" }));
+      }
+    } else if (projectId) {
+      await uploadSelectedFile(scope, projectId, localId, file, check.kind, item.uploadKey!);
+    } else {
+      updateAttachment(scope, localId, (current) => ({ ...current, status: "error", error: "请先选择项目" }));
+    }
+  }
+  async function retryUnsentAttachment(localId: string): Promise<void> {
+    const scope = currentScope;
+    const item = unsentRef.current[scope]?.attachments.find((entry) => entry.localId === localId);
+    if (!item?.file || !item.uploadKey || item.kind === "image") return;
+    const session = activeSessionId ? sessions?.find((record) => record.id === activeSessionId) : null;
+    const projectId = session?.projectId ?? activeProjectId;
+    if (!projectId) return;
+    updateAttachment(scope, localId, (current) => ({ ...current, status: "uploading", error: undefined }));
+    await uploadSelectedFile(scope, projectId, localId, item.file, item.kind, item.uploadKey);
+  }
+
   const chatStore =
     activeSessionId === null
       ? emptyChatStore
@@ -49,9 +246,27 @@ export function useWebAppController() {
     [chatStore],
   );
   const getChatSnapshot = useCallback(() => chatStore.getState(), [chatStore]);
-  const chatState = useSyncExternalStore(subscribeChat, getChatSnapshot, getChatSnapshot);
+  const rawChatState = useSyncExternalStore(subscribeChat, getChatSnapshot, getChatSnapshot);
+  const [usageSnapshots, setUsageSnapshots] = useState<Record<string, UsageSnapshot | undefined>>({});
+  const [invalidContexts, setInvalidContexts] = useState<ReadonlySet<string>>(new Set());
+  const usageRevisionRef = useRef(new Map<string, number>());
+  function invalidateContext(id: string): void {
+    usageRevisionRef.current.set(id, (usageRevisionRef.current.get(id) ?? 0) + 1);
+    setInvalidContexts(previous => new Set([...previous, id]));
+    setUsageSnapshots(previous => ({ ...previous, [id]: undefined }));
+  }
+  const snapshot = activeSessionId ? usageSnapshots[activeSessionId] : undefined;
+  const visibleStats = snapshot ? {
+    durationMs: NaN, ttftMs: NaN, promptTokens: null, completionTokens: null, totalTokens: null,
+    ...snapshot,
+    execution: rawChatState.stats?.execution ?? snapshot.execution,
+  } : rawChatState.stats;
+  const chatState = { ...rawChatState, stats: visibleStats && activeSessionId && invalidContexts.has(activeSessionId)
+    ? { ...visibleStats, context: null } : visibleStats };
 
   const activeSessionIdRef = useRef<string | null>(null);
+  const activeProjectIdRef = useRef<string | null>(null);
+  useEffect(() => { activeProjectIdRef.current = activeProjectId; }, [activeProjectId]);
   const prevSessionIdRef = useRef<string | null>(null);
   useEffect(() => {
     const prev = prevSessionIdRef.current;
@@ -90,11 +305,13 @@ export function useWebAppController() {
   async function refreshSessions(projectId: string): Promise<void> {
     if (!api) return;
     const seq = ++sessionsRequestSeqRef.current;
+    const titlesAtStart = new Map(explicitTitlesRef.current);
     try {
       setLoadError(null);
       const list = await api.listSessionsByProject(projectId);
-      if (seq !== sessionsRequestSeqRef.current) return;
-      setSessions(list);
+      if (seq !== sessionsRequestSeqRef.current || activeProjectIdRef.current !== projectId) return;
+      setSessions(list.map((row) => mergeTitleMetadata(row,
+        titlesAtStart.get(row.id) !== explicitTitlesRef.current.get(row.id))));
     } catch (err) {
       if (seq !== sessionsRequestSeqRef.current) return;
       setLoadError(err instanceof Error ? err.message : String(err));
@@ -105,18 +322,9 @@ export function useWebAppController() {
     if (!api) return;
     try {
       const list = await api.listProjects();
-      const defaultId = list.find((project) => project.isDefault)?.id ?? null;
-      if (defaultId === null) {
-        ++sessionsRequestSeqRef.current;
-        setProjects(list);
-        setProjectsError(
-          "项目列表中没有默认项目（isDefault: true），无法确定默认项目，请检查服务端配置后重试。",
-        );
-        setActiveProjectId(null);
-        setSessions(null);
-        setActiveSessionId(null);
-        return;
-      }
+      for (const project of list) draftProjectsRef.current.delete(project.id);
+      list.push(...draftProjectsRef.current.values());
+      const defaultId = list.find((project) => project.isDefault)?.id ?? list[0]?.id ?? DEFAULT_PROJECT_ID;
       setProjects(list);
       setProjectsError(null);
       setActiveProjectId((prev) =>
@@ -155,6 +363,7 @@ export function useWebAppController() {
   useEffect(() => {
     if (api) {
       // 先确定默认项目；会话列表由 activeProjectId effect 加载。
+      void api.getAccess().then(setAccess).catch(() => setAccess({ canRead: false, canWrite: false }));
       void refreshProjects();
       void refreshModels();
     }
@@ -163,6 +372,7 @@ export function useWebAppController() {
   useEffect(() => {
     if (api && activeProjectId !== null) {
       setActiveSessionId(null);
+      setSessions(null); // 切换项目时先隐藏旧项目会话，待新列表加载后才允许创建
       void refreshSessions(activeProjectId);
     }
   }, [api, activeProjectId]);
@@ -186,24 +396,32 @@ export function useWebAppController() {
     if (!api || !activeSessionId) return;
     const sessionId = activeSessionId;
     const store = chatStore;
-    const restoreOnLoad = !historyReadySessionIdsRef.current.has(sessionId);
+    const freshSession = newlyCreatedIdsRef.current.has(sessionId);
+    const restoreOnLoad = !freshSession && !historyReadySessionIdsRef.current.has(sessionId);
     const stateAtLoadStart = store.getState();
+    const usageRevision = usageRevisionRef.current.get(sessionId) ?? 0;
     setEventLog([]);
+    setHistoryNotice(null);
     let cancelled = false;
     let connection: { close: () => void } | null = null;
 
     void (async () => {
-      let cursor = 0;
+      let cursor = eventCursorsRef.current.get(sessionId) ?? 0;
       try {
+        // A just-created session has no earlier history. Start from cursor 0 so events
+        // emitted before React subscribes are replayed, rather than skipped by an export cursor.
+        if (!freshSession) {
         const data = (await api.exportSession(sessionId)) as {
           messages?: unknown;
+          timeline?: unknown;
           lastEventId?: number;
+          usageSnapshot?: UsageSnapshot;
         };
         if (cancelled) return;
         const messages = data?.messages ?? data;
-        const history = (Array.isArray(messages) ? messages : [])
+        const legacyHistory = (Array.isArray(messages) ? messages : [])
           .filter(
-            (message): message is { role: string; text: string } =>
+            (message): message is { role: string; text: string; images?: unknown } =>
               typeof message === "object" &&
               message !== null &&
               typeof (message as { text?: unknown }).text === "string",
@@ -213,8 +431,17 @@ export function useWebAppController() {
             id: `hist-${index}`,
             role: (message.role === "user" ? "user" : "assistant") as "user" | "assistant",
             text: message.text,
+            ...(message.role === "user" ? { images: readMessageImages(message.images) } : {}),
             streaming: false,
           }));
+        if (Array.isArray(messages)) {
+          rememberFirstPrompt(sessionId, firstUserPrompt(messages));
+          if (messages.length === 0 && (!Array.isArray(data?.timeline) || data.timeline.length === 0)) emptyHistoryIdsRef.current.add(sessionId);
+        }
+        const rawTimeline = data?.timeline;
+        const history = Array.isArray(rawTimeline) && rawTimeline.length
+          ? projectExportTimeline(rawTimeline, Array.isArray(messages) ? messages : []) : legacyHistory;
+        const untouchedUsage = store.getState() === stateAtLoadStart;
         // Restore only the first baseline, and only if the store stayed untouched while loading.
         // Returning to a session must preserve its SSE stream and optimistic sends.
         if (
@@ -224,7 +451,17 @@ export function useWebAppController() {
         ) {
           store.restoreHistory(history);
         }
-        if (typeof data?.lastEventId === "number") cursor = data.lastEventId;
+        if (untouchedUsage) {
+          if (usageRevision === (usageRevisionRef.current.get(sessionId) ?? 0)) {
+            store.restoreExecution(data.usageSnapshot?.execution);
+            setUsageSnapshots(previous => ({ ...previous, [sessionId]: data.usageSnapshot ?? {} }));
+            if (data.usageSnapshot) setInvalidContexts(previous => { const next = new Set(previous); next.delete(sessionId); return next; });
+          }
+        }
+        // Only the initial export baseline may skip events already represented by history.
+        // Returning sessions keep their cached timeline and replay all missed lifecycle/data.
+        if (!eventCursorsRef.current.has(sessionId) && untouchedUsage && typeof data?.lastEventId === "number") cursor = data.lastEventId;
+        }
       } catch {
         // 历史导出失败仅影响历史展示。
       }
@@ -232,6 +469,7 @@ export function useWebAppController() {
       historyReadySessionIdsRef.current.add(sessionId);
       setHistoryReadySessionIds(new Set(historyReadySessionIdsRef.current));
 
+      eventCursorsRef.current.set(sessionId, cursor);
       connection = createSseConnection({
         url: `/v1/sessions/${sessionId}/events`,
         lastEventId: cursor,
@@ -239,52 +477,100 @@ export function useWebAppController() {
           if (!cancelled) setConnected(true);
         },
         onError: () => {
+          store.clearModelOutput();
+          if (!cancelled) setConnected(false);
+        },
+        onDisconnect: () => {
+          store.clearModelOutput();
           if (!cancelled) setConnected(false);
         },
         onNoLiveStream: () => {
+          store.clearModelOutput();
           if (!cancelled) setConnected(false);
         },
-        onEvent: (event) => {
+        onEvent: (event, lastEventId) => {
           if (cancelled) return;
-          if ((event.type === "queued" || event.type === "status") && event.requestId) {
+          if (Number.isFinite(lastEventId)) eventCursorsRef.current.set(sessionId, lastEventId);
+          if (ownsSseEvent(store.getState(), event) && (event.type === "queued" || event.type === "status") && event.requestId) {
             confirmedRequestsRef.current.add(`${sessionId}:${event.requestId}`);
+            const scope = `session:${sessionId}`;
+            const pending = submitStatesRef.current[scope];
+            if (pending?.snapshot.requestId === event.requestId && pending.phase === "unknown") {
+              const confirmed = pending.snapshot;
+              projectAcceptedImages(store, confirmed);
+              rememberAcceptedPrompt(sessionId, confirmed.text);
+              store.setError(null);
+              updateSubmitState(scope, { ...pending, phase: "accepted", error: undefined });
+              clearSubmittedInputs(scope, confirmed);
+              confirmedRequestsRef.current.delete(`${sessionId}:${event.requestId}`);
+            }
           }
-          if (event.type === "completed" || event.type === "error" || event.type === "aborted") {
-            for (const key of [...confirmedRequestsRef.current]) {
-              if (key.startsWith(`${sessionId}:`)) confirmedRequestsRef.current.delete(key);
+          if (ownsSseEvent(store.getState(), event) && (event.type === "usage" || (event.type === "status" && event.phase === "agent_start"))) {
+            setUsageSnapshots(previous => ({ ...previous, [sessionId]: undefined }));
+            if (event.type === "usage") setInvalidContexts(previous => { const next = new Set(previous); next.delete(sessionId); return next; });
+          }
+          if (event.type === "steering_consumed") {
+            setPendingControls(current => {
+              const rows = current[sessionId] ?? [];
+              const consumed = rows.find(row => row.kind === "steer" && row.id === event.controlId &&
+                row.requestId === event.requestId && row.acknowledgementId === event.acknowledgementId);
+              if (!consumed) return current;
+              return { ...current, [sessionId]: rows.filter(row => row !== consumed) };
+            });
+            const snapshot = controlSnapshotsRef.current.get(event.controlId);
+            if (snapshot && snapshot.sessionId === sessionId && snapshot.requestId === event.requestId &&
+                snapshot.acknowledgementId === event.acknowledgementId) {
+              controlSnapshotsRef.current.delete(event.controlId);
+              updateUnsent(snapshot.snapshot.scope, current => ({ ...current,
+                text: (draftTextRevisionsRef.current.get(snapshot.snapshot.scope) ?? 0) === snapshot.textRevision ? "" : current.text,
+                attachments: current.attachments.filter(item => !snapshot.snapshot.localIds.includes(item.localId)),
+              }));
             }
           }
           logEvent(event);
           store.applyEvent(event);
         },
       });
+      newlyCreatedIdsRef.current.delete(sessionId);
     })();
 
     return () => {
       cancelled = true;
       connection?.close();
+      store.clearModelOutput();
       setConnected(false);
     };
   }, [api, activeSessionId, chatStore]);
 
-  function createSession(): Promise<void> {
-    if (!api || activeProjectId === null) return Promise.resolve();
-    return api.createSession(undefined, activeProjectId).then((session) => {
-      setSessions((prev) => [...(prev ?? []), session]);
-      getChatStore(session.id);
-      setActiveSessionId(session.id);
-    });
+  const projectAllowsCreation = projects?.find(project => project.id === activeProjectId)?.canCreateSession !== false;
+  const creationNotice = projectAllowsCreation ? null : "当前权限无法在此项目新建会话";
+
+  /** Enter a page-local start state; this action never calls the session creation API. */
+  function createSession(): void {
+    if (activeProjectId === null || sessions === null || !projectAllowsCreation) return;
+    setActiveSessionId(null);
+    setLoadError(null);
+  }
+
+  async function createSessionWithMessage(text: string): Promise<boolean> {
+    return (await submitCurrentMessage(text)) === "accepted";
   }
 
   async function createProject(name: string, cwd: string): Promise<void> {
     if (!api) return;
-    await api.createProject(name, cwd);
+    const project = await api.createProject(name, cwd);
+    draftProjectsRef.current.set(project.id, project);
+    setActiveProjectId(project.id);
+    activeProjectIdRef.current = project.id;
+    setActiveSessionId(null);
+    setSessions([]);
     await refreshProjects();
   }
 
   async function deleteProject(id: string): Promise<void> {
     if (!api) return;
     await api.deleteProject(id);
+    draftProjectsRef.current.delete(id);
     await refreshProjects();
   }
 
@@ -293,6 +579,7 @@ export function useWebAppController() {
     await api.deleteSession(id);
     cancelRetries(id);
     chatStoresRef.current.delete(id);
+    eventCursorsRef.current.delete(id);
     historyReadySessionIdsRef.current.delete(id);
     setHistoryReadySessionIds(new Set(historyReadySessionIdsRef.current));
     setSessions((prev) => (prev ?? []).filter((session) => session.id !== id));
@@ -300,12 +587,17 @@ export function useWebAppController() {
     for (const key of [...confirmedRequestsRef.current]) {
       if (key.startsWith(`${id}:`)) confirmedRequestsRef.current.delete(key);
     }
+    await refreshProjects();
   }
 
   async function renameSession(id: string, title: string): Promise<void> {
     if (!api) return;
+    const projectId = activeProjectIdRef.current;
     const updated = await api.renameSession(id, title);
-    setSessions((prev) => (prev ?? []).map((session) => (session.id === id ? updated : session)));
+    explicitTitlesRef.current.set(id, updated.title);
+    // Old-project completion must not invalidate the new project's pending list.
+    if (activeProjectIdRef.current !== projectId || updated.projectId !== projectId) return;
+    setSessions((prev) => prev?.map((session) => (session.id === id ? mergeTitleMetadata(updated) : session)) ?? null);
   }
 
   function reportChatError(sessionId: string, err: unknown): void {
@@ -318,6 +610,7 @@ export function useWebAppController() {
     config: { modelProvider?: string; modelId?: string; thinkingLevel?: string },
   ): Promise<void> {
     if (!api) return;
+    if (config.modelProvider !== undefined || config.modelId !== undefined) invalidateContext(id);
     try {
       const updated = await api.updateSessionConfig(id, config);
       setSessions((prev) => (prev ?? []).map((session) => (session.id === id ? updated : session)));
@@ -342,70 +635,192 @@ export function useWebAppController() {
     }
   }
 
-  function reportSendError(
-    sessionId: string,
-    requestId: string,
-    messageId: string,
-    err: unknown,
-  ): void {
-    if (activeSessionIdRef.current !== sessionId) return;
-    if (confirmedRequestsRef.current.has(`${sessionId}:${requestId}`)) return;
-    getChatStore(sessionId).rollbackUserMessage(
-      messageId,
-      err instanceof Error ? err.message : String(err),
-    );
+  function captureSnapshot(scope: string, text: string): SubmitSnapshot | null {
+    const draft = unsentRef.current[scope] ?? EMPTY_MESSAGE;
+    const attachments = draft.attachments;
+    if (attachments.some((item) => item.status !== "ready")) return null;
+    const fileIds = attachments.flatMap((item) => item.server ? [item.server.fileId] : []);
+    const images = attachments.flatMap((item) => item.image ? [{ mediaType: item.image.mediaType, base64: item.image.base64 }] : []);
+    if (!text.trim() && !fileIds.length && !images.length) return null;
+    const session = activeSessionId ? sessions?.find((row) => row.id === activeSessionId) : null;
+    const projectId = session?.projectId ?? activeProjectId;
+    if (!projectId) return null;
+    return { scope, projectId, sessionId: session?.id ?? null, requestId: crypto.randomUUID(),
+      createRequestId: crypto.randomUUID(), text: text.trim(), localIds: attachments.map((item) => item.localId),
+      fileIds: [...fileIds], images: images.map((image) => ({ ...image })), settings: { ...draft.settings } };
   }
 
-  function sendWithRetry(
-    sessionId: string,
-    requestId: string,
-    messageId: string,
-    text: string,
-    attempt: number,
-  ): void {
-    if (!api || activeSessionIdRef.current !== sessionId) return;
-    api.sendMessage(sessionId, { requestId, prompt: text }).catch((err) => {
-      if (activeSessionIdRef.current !== sessionId) return;
-      if (err instanceof ApiError && err.status < 500) {
-        reportSendError(sessionId, requestId, messageId, err);
-        return;
+  function knownRejection(error: unknown): boolean {
+    if (!(error instanceof ApiError)) return false;
+    if (error.status === 409 && error.message.includes("REQUEST_STATUS_UNKNOWN")) return false;
+    return error.status === 400 || error.status === 401 || error.status === 403 || error.status === 404 ||
+      error.status === 413 || error.status === 415 || error.status === 429 || error.status === 507 ||
+      (error.status === 409 && !error.message.includes("REQUEST_STATUS_UNKNOWN"));
+  }
+
+  function clearSubmittedInputs(scope: string, snapshot: SubmitSnapshot): void {
+    updateUnsent(scope, (current) => ({ ...current,
+      text: current.text.trim() === snapshot.text ? "" : current.text,
+      attachments: current.attachments.filter((item) => !snapshot.localIds.includes(item.localId)),
+    }));
+  }
+
+  async function runSnapshot(initialScope: string, original: SubmitSnapshot, resumeAt: "create" | "config" | "send" = "create"): Promise<SubmitOutcome> {
+    let scope = initialScope;
+    let snapshot = original;
+    let stage: "create" | "config" | "send" = snapshot.sessionId ? (resumeAt === "create" ? "send" : resumeAt) : "create";
+    let messageId: string | null = null;
+    const update = (phase: SubmissionState["phase"], error?: string) =>
+      updateSubmitState(scope, { snapshot, phase, stage, ...(error ? { error } : {}) });
+    try {
+      if (!snapshot.sessionId) {
+        stage = "create";
+        update("creating");
+        const created = await api.createSession(undefined, snapshot.projectId, snapshot.createRequestId);
+        snapshot = { ...snapshot, sessionId: created.id };
+        const sessionScope = `session:${created.id}`;
+        draftProjectsRef.current.delete(created.projectId);
+        newlyCreatedIdsRef.current.add(created.id);
+        emptyHistoryIdsRef.current.add(created.id);
+        getChatStore(created.id);
+        // The editor moves to the real session without losing input or the immutable submission.
+        const from = unsentRef.current[initialScope] ?? EMPTY_MESSAGE;
+        const sessionDraft = unsentRef.current[sessionScope];
+        updateUnsent(sessionScope, (previous) => previous === EMPTY_MESSAGE ? { ...from } : previous);
+        // The draft has moved to the created session. Clear the page-start scope so
+        // a later New session action cannot resurrect already-submitted attachments.
+        if (sessionDraft === undefined || sessionDraft === EMPTY_MESSAGE) {
+          updateUnsent(initialScope, () => EMPTY_MESSAGE);
+        }
+        updateSubmitState(initialScope, null);
+        scope = sessionScope;
+        submittingScopesRef.current.add(scope);
+        setSessions((previous) => activeProjectIdRef.current === snapshot.projectId && !previous?.some((row) => row.id === created.id)
+          ? [...(previous ?? []), created] : previous);
+        if (activeProjectIdRef.current === snapshot.projectId) setActiveSessionId(created.id);
       }
-      if (attempt < 3) {
-        const timer = setTimeout(() => {
-          retryTimersRef.current.delete(timer);
-          sendWithRetry(sessionId, requestId, messageId, text, attempt + 1);
-        }, 1000);
-        retryTimersRef.current.set(timer, sessionId);
-      } else {
-        reportSendError(sessionId, requestId, messageId, err);
+      if (resumeAt !== "send" && Object.keys(snapshot.settings).length) {
+        stage = "config";
+        update("configuring");
+        const configured = await api.updateSessionConfig(snapshot.sessionId!, snapshot.settings);
+        setSessions((previous) => previous?.map((row) => row.id === configured.id ? mergeTitleMetadata(configured, true) : row) ?? null);
       }
+      stage = "send";
+      update("submitting");
+      const store = getChatStore(snapshot.sessionId!);
+      messageId = `confirmed-${snapshot.requestId}`;
+      const label = snapshot.text || (snapshot.fileIds.length ? `附件（${snapshot.fileIds.length} 个）` : "");
+      // Image snapshots are projected only after acceptance, never as a sent-looking optimistic image.
+      if (!snapshot.images.length) store.addUserMessage(label, messageId, snapshot.requestId);
+      else {
+        store.beginRequest(snapshot.requestId);
+        imageInsertionRef.current.set(snapshot.requestId, store.getState().timeline.length);
+      }
+      await api.sendMessage(snapshot.sessionId!, { requestId: snapshot.requestId, prompt: snapshot.text,
+        ...(snapshot.fileIds.length ? { fileIds: snapshot.fileIds } : {}),
+        ...(snapshot.images.length ? { images: snapshot.images } : {}) });
+      if (snapshot.images.length) projectAcceptedImages(store, snapshot);
+      rememberAcceptedPrompt(snapshot.sessionId!, snapshot.text);
+      update("accepted");
+      confirmedRequestsRef.current.delete(`${snapshot.sessionId}:${snapshot.requestId}`);
+      clearSubmittedInputs(scope, snapshot);
+      return "accepted";
+    } catch (error) {
+      if (stage === "send" && messageId && !snapshot.images.length && !confirmedRequestsRef.current.has(`${snapshot.sessionId}:${snapshot.requestId}`)) {
+        getChatStore(snapshot.sessionId!).rollbackUserMessage(messageId, "消息提交结果未确认");
+      }
+      if (stage === "send" && confirmedRequestsRef.current.has(`${snapshot.sessionId}:${snapshot.requestId}`)) {
+        if (snapshot.images.length) projectAcceptedImages(getChatStore(snapshot.sessionId!), snapshot);
+        rememberAcceptedPrompt(snapshot.sessionId!, snapshot.text);
+        update("accepted");
+        confirmedRequestsRef.current.delete(`${snapshot.sessionId}:${snapshot.requestId}`);
+        clearSubmittedInputs(scope, snapshot);
+        return "accepted";
+      }
+      const message = error instanceof Error ? error.message : String(error);
+      // A network/5xx result is ambiguous: no automatic retry, no false failure/success.
+      const unknown = stage === "send" ? !knownRejection(error) : error instanceof ApiError ? error.status >= 500 : true;
+      update(unknown ? "unknown" : "failed", message);
+      if (!unknown && snapshot.sessionId && stage === "send") {
+        const store = getChatStore(snapshot.sessionId);
+        // A failed retry must not close a newer request that claimed the stream meanwhile.
+        store.applyEvent({ type: "error", message, requestId: snapshot.requestId });
+      }
+      return unknown ? "unknown" : "failed";
+    } finally {
+      submittingScopesRef.current.delete(initialScope);
+      submittingScopesRef.current.delete(scope);
+    }
+  }
+
+  async function submitCurrentMessage(text: string): Promise<SubmitOutcome> {
+    const scope = currentScope;
+    if (!activeSessionId && !projectAllowsCreation) return "failed";
+    if (submittingScopesRef.current.has(scope) || submitStatesRef.current[scope]?.phase === "unknown") return "unknown";
+    const snapshot = captureSnapshot(scope, text);
+    if (!snapshot || (snapshot.sessionId && !historyReadySessionIdsRef.current.has(snapshot.sessionId))) return "failed";
+    submittingScopesRef.current.add(scope);
+    setLoadError(null);
+    return runSnapshot(scope, snapshot, snapshot.sessionId ? "send" : "create");
+  }
+
+  async function sendMessage(text: string): Promise<boolean> {
+    return (await submitCurrentMessage(text)) === "accepted";
+  }
+
+  async function confirmUnknownCreation(): Promise<SubmitOutcome> {
+    const scope = currentScope;
+    const pending = submitStatesRef.current[scope];
+    if (!pending || pending.phase !== "unknown" || pending.stage !== "create" || submittingScopesRef.current.has(scope)) return "unknown";
+    // createRequestId is the server's idempotent lookup/creation key; never allocate a new key here.
+    submittingScopesRef.current.add(scope);
+    return runSnapshot(scope, pending.snapshot, "create");
+  }
+
+  async function retryFailedSubmission(): Promise<SubmitOutcome> {
+    const scope = currentScope;
+    const pending = submitStatesRef.current[scope];
+    if (!pending || pending.phase !== "failed" || submittingScopesRef.current.has(scope)) return "failed";
+    submittingScopesRef.current.add(scope);
+    return runSnapshot(scope, pending.snapshot, pending.stage);
+  }
+
+  const controlSnapshotsRef = useRef(new Map<string, { sessionId: string; requestId: string; acknowledgementId: string; textRevision: number; snapshot: SubmitSnapshot }>());
+
+  function submitControl(kind: "steer" | "followUp", text: string): void {
+    if (!activeSessionId) return;
+    const sessionId = activeSessionId;
+    const id = crypto.randomUUID();
+    const scope = `session:${sessionId}`;
+    const snapshot = kind === "steer" ? captureSnapshot(scope, text) : null;
+    const requestId = getChatStore(sessionId).getState().activeRequestId;
+    if (kind === "steer" && (!snapshot || !requestId)) return;
+    if (kind === "followUp" && !text.trim()) return;
+    if (snapshot?.fileIds.length) { reportChatError(sessionId, new Error("插话暂不支持文件附件；输入已保留")); return; }
+    if (snapshot && [...controlSnapshotsRef.current.values()].some(old => old.sessionId === sessionId &&
+        old.textRevision === (draftTextRevisionsRef.current.get(scope) ?? 0) && old.snapshot.localIds.join() === snapshot.localIds.join())) return;
+    const acknowledgementId = crypto.randomUUID();
+    if (snapshot && requestId) controlSnapshotsRef.current.set(id, { sessionId, requestId, acknowledgementId, textRevision: draftTextRevisionsRef.current.get(scope) ?? 0, snapshot });
+    const update = (status: "submitting" | "submitted" | "unknown" | "failed") =>
+      setPendingControls((current) => ({ ...current, [sessionId]: (current[sessionId] ?? []).map((row) =>
+        row.id === id ? { ...row, status } : row) }));
+    setPendingControls((current) => ({ ...current, [sessionId]: [...(current[sessionId] ?? []),
+      { id, kind, text, ...(snapshot ? { snapshot, requestId: requestId!, acknowledgementId } : {}), status: "submitting" }] }));
+    const call = kind === "steer" ? api.steer(sessionId, snapshot!.text, { controlId: id,
+      acknowledgementId, requestId: requestId!, images: snapshot!.images }) : api.followUp(sessionId, text);
+    void call.then(() => update("submitted"), (error) => {
+      const failed = error instanceof ApiError && error.status < 500;
+      update(failed ? "failed" : "unknown");
+      if (failed) controlSnapshotsRef.current.delete(id);
     });
   }
-
-  function sendMessage(text: string): void {
-    if (!api || !activeSessionId || !historyReadySessionIdsRef.current.has(activeSessionId)) return;
-    const sessionId = activeSessionId;
-    const messageId = `user-${crypto.randomUUID()}`;
-    getChatStore(sessionId).addUserMessage(text, messageId);
-    const requestId = crypto.randomUUID();
-    sendWithRetry(sessionId, requestId, messageId, text, 0);
-  }
-
-  function steer(text: string): void {
-    if (!api || !activeSessionId) return;
-    const sessionId = activeSessionId;
-    api.steer(sessionId, text).catch((err) => reportChatError(sessionId, err));
-  }
-
-  function followUp(text: string): void {
-    if (!api || !activeSessionId) return;
-    const sessionId = activeSessionId;
-    api.followUp(sessionId, text).catch((err) => reportChatError(sessionId, err));
-  }
+  function steer(text: string): void { submitControl("steer", text); }
+  function followUp(text: string): void { submitControl("followUp", text); }
 
   function abort(): void {
     if (!api || !activeSessionId) return;
     const sessionId = activeSessionId;
+    getChatStore(sessionId).clearModelOutput();
     api.abort(sessionId).catch((err) => reportChatError(sessionId, err));
   }
 
@@ -414,29 +829,52 @@ export function useWebAppController() {
   }
 
   function selectSession(sessionId: string | null): void {
-    if (sessionId !== null) getChatStore(sessionId);
+    if (sessionId !== null) {
+      getChatStore(sessionId);
+      if (sessionId !== activeSessionId) invalidateContext(sessionId);
+    }
     setActiveSessionId(sessionId);
+  }
+
+  function selectProject(projectId: string): void {
+    activeProjectIdRef.current = projectId;
+    setActiveProjectId(projectId);
   }
 
   return {
     sessions,
+    canWrite: access?.canWrite === true,
+    projectAllowsCreation,
+    creationNotice,
     activeSessionId,
     selectSession,
     projects,
     activeProjectId,
-    selectProject: setActiveProjectId,
+    selectProject,
     models,
     thinkingLevels,
     defaultModel,
     defaultThinkingLevel,
     chatState,
+    unsentMessage,
+    submitState,
+    pendingControls: activeSessionId ? pendingControls[activeSessionId] ?? [] : [],
+    setUnsentText,
+    setNewSessionSettings,
+    addUnsentFile,
+    retryUnsentAttachment,
+    removeUnsentAttachment,
+    retryFailedSubmission,
+    confirmUnknownCreation,
     historyLoading: activeSessionId !== null && !historyReadySessionIds.has(activeSessionId),
     loadError,
     projectsError,
     eventLog,
     connected,
+    historyNotice,
     retryProjects,
     createSession,
+    createSessionWithMessage,
     createProject,
     deleteProject,
     deleteSession,

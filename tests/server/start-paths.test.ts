@@ -5,18 +5,33 @@ import { describe, it, expect } from "vitest";
 import { homedir } from "node:os";
 import path from "node:path";
 import { resolveServerPaths } from "../../src/server/start.js";
+import { resolveStoragePaths } from "../../src/storage/storage-config.js";
 
 describe("resolveServerPaths 默认路径解析", () => {
-  it("全部未设置：authPath 默认个人凭证，其余路径落在 cwd 下", () => {
+  it("全部未设置：DATA_DIR 默认个人 ~/.pi/agent，cwd identity 保持进程 cwd", () => {
     const cwd = process.cwd();
+    const dataDir = path.join(homedir(), ".pi", "agent");
     const paths = resolveServerPaths({});
     expect(paths.cwd).toBe(cwd);
-    expect(paths.dataDir).toBe(cwd);
-    expect(paths.agentDir).toBe(path.join(cwd, ".pi-agent"));
-    expect(paths.modelsPath).toBe(path.join(cwd, ".pi-agent", "models.json"));
-    // 核心断言：凭证默认指向个人 $HOME/.pi/agent/auth.json（与 pi CLI 共用）
+    expect(paths.dataDir).toBe(dataDir);
+    expect(paths.agentDir).toBe(path.join(dataDir, ".pi-agent"));
+    expect(paths.modelsPath).toBe(path.join(dataDir, ".pi-agent", "models.json"));
     expect(paths.authPath).toBe(path.join(homedir(), ".pi", "agent", "auth.json"));
-    expect(paths.dbPath).toBe(path.join(cwd, "pi-agent-server.db"));
+    expect(paths.dbPath).toBe(path.join(dataDir, "pi-agent-server.db"));
+  });
+
+  it("storage path 优先级：config > env > 默认；相对路径相对 cwd 解析，空白视为 unset", () => {
+    const cwd = "/tmp/agent-work";
+    const homeData = path.join(homedir(), ".pi", "agent");
+    expect(resolveStoragePaths({}, {}, cwd)).toEqual({
+      cwd,
+      dataDir: homeData,
+      dbPath: path.join(homeData, "pi-agent-server.db"),
+    });
+    expect(resolveStoragePaths({}, { DATA_DIR: "relative-env" }, cwd).dataDir).toBe(path.resolve("relative-env"));
+    expect(resolveStoragePaths({ dataDir: "relative-config" }, { DATA_DIR: "/env/data" }, cwd).dataDir).toBe(path.resolve("relative-config"));
+    expect(resolveStoragePaths({ dataDir: "  " }, { DATA_DIR: "  " }, cwd).dataDir).toBe(homeData);
+    expect(resolveStoragePaths({}, { AGENT_CWD: "/identity", DATA_DIR: "  " }, cwd).cwd).toBe("/identity");
   });
 
   it("显式 dataDir：agentDir/modelsPath/dbPath 跟随 dataDir，authPath 仍默认个人凭证", () => {

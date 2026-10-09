@@ -55,10 +55,10 @@ volta run node --input-type=module -e \
 
 ### 3.4 自定义工具
 
-- `defineTool` + TypeBox `Type` 声明 name/label/description/parameters/execute，注册进 `customTools`，并把工具名列入 `tools` 白名单（needs.md §4.3「工具注册表」的读/写/执行映射）。
+- `defineTool` + TypeBox `Type` 声明 name/label/description/parameters/execute，注册进 `customTools`；配置 `TOOLS` 时必须把工具名列入完整白名单（needs.md §4.3「工具注册表」的读/写/执行映射）。
 - 内置工具名：`read`、`bash`、`edit`、`write`、`grep`、`find`、`ls`；默认内置 `read`/`bash`/`edit`/`write`。`noTools: "all"` 全禁、`noTools: "builtin"` 只禁默认内置、`excludeTools` 在 `tools` 白名单之后按名补禁。
-- needs.md §4.3「默认只读」实现：未配置时 `tools: ["read", "ls", "find", "grep"]`，并显式列出能力声明的 `customTools`。
-- 显式加载的受信外部插件工具同样经 `customTools` 注册，并同时进入 `tools` 白名单；仅把工具名写入白名单不会注册执行实现。
+- needs.md §4.3 工具授权：未配置 `TOOLS`（含空/空白或仅逗号）时策略为 `all`，不向 SDK 传 `tools`/`noTools` 限制；允许全部可用工具（含显式加载的扩展/插件工具），保留 SDK 默认激活、扩展 `defaultActive` 和会话恢复的工具选择语义，不强制激活已停用工具。默认允许执行/写入，需自行隔离进程/文件系统；只读选择用 `TOOLS=read,ls,find,grep`。程序化 `tools=[]` 则传 `noTools: "all"` 禁用全部。
+- 显式加载的受信外部插件工具同样经 `customTools` 注册，但不会自动扩大已配置的 `TOOLS` 白名单；仅把工具名写入白名单不会注册执行实现。HTTP RBAC、项目/会话归属及文件授权不受工具默认值影响。
 
 ### 3.5 资源加载与系统提示词（安全边界）
 
@@ -83,6 +83,10 @@ volta run node --input-type=module -e \
 扩展模块缓存语义（实测）：`ResourceLoader.reload()` 在**自身已 loaded** 时先 `clearExtensionCache()`，否则只在 cwd 与前一次缓存不同时清。因此：已加载过的 loader 再次 reload 会重求值全部扩展模块；**新建 loader 首次 reload 在 cwd 不变时只复用缓存（仅重跑工厂函数）**。宿主每个 loader 只 reload 一次且扩展加载 cwd 恒定，所以扩展模块顶层的副作用（如 `globalThis.fetch` 包装）整进程只发生一次；工厂函数则每个 loader 重跑一次（这正是「每会话独立 runtime」需要的）。仅在以下情形会重叠：同一 cwd 的 loader 被再次 reload（如 `session.reload()`，宿主当前不会调用）。
 
 **提示词的追加源必须显式给出**：`DefaultResourceLoader` 在未传 `appendSystemPrompt` 时会自动发现 `agentDir/APPEND_SYSTEM.md` 与 `<cwd>/.pi/APPEND_SYSTEM.md`（受项目信任影响）。冻结字面量恢复路径（`systemPromptOverride`，不传 `appendSystemPrompt`）若依赖该默认值，恢复出的会话会把**当前磁盘内容**追加到冻结快照之后，破坏「恢复即冻结字面量」；因此宿主对每个 loader 都显式传 `appendSystemPrompt`（无能力片段时传 `[]`）关闭该自动发现（0.86.0 仍成立）。
+
+`PI_APPEND_SYSTEM` / `StartConfig.appendSystemPrompt` 是追加原文，不是 SDK 的文本/文件路径混合输入。宿主通过 `appendSystemPromptOverride` 把原文置于已解析的能力片段之前，避免字符串碰巧为现存文件路径时被读取；未设置/空白不追加，有效多行原文不 trim。顺序为 SDK 默认或 `PI_SYSTEM_PROMPT` 整体覆盖 → 环境原文 → `PI_APPEND_SYSTEM_FILE` 文件原文 → capability fragments。startup 默认提示词、项目 cwd 探针和未冻结会话均使用同一组配置；冻结 `systemPromptOverride` 恢复路径不传环境追加或能力片段，仍显式传 `appendSystemPrompt: []`，因此不重复追加也不自动发现 `APPEND_SYSTEM.md`。配置变更需重启并新建会话，已有冻结快照不变。
+
+`PI_APPEND_SYSTEM_FILE` / `StartConfig.appendSystemPromptFile` 是宿主显式文件输入：未配置/空白路径不读，路径首尾 trim，支持绝对路径，相对路径基于 `startServer` 开始时的 `process.cwd()`（不是 `AGENT_CWD`/项目 cwd），不展开 `~`。宿主在异步初始化前打开普通文件、按显式 UTF-8 fatal 解码读取一次（非法编码不替换字符），保留多行原文/空白；空或纯空白内容忽略。不存在、目录/非普通文件、权限或非法 UTF-8 错误均 fail-fast，仅回显变量名和解析后的路径，不泄露正文或原始异常。文件快照与 `PI_APPEND_SYSTEM` 原文以空行连接，经 `appendSystemPromptText` → SDK `appendSystemPromptOverride` 注入，**绝不**把文件正文传入 SDK `appendSystemPrompt` 路径数组。SDK 1.0.4 的 `examples/sdk/03-custom-prompt.ts` 与 `dist/core/resource-loader.js` 已核对该 literal override 接口；能力源数组仍由 SDK 解析。所有 startup/项目/未冻结会话共用启动快照，磁盘或项目 cwd 变化不重读；冻结路径完全不传追加源。文件/配置变更需重启并新建会话，不改变已有冻结提示词；仍不自动发现 `APPEND_SYSTEM.md`。
 
 可信扩展的模块级副作用（含上面这类 `globalThis.fetch` 包装）属于**进程生命周期**，不是会话生命周期：宿主无法卸载它们，启动失败退出也不保证能回滚任意扩展已经施加的全局副作用（见 README「Current boundaries」）。
 

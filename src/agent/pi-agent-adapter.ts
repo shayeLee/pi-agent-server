@@ -2,11 +2,19 @@
 // 这是接入真实 SDK 的唯一位置；单元测试用 AgentSessionLike 结构（fake），不碰真实 SDK；
 // 真实 AgentSession 的验证走独立的慢速集成测试（docs/architecture.md §3.2）。
 
+import { AsyncLocalStorage } from "node:async_hooks";
+import type { SteeringIdentity, SteeringInput } from "../shared/steering.js";
 import type { AgentAdapter, AgentConfigurationSnapshot, ImageInput, UsageInfo } from "./agent-adapter.js";
 import { FAILBACK_LIFECYCLE_EVENT, isFailbackLifecycleEvent, type FailbackLifecycleSource } from "./failback-lifecycle.js";
 import { FAILBACK_HOST_TRANSPORT_EVENT, isFailbackHostTransportHandshake, type FailbackHostTransport } from "./failback-host-transport.js";
 import type { AgentSdkEvent } from "./events.js";
+import { SUBAGENT_HOST_TRANSPORT_EVENT, isSubagentHostTransportHandshake, type SubagentHostTransport, type ExtensionCustomMessage } from "./subagent-host-transport.js";
+import { notificationFromEntry } from "./subagent-notification.js";
+import { ModelOutputSampler, type ModelOutputProgress } from "./model-output-sampler.js";
+import { cacheHitPercent, nonnegative, responseSpeed, type LastResponseUsage, type UsageSnapshot, type UsageTokens } from "../core/usage-snapshot.js";
+import type { Usage } from "@earendil-works/pi-ai";
 import type { SessionManager } from "@earendil-works/pi-coding-agent";
+import { ExecutionMetrics } from "./execution-metrics.js";
 import { projectExportSnapshot } from "./session-export.js";
 export { extractText, projectExportMessages, type ExportMessage, type ExportSnapshot, type ExportTimelineItem } from "./session-export.js";
 
@@ -26,11 +34,13 @@ export type SdkImageContent = {
 /** 真实 Pi SDK AgentSession 的最小结构（与方法签名对齐，便于 fake 测试与类型隔离）。 */
 export type AgentSessionLike = {
   prompt(text: string, options?: { images?: SdkImageContent[] }): Promise<void>;
-  steer(text: string): Promise<void>;
+  readonly isStreaming?: boolean;
+  sendCustomMessage?(message: ExtensionCustomMessage, options: { deliverAs: "followUp"; triggerTurn: true }): Promise<void>;
+  steer(text: string, images?: SdkImageContent[]): Promise<unknown>;
   followUp(text: string): Promise<void>;
   abort(): Promise<void>;
   clearQueue?(): { steering: string[]; followUp: string[] };
-  agent?: { streamFunction: (...args: any[]) => any };
+  agent?: { streamFunction: (...args: any[]) => any; steer?(message: object): void };
   bindExtensions?(bindings: { mode: "json"; onError: (error: Error) => void }): Promise<void>;
   navigateTree(targetId: string): Promise<void>;
   subscribe(listener: (event: AgentSdkEvent) => void): () => void;
@@ -39,8 +49,10 @@ export type AgentSessionLike = {
   setThinkingLevel(level: unknown): void;
   /** 会话消息列表（导出用；SDK 为 AgentMessage[]，此处用 unknown[] 保持类型隔离）。 */
   messages: unknown[];
+  getSessionStats?(): { tokens: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number }; cost: number };
+  getContextUsage?(): { tokens: number | null; contextWindow: number; percent: number | null } | undefined;
   /** SDK public session manager gives the active JSONL branch and its stable entry ids. */
-  sessionManager?: Pick<SessionManager, "getBranch">;
+  sessionManager?: Pick<SessionManager, "getBranch"> & Partial<Pick<SessionManager, "getEntries" | "appendCustomEntry">>;
   /** SDK 当前状态；恢复时 transcript 解析后的值在这里可见。 */
   model?: { provider?: string; id?: string };
   thinkingLevel?: string;
@@ -54,13 +66,100 @@ export class PiAgentAdapter implements AgentAdapter {
     private readonly session: AgentSessionLike,
     private readonly getModel?: GetModel,
     private readonly failbackLifecycleSource?: FailbackLifecycleSource,
+    private readonly monotonicNow: () => number = () => performance.now(),
   ) {
+    const manager = session.sessionManager;
+    this.executionMetrics = new ExecutionMetrics(manager?.getEntries && manager.appendCustomEntry ? {
+      getEntries: () => manager.getEntries!(),
+      appendCustomEntry: (type, data) => manager.appendCustomEntry!(type, data),
+    } : undefined);
+    this.outputSampler = new ModelOutputSampler(monotonicNow, progress => {
+      for (const listener of this.outputListeners) listener(progress);
+    });
     this.baseStreamFunction = session.agent?.streamFunction;
+    const agent = session.agent;
+    const enqueue = agent?.steer;
+    if (agent && enqueue) {
+      agent.steer = message => {
+        const identity = this.steeringContext.getStore();
+        if (identity) this.steeringMessages.set(message, identity);
+        enqueue.call(agent, message);
+      };
+    }
     this.installFailbackHostTransport();
+    this.unsubscribeHostIdentity = failbackLifecycleSource?.on("agent-team:host-identity", data => {
+      if (typeof data === "object" && data !== null && "accept" in data &&
+          typeof data.accept === "function") data.accept({ version: 1, host: "pi-agent-server" });
+    }) ?? (() => {});
+    this.unsubscribeSubagentTransport = failbackLifecycleSource?.on(SUBAGENT_HOST_TRANSPORT_EVENT, data => {
+      if (isSubagentHostTransportHandshake(data)) data.accept({ post: payload => {
+        if (this.disposed) return Promise.resolve({ accepted: false, reason: "disposed" });
+        return this.subagentTransport?.post(payload) ?? Promise.resolve({ accepted: false, reason: "notready" });
+      } });
+    }) ?? (() => {});
+    // One internal observer, regardless of how many host SSE subscribers exist.
+    this.unsubscribeMeasurement = session.subscribe((event) => {
+      if (!this.discard) {
+        if (event.type === "message_start" && typeof event.message === "object" && event.message !== null &&
+            (event.message as { role?: string }).role === "user") {
+          const identity = this.steeringMessages.get(event.message);
+          if (identity) {
+            this.steeringMessages.delete(event.message);
+            // CustomEntry.data is metadata only: never alter user content/source or inject model context.
+            session.sessionManager?.appendCustomEntry?.("pi-agent-server.steering-consumed", { version: 1, ...identity });
+            for (const listener of this.steeringListeners) listener(identity);
+          }
+        }
+        if (this.executionActive) this.executionMetrics.observe(event);
+        this.measureResponse(event);
+        const progress = this.outputSampler.sample(event);
+        if (progress) for (const listener of this.outputListeners) listener(progress);
+      }
+    });
   }
 
   /** abort 后置真：丢弃底层 run 的残余事件（如迟到的 agent_end），避免串扰下一次 prompt；prompt 开始恢复。 */
   private discard = false;
+  private readonly executionMetrics: ExecutionMetrics;
+  private executionActive = false;
+  getExecutionSnapshot(): import("../core/usage-snapshot.js").ExecutionSnapshot { return this.executionMetrics.snapshot(); }
+  private subagentTransport: SubagentHostTransport | undefined;
+  private readonly unsubscribeSubagentTransport: () => void;
+  private readonly unsubscribeHostIdentity: () => void;
+  bindSubagentHostTransport(transport: SubagentHostTransport): () => void {
+    this.subagentTransport = transport;
+    return () => { if (this.subagentTransport === transport) this.subagentTransport = undefined; };
+  }
+  isSdkStreaming(): boolean { return this.session.isStreaming === true; }
+  queueCustomFollowUp(message: ExtensionCustomMessage): Promise<void> {
+    if (this.disposed || !this.requestAbort || this.requestAbort.signal.aborted || !this.isSdkStreaming()) {
+      return Promise.reject(new Error("Custom follow-up no longer owned"));
+    }
+    if (!this.session.sendCustomMessage) return Promise.reject(new Error("Custom messages unavailable"));
+    // No await between streaming check and SDK enqueue: sendCustomMessage queues synchronously.
+    return this.session.sendCustomMessage(message, { deliverAs: "followUp", triggerTurn: true });
+  }
+  async promptCustom(message: ExtensionCustomMessage): Promise<void> {
+    await this.runMeasuredPrompt(async () => {
+      if (!this.session.sendCustomMessage) throw new Error("Custom messages unavailable");
+      await this.session.sendCustomMessage(message, { deliverAs: "followUp", triggerTurn: true });
+    });
+  }
+  /** No historical fallback: only messages appended during this prompt qualify. */
+  private usageStart: number | null = null;
+  private usageBoundary: unknown;
+  private readonly unsubscribeMeasurement: () => void;
+  private readonly outputSampler: ModelOutputSampler;
+  private readonly outputListeners = new Set<(progress: ModelOutputProgress) => void>();
+  subscribeModelOutputProgress(listener: (progress: ModelOutputProgress) => void): () => void {
+    this.outputListeners.add(listener);
+    return () => { this.outputListeners.delete(listener); };
+  }
+  private lastResponse: LastResponseUsage | null = null;
+  private responseOrdinal = 0;
+  private firstDeltaAt: number | null = null;
+  private responseActive = false;
+  private sawAssistantEvent = false;
   /** A request-local token survives post-run retry/continue and gates the actual SDK stream function. */
   private requestAbort: AbortController | null = null;
   private failbackAttempt: string | null = null;
@@ -113,27 +212,52 @@ export class PiAgentAdapter implements AgentAdapter {
   }
 
   async prompt(text: string, options?: { images?: ImageInput[] }): Promise<void> {
+    await this.runMeasuredPrompt(async () => {
+      if (options?.images === undefined || options.images.length === 0) {
+        await this.session.prompt(text);
+        return;
+      }
+      await this.session.prompt(text, {
+        images: options.images.map((image): SdkImageContent => ({
+          type: "image", data: image.base64, mimeType: image.mediaType,
+        })),
+      });
+    });
+  }
+
+  private async runMeasuredPrompt(run: () => Promise<void>): Promise<void> {
+    this.executionMetrics.begin();
+    this.executionActive = true;
+    this.clearResponseMeasurement();
+    this.usageStart = this.session.messages.length;
+    this.usageBoundary = this.session.messages[this.usageStart - 1];
     this.discard = false; // 新 run 开始：恢复事件传递
     this.failbackAttempt = null;
     const token = this.requestAbort = new AbortController();
     this.installStreamGate(token);
-    if (options?.images === undefined || options.images.length === 0) {
-      await this.session.prompt(text);
-      return;
+    try {
+      await run();
+    } finally {
+      this.executionActive = false;
+      this.executionMetrics.end();
+      this.outputSampler.reset(); // prompt resolution/rejection cannot leave a trailing timer
     }
-    // ImageInput（接口层轻量结构）→ SDK ImageContent（base64），只在适配层转换；
-    // data 逐字节透传（不重新编码），保证客户端提交的图片内容原样进入 SDK。
-    await this.session.prompt(text, {
-      images: options.images.map((image): SdkImageContent => ({
-        type: "image",
-        data: image.base64,
-        mimeType: image.mediaType,
-      })),
-    });
   }
 
-  async steer(text: string): Promise<void> {
-    await this.session.steer(text);
+  private readonly steeringContext = new AsyncLocalStorage<SteeringIdentity>();
+  private readonly steeringMessages = new WeakMap<object, SteeringIdentity>();
+  private readonly steeringListeners = new Set<(identity: SteeringIdentity) => void>();
+  subscribeSteeringConsumed(listener: (identity: SteeringIdentity) => void): () => void {
+    this.steeringListeners.add(listener);
+    return () => { this.steeringListeners.delete(listener); };
+  }
+
+  async steer(text: string, input?: SteeringInput): Promise<void> {
+    if (!input) { await this.session.steer(text); return; }
+    // Async-local context survives input extension awaits and isolates concurrent equal-text submissions.
+    const { controlId, acknowledgementId, requestId } = input;
+    await this.steeringContext.run({ controlId, acknowledgementId, requestId }, () => this.session.steer(text,
+      input.images?.map(image => ({ type: "image", data: image.base64, mimeType: image.mediaType }))));
   }
 
   async followUp(text: string): Promise<void> {
@@ -143,6 +267,7 @@ export class PiAgentAdapter implements AgentAdapter {
   async abort(): Promise<void> {
     // The order is intentional: synchronously revoke this request and discard queued continuation
     // before the SDK observes abort; finally repeats clearQueue for queue_update reentrancy.
+    this.outputSampler.reset();
     const token = this.requestAbort;
     token?.abort();
     this.session.clearQueue?.();
@@ -150,12 +275,15 @@ export class PiAgentAdapter implements AgentAdapter {
       await this.session.abort();
       this.discard = true; // 中止后丢弃残余事件（迟到 agent_end/text/tool）
     } finally {
+      this.outputSampler.reset();
       this.session.clearQueue?.();
       this.failbackAttempt = null;
     }
   }
 
   async navigateTree(targetId: string): Promise<void> {
+    this.clearResponseMeasurement();
+    this.usageStart = null;
     await this.session.navigateTree(targetId);
   }
 
@@ -169,9 +297,29 @@ export class PiAgentAdapter implements AgentAdapter {
     this.session.setThinkingLevel(level);
   }
 
+  private disposed = false;
+
+  subscribeNotifications(listener: (event: import("./subagent-notification.js").NotificationEvent) => void): () => void {
+    return this.session.subscribe((event) => {
+      if (this.disposed) return;
+      const raw = event as unknown as { type: string; entry?: unknown };
+      if (raw.type !== "entry_appended") return;
+      const notification = notificationFromEntry(raw.entry);
+      if (notification) listener(notification);
+    });
+  }
+
   dispose(): void {
+    this.disposed = true;
+    this.subagentTransport = undefined;
+    this.unsubscribeSubagentTransport();
+    this.unsubscribeHostIdentity();
     this.requestAbort?.abort();
     this.session.clearQueue?.();
+    this.unsubscribeMeasurement();
+    this.outputListeners.clear();
+    this.steeringListeners.clear();
+    this.clearResponseMeasurement();
     this.session.dispose();
   }
 
@@ -215,26 +363,118 @@ export class PiAgentAdapter implements AgentAdapter {
     });
   }
 
-  async getLastUsage(): Promise<UsageInfo | null> {
-    const messages = this.session.messages as Array<{
-      role?: string;
-      usage?: { promptTokens?: number; completionTokens?: number; totalTokens?: number };
-    }>;
-    for (let i = messages.length - 1; i >= 0; i--) {
-      const m = messages[i];
-      if (m?.role !== "assistant" || !m.usage) continue;
-      const promptTokens = m.usage.promptTokens ?? 0;
-      const completionTokens = m.usage.completionTokens ?? 0;
-      const totalTokens = m.usage.totalTokens ?? promptTokens + completionTokens;
-      if (totalTokens > 0) {
-        return { promptTokens, completionTokens, totalTokens };
+  private clearResponseMeasurement(): void {
+    this.outputSampler.reset();
+    this.lastResponse = null;
+    this.responseOrdinal = 0;
+    this.firstDeltaAt = null;
+    this.responseActive = false;
+    this.sawAssistantEvent = false;
+  }
+
+  private measureResponse(event: AgentSdkEvent): void {
+    if (this.usageStart === null) return;
+    if (event.type !== "message_start" && event.type !== "message_update" && event.type !== "message_end") return;
+    const message = event.message as { role?: string; usage?: Usage } | undefined;
+    if (message?.role !== "assistant") return;
+    this.sawAssistantEvent = true;
+    if (event.type === "message_start") {
+      this.responseOrdinal++;
+      this.responseActive = true;
+      this.firstDeltaAt = null;
+      this.lastResponse = null;
+    } else if (event.type === "message_update" && this.responseActive) {
+      const delta = event.assistantMessageEvent;
+      if ((delta.type === "text_delta" || delta.type === "thinking_delta" || delta.type === "toolcall_delta") && delta.delta.length > 0 && this.firstDeltaAt === null) {
+        this.firstDeltaAt = this.monotonicNow();
       }
+    } else if (event.type === "message_end") {
+      const duration = this.responseActive && this.firstDeltaAt !== null
+        ? nonnegative(this.monotonicNow() - this.firstDeltaAt) : null;
+      this.lastResponse = this.projectResponse(message.usage, this.responseOrdinal || null, duration);
+      this.responseActive = false;
+      this.firstDeltaAt = null;
+    }
+  }
+
+  private projectTokens(usage: Partial<Usage> | undefined): UsageTokens {
+    return {
+      input: nonnegative(usage?.input), output: nonnegative(usage?.output),
+      cacheRead: nonnegative(usage?.cacheRead), cacheWrite: nonnegative(usage?.cacheWrite),
+      totalTokens: nonnegative(usage?.totalTokens), costUsdEstimate: nonnegative(usage?.cost?.total),
+    };
+  }
+
+  private projectResponse(usage: Usage | undefined, ordinal: number | null, duration: number | null): LastResponseUsage {
+    const tokens = this.projectTokens(usage);
+    return { ...tokens, ordinal, cacheHitPercent: cacheHitPercent(tokens.input, tokens.cacheRead, tokens.cacheWrite),
+      speed: responseSpeed(tokens.output, duration) };
+  }
+
+  async getUsageSnapshot(): Promise<UsageSnapshot> {
+    // No caching: navigation, compaction and model changes must never reuse old context.
+    let sessionTotals: UsageSnapshot["sessionTotals"] = null;
+    let context: UsageSnapshot["context"] = null;
+    try {
+      const stats = this.session.getSessionStats?.();
+      if (stats) sessionTotals = { scope: "allEntries", input: nonnegative(stats.tokens.input),
+        output: nonnegative(stats.tokens.output), cacheRead: nonnegative(stats.tokens.cacheRead),
+        cacheWrite: nonnegative(stats.tokens.cacheWrite), totalTokens: nonnegative(stats.tokens.total),
+        costUsdEstimate: nonnegative(stats.cost) };
+    } catch { /* unavailable is unknown, not zero */ }
+    try {
+      const usage = this.session.getContextUsage?.();
+      if (usage) {
+        const window = nonnegative(usage.contextWindow);
+        context = { tokens: nonnegative(usage.tokens), window: window !== null && window > 0 ? window : null,
+          percent: window !== null && window > 0 && nonnegative(usage.tokens) !== null ? nonnegative(usage.percent) : null,
+          estimate: true };
+      }
+    } catch { /* unavailable is unknown */ }
+    let lastResponse = this.lastResponse;
+    if (!this.sawAssistantEvent) {
+      const message = this.latestPromptAssistant();
+      if (message) lastResponse = this.projectResponse(message.usage, null, null);
+    }
+    return { lastResponse, sessionTotals, context, execution: this.getExecutionSnapshot() };
+  }
+
+  private latestPromptAssistant(): { usage?: Usage } | null {
+    if (this.usageStart === null) return null;
+    const messages = this.session.messages as Array<{ role?: string; usage?: Usage }>;
+    if (this.usageStart > 0 && messages[this.usageStart - 1] !== this.usageBoundary) return null;
+    for (let i = messages.length - 1; i >= this.usageStart; i--) {
+      if (messages[i]?.role === "assistant") return messages[i]!;
+    }
+    return null;
+  }
+
+  async getLastUsage(): Promise<UsageInfo | null> {
+    if (this.sawAssistantEvent) {
+      const response = this.lastResponse;
+      return response && response.input !== null && response.output !== null && response.totalTokens !== null
+        ? { promptTokens: response.input, completionTokens: response.output, totalTokens: response.totalTokens } : null;
+    }
+    if (this.usageStart === null) return null;
+    const messages = this.session.messages as Array<{ role?: string; usage?: Usage }>;
+    // Compaction/navigation may replace the prefix. Never treat a shifted historical message as current.
+    if (this.usageStart > 0 && messages[this.usageStart - 1] !== this.usageBoundary) return null;
+    for (let i = messages.length - 1; i >= this.usageStart; i--) {
+      const m = messages[i];
+      if (m?.role !== "assistant") continue;
+      // A missing/invalid latest measurement is unknown, not an earlier assistant's usage.
+      const usage = m.usage;
+      if (!usage || ![usage.input, usage.output, usage.totalTokens].every(
+        (value) => typeof value === "number" && Number.isFinite(value) && value >= 0,
+      )) return null;
+      return { promptTokens: usage.input, completionTokens: usage.output, totalTokens: usage.totalTokens };
     }
     return null;
   }
 
   /** Additive snapshot: legacy messages plus stable, block-ordered tool timeline. */
   async exportSession(): Promise<unknown> {
-    return projectExportSnapshot(this.session.messages, this.session.sessionManager?.getBranch() ?? []);
+    return { ...projectExportSnapshot(this.session.messages, this.session.sessionManager?.getBranch() ?? []),
+      usageSnapshot: await this.getUsageSnapshot() };
   }
 }

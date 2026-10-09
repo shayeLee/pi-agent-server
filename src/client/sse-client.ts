@@ -109,13 +109,16 @@ export type SseConnectionOptions = {
   fetch?: FetchLike;
   /** Factory for a platform-specific streaming UTF-8 decoder. Defaults to TextDecoder. */
   createDecoder?: () => SseDecoder;
-  onEvent: (event: SseEvent) => void;
+  /** Event callback includes the consumed cursor for host-managed session resumption. */
+  onEvent: (event: SseEvent, lastEventId: number) => void;
   onError?: (error: Error) => void;
   /** Called when the connection opens (including after reconnect). */
   onOpen?: () => void;
   /** Server startup epoch, called when response headers include it. */
   onEpoch?: (epoch: string) => void;
   lastEventId?: number;
+  /** Called as soon as a stream ends or fails, before reconnect waiting. */
+  onDisconnect?: () => void;
   /** Reconnect delay in milliseconds; defaults to 1000. */
   reconnectDelay?: number;
   /** Called for HTTP 204; no automatic reconnect is attempted. */
@@ -145,7 +148,7 @@ export function createSseConnection(options: SseConnectionOptions): { close: () 
           onOpen: options.onOpen,
           onEvent: (event, id) => {
             lastEventId = id;
-            options.onEvent(event);
+            options.onEvent(event, id);
           },
           onError: options.onError,
           onEpoch: (epoch) => {
@@ -166,6 +169,7 @@ export function createSseConnection(options: SseConnectionOptions): { close: () 
         if (closed) break;
         options.onError?.(error instanceof Error ? error : new Error(String(error)));
       }
+      options.onDisconnect?.();
       if (closed) break;
       await sleep(options.reconnectDelay ?? 1000);
     }

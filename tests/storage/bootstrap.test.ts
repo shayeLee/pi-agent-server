@@ -236,8 +236,8 @@ describe("旧 schema 严格兼容性 preflight（M1：列名齐全但类型/FK/�
       checksum TEXT NOT NULL,
       applied_at INTEGER NOT NULL
     )`);
-    db.prepare("INSERT INTO schema_migrations (version, name, checksum, applied_at) VALUES (0, ?, ?, 1)")
-      .run(migrationDefinitions[0]!.name, migrationChecksum(migrationDefinitions[0]!));
+    const insert = db.prepare("INSERT INTO schema_migrations (version, name, checksum, applied_at) VALUES (?, ?, ?, 1)");
+    for (const migration of migrationDefinitions) insert.run(migration.version, migration.name, migrationChecksum(migration));
   }
 
   // 构造「表已存在但形态旧」的 SQLite 库：sessions 缺 Manifest 第 12 列 capability_versions。

@@ -1,7 +1,10 @@
+export { DEFAULT_PROJECT_ID } from "../shared/project-identity.js";
 export * from "./api.js";
+export * from "./session-title.js";
 export * from "./chat-state.js";
 export * from "./chat-store.js";
 export * from "./sse.js";
 export * from "./sse-client.js";
 export type * from "./transport.js";
 export type * from "./types.js";
+export type { Export, ExportMessage, ExportTimelineItem } from "../public-api/contract.js";

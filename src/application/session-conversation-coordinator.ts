@@ -69,7 +69,9 @@ export class SessionConversationCoordinator {
     const prepared = await factory.prepareNew(context);
     this.assertFactoryDescriptor(factory.agentKind, factory.conversationFormat, prepared.proposedConversation);
     const proposedRef = prepared.proposedConversation.conversationRef;
-    const reservation = this.reservationInputOf(sessionId, record.projectId, prepared.proposedConversation);
+    const reservation = prepared.sourceReservationKey
+      ? { conversationRef: proposedRef, tombstoneOperationKey: prepared.sourceReservationKey }
+      : this.reservationInputOf(sessionId, record.projectId, prepared.proposedConversation);
     const reserved = await this.sessions.reserveConversation(sessionId, reservation);
     if (!reserved) return this.restoreReservationOutcome(sessionId, projectCwd);
 

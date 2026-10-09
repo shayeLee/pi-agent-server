@@ -50,6 +50,6 @@ type _AssertSessionsConversationFormat = Assert<Equal<DatabaseSchema["sessions"]
 type _AssertSessionsConversationRef = Assert<Equal<DatabaseSchema["sessions"]["conversation_ref"], string | null>>;
 type _AssertSessionsProjectId = Assert<Equal<DatabaseSchema["sessions"]["project_id"], string>>;
 type _AssertIdempotencyResult = Assert<Equal<DatabaseSchema["idempotency"]["result"], string>>;
-type _AssertIdempotencyPkCols = Assert<Equal<keyof DatabaseSchema["idempotency"], "session_id" | "request_id" | "result" | "created_at">>;
+type _AssertIdempotencyPkCols = Assert<Equal<keyof DatabaseSchema["idempotency"], "session_id" | "request_id" | "result" | "created_at" | "fingerprint">>;
 type _AssertFileOperationRelativePath = Assert<Equal<DatabaseSchema["file_operations"]["relative_path"], string>>;
 type _AssertFileOperationLeaseUntil = Assert<Equal<DatabaseSchema["file_operations"]["lease_until"], number | null>>;

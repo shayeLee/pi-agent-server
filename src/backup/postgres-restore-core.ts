@@ -16,11 +16,14 @@ import path from "node:path";
 import { tmpdir } from "node:os";
 import { createPostgresKysely, createPostgresPool } from "../storage/postgres-bootstrap.js";
 import { isPostgresSystemSchema } from "../storage/postgres-schema-guard.js";
-import { runPostgresMigrations } from "../storage/migration-engine.js";
+import { assertPostgresMigrationLedgerContract } from "../storage/migration-engine.js";
+import { assertSchemaCompatible } from "../storage/schema-compatibility.js";
+import { isDurableIdempotencyReservation } from "../storage/kysely-idempotency-repository.js";
 import { classifyPiJsonlReference } from "../agent/pi-jsonl-reference.js";
 import { migrationPrefixForLedger, type MigrationDefinition, type MigrationLedgerSnapshot } from "../storage/migration-manifest.js";
 import { stableSerialize } from "../storage/migration-manifest.js";
 import { validateRestoredFileOperations } from "./restore-validation.js";
+import { snapshotUploadedRows, validateAttachmentSet, verifyAttachmentBlob } from "./attachment-payload.js";
 import {
   decryptWithAdapter,
   deriveRelativeSessionPath,
@@ -53,16 +56,20 @@ import {
 } from "./postgres-backup-core.js";
 import type { PostgresBackupManifest, BackupFileRecord } from "./backup-core.js";
 
+import { validateNativeManifest, validateNativeSet, unauthorisedRestoreBinding, planNativeRestore, publishNativeRestore, recordNativeRestore, finalizeNativeRestore, type NativeRestorePhase, type NativeRestoreOptions, type NativeRestoreClaim } from "./native-payload.js";
+
 const RESTORE_DIR_PREFIX = "restore-";
 const SAFE_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const SAFE_SHA256 = /^[0-9a-f]{64}$/;
 
 export type PgRestoreClient = PgBackupClient;
 
-export interface PostgresRestorePaths {
+export interface PostgresRestorePaths extends NativeRestoreOptions {
   readonly inputBackup: string;
   readonly targetRoot: string;
   readonly ageIdentityFile: string;
+  /** Absolute Pi-visible mapping for targetRoot; v2 maps <restore-id>/uploads under it. */
+  readonly uploadAgentRoot?: string;
 }
 
 export const POSTGRES_RESTORE_SAFETY_CONTRACT = Object.freeze({
@@ -90,6 +97,8 @@ export interface PostgresRestoreOptions {
   readonly age?: RestoreAgeAdapter;
   readonly crypto?: RestoreAgeAdapter;
   readonly cryptoAdapter?: RestoreAgeAdapter;
+  /** Test-only process crash checkpoints. */
+  readonly nativeRestoreCheckpoint?: (phase: NativeRestorePhase) => void;
   readonly pgClient?: PgRestoreClient;
   readonly pgProcess?: PgProcessAdapter;
   readonly pgRestoreBinary?: string;
@@ -100,7 +109,8 @@ export interface PostgresRestoreOptions {
 export interface PostgresRestoreReport {
   readonly status: "success";
   readonly dialect: "PostgreSQL";
-  readonly format: "pi-agent-server.backup-manifest.v1";
+  readonly nativeSessionSources?: PostgresBackupManifest["nativeSessionSources"];
+  readonly format: "pi-agent-server.backup-manifest.v1" | "pi-agent-server.backup-manifest.v2";
   readonly counts: {
     readonly payloads: number;
     readonly jsonlFiles: number;
@@ -413,15 +423,25 @@ function validateLedger(ledger: PostgresBackupManifest["migrationLedger"]): void
         !Number.isSafeInteger(row.applied_at) || row.applied_at < 0) fail("manifest migration ledger is invalid");
   }
   if (ledger.appliedVersion !== (ledger.appliedCount === 0 ? null : ledger.rows.at(-1)!.version)) fail("manifest migration ledger head is invalid");
+  if (!ledger.present) return;
+  try {
+    const prefix = migrationPrefixForLedger(ledger as MigrationLedgerSnapshot);
+    if (prefix.length === 0) fail("manifest migration ledger has no authenticated canonical history");
+  } catch (error) {
+    fail(error instanceof Error ? error.message.replace(/^schema migration ledger:\s*/, "") : "authenticated migration history is invalid");
+  }
 }
 
 function validatePostgresManifest(value: unknown): PostgresBackupManifest {
   if (!value || typeof value !== "object") fail("manifest is not an object");
   const manifest = value as Partial<PostgresBackupManifest> & { credentials?: { included?: unknown; policy?: unknown } };
-  if (manifest.format !== "pi-agent-server.backup-manifest.v1" || (manifest.kind !== "postgresql" && manifest.kind !== "pre-migration" && manifest.kind !== "pre-owner-transfer") || manifest.dialect !== "PostgreSQL") fail("unsupported backup format or dialect");
+  if ((manifest.format !== "pi-agent-server.backup-manifest.v1" && manifest.format !== "pi-agent-server.backup-manifest.v2") || (manifest.kind !== "postgresql" && manifest.kind !== "pre-migration" && manifest.kind !== "pre-owner-transfer") || manifest.dialect !== "PostgreSQL") fail("unsupported backup format or dialect");
   if (!manifest.credentials || manifest.credentials.included !== false || manifest.credentials.policy !== "whitelist-excludes-credentials") fail("manifest credential policy is invalid");
   const roots = manifest.sourceRoots;
   if (!roots || typeof roots.dataDir !== "string" || !path.isAbsolute(roots.dataDir) || typeof roots.agentDir !== "string" || !path.isAbsolute(roots.agentDir)) fail("manifest must include explicit authenticated source roots");
+  if (manifest.format === "pi-agent-server.backup-manifest.v2"
+    ? typeof roots.uploadRoot !== "string" || !path.isAbsolute(roots.uploadRoot) || !Array.isArray(manifest.attachments) || manifest.attachments.length === 0
+    : roots.uploadRoot !== undefined || manifest.attachments !== undefined) fail("manifest attachment metadata is invalid");
   if (typeof manifest.sourceRootsSha256 !== "string" || !SAFE_SHA256.test(manifest.sourceRootsSha256) || manifest.sourceRootsHash !== manifest.sourceRootsSha256 || sourceRootsHash(roots) !== manifest.sourceRootsSha256) fail("manifest source roots hash is invalid");
   if (typeof manifest.createdAt !== "string" || !manifest.timeWindow || typeof manifest.timeWindow.startedAt !== "string" || typeof manifest.timeWindow.finishedAt !== "string") fail("manifest time metadata is invalid");
   const snapshot = manifest.postgres;
@@ -441,9 +461,9 @@ function validatePostgresManifest(value: unknown): PostgresBackupManifest {
     if (!relative.startsWith("payload/") || seen.has(relative)) fail("manifest contains a duplicate or non-payload path");
     seen.add(relative);
     const encryptedSize = record.encryptedSize;
-    if (!(record.kind === "postgres-dump" || record.kind === "jsonl" || record.kind === "config") || !Number.isSafeInteger(record.size) || record.size < 0 || typeof record.sha256 !== "string" || !SAFE_SHA256.test(record.sha256) || typeof encryptedSize !== "number" || !Number.isSafeInteger(encryptedSize) || encryptedSize <= 0 || typeof record.encryptedSha256 !== "string" || !SAFE_SHA256.test(record.encryptedSha256)) fail("manifest contains an invalid file hash or size");
-    const expectedKind = relative === "payload/database.pg_dump.age" ? "postgres-dump" : relative.endsWith(".jsonl.age") ? "jsonl" : "config";
-    if (record.kind !== expectedKind || (expectedKind === "postgres-dump" && relative !== "payload/database.pg_dump.age") || (expectedKind === "jsonl" && !isJsonlRelative(relative.slice("payload/".length, -4))) || (expectedKind === "config" && relative !== "payload/.pi-agent/models.json.age" && relative !== "payload/agentDir/models.json.age")) fail("manifest contains a path outside the PostgreSQL payload whitelist");
+    if (!(record.kind === "postgres-dump" || record.kind === "jsonl" || record.kind === "config" || record.kind === "attachment") || !Number.isSafeInteger(record.size) || record.size < 0 || typeof record.sha256 !== "string" || !SAFE_SHA256.test(record.sha256) || typeof encryptedSize !== "number" || !Number.isSafeInteger(encryptedSize) || encryptedSize <= 0 || typeof record.encryptedSha256 !== "string" || !SAFE_SHA256.test(record.encryptedSha256)) fail("manifest contains an invalid file hash or size");
+    const expectedKind = relative === "payload/database.pg_dump.age" ? "postgres-dump" : /^payload\/attachments\/[0-9a-f-]{36}\.age$/.test(relative) ? "attachment" : relative.endsWith(".jsonl.age") ? "jsonl" : "config";
+    if (record.kind !== expectedKind || (expectedKind === "postgres-dump" && relative !== "payload/database.pg_dump.age") || (expectedKind === "jsonl" && !isJsonlRelative(relative.slice("payload/".length, -4))) || (expectedKind === "attachment" && manifest.format !== "pi-agent-server.backup-manifest.v2") || (expectedKind === "config" && relative !== "payload/.pi-agent/models.json.age" && relative !== "payload/agentDir/models.json.age")) fail("manifest contains a path outside the PostgreSQL payload whitelist");
   }
   if (seen.size === 0 || !seen.has("payload/database.pg_dump.age") || [...seen].filter((path) => path.endsWith("database.pg_dump.age")).length !== 1) fail("manifest must contain one PostgreSQL dump payload");
   if (!Array.isArray(manifest.missingSessionReferences) || !Array.isArray(manifest.excludedFiles)) fail("manifest reference metadata is invalid");
@@ -462,6 +482,11 @@ function validatePostgresManifest(value: unknown): PostgresBackupManifest {
   for (const value of manifest.excludedFiles) {
     if (!value || typeof value !== "object" || typeof value.path !== "string" || value.reason !== "auth-file" || path.isAbsolute(value.path) || value.path.includes("..")) fail("manifest excluded-file metadata is invalid");
   }
+  validateNativeManifest((manifest as PostgresBackupManifest).nativeSessionSources);
+  const native = (manifest as PostgresBackupManifest).nativeSessionSources ?? [];
+  if (native.some(entry => entry.status === "external-required")) fail("native external-required package lacks native bytes; complete restore refused");
+  for (const entry of native) if (entry.status === "archived" && !seen.has(entry.payloadPath!)) fail("native archived payload is missing");
+  for (const relative of seen) if (relative.startsWith("payload/native/") && !native.some(entry => entry.payloadPath === relative)) fail("unclaimed native payload");
   return manifest as PostgresBackupManifest;
 }
 
@@ -774,18 +799,18 @@ type RestoreMigrationContext = {
 };
 
 /**
- * Authenticate the package's migration ledger before any restored data is
- * trusted. Restore accepts ONLY the canonical single baseline; a package
- * without a ledger (legacy RC shape) or with any other ledger history fails
- * here, before any payload is decrypted or staged.
+ * Authenticate the package's immutable migration prefix before any restored
+ * data is trusted. The recorded physical schema is verified without applying
+ * migrations; unknown, truncated, or altered histories fail before any payload
+ * is decrypted or staged.
  */
 function selectRestoreMigrationContext(ledger: MigrationLedgerSnapshot): RestoreMigrationContext {
   if (!ledger.present) {
-    fail("backup carries no authenticated migration ledger; only packages with the exact canonical single baseline are recoverable");
+    fail("backup carries no authenticated migration ledger; restore refuses packages without a canonical migration history");
   }
   try {
     const migrations = migrationPrefixForLedger(ledger);
-    if (migrations.length !== 1 || migrations[0]!.version !== 0) fail("restore accepts only the canonical single-baseline migration ledger");
+    if (migrations.length === 0) fail("restore requires an authenticated canonical migration history");
     return { migrations };
   } catch (error) {
     fail(error instanceof Error ? error.message.replace(/^schema migration ledger:\s*/, "") : "authenticated migration history is invalid");
@@ -795,7 +820,7 @@ function selectRestoreMigrationContext(ledger: MigrationLedgerSnapshot): Restore
 async function queryLedger(client: PgRestoreClient, schema: string): Promise<PostgresBackupManifest["migrationLedger"]> {
   try {
     // Read the table directly so this remains compatible with the narrow
-    // client seam used by offline tests. The canonical single baseline always
+    // client seam used by offline tests. Every recoverable migration prefix
     // ships the schema_migrations relation; an absent relation fails the
     // ledger comparison against the authenticated manifest below.
     const result = await client.query<{ version: unknown; name: unknown; checksum: unknown; applied_at: unknown }>(`SELECT version, name, checksum, applied_at FROM ${quoteIdentifier(schema)}."schema_migrations" ORDER BY version`);
@@ -825,6 +850,8 @@ async function validateDatabase(
   finalPath: string,
   verifyMigrations: PostgresRestoreOptions["verifyMigrations"],
   migrationContext: RestoreMigrationContext,
+  assembledRoot: string,
+  schemaKysely?: ReturnType<typeof createPostgresKysely>,
 ): Promise<{
   migration: { version: number | null; pending: number };
   ledger: PostgresBackupManifest["migrationLedger"];
@@ -837,9 +864,21 @@ async function validateDatabase(
   sessionRows: readonly { id: unknown; agent_kind: unknown; conversation_format: unknown; conversation_ref: unknown; capability_versions: unknown }[];
   sessionEntries: number;
 }> {
-  const checked = verifyMigrations ? await verifyMigrations(client, schema) : fail("PostgreSQL restore requires a migration verification adapter");
-  const expectedVersion = migrationContext.migrations.at(-1)!.version;
-  if (checked.pending !== 0 || checked.version !== expectedVersion) fail("restored PostgreSQL database did not reach the authenticated migration head");
+  const migrationDefinition = migrationContext.migrations.at(-1)!;
+  let checked: { version: number | null; pending: number };
+  if (schemaKysely) {
+    await assertPostgresMigrationLedgerContract(schemaKysely);
+    const verdict = await assertSchemaCompatible(schemaKysely, "PostgreSQL", migrationDefinition.physicalTypeMaps.PostgreSQL, migrationDefinition.manifest);
+    if (verdict !== "complete") fail("restored PostgreSQL schema does not match the authenticated migration history");
+    checked = { version: migrationDefinition.version, pending: 0 };
+  } else if (verifyMigrations) {
+    checked = await verifyMigrations(client, schema);
+    if (checked.pending !== 0 || checked.version !== migrationDefinition.version) fail("restored PostgreSQL database does not match the authenticated migration history");
+  } else {
+    fail("PostgreSQL restore requires a migration verification adapter");
+  }
+  const expectedVersion = migrationDefinition.version;
+  if (checked.pending !== 0 || checked.version !== expectedVersion) fail("restored PostgreSQL database does not match the authenticated migration history");
   const migration = { version: checked.version, pending: checked.pending };
   const ledger = await queryLedger(client, schema);
   if (stableSerialize(ledger.rows) !== stableSerialize(manifest.migrationLedger.rows) || ledger.appliedVersion !== manifest.migrationLedger.appliedVersion || ledger.appliedCount !== manifest.migrationLedger.appliedCount) fail("manifest migration ledger does not match the restored PostgreSQL database");
@@ -855,14 +894,23 @@ async function validateDatabase(
       ...migrationContext.migrations.at(-1)!.manifest.tables.map((table) => table.name),
     ].sort();
     if (tableNames.some((name) => typeof name !== "string") || stableSerialize(tableNames) !== stableSerialize(expectedTableNames)) fail("restored PostgreSQL schema does not match the authenticated schema contract");
-    // The canonical single baseline always ships file_operations; restore
-    // validates its rows but never executes any pending deletion task.
+    const uploadedRows = migrationDefinition.manifest.tables.some((table) => table.name === "uploaded_files")
+      ? snapshotUploadedRows((await client.query<Record<string, unknown>>(`SELECT * FROM ${qschema}."uploaded_files" ORDER BY id`)).rows)
+      : [];
+    validateAttachmentSet(manifest.format, manifest.attachments, uploadedRows, manifest.files);
+    for (const row of uploadedRows) {
+      const entry = manifest.attachments!.find((item) => item.fileId === row.id)!;
+      verifyAttachmentBlob(path.join(assembledRoot, "uploads"), entry);
+    }
+    // Restore validates file_operations rows but never executes any pending
+    // deletion task.
     const fileOperations = (await client.query<Record<string, unknown>>(`SELECT id, operation_key, kind, relative_path, session_id, project_id, state, attempt_count, available_at, lease_until, lease_token, last_error, created_at, updated_at FROM ${qschema}."file_operations"`)).rows;
     validateRestoredFileOperations(fileOperations);
+    const hasFingerprint = migrationContext.migrations.at(-1)!.manifest.tables.find((table) => table.name === "idempotency")?.columns.some((col) => col.name === "fingerprint") === true;
     const [projects, sessions, idempotency, fks] = await Promise.all([
       client.query<Record<string, unknown>>(`SELECT id, name, cwd, owner_key FROM ${qschema}."projects"`),
       client.query<{ id: unknown; agent_kind: unknown; conversation_format: unknown; conversation_ref: unknown; capability_versions: unknown }>(`SELECT id, agent_kind, conversation_format, conversation_ref, capability_versions FROM ${qschema}."sessions"`),
-      client.query<Record<string, unknown>>(`SELECT session_id, request_id, result FROM ${qschema}."idempotency"`),
+      client.query<Record<string, unknown>>(`SELECT session_id, request_id, result${hasFingerprint ? ", fingerprint" : ""} FROM ${qschema}."idempotency"`),
       client.query<{ total: number | string; invalid: number | string }>("SELECT count(*)::int AS total, count(*) FILTER (WHERE NOT con.convalidated)::int AS invalid FROM pg_constraint con JOIN pg_namespace ns ON ns.oid = con.connamespace WHERE ns.nspname = $1 AND con.contype = 'f'", [schema]),
     ]);
     for (const row of projects.rows) if (![row.id, row.name, row.cwd, row.owner_key].every((value) => typeof value === "string")) fail("restored PostgreSQL project data is malformed");
@@ -870,12 +918,16 @@ async function validateDatabase(
       if (typeof row.id !== "string") fail("restored PostgreSQL session data is malformed");
       // The source dump still contains source conversation refs at this point; the
       // remap transaction below is the operation that binds Pi refs to finalPath.
-      if (row.agent_kind !== "pi" || row.conversation_format !== "pi-jsonl-v3") fail("restored PostgreSQL session uses an unsupported conversation kind or format");
+      if (row.conversation_format === "pi-native-jsonl-v3" || manifest.nativeSessionSources?.some(entry => !entry.deleted && entry.session_id === row.id)) {
+        const entry = manifest.nativeSessionSources?.find(entry => entry.session_id === row.id && entry.deleted === 0);
+        if (!entry || row.agent_kind !== "pi" || entry.source_path !== row.conversation_ref) fail("restored native reference differs from authenticated manifest");
+      } else if (row.agent_kind !== "pi" || row.conversation_format !== "pi-jsonl-v3") fail("restored PostgreSQL session uses an unsupported conversation kind or format");
       if (row.conversation_ref !== null && (typeof row.conversation_ref !== "string" || !path.isAbsolute(row.conversation_ref))) fail("restored PostgreSQL conversation reference is malformed");
       if (row.capability_versions !== null) { try { JSON.parse(String(row.capability_versions)); } catch { fail("restored PostgreSQL capability_versions is invalid JSON"); } }
     }
     for (const row of idempotency.rows) {
       if (typeof row.session_id !== "string" || typeof row.request_id !== "string") fail("restored PostgreSQL idempotency key is malformed");
+      if (hasFingerprint && isDurableIdempotencyReservation(row.result, row.fingerprint)) continue;
       try { JSON.parse(String(row.result)); } catch { fail("restored PostgreSQL idempotency result is invalid JSON"); }
     }
     const foreignKeyCount = Number(fks.rows[0]?.total ?? 0);
@@ -900,12 +952,15 @@ function buildPostgresRestoreReport(
   database: string,
   schema: string,
   missing: number,
+  format: PostgresBackupManifest["format"],
+  nativeSessionSources?: PostgresBackupManifest["nativeSessionSources"],
 ): PostgresRestoreReport {
   const schemaIdentity = pgIdentity(schema, "schema");
   return {
     status: "success",
     dialect: "PostgreSQL",
-    format: "pi-agent-server.backup-manifest.v1",
+    format,
+    ...(nativeSessionSources ? { nativeSessionSources } : {}),
     counts: {
       payloads: records.size,
       jsonlFiles: jsonlFiles.length,
@@ -933,7 +988,7 @@ function buildPostgresRestoreReport(
   };
 }
 
-async function remapDatabase(client: PgRestoreClient, schema: string, finalPath: string, manifest: PostgresBackupManifest, included: Set<string>, assembledRoot: string, invalidHistories: ReadonlySet<string>): Promise<number> {
+async function remapDatabase(client: PgRestoreClient, schema: string, finalPath: string, manifest: PostgresBackupManifest, included: Set<string>, assembledRoot: string, invalidHistories: ReadonlySet<string>, agentRoot?: string, nativeClaims: readonly NativeRestoreClaim[] = [], publishBeforeCommit?: () => void): Promise<number> {
   const missingKeys = new Set(manifest.missingSessionReferences.map((reference) => `${reference.sessionId}\u0000${reference.path}`));
   const consumed = new Set<string>();
   const qschema = quoteIdentifier(schema);
@@ -941,7 +996,17 @@ async function remapDatabase(client: PgRestoreClient, schema: string, finalPath:
   try {
     await client.query("BEGIN");
     const result = await client.query<{ id: unknown; project_id: unknown; agent_kind: unknown; conversation_format: unknown; conversation_ref: unknown }>(`SELECT id, project_id, agent_kind, conversation_format, conversation_ref FROM ${qschema}."sessions" WHERE conversation_ref IS NOT NULL`);
+    const nativeRows = manifest.migrationLedger.appliedVersion !== null && manifest.migrationLedger.appliedVersion >= 2
+      ? (await client.query<Record<string, unknown>>(`SELECT * FROM ${qschema}."native_session_sources" ORDER BY source_path`)).rows : [];
+    const nativeEntries = validateNativeSet(manifest.nativeSessionSources, nativeRows,
+      (await client.query<Record<string, unknown>>(`SELECT id, project_id, agent_kind, conversation_format, conversation_ref${nativeRows.length ? ", visibility, origin" : ""} FROM ${qschema}."sessions"`)).rows);
+    for (const entry of nativeEntries) {
+      const claim = nativeClaims.find(claim => claim.entry.source_path === entry.source_path);
+      await client.query(`UPDATE ${qschema}."native_session_sources" SET source_path = $1, binding = $2 WHERE source_path = $3`, [claim?.target ?? entry.source_path, claim?.binding ?? unauthorisedRestoreBinding(entry.binding), entry.source_path]);
+      if (claim) await client.query(`UPDATE ${qschema}."sessions" SET conversation_ref = $1 WHERE id = $2`, [claim.target, entry.session_id]);
+    }
     for (const row of result.rows) {
+      if (row.conversation_format === "pi-native-jsonl-v3" || nativeClaims.some(claim => claim.entry.session_id === row.id)) continue;
       if (typeof row.id !== "string" || typeof row.project_id !== "string" || row.agent_kind !== "pi" || row.conversation_format !== "pi-jsonl-v3" || typeof row.conversation_ref !== "string") fail("restored PostgreSQL session conversation reference is malformed");
       const relative = deriveRelativeSessionPath(row.conversation_ref);
       const key = `${row.id}\u0000${relative}`;
@@ -976,6 +1041,20 @@ async function remapDatabase(client: PgRestoreClient, schema: string, finalPath:
       await client.query(`UPDATE ${qschema}."sessions" SET conversation_ref = $1 WHERE id = $2`, [path.join(finalPath, relative), row.id]);
     }
     if (consumed.size !== missingKeys.size) fail("manifest missing session references do not match the restored PostgreSQL database exactly");
+    const uploadsPresent = manifest.migrationLedger.appliedVersion !== null && manifest.migrationLedger.appliedVersion >= 1;
+    const uploadedRows = uploadsPresent
+      ? snapshotUploadedRows((await client.query<Record<string, unknown>>(`SELECT * FROM ${qschema}."uploaded_files" ORDER BY id`)).rows)
+      : [];
+    validateAttachmentSet(manifest.format, manifest.attachments, uploadedRows, manifest.files);
+    if (uploadedRows.length && !agentRoot) fail("v2 attachment restore requires a Pi-visible target mapping");
+    for (const row of uploadedRows) {
+      const entry = manifest.attachments!.find((item) => item.fileId === row.id)!;
+      if (!included.has(`payload/attachments/${row.storage_key}.age`)) fail("restored attachment payload is missing");
+      verifyAttachmentBlob(path.join(assembledRoot, "uploads"), entry);
+      await client.query(`UPDATE ${qschema}."uploaded_files" SET storage_key = $1, agent_path = $2 WHERE id = $3`,
+        [entry.storageKey, path.join(agentRoot!, entry.storageKey), row.id]);
+    }
+    publishBeforeCommit?.();
     await client.query("COMMIT");
     return missing;
   } catch (error) {
@@ -996,6 +1075,8 @@ export async function restorePostgresBackup(options: PostgresRestoreOptions): Pr
   const manifestStaging = privateManifestStaging(path.dirname(resolved.target));
   let staging: string | undefined;
   let published = false;
+  let rollbackNative: (() => void) | undefined;
+  let drillRenamed = false;
   let targetCreated = false;
   let finalPath: string | undefined;
   let targetClient: PgRestoreClient | undefined = options.pgClient;
@@ -1007,17 +1088,28 @@ export async function restorePostgresBackup(options: PostgresRestoreOptions): Pr
     if (hashFile(packageLayout.manifestCiphertext).sha256 !== packageLayout.manifestCiphertextSha256) fail("manifest ciphertext does not match COMPLETE");
     await decryptWithAdapter(age, packageLayout.manifestCiphertext, manifestPlain, resolved.identity);
     const manifest = validatePostgresManifest(JSON.parse(readFileSync(manifestPlain, "utf8")));
-    // Authenticate the canonical single-baseline migration ledger before any
-    // payload is staged or decrypted.  Legacy packages (no ledger or any
-    // non-canonical ledger) fail here.  Restore never applies a migration.
+    // Authenticate the canonical migration prefix before any payload is staged
+    // or decrypted. Legacy packages (no ledger or non-canonical history) fail
+    // here. Restore never applies a migration.
     const migrationContext = selectRestoreMigrationContext(manifest.migrationLedger as MigrationLedgerSnapshot);
+    if (options.paths.nativeSourceRoot) {
+      const root = canonicalPath(options.paths.nativeSourceRoot, "native restore source root");
+      if (root === path.parse(root).root || within(root, resolved.input) || within(resolved.input, root) || within(root, resolved.identity) || within(resolved.identity, root)) fail("native restore root overlaps protected paths");
+    }
     const pgDumpMajor = parseClientMajor(manifest.postgres.pgDumpVersion);
     rmSync(manifestPlain, { force: true });
     // There is no business `public` schema: a PostgreSQL source schema of
     // `public` is rejected for every backup kind, before any payload staging.
     if (manifest.postgres.schemaIdentity === pgIdentity("public", "schema")) fail("authenticated PostgreSQL source schema public is not allowed");
-    const sourceRoots = [manifest.sourceRoots.dataDir, manifest.sourceRoots.agentDir].map((root, index) => canonicalPath(root, `manifest source root ${index}`));
+    const sourceRoots = [manifest.sourceRoots.dataDir, manifest.sourceRoots.agentDir,
+      ...(manifest.sourceRoots.uploadRoot ? [manifest.sourceRoots.uploadRoot] : [])].map((root, index) => canonicalPath(root, `manifest source root ${index}`));
     if (sourceRoots.some((source) => within(source, resolved.target) || within(resolved.target, source))) fail("target root overlaps an authenticated source root");
+    const agentBase = manifest.format === "pi-agent-server.backup-manifest.v2"
+      ? canonicalPath(options.paths.uploadAgentRoot ?? fail("v2 restore requires explicit Pi upload mount mapping"), "Pi upload mount mapping")
+      : undefined;
+    if (agentBase && (within(agentBase, resolved.input) || within(resolved.input, agentBase) ||
+      within(agentBase, resolved.identity) || within(resolved.identity, agentBase) ||
+      sourceRoots.some((source) => within(agentBase, source) || within(source, agentBase)))) fail("Pi upload mount mapping overlaps a protected source or credential path");
 
     if (!targetClient) {
       const created = clientFromUrl(options.targetDatabaseUrl);
@@ -1031,7 +1123,7 @@ export async function restorePostgresBackup(options: PostgresRestoreOptions): Pr
     if (options.dryRun === true) return {
       dryRun: true,
       finalPath: null,
-      report: { status: "success", dialect: "PostgreSQL", format: "pi-agent-server.backup-manifest.v1", counts: { payloads: manifest.files.length, jsonlFiles: manifest.files.filter((file) => file.kind === "jsonl").length, projects: 0, sessions: 0, idempotencyRows: 0, fileOperations: 0, sessionEntries: 0, sessionHeaders: 0, missingSessionReferences: manifest.missingSessionReferences.length, invalidSessionHistories: 0, foreignKeyViolations: 0 }, migration: { version: manifest.migrationLedger.appliedVersion, pending: 0 }, target: { databaseIdentity: pgIdentity(target.database, "database"), schemaIdentity: pgIdentity(target.schema, "schema"), schemaSummary: { identity: pgIdentity(target.schema, "schema"), tableCount: 0, migrationVersion: manifest.migrationLedger.appliedVersion, foreignKeyViolations: 0 } } },
+      report: { status: "success", dialect: "PostgreSQL", format: manifest.format, counts: { payloads: manifest.files.length, jsonlFiles: manifest.files.filter((file) => file.kind === "jsonl").length, projects: 0, sessions: 0, idempotencyRows: 0, fileOperations: 0, sessionEntries: 0, sessionHeaders: 0, missingSessionReferences: manifest.missingSessionReferences.length, invalidSessionHistories: 0, foreignKeyViolations: 0 }, migration: { version: manifest.migrationLedger.appliedVersion, pending: 0 }, target: { databaseIdentity: pgIdentity(target.database, "database"), schemaIdentity: pgIdentity(target.schema, "schema"), schemaSummary: { identity: pgIdentity(target.schema, "schema"), tableCount: 0, migrationVersion: manifest.migrationLedger.appliedVersion, foreignKeyViolations: 0 } } },
     };
 
     const pgProcess = options.pgProcess ?? pgProcessAdapter;
@@ -1064,8 +1156,11 @@ export async function restorePostgresBackup(options: PostgresRestoreOptions): Pr
       await decryptWithAdapter(age, ciphertext, plaintext, resolved.identity);
       const actual = hashFile(plaintext);
       if (actual.size !== record.size || actual.sha256 !== record.sha256) fail("decrypted PostgreSQL payload hash or size mismatch");
-      if (record.kind === "jsonl" || record.kind === "config") {
-        const destination = path.join(assembledRoot, record.path.slice("payload/".length, -4));
+      if (record.kind === "jsonl" || record.kind === "config" || record.kind === "attachment") {
+        const relative = record.path.slice("payload/".length, -4);
+        const destination = record.kind === "attachment"
+          ? path.join(assembledRoot, "uploads", path.basename(relative))
+          : path.join(assembledRoot, relative);
         mkdirSync(path.dirname(destination), { recursive: true, mode: 0o700 });
         copyFileSync(plaintext, destination);
         chmodSync(destination, 0o600);
@@ -1092,12 +1187,25 @@ export async function restorePostgresBackup(options: PostgresRestoreOptions): Pr
         // Only confirmed semantic JSONL invalidity may degrade. I/O, assembly,
         // age/hash/manifest and every other operational failure remains
         // fail-closed for the whole restore.
-        if (!(error instanceof InvalidSessionHistoryError)) throw error;
+        if (!(error instanceof InvalidSessionHistoryError) || relative.startsWith("native/")) throw error;
         invalidHistories.add(relative);
         rmSync(file, { force: true });
       }
     }
 
+    const nativeClaims = planNativeRestore(manifest.nativeSessionSources, assembledRoot, options.paths);
+    const publishNativeAndDrill = () => {
+      if (existsSync(resolved.target)) safeDirectory(resolved.target, "target root");
+      else { mkdirSync(resolved.target, { recursive: true, mode: 0o700 }); chmodSync(resolved.target, 0o700); targetCreated = true; }
+      if (existsSync(finalPath!)) fail("restore target already exists");
+      recordNativeRestore(nativeClaims, assembledRoot, finalPath!);
+      options.nativeRestoreCheckpoint?.("prepared");
+      rollbackNative = publishNativeRestore(nativeClaims);
+      options.nativeRestoreCheckpoint?.("linked");
+      renameSync(assembledRoot, finalPath!);
+      drillRenamed = true;
+      options.nativeRestoreCheckpoint?.("renamed");
+    };
     const username = targetParsed.username ?? target.user;
     const pgRestoreBinary = options.pgRestoreBinary ?? "pg_restore";
     const diagnosticSecrets = [targetParsed.password, process.env.PGPASSWORD, username].filter((value): value is string => Boolean(value));
@@ -1133,10 +1241,7 @@ export async function restorePostgresBackup(options: PostgresRestoreOptions): Pr
       schemaPool = createPostgresPool(schemaScopedConnectionUrl(options.targetDatabaseUrl, restoredSchema));
       const kysely = createPostgresKysely(schemaPool);
       try {
-        const checked = await validateDatabase(targetClient, restoredSchema, manifest, finalPath, options.verifyMigrations ?? (async () => {
-          const result = await runPostgresMigrations(kysely, { mode: "verify" });
-          return { version: result.appliedVersion, pending: result.pending.length };
-        }), migrationContext);
+        const checked = await validateDatabase(targetClient, restoredSchema, manifest, finalPath, options.verifyMigrations, migrationContext, assembledRoot, kysely);
         const included = new Set(records.keys());
         // Pool.query() may select a different connection per statement. Lease one
         // target connection so BEGIN/UPDATE/COMMIT (and rollback on any error)
@@ -1144,31 +1249,38 @@ export async function restorePostgresBackup(options: PostgresRestoreOptions): Pr
         const remapClient = await targetPool.connect();
         let missing: number;
         try {
-          missing = await remapDatabase(remapClient, restoredSchema, finalPath, manifest, included, assembledRoot, invalidHistories);
+          missing = await remapDatabase(remapClient, restoredSchema, finalPath, manifest, included, assembledRoot, invalidHistories,
+            agentBase ? path.join(agentBase, path.basename(finalPath), "uploads") : undefined, nativeClaims,
+            nativeClaims.length ? publishNativeAndDrill : undefined);
         } finally {
           remapClient.release();
         }
-        const report = buildPostgresRestoreReport(records, jsonlFiles, sessionEntries, invalidHistories.size, checked, target.database, restoredSchema, missing);
-        if (existsSync(resolved.target)) safeDirectory(resolved.target, "target root");
-        else { mkdirSync(resolved.target, { recursive: true, mode: 0o700 }); chmodSync(resolved.target, 0o700); targetCreated = true; }
-        if (existsSync(finalPath)) fail("restore target already exists");
-        renameSync(assembledRoot, finalPath);
+        const report = buildPostgresRestoreReport(records, jsonlFiles, sessionEntries, invalidHistories.size, checked, target.database, restoredSchema, missing, manifest.format, manifest.nativeSessionSources);
+        if (!drillRenamed) publishNativeAndDrill();
         published = true;
+        options.nativeRestoreCheckpoint?.("committed");
+        finalizeNativeRestore(nativeClaims, assembledRoot, finalPath!, options.nativeRestoreCheckpoint);
+        options.nativeRestoreCheckpoint?.("finalized");
         return { dryRun: false, finalPath, report };
       } finally { await kysely.destroy(); schemaPoolClosed = true; }
     }
     if (!options.verifyMigrations) fail("PostgreSQL restore requires a migration verification adapter");
-    const checked = await validateDatabase(targetClient, restoredSchema, manifest, finalPath, options.verifyMigrations, migrationContext);
-    const missing = await remapDatabase(targetClient, restoredSchema, finalPath, manifest, new Set(records.keys()), assembledRoot, invalidHistories);
-    const report = buildPostgresRestoreReport(records, jsonlFiles, sessionEntries, invalidHistories.size, checked, target.database, restoredSchema, missing);
-    if (existsSync(resolved.target)) safeDirectory(resolved.target, "target root");
-    else { mkdirSync(resolved.target, { recursive: true, mode: 0o700 }); chmodSync(resolved.target, 0o700); targetCreated = true; }
-    if (existsSync(finalPath)) fail("restore target already exists");
-    renameSync(assembledRoot, finalPath);
+    const checked = await validateDatabase(targetClient, restoredSchema, manifest, finalPath, options.verifyMigrations, migrationContext, assembledRoot);
+    const missing = await remapDatabase(targetClient, restoredSchema, finalPath, manifest, new Set(records.keys()), assembledRoot, invalidHistories,
+      agentBase ? path.join(agentBase, path.basename(finalPath), "uploads") : undefined, nativeClaims,
+      nativeClaims.length ? publishNativeAndDrill : undefined);
+    const report = buildPostgresRestoreReport(records, jsonlFiles, sessionEntries, invalidHistories.size, checked, target.database, restoredSchema, missing, manifest.format, manifest.nativeSessionSources);
+    if (!drillRenamed) publishNativeAndDrill();
     published = true;
+    options.nativeRestoreCheckpoint?.("committed");
+    finalizeNativeRestore(nativeClaims, assembledRoot, finalPath!, options.nativeRestoreCheckpoint);
+    options.nativeRestoreCheckpoint?.("finalized");
     return { dryRun: false, finalPath, report };
   } finally {
-    if (!published && finalPath) rmSync(finalPath, { recursive: true, force: true });
+    if (!published) {
+      rollbackNative?.();
+      if (drillRenamed && finalPath) rmSync(finalPath, { recursive: true, force: true });
+    }
     if (targetCreated && finalPath && existsSync(resolved.target) && readdirSync(resolved.target).length === 0) rmSync(resolved.target, { recursive: true, force: true });
     if (staging) rmSync(staging, { recursive: true, force: true });
     rmSync(manifestStaging, { recursive: true, force: true });

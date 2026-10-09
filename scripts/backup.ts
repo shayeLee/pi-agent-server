@@ -3,6 +3,8 @@
 // and does not install a timer or scheduler.
 
 import { realpathSync } from "node:fs";
+import { homedir } from "node:os";
+import { resolveNativeSessionSourceDir } from "../src/core/native-session-policy.js";
 import { fileURLToPath } from "node:url";
 import { createSqliteBackup } from "../src/backup/backup-core.js";
 import { createPostgresBackup, redactPgDiagnostic } from "../src/backup/postgres-backup-core.js";
@@ -86,13 +88,15 @@ async function main(): Promise<void> {
   const environment = process.env as StorageEnvironment;
   const paths = resolveBackupCliPaths(environment, cli.backupRoot, cli.ageRecipientFile, environment.AGENT_CWD!);
   const storage = resolveStorageConfig({}, paths.dbPath, environment);
+  const nativeSourceRoot = resolveNativeSessionSourceDir({ sourceDir: process.env.PI_SESSION_SOURCE_DIR, home: homedir(), env: process.env });
   if (storage.dialect === "postgres") {
     const dialect = environment.PI_STORAGE_DIALECT?.trim().toLowerCase();
     if (dialect !== "postgres" || !environment.PI_DATABASE_URL?.trim()) throw new Error("backup: PostgreSQL backup requires explicit PI_STORAGE_DIALECT=postgres and PI_DATABASE_URL");
     const result = await createPostgresBackup({
       storageDialect: dialect,
       databaseUrl: storage.databaseUrl,
-      paths: { dataDir: paths.dataDir, agentDir: paths.agentDir, authPath: paths.authPath, backupRoot: paths.backupRoot, ageRecipientFile: paths.ageRecipientFile },
+      paths: { dataDir: paths.dataDir, agentDir: paths.agentDir, authPath: paths.authPath, backupRoot: paths.backupRoot, ageRecipientFile: paths.ageRecipientFile, nativeSourceRoot,
+        ...(environment.PI_UPLOAD_STORAGE_ROOT ? { uploadRoot: environment.PI_UPLOAD_STORAGE_ROOT } : {}) },
       dryRun: cli.dryRun,
       stagingRoot: environment.PI_BACKUP_STAGING_ROOT,
     });
@@ -104,7 +108,9 @@ async function main(): Promise<void> {
     }
     return;
   }
-  const result = await createSqliteBackup({ paths, dryRun: cli.dryRun, stagingRoot: environment.PI_BACKUP_STAGING_ROOT });
+  const result = await createSqliteBackup({ paths: { ...paths, nativeSourceRoot,
+    ...(environment.PI_UPLOAD_STORAGE_ROOT ? { uploadRoot: environment.PI_UPLOAD_STORAGE_ROOT } : {}) },
+    dryRun: cli.dryRun, stagingRoot: environment.PI_BACKUP_STAGING_ROOT });
   if (result.dryRun) {
     console.log(`backup dry-run: no writes; ${result.files.length} whitelisted payload(s), ${result.missingSessionReferences.length} missing session reference(s)`);
   } else {

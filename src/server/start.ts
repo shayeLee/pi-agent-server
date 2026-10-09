@@ -5,6 +5,7 @@
 //   生产部署应通过 PI_AUTH_PATH 指向服务端独立凭证）；服务端默认模型 API key 可从环境变量注入（setRuntimeApiKey，不落盘）。
 
 import { homedir } from "node:os";
+import { readAppendSystemPromptFile } from "./system-prompt-file.js";
 import { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
 import { chmodSync, copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
@@ -35,6 +36,11 @@ import { createIdempotentStorageCloser } from "./storage-close.js";
 import { createOperationStatus, validateMigrationGate, validateDataMode, enforceDataModeGate, type DataMode } from "./ops-status.js";
 import { SessionConversationCoordinator } from "../application/session-conversation-coordinator.js";
 import { PiAgentSessionFactory, type PiResourceLoaderRequest } from "../agent/pi-agent-session-factory.js";
+import { NativeSessionPolicy, resolveNativeSessionSourceDir, splitSessionExcludeCwds } from "../core/native-session-policy.js";
+import { NativeSessionSource } from "../agent/native-session-source.js";
+import { NativePiConversationStorage } from "../agent/native-pi-conversation-storage.js";
+import { NativeSessionService } from "../application/native-session-service.js";
+import { KyselyNativeSessionIndex } from "../storage/kysely-native-session-index.js";
 import { PiJsonlConversationStorage } from "../agent/pi-jsonl-conversation-storage.js";
 import { runSqliteMigrations } from "../storage/migration-engine.js";
 import { initializeDatabaseVerifyOnly } from "../storage/bootstrap.js";
@@ -56,6 +62,8 @@ import type { Kysely } from "kysely";
 import { KyselySessionRepository } from "../storage/kysely-session-repository.js";
 import { KyselyProjectRepository } from "../storage/kysely-project-repository.js";
 import { KyselyIdempotencyRepository } from "../storage/kysely-idempotency-repository.js";
+import { KyselyUploadedFileRepository } from "../storage/kysely-uploaded-file-repository.js";
+import { UploadService } from "../application/upload-service.js";
 import { KyselyFileOperationRepository } from "../storage/kysely-file-operation-repository.js";
 import { PiModelRuntimeCatalog } from "../model-adapters/pi-model-runtime-catalog.js";
 import { PiModelRuntimeCredentials } from "../model-adapters/pi-model-runtime-credentials.js";
@@ -103,10 +111,20 @@ export type StartConfig = {
   databaseUrl?: string;
   /** Agent 工作目录（工具/仓库根）。 */
   cwd?: string;
-  /** 启用工具列表（未配置时默认只读工具 read/ls/find/grep；bash/edit/write 需显式开启）。 */
+  /** 完整工具白名单（包含扩展/插件工具）；undefined 允许全部，[] 禁用全部。 */
   tools?: string[];
-  /** 服务数据目录（JSONL 会话 + 服务专用 agentDir；凭证默认不落此目录）。 */
+  /** 服务数据目录（JSONL 会话 + 服务专用 agentDir；未配置时默认 $HOME/.pi/agent，凭证默认不落此目录）。 */
   dataDir?: string;
+  /** Unified CLI/new Web-private JSONL root, independent of dataDir/agentDir; tests must inject a temporary canonical root. */
+  nativeSessionSourceDir?: string;
+  sessionShareExcludeCwds?: readonly string[];
+  /** Explicit private server upload directory. No default path or cleanup is inferred. */
+  uploadStorageRoot?: string;
+  /** The corresponding absolute path visible to the Pi worker (deployment must verify the mount). */
+  uploadAgentRoot?: string;
+  /** Required when uploads are enabled; durable owner/global disk budgets (not file TTL). */
+  uploadOwnerQuotaBytes?: number;
+  uploadGlobalQuotaBytes?: number;
   /** 服务专用 agentDir（默认 dataDir/.pi-agent），不继承个人 ~/.pi/agent。 */
   agentDir?: string;
   /** 凭证文件路径（默认 $HOME/.pi/agent/auth.json，与 pi CLI 共用，OAuth 刷新会回写该文件；PI_AUTH_PATH 可覆盖）。 */
@@ -120,6 +138,10 @@ export type StartConfig = {
   defaultThinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
   /** 可选系统提示词覆盖；未设置时使用 Pi SDK 内置默认提示词。 */
   systemPrompt?: string;
+  /** 追加系统提示词原文（PI_APPEND_SYSTEM），不是文件路径；空白忽略，多行原文保留。位于能力片段之前。 */
+  appendSystemPrompt?: string;
+  /** 显式 UTF-8 文件（PI_APPEND_SYSTEM_FILE）；相对 process.cwd()，不展开 ~。启动读取一次，原文后、能力片段前。 */
+  appendSystemPromptFile?: string;
   /** 显式加载的受信外部插件（模块 specifier 或测试内联模块）；未配置时不加载任何插件。 */
   plugins?: readonly PluginSource[];
   /**
@@ -267,7 +289,7 @@ export type ResolvedServerPaths = {
 
 /**
  * 解析 startServer 的路径默认值。
- * 约定：agentDir/modelsPath 落在 dataDir 下（服务端独立配置），
+ * 约定：dataDir 默认个人 $HOME/.pi/agent；agentDir/modelsPath 落在 dataDir 下（服务端独立配置），
  * authPath 默认个人 $HOME/.pi/agent/auth.json（与 pi CLI 共用，OAuth 刷新回写）；
  * 显式传入的配置优先，其余均可用对应环境变量覆盖。
  */
@@ -307,6 +329,11 @@ export async function startServer(config: StartConfig) {
 
   // 显式扩展路径（纯函数，fail-fast：相对路径/主旧同时配置在创建任何资源前拒绝；未配置时为空）。
   const extensionPaths = resolveExtensionPaths(config.extensionPaths, config.providerExtensionPaths);
+  // 在任何异步初始化之前固定文件快照；不随项目 cwd 变化重新读取。
+  const appendFileText = readAppendSystemPromptFile(config.appendSystemPromptFile);
+  const appendSystemPromptText = [config.appendSystemPrompt, appendFileText]
+    .filter((text): text is string => Boolean(text?.trim()))
+    .join("\n\n");
 
   // 模型运行时：凭证默认读个人 ~/.pi/agent/auth.json（与 pi CLI 共用，OAuth token 临近过期时 SDK 会自动
   // 刷新并回写该文件，同文件带锁并发安全）；生产部署可用 PI_AUTH_PATH 指向服务端独立凭证。
@@ -418,6 +445,7 @@ export async function startServer(config: StartConfig) {
       systemPrompt?: string;
       systemPromptOverride?: () => string;
       appendSystemPrompt?: readonly string[];
+      appendSystemPromptText?: string;
     } = {},
   ): Promise<DefaultResourceLoader> =>
     loadSessionResourceLoader(modelRuntime, {
@@ -432,25 +460,34 @@ export async function startServer(config: StartConfig) {
       ...(extra.appendSystemPrompt !== undefined
         ? { appendSystemPrompt: extra.appendSystemPrompt }
         : {}),
+      ...(extra.appendSystemPromptText !== undefined
+        ? { appendSystemPromptText: extra.appendSystemPromptText }
+        : {}),
     });
 
-  // 工具清单 = 已启用能力 manifest 声明的工具并集 ∪ 内置工具白名单（未配置时默认只读工具集）。
-  const builtinGrant = toolPolicyFromAllowlist(config.tools).resolve();
-  const builtinTools = builtinGrant.kind === "allowlist" ? [...builtinGrant.tools] : [];
-  const allTools = [...new Set([...capabilitySnapshot.toolNames, ...builtinTools])];
-  const agentToolConfig =
-    allTools.length > 0 ? { tools: allTools } : { noTools: "all" as const };
+  // all 不向 SDK 传 tools/noTools 限制，保留 SDK 的会话工具激活/恢复语义。
+  // 显式白名单覆盖全部工具来源，不能通过能力 manifest 或扩展工具扩大范围。
+  const toolGrant = toolPolicyFromAllowlist(config.tools).resolve();
+  const agentToolConfig = toolGrant.kind === "all"
+    ? {}
+    : toolGrant.kind === "allowlist"
+      ? { tools: [...toolGrant.tools] }
+      : { noTools: "all" as const };
 
   // 会话专属 loader 首次创建即完成 provider 扩展加载 + provider 注册刷入共享 ModelRuntime，
   // 因此默认模型/凭证与插件 mode 校验必须排在它之后（否则显式接入的 provider 不可见）。
   // 这个 loader 只用于 startup 探针会话，探针 dispose 后不再交给任何真实会话
   // （同一 cwd 下扩展模块只求值一次，见 provider-extensions.ts）。
-  const probeResourceLoader = await createSessionResourceLoader({
-    // 未设置 PI_SYSTEM_PROMPT 时不覆盖，让 Pi SDK buildSystemPrompt() 生成其默认提示词。
+  // 仅未冻结路径使用：默认/整体覆盖 → PI_APPEND_SYSTEM 原文 → 文件快照原文 → 能力片段。
+  // 原文不进入 SDK 的文件路径解析；trim 仅判空，不改变有效文本。
+  const unfrozenPromptOptions = {
     ...(config.systemPrompt ? { systemPrompt: config.systemPrompt } : {}),
-    // 能力提示词片段（inline 文本或文件路径）追加到系统提示词（Pi 原生支持）。
+    ...(appendSystemPromptText
+      ? { appendSystemPromptText }
+      : {}),
     appendSystemPrompt: collectPromptFragmentSources(capabilitySnapshot.promptFragments),
-  });
+  };
+  const probeResourceLoader = await createSessionResourceLoader(unfrozenPromptOptions);
 
   // provider 扩展注册完成后才解析默认模型与插件 mode：显式接入的 provider 对二者可见。
   const configuredDefaultModel = config.defaultModel
@@ -511,10 +548,7 @@ export async function startServer(config: StartConfig) {
       if (projectCwd === cwd) return defaultSystemPrompt;
       // 探针 loader 同样独立：创建后立即 dispose，只影响该次探针自己的 runtime；
       // 扩展加载 cwd 仍是服务 cwd（模块缓存不因项目 cwd 交替而清空）。
-      const projectLoader = await createSessionResourceLoader({
-        ...(config.systemPrompt ? { systemPrompt: config.systemPrompt } : {}),
-        appendSystemPrompt: collectPromptFragmentSources(capabilitySnapshot.promptFragments),
-      });
+      const projectLoader = await createSessionResourceLoader(unfrozenPromptOptions);
       const { session } = await createAgentSession({
         sessionManager: SessionManager.inMemory(projectCwd),
         modelRuntime,
@@ -610,15 +644,22 @@ export async function startServer(config: StartConfig) {
       storage.dialect === "postgres" ? "postgres" : "sqlite",
     );
     const conversationStorage = new ConversationStorageRegistry();
-    const piStorage = new PiJsonlConversationStorage(dataDir);
+    const nativePolicy = new NativeSessionPolicy(config.sessionShareExcludeCwds ?? splitSessionExcludeCwds(process.env.PI_SESSION_SHARE_EXCLUDE_CWDS));
+    const nativeSource = new NativeSessionSource(resolveNativeSessionSourceDir({
+      sourceDir: config.nativeSessionSourceDir ?? process.env.PI_SESSION_SOURCE_DIR, home: homedir(), env: process.env,
+    }), nativePolicy);
+    const nativeIndex = new KyselyNativeSessionIndex(kysely, storage.dialect, { defaultProjectCwd: cwd });
+    const piStorage = new PiJsonlConversationStorage(dataDir, { source: nativeSource, index: nativeIndex });
     conversationStorage.register(piStorage);
+    const nativeSessions = new NativeSessionService(nativeSource, nativeIndex, randomUUID);
+    conversationStorage.register(new NativePiConversationStorage(nativeSource, nativeIndex));
     const agentFactories = new DefaultAgentSessionFactoryRegistry();
     /**
      * 每个 adapter（新会话或恢复）都构造**独立**的会话专属 loader：provider 扩展与 provider
      * hook 在恢复出的会话上同样可用，但两次会话绝不共享 ExtensionRuntime（否则一个 session 的
      * dispose 会 invalidate 另一个）。同一 cwd 下扩展模块已缓存，不会重复安装扩展模块级副作用。
      *
-     * 有冻结提示词（会话创建时快照）时用字面量 override：既不重新解析，也绝不追加当前能力片段；
+     * 有冻结提示词（会话创建时快照）时用字面量 override：既不重新解析，也不追加当前环境原文/能力片段；
      * 未冻结时才重新解析（与 startup 探针同一份 Pi 默认提示词语义）。两者都用同一个稳定扩展
      * 加载 cwd，因此同一扩展模块整进程只求值一次、工厂函数每会话重跑一次。
      */
@@ -626,10 +667,7 @@ export async function startServer(config: StartConfig) {
       const frozen = request.systemPrompt;
       const loader = await createSessionResourceLoader({
         ...(frozen === null
-          ? {
-              ...(config.systemPrompt ? { systemPrompt: config.systemPrompt } : {}),
-              appendSystemPrompt: collectPromptFragmentSources(capabilitySnapshot.promptFragments),
-            }
+          ? unfrozenPromptOptions
           : { systemPromptOverride: () => frozen }),
       });
       return { loader, failbackLifecycleSource: getProviderExtensionEventBus(loader) };
@@ -641,8 +679,13 @@ export async function startServer(config: StartConfig) {
       defaultThinkingLevel,
       customTools: pluginTools,
       agentToolConfig,
+      unified: { source: nativeSource, index: nativeIndex },
     });
     agentFactories.register(piFactory);
+    agentFactories.register(new PiAgentSessionFactory({
+      modelRuntime, createResourceLoader, defaultModel: configuredDefaultModel, defaultThinkingLevel,
+      customTools: pluginTools, agentToolConfig, native: { source: nativeSource, index: nativeIndex },
+    }));
     const cleanupPlan = (input: Parameters<PiJsonlConversationStorage["planCleanup"]>[0]) =>
       conversationStorage.require(input.conversation).planCleanup(input);
     const repositoryOptions = {
@@ -651,6 +694,8 @@ export async function startServer(config: StartConfig) {
     } as const;
     const projects = new KyselyProjectRepository(kysely, constraintMapper, {
       ...repositoryOptions,
+      enforceCanonicalCwd: true,
+      defaultProjectCwd: cwd,
       dialect: storage.dialect,
     });
     await projects.ensureDefaultProject({
@@ -664,6 +709,22 @@ export async function startServer(config: StartConfig) {
     // 对当前数据库中仍为 NULL 的系统提示词做防御性补齐；正常新会话创建时已冻结该值。
     await sessions.backfillSystemPrompt(defaultSystemPrompt);
     const idempotencyRepo = new KyselyIdempotencyRepository(kysely);
+    const uploadStorageRoot = config.uploadStorageRoot ?? process.env.PI_UPLOAD_STORAGE_ROOT;
+    const uploadAgentRoot = config.uploadAgentRoot ?? process.env.PI_UPLOAD_AGENT_ROOT;
+    if ((uploadStorageRoot && !uploadAgentRoot) || (!uploadStorageRoot && uploadAgentRoot)) {
+      throw new Error("file uploads require both PI_UPLOAD_STORAGE_ROOT and PI_UPLOAD_AGENT_ROOT");
+    }
+    if (uploadStorageRoot && uploadAgentRoot && (!path.isAbsolute(uploadStorageRoot) || !path.isAbsolute(uploadAgentRoot))) {
+      throw new Error("file upload roots must both be absolute paths");
+    }
+    const quota = {
+      ownerMaxBytes: config.uploadOwnerQuotaBytes ?? Number(process.env.PI_UPLOAD_OWNER_QUOTA_BYTES),
+      globalMaxBytes: config.uploadGlobalQuotaBytes ?? Number(process.env.PI_UPLOAD_GLOBAL_QUOTA_BYTES),
+    };
+    const uploads = uploadStorageRoot && uploadAgentRoot
+      ? new UploadService(new KyselyUploadedFileRepository(kysely, storage.dialect), projects,
+          { storageRoot: uploadStorageRoot, agentVisibleRoot: uploadAgentRoot }, quota, sessions, nativeSessions)
+      : undefined;
     const sessionConversationCoordinator = new SessionConversationCoordinator({
       sessions,
       projects,
@@ -690,8 +751,10 @@ export async function startServer(config: StartConfig) {
     ipAccess,
     // 未实例化会话的只读导出由通用 registry 分派到 Pi JSONL storage。
     conversationStorage,
+    nativeSessions,
     createAdapter: (sessionId) => sessionConversationCoordinator.createAdapter(sessionId),
     idempotencyRepo,
+    uploads,
     serverEpoch: randomUUID(),
     systemPrompt: defaultSystemPrompt,
     systemPromptResolver,
@@ -706,6 +769,7 @@ export async function startServer(config: StartConfig) {
     },
   });
 
+  app.addHook("onClose", async () => { await nativeSessions.close(); });
   if (!sessionService) throw new Error("插件宿主初始化失败：SessionService 不可用");
   if (!app) throw new Error("插件宿主初始化失败：HTTP 应用不可用");
   // 清理器必须在 registerPlugins **之前**建立：registerPlugins 抛错时 app 已存在，

@@ -15,17 +15,17 @@ afterEach(async () => {
 });
 
 describe("WP4A file_operations outbox（SQLite）", () => {
-  it("单基线 apply 建出完整 schema（含 outbox），既有业务数据保留，幂等重跑无 pending", async () => {
+  it("v0+v1 apply 建出完整 schema（含 outbox），既有业务数据保留，幂等重跑无 pending", async () => {
     // 用独立内存连接先应用发布的单基线 v0（= 完整 schema），再幂等重跑当前 registry。
     const raw = new DatabaseSync(":memory:");
     try {
       await runSqliteMigrationsForTest(raw, { migrations: [migrationDefinitions[0]!] });
       raw.prepare("INSERT INTO projects (id, name, cwd, owner_key, created_at) VALUES (?, ?, ?, ?, ?)").run("kept", "P", "/p", "owner", 1);
       const result = await runSqliteMigrations(raw);
-      expect(result.appliedVersion).toBe(0);
+      expect(result.appliedVersion).toBe(2);
       expect(result.pending).toEqual([]);
       expect(raw.prepare("SELECT name FROM projects WHERE id = 'kept'").get()).toEqual({ name: "P" });
-      expect(raw.prepare("SELECT version FROM schema_migrations ORDER BY version").all()).toEqual([{ version: 0 }]);
+      expect(raw.prepare("SELECT version FROM schema_migrations ORDER BY version").all()).toEqual([{ version: 0 }, { version: 1 }, { version: 2 }]);
       expect(raw.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'file_operations'").get()).toEqual({ name: "file_operations" });
     } finally {
       raw.close();

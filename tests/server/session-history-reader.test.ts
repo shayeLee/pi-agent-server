@@ -9,7 +9,7 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import { readFileSync, statSync, writeFileSync } from "node:fs";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
-import { readPiJsonlExport } from "../../src/agent/pi-jsonl-conversation-storage.js";
+import { openPiRuntimeSessionFile, readPiJsonlExport } from "../../src/agent/pi-jsonl-conversation-storage.js";
 import { PiAgentAdapter, type AgentSessionLike } from "../../src/agent/pi-agent-adapter.js";
 import {
   JPEG_2X2_BASE64,
@@ -30,7 +30,7 @@ function makeFixtureSession(dir: string): { file: string; manager: SessionManage
   manager.appendMessage({ role: "user", content: [{ type: "text", text: "你好" }] } as unknown as AppendArg);
   manager.appendMessage({
     role: "assistant",
-    content: [{ type: "text", text: "回复" }, { type: "thinking", text: "内部思考" }],
+    content: [{ type: "text", text: "回复" }, { type: "thinking", thinking: "内部思考 原文" }],
   } as unknown as AppendArg);
   manager.appendMessage({ role: "toolResult", content: [{ type: "text", text: "工具结果" }] } as unknown as AppendArg);
   const file = manager.getSessionFile();
@@ -45,21 +45,36 @@ function fingerprint(file: string): string {
 }
 
 describe("PiJsonlConversationStorage（只读导出解析）", () => {
-  it("只读解析真实 JSONL，投影与 PiAgentAdapter.exportSession 完全一致（role/text，忽略 thinking/toolResult）", async () => {
+  it("只读解析真实 JSONL：assistant 原文 thinking 在 timeline 恢复，legacy messages 仍仅含文本", async () => {
     const dir = makeSessionDir();
     const { file, manager } = makeFixtureSession(dir);
     const exported = (await readPiJsonlExport(file)) as { messages: Array<{ role: string; text: string; sourceId: string }>; timeline: unknown[] };
 
-    // 只保留 user/assistant 并提取 text 块；thinking 与 toolResult 一律忽略。
+    // SDK 写入的 AssistantMessage 保存 thinking 原文字段；只读导出不从 SSE 或摘要重建。
+    expect(readFileSync(file, "utf8")).toContain('"thinking":"内部思考 原文"');
     expect(exported.messages).toEqual([
       expect.objectContaining({ role: "user", text: "你好", sourceId: expect.any(String) }),
       expect.objectContaining({ role: "assistant", text: "回复", sourceId: expect.any(String) }),
     ]);
-    expect((exported.timeline as Array<{ messageId: string }>).map((item) => item.messageId)).toEqual((exported.messages as Array<{ sourceId: string }>).map((message) => message.sourceId));
+    const persistedTimeline = exported.timeline as Array<Record<string, unknown>>;
+    expect(persistedTimeline.filter((item) => item.type === "thinking")).toEqual([
+      expect.objectContaining({ type: "thinking", text: "内部思考 原文", messageId: expect.any(String), turnId: expect.any(String) }),
+    ]);
+    expect(persistedTimeline.filter((item) => item.type !== "thinking").map((item) => item.messageId)).toEqual((exported.messages as Array<{ sourceId: string }>).map((message) => message.sourceId));
 
-    // A live fake with no SessionManager has no JSONL branch evidence, so it retains the
-    // legacy fallback. Persisted Pi exports above carry the authoritative sourceId.
-    const live = new PiAgentAdapter({ messages: manager.buildSessionContext().messages as unknown[] } as unknown as AgentSessionLike);
+    // A resumed SDK manager reads the same persisted branch through the live adapter path.
+    const resumed = openPiRuntimeSessionFile(file);
+    const resumedAdapter = new PiAgentAdapter({
+      messages: resumed.buildSessionContext().messages as unknown[],
+      sessionManager: resumed,
+      subscribe: () => () => {},
+    } as unknown as AgentSessionLike);
+    expect(await resumedAdapter.exportSession()).toEqual({ ...exported,
+      usageSnapshot: { lastResponse: null, sessionTotals: null, context: null, execution: resumedAdapter.getExecutionSnapshot() } });
+
+    // A live fake without SessionManager has no selected-branch provenance, so this checks only
+    // the legacy text projection; it does not imply that the supplied messages lack thinking.
+    const live = new PiAgentAdapter({ subscribe: () => () => {}, messages: manager.buildSessionContext().messages as unknown[] } as unknown as AgentSessionLike);
     expect((await live.exportSession() as { messages: unknown }).messages).toEqual([
       { role: "user", text: "你好" }, { role: "assistant", text: "回复" },
     ]);
@@ -95,6 +110,7 @@ describe("PiJsonlConversationStorage（只读导出解析）", () => {
 
     // 与活会话导出（同一投影函数）逐字节一致
     const live = new PiAgentAdapter({
+      subscribe: () => () => {},
       messages: [
         {
           role: "user",
@@ -173,7 +189,7 @@ describe("PiJsonlConversationStorage（只读导出解析）", () => {
     writeFileSync(file, "");
     const before = fingerprint(file);
     const exported = await readPiJsonlExport(file);
-    expect(exported).toEqual({ messages: [], timeline: [] });
+    expect(exported).toEqual({ messages: [], timeline: [], usageSnapshot: { execution: { scope: "allEntries", coverage: "complete", totalLoops: 0, totalTurns: 0, recordedLoops: 0, recordedTurns: 0 } } });
     expect(fingerprint(file)).toBe(before);
   });
 

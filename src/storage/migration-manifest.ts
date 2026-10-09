@@ -1,21 +1,15 @@
-// Immutable, descriptor-driven migration registry (new baseline). The registry
-// is now a SINGLE immutable migration at version 0 that builds the complete
-// current schema from the full schemaManifest (projects / sessions /
-// idempotency / file_operations). Published migrations contain data, not
-// executable up callbacks: the exact canonical operations are rendered once
-// from the immutable manifest and are the only operations the runner executes.
-//
-// The v0/v1 historical registry was removed with the legacy RC world (the
-// controlled cutover tool is gone). Before first deployment, RC schema changes
-// replace this single canonical descriptor and its golden checksum directly;
-// after publication the descriptor is immutable. Legacy ledgers/databases and
-// packages carrying a different checksum fail fast and are never adopted.
+// Immutable, descriptor-driven migration registry. v0 is the released baseline and
+// is frozen; v1 contains only additive uploaded-file and idempotency-fingerprint changes.
+// Published migrations contain data, not executable up callbacks: the exact canonical
+// operations are checksummed and are the only operations the runner executes.
 
 import { createHash } from "node:crypto";
 import type { Kysely } from "kysely";
 import { renderMigrationOperations, type MigrationOperation } from "./migration-renderer.js";
 import {
   LOGICAL_COLUMN_TYPE_KEYS,
+  initialSchemaManifest,
+  uploadedFilesSchemaManifest,
   schemaManifest,
   type LogicalColumnType,
   type SchemaManifest,
@@ -60,11 +54,8 @@ export interface MigrationLedgerSnapshot {
 
 /**
  * Select the immutable migration prefix represented by an authenticated
- * ledger.  A restore must verify the historical prefix, not the mutable
- * current head.  With the single-baseline registry this is exactly the v0
- * baseline; a missing ledger and legacy multi-row ledgers from the removed
- * v0/v1 registry are rejected.  This function performs no DDL and never
- * applies a migration.
+ * ledger. A restore verifies the recorded historical prefix, not just the
+ * current head. This function performs no DDL and never applies a migration.
  */
 export interface MigrationPrefixOptions {
   /** Only test/fixture verifiers may bypass the registry checksum; real runners remain strict. */
@@ -165,21 +156,70 @@ export const MIGRATION_BASELINE_GOLDEN_DDL_SNAPSHOT = Object.freeze({
   ]),
 });
 export const MIGRATION_BASELINE_GOLDEN_CHECKSUM = "8aa7541155a6d773b5eaf7d5346255f316812e7e862e13b8ef742a2cc56ac538";
+export const MIGRATION_V1_GOLDEN_DDL_SNAPSHOT = Object.freeze({
+  SQLite: Object.freeze([
+    'ALTER TABLE "idempotency" ADD COLUMN "fingerprint" TEXT',
+    'CREATE TABLE "uploaded_files" ("id" TEXT NOT NULL PRIMARY KEY, "owner_key" TEXT NOT NULL, "project_id" TEXT NOT NULL, "upload_key" TEXT NOT NULL, "name" TEXT NOT NULL, "media_type" TEXT NOT NULL, "size" INTEGER NOT NULL, "checksum" TEXT NOT NULL, "storage_key" TEXT NOT NULL, "agent_path" TEXT NOT NULL, "status" TEXT NOT NULL, "created_at" INTEGER NOT NULL, "session_id" TEXT)',
+    'CREATE UNIQUE INDEX "idx_uploaded_files_upload_key" ON "uploaded_files" ("owner_key", "project_id", "upload_key")',
+  ]),
+  PostgreSQL: Object.freeze([
+    'ALTER TABLE "idempotency" ADD COLUMN "fingerprint" TEXT',
+    'CREATE TABLE "uploaded_files" ("id" UUID NOT NULL PRIMARY KEY, "owner_key" TEXT NOT NULL, "project_id" UUID NOT NULL, "upload_key" TEXT NOT NULL, "name" TEXT NOT NULL, "media_type" TEXT NOT NULL, "size" BIGINT NOT NULL, "checksum" TEXT NOT NULL, "storage_key" TEXT NOT NULL, "agent_path" TEXT NOT NULL, "status" TEXT NOT NULL, "created_at" BIGINT NOT NULL, "session_id" UUID)',
+    'CREATE UNIQUE INDEX "idx_uploaded_files_upload_key" ON "uploaded_files" ("owner_key", "project_id", "upload_key")',
+  ]),
+});
+export const MIGRATION_V1_GOLDEN_CHECKSUM = "99a8327931d76afb24e414cf20b88237c0bb9319817dfd3e20a5cf8bc2748ce2";
+export const MIGRATION_V2_GOLDEN_CHECKSUM = "ab9e119c4632563ca103c5876e64e2ed9e439d3840a6870ef87dbd8a18509cf0";
 
 export const initialSchemaMigration: MigrationDefinition = deepFreeze({
   version: 0,
   name: "initial-schema",
-  manifest: schemaManifest,
+  manifest: initialSchemaManifest,
   physicalTypeMaps: BASELINE_PHYSICAL_TYPE_MAPS,
   operations: {
-    SQLite: renderMigrationOperations(schemaManifest, "SQLite", SQLITE_PHYSICAL_TYPES),
-    PostgreSQL: renderMigrationOperations(schemaManifest, "PostgreSQL", POSTGRES_PHYSICAL_TYPES),
+    SQLite: renderMigrationOperations(initialSchemaManifest, "SQLite", SQLITE_PHYSICAL_TYPES),
+    PostgreSQL: renderMigrationOperations(initialSchemaManifest, "PostgreSQL", POSTGRES_PHYSICAL_TYPES),
   },
+  dataTransform: { kind: "none", format: "pi-agent-server.data-transform.v1" },
+});
+
+const uploadedFilesMigration: MigrationDefinition = deepFreeze({
+  version: 1,
+  name: "uploaded-files-and-idempotency-fingerprint",
+  manifest: uploadedFilesSchemaManifest,
+  physicalTypeMaps: BASELINE_PHYSICAL_TYPE_MAPS,
+  operations: {
+    SQLite: [
+      { kind: "ddl", dialect: "SQLite", sql: 'ALTER TABLE "idempotency" ADD COLUMN "fingerprint" TEXT' },
+      { kind: "ddl", dialect: "SQLite", sql: 'CREATE TABLE "uploaded_files" ("id" TEXT NOT NULL PRIMARY KEY, "owner_key" TEXT NOT NULL, "project_id" TEXT NOT NULL, "upload_key" TEXT NOT NULL, "name" TEXT NOT NULL, "media_type" TEXT NOT NULL, "size" INTEGER NOT NULL, "checksum" TEXT NOT NULL, "storage_key" TEXT NOT NULL, "agent_path" TEXT NOT NULL, "status" TEXT NOT NULL, "created_at" INTEGER NOT NULL, "session_id" TEXT)' },
+      { kind: "ddl", dialect: "SQLite", sql: 'CREATE UNIQUE INDEX "idx_uploaded_files_upload_key" ON "uploaded_files" ("owner_key", "project_id", "upload_key")' },
+    ],
+    PostgreSQL: [
+      { kind: "ddl", dialect: "PostgreSQL", sql: 'ALTER TABLE "idempotency" ADD COLUMN "fingerprint" TEXT' },
+      { kind: "ddl", dialect: "PostgreSQL", sql: 'CREATE TABLE "uploaded_files" ("id" UUID NOT NULL PRIMARY KEY, "owner_key" TEXT NOT NULL, "project_id" UUID NOT NULL, "upload_key" TEXT NOT NULL, "name" TEXT NOT NULL, "media_type" TEXT NOT NULL, "size" BIGINT NOT NULL, "checksum" TEXT NOT NULL, "storage_key" TEXT NOT NULL, "agent_path" TEXT NOT NULL, "status" TEXT NOT NULL, "created_at" BIGINT NOT NULL, "session_id" UUID)' },
+      { kind: "ddl", dialect: "PostgreSQL", sql: 'CREATE UNIQUE INDEX "idx_uploaded_files_upload_key" ON "uploaded_files" ("owner_key", "project_id", "upload_key")' },
+    ],
+  },
+  dataTransform: { kind: "none", format: "pi-agent-server.data-transform.v1" },
+});
+
+const nativeSessionsMigration: MigrationDefinition = deepFreeze({
+  version: 2,
+  name: "native-shared-sessions",
+  manifest: schemaManifest,
+  physicalTypeMaps: BASELINE_PHYSICAL_TYPE_MAPS,
+  operations: Object.fromEntries((["SQLite", "PostgreSQL"] as const).map(dialect => [dialect, [
+    { kind: "ddl", dialect, sql: 'ALTER TABLE "sessions" ADD COLUMN "visibility" TEXT NOT NULL DEFAULT \'private\'' },
+    { kind: "ddl", dialect, sql: 'ALTER TABLE "sessions" ADD COLUMN "origin" TEXT NOT NULL DEFAULT \'managed\'' },
+    ...renderMigrationOperations({ tables: [schemaManifest.tables[5]] }, dialect, BASELINE_PHYSICAL_TYPE_MAPS[dialect]),
+  ]])) as unknown as MigrationDefinition["operations"],
   dataTransform: { kind: "none", format: "pi-agent-server.data-transform.v1" },
 });
 
 export const migrationDefinitions: readonly MigrationDefinition[] = deepFreeze([
   initialSchemaMigration,
+  uploadedFilesMigration,
+  nativeSessionsMigration,
 ]);
 export const migrationHeadManifest: SchemaManifest = schemaManifest;
 
@@ -192,7 +232,7 @@ function validateCanonicalBaseline(migration: MigrationDefinition): void {
   if (
     migration.version !== 0 ||
     migration.name !== initialSchemaMigration.name ||
-    migration.manifest !== schemaManifest ||
+    migration.manifest !== initialSchemaManifest ||
     migration.physicalTypeMaps !== initialSchemaMigration.physicalTypeMaps ||
     !operationsMatch ||
     !descriptorMatch ||
@@ -223,7 +263,17 @@ export function validateMigrationDefinitions(migrations: readonly MigrationDefin
     if (!migration.dataTransform || typeof migration.dataTransform.kind !== "string") throw new Error(`migration manifest: version ${migration.version} has no explicit data-transform descriptor`);
   }
   validateCanonicalBaseline(migrations[0]!);
-  if (migrations === migrationDefinitions && migrations.at(-1)!.manifest !== migrationHeadManifest) throw new Error("migration manifest: registry head does not match schemaManifest");
+  if (migrations === migrationDefinitions) {
+    const v1 = migrations[1];
+    if (!v1 || v1.version !== 1 || v1.name !== "uploaded-files-and-idempotency-fingerprint" || v1.manifest !== uploadedFilesSchemaManifest ||
+        (Object.keys(MIGRATION_V1_GOLDEN_DDL_SNAPSHOT) as MigrationDialect[]).some((dialect) =>
+          stableSerialize(v1.operations[dialect].map((operation) => operation.sql)) !== stableSerialize(MIGRATION_V1_GOLDEN_DDL_SNAPSHOT[dialect]),
+        ) || migrationChecksum(v1) !== MIGRATION_V1_GOLDEN_CHECKSUM) {
+      throw new Error("migration manifest: registry version 1 does not match its immutable descriptor, golden DDL, and checksum");
+    }
+    if (migrationChecksum(migrations[2]!) !== MIGRATION_V2_GOLDEN_CHECKSUM) throw new Error("migration manifest: registry version 2 checksum changed");
+    if (migrations.at(-1)!.manifest !== migrationHeadManifest) throw new Error("migration manifest: registry head does not match schemaManifest");
+  }
 }
 
 validateMigrationDefinitions();
@@ -245,5 +295,5 @@ function deepFreeze<T>(value: T): T {
   return value;
 }
 
-export { schemaManifest, renderMigrationOperations };
+export { initialSchemaManifest, schemaManifest, renderMigrationOperations };
 export type { MigrationOperation } from "./migration-renderer.js";

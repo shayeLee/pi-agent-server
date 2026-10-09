@@ -4,8 +4,9 @@ import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempSync, readFileSync, 
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { bindReferencesToPayload, createSqliteBackup, type AgeAdapter } from "../../src/backup/backup-core.js";
-import { createCanonicalSqliteBaseline, insertCanonicalSession } from "./sqlite-fixture.js";
+import { bindReferencesToPayload, createSqliteBackup, verifyPublishedBackup, type AgeAdapter } from "../../src/backup/backup-core.js";
+import { createCanonicalSqliteHead, insertCanonicalSession } from "./sqlite-fixture.js";
+import { migrationChecksum, migrationDefinitions } from "../../src/storage/migration-manifest.js";
 import { DEFAULT_PROJECT_ID } from "../../src/application/ports/project-store-port.js";
 
 const cleanups: string[] = [];
@@ -21,7 +22,7 @@ function fixture(): { root: string; dataDir: string; dbPath: string; backupRoot:
   mkdirSync(path.join(dataDir, ".pi-agent"), { recursive: true, mode: 0o700 });
   const dbPath = path.join(dataDir, "pi-agent-server.db");
   const db = new DatabaseSync(dbPath);
-  createCanonicalSqliteBaseline(db);
+  createCanonicalSqliteHead(db);
   db.close();
   const recipient = path.join(root, "recipient.txt");
   writeFileSync(recipient, "# test\nage1testrecipient\n", { mode: 0o600 });
@@ -75,9 +76,18 @@ describe("SQLite online backup core (WP3A)", () => {
     const manifest = JSON.parse(age.decrypt(readFileSync(path.join(result.finalPath!, "manifest.json.age"))).toString()) as {
       files: Array<{ path: string; sha256: string }>;
       credentials: { included: boolean };
+      migrationLedger: { appliedCount: number; appliedVersion: number; checksums: string[] };
       missingSessionReferences: unknown[];
     };
     expect(manifest.credentials.included).toBe(false);
+    expect(manifest.migrationLedger).toEqual({
+      present: true,
+      appliedCount: migrationDefinitions.length,
+      appliedVersion: migrationDefinitions.at(-1)!.version,
+      checksums: migrationDefinitions.map((migration) => migrationChecksum(migration)),
+      rows: migrationDefinitions.map((migration) => ({ version: migration.version, name: migration.name, checksum: migrationChecksum(migration), applied_at: 1 })),
+      pending: 0,
+    });
     const sessionPayload = age.decrypt(readFileSync(path.join(result.finalPath!, "payload/sessions/s1/history.jsonl.age")));
     expect(manifest.files.find((file) => file.path.endsWith("history.jsonl.age"))?.sha256).toBe(createHash("sha256").update(sessionPayload).digest("hex"));
     expect(manifest.files.map((file) => file.path)).toEqual([
@@ -96,20 +106,34 @@ describe("SQLite online backup core (WP3A)", () => {
     expect(`${encryptedPayloads} ${encryptedManifest}`).not.toContain("payload-secret");
   });
 
-  it("fails closed before encryption or publication for a missing, multi-row, or checksum-mismatched source ledger (including dry-run)", async () => {
+  it("fails closed before encryption or publication for a missing, unknown, or checksum-mismatched source ledger (including dry-run)", async () => {
     for (const mutate of [
       (db: DatabaseSync) => db.exec("DROP TABLE schema_migrations"),
-      (db: DatabaseSync) => db.prepare("INSERT INTO schema_migrations VALUES (1, 'legacy-extra', ?, 2)").run("b".repeat(64)),
+      (db: DatabaseSync) => db.prepare("INSERT INTO schema_migrations VALUES (3, 'unknown-future', ?, 3)").run("b".repeat(64)),
       (db: DatabaseSync) => db.prepare("UPDATE schema_migrations SET checksum = ? WHERE version = 0").run("0".repeat(64)),
+      (db: DatabaseSync) => db.prepare("UPDATE schema_migrations SET checksum = ? WHERE version = 1").run("0".repeat(64)),
     ]) {
       const f = fixture();
       const db = new DatabaseSync(f.dbPath);
       try { mutate(db); } finally { db.close(); }
       for (const dryRun of [false, true]) {
-        await expect(createSqliteBackup({ paths: makePaths(f), dryRun, age: fakeAge() })).rejects.toThrow(/migration ledger|single-baseline/);
+        await expect(createSqliteBackup({ paths: makePaths(f), dryRun, age: fakeAge() })).rejects.toThrow(/migration ledger|migration history|canonical migration head/);
       }
       expect(existsSync(f.backupRoot)).toBe(false);
     }
+  });
+
+  it("rejects malformed uploaded_files metadata before packaging attachment bytes", async () => {
+    const f = fixture();
+    const db = new DatabaseSync(f.dbPath);
+    db.prepare("INSERT INTO uploaded_files (id, owner_key, project_id, upload_key, name, media_type, size, checksum, storage_key, agent_path, status, created_at, session_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .run("upload-1", "owner", DEFAULT_PROJECT_ID, "upload-key", "document.pdf", "application/pdf", 1, "a".repeat(64), "private/upload-1", "/agent/document.pdf", "ready", 1, null);
+    db.close();
+    let encryptCalls = 0;
+    const age = { ...fakeAge(), encrypt(input: Buffer) { encryptCalls++; return fakeAge().encrypt(input, f.recipient); } };
+    await expect(createSqliteBackup({ paths: makePaths(f), age })).rejects.toThrow(/invalid uploaded_files metadata/);
+    expect(encryptCalls).toBe(0);
+    expect(existsSync(f.backupRoot)).toBe(false);
   });
 
   it("fails closed before encryption or publication when the canonical ledger is correct but the physical schema is missing a canonical table/column/index (including dry-run)", async () => {
@@ -191,6 +215,104 @@ describe("SQLite online backup core (WP3A)", () => {
     expect(dry.dryRun).toBe(true);
     expect(dry.finalPath).toBeNull();
     expect(dry.missingSessionReferences).toHaveLength(1);
+  });
+
+  it("uses the frozen SQLite snapshot: a later uploaded row and original are excluded", async () => {
+    const f = fixture();
+    const uploadDir = path.join(f.root, "uploads");
+    mkdirSync(uploadDir, { mode: 0o700 });
+    const uploadRoot = realpathSync(uploadDir);
+    const key = "00000000-0000-4000-8000-000000000041";
+    const bytes = Buffer.from("arrived after snapshot");
+    let injected = false;
+    const age: AgeAdapter = {
+      ...fakeAge(),
+      encrypt(input) {
+        if (!injected) {
+          injected = true; // first encryption starts after VACUUM INTO and snapshot row inspection
+          writeFileSync(path.join(uploadRoot, key), bytes, { mode: 0o600 });
+          const writer = new DatabaseSync(f.dbPath);
+          try {
+            writer.prepare("INSERT INTO uploaded_files (id,owner_key,project_id,upload_key,name,media_type,size,checksum,storage_key,agent_path,status,created_at,session_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)")
+              .run(key, "owner", DEFAULT_PROJECT_ID, "late-key", "late.txt", "text/plain", bytes.length,
+                createHash("sha256").update(bytes).digest("hex"), key, `/source/uploads/${key}`, "ready", 1, null);
+          } finally { writer.close(); }
+        }
+        return fakeAge().encrypt(input, f.recipient);
+      },
+    };
+    const result = await createSqliteBackup({ paths: { ...makePaths(f), uploadRoot }, age });
+    expect(injected).toBe(true);
+    expect(result.manifest?.format).toBe("pi-agent-server.backup-manifest.v1");
+    expect(result.files.some((file) => file.kind === "attachment")).toBe(false);
+    const snapshot = fakeAge().decrypt(readFileSync(path.join(result.finalPath!, "payload/database.sqlite.age")));
+    const frozen = path.join(f.root, "frozen-upload.db");
+    writeFileSync(frozen, snapshot, { mode: 0o600 });
+    const reader = new DatabaseSync(frozen, { readOnly: true });
+    try { expect(reader.prepare("SELECT count(*) AS n FROM uploaded_files").get()).toEqual({ n: 0 }); }
+    finally { reader.close(); }
+  });
+
+  it("refuses a missing or changed original without publishing COMPLETE", async () => {
+    for (const altered of [false, true]) {
+      const f = fixture();
+      const uploadDir = path.join(f.root, "originals");
+      mkdirSync(uploadDir, { mode: 0o700 });
+      const uploadRoot = realpathSync(uploadDir);
+      const key = "00000000-0000-4000-8000-000000000042";
+      const original = Buffer.from("original");
+      if (altered) writeFileSync(path.join(uploadRoot, key), Buffer.from("tampered"), { mode: 0o600 });
+      const db = new DatabaseSync(f.dbPath);
+      try {
+        db.prepare("INSERT INTO uploaded_files (id,owner_key,project_id,upload_key,name,media_type,size,checksum,storage_key,agent_path,status,created_at,session_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)")
+          .run(key, "owner", DEFAULT_PROJECT_ID, "source-key", "source.txt", "text/plain", original.length,
+            createHash("sha256").update(original).digest("hex"), key, `/source/uploads/${key}`, "ready", 1, null);
+      } finally { db.close(); }
+      await expect(createSqliteBackup({ paths: { ...makePaths(f), uploadRoot }, age: fakeAge() })).rejects.toThrow(/attachment|ENOENT/);
+      expect(existsSync(f.backupRoot)).toBe(false);
+    }
+  });
+
+  it("does not publish COMPLETE when attachment encryption fails after the DB snapshot", async () => {
+    const f = fixture();
+    const uploadDir = path.join(f.root, "originals");
+    mkdirSync(uploadDir, { mode: 0o700 });
+    const uploadRoot = realpathSync(uploadDir);
+    const key = "00000000-0000-4000-8000-000000000043";
+    const bytes = Buffer.from("fail during age attachment encryption");
+    writeFileSync(path.join(uploadRoot, key), bytes, { mode: 0o600 });
+    const db = new DatabaseSync(f.dbPath);
+    try {
+      db.prepare("INSERT INTO uploaded_files (id,owner_key,project_id,upload_key,name,media_type,size,checksum,storage_key,agent_path,status,created_at,session_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)")
+        .run(key, "owner", DEFAULT_PROJECT_ID, "fail-key", "file.txt", "text/plain", bytes.length,
+          createHash("sha256").update(bytes).digest("hex"), key, `/source/uploads/${key}`, "ready", 1, null);
+    } finally { db.close(); }
+    const age: AgeAdapter = { ...fakeAge(), encrypt(input) {
+      if (input.equals(bytes)) throw new Error("injected attachment encryption failure");
+      return fakeAge().encrypt(input, f.recipient);
+    } };
+    await expect(createSqliteBackup({ paths: { ...makePaths(f), uploadRoot }, age })).rejects.toThrow(/injected attachment encryption failure/);
+    expect(existsSync(path.join(uploadRoot, key))).toBe(true);
+    expect(readdirSync(f.backupRoot).filter((name) => !name.startsWith("."))).toEqual([]);
+  });
+
+  it("verifies a published v2 pre-migration package with encrypted attachment bytes", async () => {
+    const f = fixture();
+    const directory = path.join(f.root, "originals");
+    mkdirSync(directory, { mode: 0o700 });
+    const uploadRoot = realpathSync(directory);
+    const key = "00000000-0000-4000-8000-000000000044";
+    const bytes = Buffer.from("v2 pre-migration original");
+    writeFileSync(path.join(uploadRoot, key), bytes, { mode: 0o600 });
+    const db = new DatabaseSync(f.dbPath);
+    try {
+      db.prepare("INSERT INTO uploaded_files (id,owner_key,project_id,upload_key,name,media_type,size,checksum,storage_key,agent_path,status,created_at,session_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)")
+        .run(key, "owner", DEFAULT_PROJECT_ID, "pre-key", "file.txt", "text/plain", bytes.length,
+          createHash("sha256").update(bytes).digest("hex"), key, `/source/uploads/${key}`, "ready", 1, null);
+    } finally { db.close(); }
+    const backup = await createSqliteBackup({ paths: { ...makePaths(f), uploadRoot }, backupKind: "pre-migration", age: fakeAge() });
+    expect(backup.manifest?.format).toBe("pi-agent-server.backup-manifest.v2");
+    expect(verifyPublishedBackup(backup).version).toBe(migrationDefinitions.at(-1)!.version);
   });
 
   it("binds concurrent snapshot-window references: a missing late history is recorded missing-as-empty", async () => {

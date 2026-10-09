@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { Icon } from "../src/components/Icon.js";
 import { Markdown } from "../src/components/Markdown";
 import "./style.css";
 
@@ -91,7 +92,7 @@ function App() {
         {!detail && !loadingDetail && !error && <p className="notice">选择 IP 和会话以查看内容。</p>}
         {detail && <div className="conversation">
           <div className="prompt-panel"><button className="prompt-toggle" aria-expanded={showPrompt} onClick={() => setShowPrompt(!showPrompt)}>
-            系统提示词 {showPrompt ? "▾" : "▸"}{detail.systemPrompt === null ? "（无记录）" : ""}
+            系统提示词 <Icon name={showPrompt ? "down" : "chevron"} />{detail.systemPrompt === null ? "（无记录）" : ""}
           </button>
             {showPrompt && <div className="prompt-body">{detail.systemPrompt ? <Markdown text={detail.systemPrompt} /> : <p>该会话没有保存系统提示词。</p>}</div>}
           </div>

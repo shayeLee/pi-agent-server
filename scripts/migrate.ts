@@ -5,7 +5,8 @@
 import { DatabaseSync } from "node:sqlite";
 import { createHash } from "node:crypto";
 import { existsSync, realpathSync, rmSync, statSync, readFileSync, mkdtempSync, copyFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { tmpdir, homedir } from "node:os";
+import { resolveNativeSessionSourceDir } from "../src/core/native-session-policy.js";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { createPostgresKysely, createPostgresPool } from "../src/storage/postgres-bootstrap.js";
@@ -200,12 +201,17 @@ function assertUnchanged(before: Record<string, FileFingerprint>, dbFile: string
 function openReadonlySnapshot(dbFile: string): { db: DatabaseSync; cleanup: () => void } {
   const directory = mkdtempSync(path.join(tmpdir(), "pi-migrate-readonly-"));
   const copy = path.join(directory, "snapshot.db");
-  for (const suffix of ["", "-wal", "-shm"]) {
-    const source = `${dbFile}${suffix}`;
-    if (existsSync(source)) copyFileSync(source, `${copy}${suffix}`);
+  try {
+    for (const suffix of ["", "-wal", "-shm"]) {
+      const source = `${dbFile}${suffix}`;
+      if (existsSync(source)) copyFileSync(source, `${copy}${suffix}`);
+    }
+    const db = new DatabaseSync(copy, { timeout: 5000, readOnly: true, enableForeignKeyConstraints: true });
+    return { db, cleanup: () => { try { db.close(); } finally { rmSync(directory, { recursive: true, force: true }); } } };
+  } catch (error) {
+    rmSync(directory, { recursive: true, force: true });
+    throw error;
   }
-  const db = new DatabaseSync(copy, { timeout: 5000, readOnly: true, enableForeignKeyConstraints: true });
-  return { db, cleanup: () => { try { db.close(); } finally { rmSync(directory, { recursive: true, force: true }); } } };
 }
 
 export interface PreMigrationApplyOperations<B> {
@@ -383,7 +389,9 @@ async function main(): Promise<void> {
         const operations: PreMigrationApplyOperations<PostgresBackupResult> = {
           createBackup: () => createPostgresBackup({
             storageDialect: "postgres", databaseUrl: storage.databaseUrl,
-            paths: { dataDir: paths.dataDir, agentDir: paths.agentDir, backupRoot: paths.backupRoot, ageRecipientFile: paths.ageRecipientFile },
+            paths: { dataDir: paths.dataDir, agentDir: paths.agentDir, backupRoot: paths.backupRoot, ageRecipientFile: paths.ageRecipientFile,
+              nativeSourceRoot: resolveNativeSessionSourceDir({ sourceDir: process.env.PI_SESSION_SOURCE_DIR, home: homedir(), env: process.env }),
+              ...(environment.PI_UPLOAD_STORAGE_ROOT ? { uploadRoot: environment.PI_UPLOAD_STORAGE_ROOT } : {}) },
             backupKind: "pre-migration",
             stagingRoot: environment.PI_BACKUP_STAGING_ROOT,
             onStage: report,
@@ -427,7 +435,10 @@ async function main(): Promise<void> {
   if (cli.mode === "apply") {
     const backupPaths = resolveBackupCliPaths(environment, cli.backupRoot!, cli.ageRecipientFile!, environment.AGENT_CWD!);
     const operations: PreMigrationApplyOperations<BackupResult> = {
-      createBackup: () => createSqliteBackup({ paths: backupPaths, backupKind: "pre-migration", stagingRoot: environment.PI_BACKUP_STAGING_ROOT }),
+      createBackup: () => createSqliteBackup({ paths: { ...backupPaths,
+        nativeSourceRoot: resolveNativeSessionSourceDir({ sourceDir: process.env.PI_SESSION_SOURCE_DIR, home: homedir(), env: process.env }),
+        ...(environment.PI_UPLOAD_STORAGE_ROOT ? { uploadRoot: environment.PI_UPLOAD_STORAGE_ROOT } : {}) },
+        backupKind: "pre-migration", stagingRoot: environment.PI_BACKUP_STAGING_ROOT }),
       verifyBackup: (backup) => verifyPublishedBackup(backup),
       applyMigration: async () => {
         const db = new DatabaseSync(dbFile, { timeout: 5000, enableForeignKeyConstraints: true });

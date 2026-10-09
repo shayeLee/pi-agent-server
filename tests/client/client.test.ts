@@ -13,6 +13,39 @@ function jsonResponse(data: unknown): Response {
 }
 
 describe("framework-neutral Agent Server client", () => {
+  it.each([202, 204])("steer explicitly accepts empty %s without JSON parsing", async status => {
+    const response = new Response(null, { status });
+    const parse = vi.spyOn(response, "json");
+    const api = new ApiClient({ fetch: async () => response });
+    await expect(api.steer("session", "same", { controlId: "control", acknowledgementId: "token", requestId: "primary" })).resolves.toBeUndefined();
+    expect(parse).not.toHaveBeenCalled();
+  });
+
+  it("steer retains non-2xx errors, while other 202 responses still require JSON", async () => {
+    const api = new ApiClient({ fetch: async () => new Response("conflict", { status: 409 }) });
+    await expect(api.steer("session", "text")).rejects.toMatchObject({ name: "ApiError", status: 409, message: "HTTP 409: conflict" });
+    const message = { requestId: "primary", prompt: "text" };
+    const accepted = new Response(JSON.stringify({ status: "accepted" }), { status: 202 });
+    const parse = vi.spyOn(accepted, "json");
+    await expect(new ApiClient({ fetch: async () => accepted }).sendMessage("session", message)).resolves.toEqual({ status: "accepted" });
+    expect(parse).toHaveBeenCalledOnce();
+    await expect(new ApiClient({ fetch: async () => new Response(null, { status: 202 }) }).sendMessage("session", message)).rejects.toBeInstanceOf(SyntaxError);
+  });
+  it("preserves measured zero and unknown null from public SSE into chat stats", async () => {
+    const store = createChatStore();
+    const events: SseEvent[] = [
+      { type: "usage", promptTokens: 120, completionTokens: 8, totalTokens: 160, durationMs: 10, ttftMs: 1 },
+      { type: "usage", promptTokens: 0, completionTokens: 0, totalTokens: 0, durationMs: 10, ttftMs: 1 },
+      { type: "usage", promptTokens: null, completionTokens: null, totalTokens: null, durationMs: 10, ttftMs: 1 },
+    ];
+    for (const event of events) {
+      const response = new Response(`data: ${JSON.stringify(event)}\n\n`);
+      await consumeSse({ url: "http://fixture/events", fetch: async () => response, onEvent: decoded => store.applyEvent(decoded) });
+      const { type: _type, ...stats } = event;
+      expect(store.getState().stats).toEqual(stats);
+    }
+  });
+
   it("injects URL resolution, per-request authentication, headers, and fetch", async () => {
     let token = "first";
     const fetchMock: FetchLike = vi.fn(async () => jsonResponse([]));
@@ -72,6 +105,22 @@ describe("framework-neutral Agent Server client", () => {
         }),
       }),
     );
+  });
+
+  it("exposes the consumed cursor so a cached session can resume after closing its connection", async () => {
+    const onEvent = vi.fn();
+    let finish!: () => void;
+    const ended = new Promise<void>(resolve => { finish = resolve; });
+    const fetchMock: FetchLike = vi.fn(async () => new Response('id: 43\ndata: {"type":"completed","requestId":"A"}\n\n'));
+    const connection = createSseConnection({
+      url: "native://agent/events", lastEventId: 42, fetch: fetchMock, onEvent,
+      onDisconnect: () => { connection.close(); finish(); },
+    });
+    await ended;
+    expect(onEvent).toHaveBeenCalledExactlyOnceWith({ type: "completed", requestId: "A" }, 43);
+    expect(fetchMock).toHaveBeenCalledWith("native://agent/events", expect.objectContaining({
+      headers: expect.objectContaining({ "last-event-id": "42" }),
+    }));
   });
 
   it("does not start a fetch when a connection closes during async header resolution", async () => {

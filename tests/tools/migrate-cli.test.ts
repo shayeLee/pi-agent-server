@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { assertCliMigrationHead, parseMode, readPostgresTarget, redactedMessage } from "../../scripts/migrate.js";
 import { resolveMigrationCliPaths, summarizePostgresTarget } from "../../src/storage/storage-config.js";
+import { migrationDefinitions } from "../../src/storage/migration-manifest.js";
 
 describe("offline migration CLI", () => {
   it("requires an explicit absolute AGENT_CWD and rejects relative path combinations", () => {
@@ -159,7 +160,7 @@ describe("offline migration CLI", () => {
       expect(machine.status).toBe("success");
       expect(machine.mode).toBe("bootstrap-baseline");
       expect(machine.migration.status).toBe("applied");
-      expect(machine.migration.appliedVersion).toBe(0);
+      expect(machine.migration.appliedVersion).toBe(migrationDefinitions.at(-1)!.version);
       expect(machine.migration.pending).toBe(0);
       expect(machine.verify.status).toBe("verified");
       expect(machine.verify.pending).toBe(0);
@@ -167,7 +168,7 @@ describe("offline migration CLI", () => {
       const db = new DatabaseSync(dbPath);
       const ledger = db.prepare("SELECT version, name FROM schema_migrations ORDER BY version").all();
       db.close();
-      expect(JSON.stringify(ledger)).toBe(JSON.stringify([{ version: 0, name: "initial-schema" }]));
+      expect(ledger).toEqual(migrationDefinitions.map(({ version, name }) => ({ version, name })));
 
       // A second bootstrap on the now-initialized database must refuse: it is no longer empty.
       const again = spawnSync("pnpm", ["exec", "tsx", "scripts/migrate.ts", "--", "--bootstrap-baseline", "--bootstrap-confirm", "CONFIRMED"], {

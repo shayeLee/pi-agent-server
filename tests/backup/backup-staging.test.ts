@@ -5,7 +5,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createSqliteBackup, type AgeAdapter } from "../../src/backup/backup-core.js";
 import { migrationChecksum, migrationDefinitions } from "../../src/storage/migration-manifest.js";
-import { createCanonicalSqliteBaseline } from "./sqlite-fixture.js";
+import { createCanonicalSqliteHead } from "./sqlite-fixture.js";
 import { createPostgresBackupForTest, type PgProcessAdapter, type PgProcessRequest } from "../../src/backup/postgres-backup-core.js";
 
 const cleanups: string[] = [];
@@ -44,7 +44,7 @@ function writeFixture(sources: string): { dataDir: string; dbPath: string; recip
   mkdirSync(path.join(dataDir, ".pi-agent"), { recursive: true, mode: 0o700 });
   const dbPath = path.join(dataDir, "pi-agent-server.db");
   const db = new DatabaseSync(dbPath);
-  createCanonicalSqliteBaseline(db);
+  createCanonicalSqliteHead(db);
   db.close();
   writeFileSync(path.join(dataDir, "sessions", "s1", "history.jsonl"), '{"secret":"payload-secret"}\n', { mode: 0o600 });
   writeFileSync(path.join(dataDir, ".pi-agent", "models.json"), '{"models":[]}\n', { mode: 0o600 });
@@ -226,7 +226,9 @@ describe("backup staging separation (plaintext temp root vs ciphertext publish s
           const table = values?.[1];
           return { rows: [{ present: table === "schema_migrations" }] as unknown as readonly T[] };
         }
-        if (text.includes("FROM \"app_schema\".\"schema_migrations\"")) return { rows: [{ version: 0, name: "initial-schema", checksum: migrationChecksum(migrationDefinitions[0]!), applied_at: 1 }] as unknown as readonly T[] };
+        if (text.includes("FROM \"app_schema\".\"schema_migrations\"")) return { rows: migrationDefinitions.filter(migration => migration.version <= 1).map((migration) => ({ version: migration.version, name: migration.name, checksum: migrationChecksum(migration), applied_at: 1 })) as unknown as readonly T[] };
+        if (text.includes("FROM \"app_schema\".\"uploaded_files\"")) return { rows: [] as unknown as readonly T[] };
+        if (text.includes("FROM \"app_schema\".\"sessions\"")) return { rows: [] as unknown as readonly T[] };
         throw new Error(`unexpected fake source query: ${text}`);
       },
     };
@@ -243,7 +245,7 @@ describe("backup staging separation (plaintext temp root vs ciphertext publish s
       age: fakeAge(),
       pgClient: client,
       pgProcess: process,
-}, async () => ({ version: 0, pending: 0 }))).rejects.toThrow(/staging root must be an absolute path/);
+}, async () => ({ version: 1, pending: 0 }))).rejects.toThrow(/staging root must be an absolute path/);
     // Only the binary preflight versions ran; no dump and no publication.
     expect(requests.every((request) => request.args[0] === "--version")).toBe(true);
     expect(existsSync(layout.backupRoot)).toBe(false);

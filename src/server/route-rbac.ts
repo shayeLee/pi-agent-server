@@ -20,7 +20,9 @@
 
 import type { FastifyReply, FastifyRequest } from "fastify";
 import { IP_ROLES, type IpRole } from "../core/ip-access-policy.js";
-import { PLUGIN_ROUTE_ACCESS, type PluginRouteAccess } from "../plugin/contract.js";
+import type { PluginRouteAccess } from "../plugin/contract.js";
+// Load the request augmentation even when this server module is checked in isolation.
+import type {} from "./network-admission.js";
 
 /**
  * 插件权限档位 → 允许角色集合：插件能力档位的**唯一权威词汇表**。
@@ -66,6 +68,7 @@ export type RoutePermission =
   | "sessions:update"
   | "sessions:update-config"
   | "sessions:send-message"
+  | "files:upload"
   | "sessions:control"
   | "sessions:export"
   | "sessions:file-preview"
@@ -103,6 +106,7 @@ export const ROUTE_PERMISSIONS: Record<RoutePermission, readonly IpRole[]> = Obj
   "sessions:update": frozenRoles("admin", "user"),
   "sessions:update-config": frozenRoles("admin", "user"),
   "sessions:send-message": frozenRoles("admin", "user"),
+  "files:upload": frozenRoles("admin", "user"),
   "sessions:control": frozenRoles("admin", "user"), // steer / follow-up / abort
 });
 
@@ -120,7 +124,8 @@ export const ROUTE_PERMISSIONS: Record<RoutePermission, readonly IpRole[]> = Obj
  * 采用「全部允许」的交集语义：当前矩阵中这三项与读写两极完全一致；未来若矩阵出现分项
  * 不一致，布尔值只会更保守（少报可写），前端可据此隐藏写操作，绝不误放行。
  */
-export type AccessCapabilities = { readonly canRead: boolean; readonly canWrite: boolean };
+import type { AccessCapabilities } from "../shared/api-types.js";
+export type { AccessCapabilities } from "../shared/api-types.js";
 
 const READ_CAPABILITY_PERMISSIONS: readonly RoutePermission[] = [
   "sessions:list",
@@ -132,6 +137,7 @@ const READ_CAPABILITY_PERMISSIONS: readonly RoutePermission[] = [
 
 const WRITE_CAPABILITY_PERMISSIONS: readonly RoutePermission[] = [
   "sessions:send-message",
+  "files:upload",
   "sessions:control",
   "capability:write",
 ];

@@ -1,11 +1,6 @@
-// Public host API contract v1. This module deliberately re-exports the DTOs used by
-// the HTTP composition root so UI consumers do not need to depend on internals.
-
-import type { SubmitInput } from "../application/ports/session-runtime-port.js";
-import type { SseEvent as InternalSseEvent } from "../agent/events.js";
-import type { AccessCapabilities } from "../server/route-rbac.js";
-import type { ModelDescriptor } from "../application/ports/model-catalog-port.js";
-import type { ProjectDto, SessionDto } from "../application/session-service.js";
+// Public host API contract v1. Only pure shared DTOs cross this boundary.
+import type { SseEvent as InternalSseEvent } from "../shared/events.js";
+import type { AccessCapabilities, ModelDescriptor, ProjectDto, SessionDto } from "../shared/api-types.js";
 
 /** `GET /v1/access`. It intentionally contains no role, IP, or token. */
 export type Access = AccessCapabilities;
@@ -13,11 +8,18 @@ export type Access = AccessCapabilities;
 export type Model = ModelDescriptor;
 /** A project returned by the host. */
 export type Project = ProjectDto;
-/** A session returned by the host; internal persistence fields are excluded. */
+/** A session returned by the host; internal persistence fields/source paths are excluded.
+ * Optional visibility/origin distinguish native shared sessions; absent means private/managed.
+ * Shared access still requires network admission, existing RBAC, and current cwd policy.
+ */
 export type Session = SessionDto;
 
 /** Input accepted by `POST /v1/sessions/:id/messages`. */
-export type MessageInput = Omit<SubmitInput, "userId">;
+export type { MessageInput } from "../shared/api-types.js";
+
+/** Correlated steer identity; HTTP 202 only admits it, SSE confirms SDK consumption. */
+export type { SteeringIdentity, SteeringInput } from "../shared/steering.js";
+export type SteeringConsumed = Extract<InternalSseEvent, { type: "steering_consumed" }>;
 
 /** Immediate successful response from a submitted asynchronous message. */
 export type SubmitResult =
@@ -28,12 +30,15 @@ export type SubmitResult =
 export type ExportMessage = { role: string; text: string; sourceId?: string; id?: string; images?: Array<{ mediaType: string; base64: string }> };
 /** Block-ordered timeline item returned by `GET /v1/sessions/:id/export`. */
 export type ExportTimelineItem =
+  | (Omit<import("../shared/events.js").NotificationEvent, "type" | "requestId"> & { id: string; type: "notification"; order: number })
   | { id: string; type: "message"; role: "user" | "assistant"; messageId: string; turnId: string | null; text: string; order: number; timestamp?: string }
+  | { id: string; type: "thinking"; messageId: string; turnId: string | null; text: string; order: number; timestamp?: string }
   | { id: string; type: "tool_call"; messageId: string; turnId: string | null; callId: string; toolCallId: string; toolName: string; args: unknown; status: "completed" | "error" | "no_result"; order: number; timestamp?: string }
   | { id: string; type: "tool_result"; messageId: string | null; turnId: string | null; callId: string; toolCallId: string; toolName: string; result: unknown; isError: boolean; order: number; timestamp?: string }
   | { id: string; type: "system_event"; event: "model_failback"; from: string; to: string; reason: string; order: number; timestamp?: string };
 /** Read-only session snapshot returned by `GET /v1/sessions/:id/export`. `timeline` is additive; Pi `messages[].sourceId` exactly joins `timeline[].messageId`. */
-export type Export = { messages: ExportMessage[]; timeline: ExportTimelineItem[]; lastEventId: number };
+export type { UsageSnapshot, UsageTokens, LastResponseUsage, ExecutionSnapshot } from "../core/usage-snapshot.js";
+export type Export = { messages: ExportMessage[]; timeline: ExportTimelineItem[]; lastEventId: number; usageSnapshot?: import("../core/usage-snapshot.js").UsageSnapshot };
 /** Owner/session-scoped UTF-8 text preview. `path` is always project-relative; no root is client supplied. */
 export type FilePreview = { path: string; content: string; lineCount: number; requestedLine?: number };
 
@@ -49,12 +54,15 @@ export type SseEvent = InternalSseEvent;
  * 注入给插件（插件不能静态 import 宿主包，见 plugin/contract.ts）。
  * 命名不可随意变更：插件与测试据此判定终态原因。
  */
-export { TURN_ERROR_CODES } from "../application/ports/session-runtime-port.js";
+export { TURN_ERROR_CODES } from "../shared/api-types.js";
 
-/** The twelve event discriminants supported by SSE v1. */
+/** Event discriminants supported by SSE v1 (additive optional progress). */
 export const SSE_EVENT_TYPES = [
+  "notification",
+  "steering_consumed",
   "text_delta",
   "thinking_delta",
+  "model_output_progress",
   "tool_start",
   "tool_update",
   "tool_end",

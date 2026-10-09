@@ -2,7 +2,7 @@
 // 1. Manifest 是唯一手工声明：表/列/PK/FK/索引全部在 schemaManifest 中声明一次；
 //    Manifest → SQLite bootstrap 可生成与 PRAGMA 实际观察一致的 schema（等价 DDL）。
 // 2. 真实 DatabaseSync 空库验证：所有表、列（类型/nullable/default）、单列/复合主键、
-//    FK cascade、7 个索引（含 updated_at DESC、conversation identity 唯一与 outbox claim/key）、文件库 WAL、无 kysely_migration。
+//    FK cascade、8 个索引（含 uploaded-file upload key 唯一）、文件库 WAL、无 kysely_migration。
 // 3. defineSchema 运行期校验：重复表/列/索引名、未知列引用、FK 目标不存在或声明顺序错误、
 //    FK 源/目标列非空且等长、源/目标逻辑类型一致、主键列不可 nullable、
 //    onDelete 非法、default 类型不匹配（含 boolean 拒绝）均抛错。
@@ -89,7 +89,7 @@ function indexKeyColumns(db: DatabaseSync, index: string): Array<{ name: string;
 /** 显式索引的 UNIQUE 标志（PRAGMA index_list 的 unique 列；排除 SQLite 自动建的 PK/UNIQUE 约束索引 sqlite_autoindex_*）。 */
 function indexUniqueness(db: DatabaseSync): Record<string, number> {
   const out: Record<string, number> = {};
-  for (const table of ["projects", "sessions", "idempotency", "file_operations"]) {
+  for (const table of schemaManifest.tables.map(table => table.name)) {
     for (const r of db.prepare(`PRAGMA index_list(${table})`).all() as Array<{ name: string; unique: number }>) {
       if (!r.name.startsWith("sqlite_autoindex_")) out[r.name] = r.unique;
     }
@@ -132,10 +132,10 @@ async function initMemoryDb() {
 }
 
 describe("Schema Manifest 契约：Manifest → SQLite bootstrap DDL 等价（真实空库）", () => {
-  it("Manifest 声明了恰好的 4 张表，每张表的列/主键/外键/索引与当前 schema 一致", () => {
+  it("Manifest 声明了当前 5 张表，每张表的列/主键/外键/索引与当前 schema 一致", () => {
     // 宽化为 TableManifest：字面量仅供 DatabaseSchema 推导，这里只做值的断言。
     const tables: readonly TableManifest[] = schemaManifest.tables;
-    expect(tables.map((t) => t.name)).toEqual(["projects", "sessions", "idempotency", "file_operations"]);
+    expect(tables.map((t) => t.name)).toEqual(["projects", "sessions", "idempotency", "file_operations", "uploaded_files", "native_session_sources"]);
 
     expect(tables[0]!.columns.map((c) => [c.name, c.type, c.nullable])).toEqual([
       ["id", "uuid", false],
@@ -162,6 +162,7 @@ describe("Schema Manifest 契约：Manifest → SQLite bootstrap DDL 等价（�
       ["thinking_level", "text", true],
       ["system_prompt", "text", true],
       ["capability_versions", "json", true],
+      ["visibility", "text", false], ["origin", "text", false],
     ]);
     expect(tables[1]!.primaryKey).toEqual({ columns: ["id"] });
     expect(tables[1]!.foreignKeys).toEqual([
@@ -186,6 +187,7 @@ describe("Schema Manifest 契约：Manifest → SQLite bootstrap DDL 等价（�
       ["request_id", "text", false],
       ["result", "json", false],
       ["created_at", "integer", false],
+      ["fingerprint", "text", true],
     ]);
     expect(tables[2]!.primaryKey).toEqual({ constraintName: "idempotency_pk", columns: ["session_id", "request_id"] });
     expect(tables[2]!.indexes!.map((i) => i.name)).toEqual(["idx_idempotency_created_at"]);
@@ -198,6 +200,20 @@ describe("Schema Manifest 契约：Manifest → SQLite bootstrap DDL 等价（�
       ["created_at", "integer", false], ["updated_at", "integer", false],
     ]);
     expect(tables[3]!.foreignKeys).toEqual([]);
+    expect(tables[4]!.name).toBe("uploaded_files");
+    expect(tables[4]!.columns.map((c) => [c.name, c.type, c.nullable])).toEqual([
+      ["id", "uuid", false], ["owner_key", "text", false], ["project_id", "uuid", false],
+      ["upload_key", "text", false], ["name", "text", false], ["media_type", "text", false],
+      ["size", "bigint", false], ["checksum", "text", false], ["storage_key", "text", false],
+      ["agent_path", "text", false], ["status", "text", false], ["created_at", "integer", false],
+      ["session_id", "uuid", true],
+    ]);
+    expect(tables[4]!.foreignKeys).toEqual([]);
+    expect(tables[4]!.indexes).toEqual([{
+      name: "idx_uploaded_files_upload_key",
+      columns: [{ name: "owner_key" }, { name: "project_id" }, { name: "upload_key" }],
+      unique: true,
+    }]);
 
     // 默认值唯一来源：sessions.project_id 引用 DEFAULT_PROJECT_ID 常量
     expect(tables[1]!.columns.find((c) => c.name === "project_id")).toMatchObject({ default: DEFAULT_PROJECT_ID });
@@ -316,7 +332,8 @@ describe("Schema Manifest 契约：Manifest → SQLite bootstrap DDL 等价（�
     expect(Object.keys(uniqueness).sort()).toEqual(expectedIndexes.map(([name]) => name).sort());
     expect(uniqueness.idx_file_operations_key).toBe(1);
     expect(uniqueness.idx_sessions_conversation).toBe(1);
-    for (const name of Object.keys(uniqueness).filter((name) => name !== "idx_file_operations_key" && name !== "idx_sessions_conversation")) {
+    expect(uniqueness.idx_uploaded_files_upload_key).toBe(1);
+    for (const name of Object.keys(uniqueness).filter((name) => !["idx_file_operations_key", "idx_sessions_conversation", "idx_uploaded_files_upload_key", "idx_native_source_id", "idx_native_session_id"].includes(name))) {
       expect(uniqueness[name], `索引 ${name} 不应是 UNIQUE`).toBe(0);
     }
 
@@ -334,7 +351,7 @@ describe("Schema Manifest 契约：Manifest → SQLite bootstrap DDL 等价（�
     await kysely.destroy();
   });
 
-  it("复合主键：idempotency(session_id, request_id)；bootstrap 写入单一基线 ledger；无 kysely_migration；文件库 WAL、:memory: 保持 memory", async () => {
+  it("复合主键与 v1 nullable fingerprint；bootstrap 写入完整迁移 ledger；无 kysely_migration；文件库 WAL、:memory: 保持 memory", async () => {
     // 复合主键由 PRAGMA 观察（pk 序号 1、2）
     const { db, kysely } = await initMemoryDb();
     const idem = tableInfo(db, "idempotency");
@@ -346,10 +363,12 @@ describe("Schema Manifest 契约：Manifest → SQLite bootstrap DDL 等价（�
       (db.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all() as { name: string }[]).map(
         (r) => r.name,
       ),
-    ).toEqual(["file_operations", "idempotency", "projects", "schema_migrations", "sessions"]);
-    // new-baseline：bootstrap 在全新库建 schema 的同时写入**单一**基线 ledger 行（version=0）。
+    ).toEqual(["file_operations", "idempotency", "native_session_sources", "projects", "schema_migrations", "sessions", "uploaded_files"]);
+    // Bootstrap creates the latest manifest atomically with the full canonical migration ledger.
     expect(db.prepare("SELECT version, name FROM schema_migrations ORDER BY version").all()).toEqual([
       { version: 0, name: "initial-schema" },
+      { version: 1, name: "uploaded-files-and-idempotency-fingerprint" },
+      { version: 2, name: "native-shared-sessions" },
     ]);
     // 无版本化迁移痕迹（本方案没有 Migrator，不应创建迁移簿记表）
     expect(
@@ -385,7 +404,7 @@ describe("Schema Manifest 契约：Manifest → SQLite bootstrap DDL 等价（�
       .insertInto("sessions")
       .values({
         id: "s-type",
-        owner_key: "o",
+        owner_key: "o", visibility: "private", origin: "managed",
         project_id: DEFAULT_PROJECT_ID,
         title: "t",
         created_at: 1,

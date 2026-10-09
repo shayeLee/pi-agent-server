@@ -4,10 +4,8 @@
 //   - WAL（文件数据库启用，:memory: 跳过，与外键/5s timeout 选项在 start.ts 的 DatabaseSync
 //     创建时一并设置）；
 //   - 表/列/主键/外键/索引的全部声明来自 schema-manifest.ts 的 schemaManifest（唯一来源）；
-//   - new-baseline 边界：仅面向全新库或已带**单一基线 ledger** 的当前 schema。全新库建库时同事务
-//     写入 schema_migrations 基线行（与迁移引擎相同的 version=0/initial-schema/canonical checksum，
-//     保证 bootstrap 产物可被迁移引擎 verify）；已含 managed 表但无 ledger 的 legacy 库，或携带
-//     旧 v0/v1 注册表 ledger 的库，一律 fail-fast（专有消息），bootstrap 绝不采用（adopt）；
+//   - migration-head 边界：全新库按最新 manifest 原子建表，并同事务写入完整 canonical ledger；
+//     已含 managed 表但无 ledger、或 ledger 未到 head 的库一律 fail-fast。历史升级只由 offline migrate 执行；
 //   - 默认项目不在此处写入：由 start.ts / mock 在初始化后经 Repository.ensureDefaultProject
 //     创建，保证「不得用配置错误的默认 cwd 覆盖已存在默认项目」。
 
@@ -45,16 +43,15 @@ export function isMemoryDatabase(db: DatabaseSync): boolean {
  * 可正常初始化。BEGIN IMMEDIATE 与迁移引擎一致，作为跨进程并发的写锁：第二个并发
  * bootstrap 等待第一个 COMMIT/ROLLBACK 后再做 preflight，看到完整 schema 即跳过 DDL。
  *
- * new-baseline ledger 门禁（在任何建表/建索引 DDL 之前）：
- * 1. 库中已存在 schema_migrations：只接受**恰好一条** canonical 基线行（version=0 /
- *    initial-schema / 当前 golden checksum）；旧 v0/v1 注册表的多行/旧 checksum ledger
- *    一律 fail-fast（专有 legacy 消息），绝不采用；
+ * migration-head ledger 门禁（在任何建表/建索引 DDL 之前）：
+ * 1. 库中已存在 schema_migrations：只接受所有已发布迁移的完整 canonical ledger；落后于 head
+ *    或带未知版本/错误 checksum 的 ledger 一律 fail-fast，历史升级由 offline migrate 完成；
  * 2. 无 ledger 但已含任一 managed 表 → legacy 库，fail-fast（专有消息），绝不采用；
- * 3. 全新库（无 ledger、无 managed 表）→ bootstrap 建全部表/索引，并在**同一事务**写入基线
- *    ledger 行（与迁移引擎 apply 的产物完全一致，后续 verify/apply 均可直接通过）。
+ * 3. 全新库（无 ledger、无 managed 表）→ bootstrap 建最新 manifest 的全部表/索引，并在**同一事务**
+ *    写入完整 canonical migration ledger（后续 verify/apply 均可直接通过）。
  *
  * 启动路径（strict schema preflight，**在任何建表/建索引 DDL 之前**）：
- * - 无任何 managed 表（全新库 / 只有无关表）→ bootstrap 正常建库 + 基线 ledger；
+ * - 无任何 managed 表（全新库 / 只有无关表）→ bootstrap 正常建库 + 完整 migration-head ledger；
  * - 已含任一 managed 表 → 要求完整 schema 与 Manifest 物理契约一致（列名/物理类型/
  *   nullable/DEFAULT/PK/FK/显式索引），否则 fail-fast，不执行任何 ALTER/补列/建索引；
  * - 已完整一致 → 跳过 DDL（不重建，数据保留）。
@@ -110,15 +107,15 @@ export async function initializeDatabase(db: DatabaseSync, options: SchemaBootst
   const kysely = createDatabaseKysely(db);
 
   const manifest = options.manifest ?? schemaManifest;
-  const baseline = migrationDefinitions[0]!;
+  const migrations = migrationDefinitions;
   try {
     db.exec("BEGIN IMMEDIATE");
     try {
-      // new-baseline ledger 门禁：先于任何 DDL 判定 legacy / 旧注册表 ledger / 正常状态。
+      // migration-head ledger 门禁：先于任何 DDL 判定 legacy / incomplete ledger / 正常状态.
       if (sqliteTableExists(db, MIGRATION_LEDGER_TABLE)) {
         // Reuse migration-engine's strict physical ledger contract before reading/adopting its row.
         assertSqliteMigrationLedgerContract(db);
-        assertCanonicalBaselineLedger(db, baseline);
+        assertCanonicalMigrationLedger(db, migrations);
         const verdict = await assertSchemaCompatible(kysely, "SQLite", SQLITE_LOGICAL_TYPE, manifest);
         if (verdict === "empty") {
           throw new Error(`schema migration ledger: ledger exists but no managed table is present; refusing to adopt a corrupt legacy state`);
@@ -127,14 +124,14 @@ export async function initializeDatabase(db: DatabaseSync, options: SchemaBootst
       } else if (sqliteManagedTableExists(db, manifest)) {
         throw new Error(
           `schema migration ledger: managed tables exist without the migration ledger; this is a legacy database and bootstrap adoption is forbidden — ` +
-          `start from an empty database and apply the single baseline (pnpm migrate -- --apply)`,
+          `start from an empty database and apply migrations (pnpm migrate -- --apply)`,
         );
       } else {
         const verdict = await assertSchemaCompatible(kysely, "SQLite", SQLITE_LOGICAL_TYPE, manifest);
         if (verdict === "empty") {
           await bootstrapSchemaFromManifest(kysely, SQLITE_LOGICAL_TYPE, manifest);
           createSqliteLedgerTable(db);
-          insertSqliteLedgerRow(db, baseline);
+          for (const migration of migrations) insertSqliteLedgerRow(db, migration);
         }
       }
       db.exec("COMMIT");
@@ -166,21 +163,18 @@ function sqliteManagedTableExists(db: DatabaseSync, manifest: SchemaManifest): b
 }
 
 /** 只接受恰好一条 canonical 基线行（version=0 / initial-schema / 当前 golden checksum）。 */
-function assertCanonicalBaselineLedger(db: DatabaseSync, baseline: (typeof migrationDefinitions)[number]): void {
+function assertCanonicalMigrationLedger(db: DatabaseSync, migrations: typeof migrationDefinitions): void {
   const rows = db.prepare(
     `SELECT version, name, checksum FROM ${quoteSqliteIdent(MIGRATION_LEDGER_TABLE)} ORDER BY version`,
   ).all() as Array<{ version: unknown; name: unknown; checksum: unknown }>;
-  const canonical = rows.length === 1 &&
-    rows[0]!.version === 0 &&
-    rows[0]!.name === baseline.name &&
-    rows[0]!.checksum === migrationChecksum(baseline);
+  const canonical = rows.length === migrations.length && migrations.every((migration, index) => {
+    const row = rows[index];
+    return row?.version === migration.version && row.name === migration.name && row.checksum === migrationChecksum(migration);
+  });
   if (!canonical) {
-    const detail = rows.length === 0
-      ? "ledger exists but is empty"
-      : `${rows.length} ledger row(s) do not match the single canonical baseline (version 0 / ${baseline.name} / current golden checksum)`;
     throw new Error(
-      `schema migration ledger: legacy migration ledger (${detail}) from the removed v0/v1 registry; ` +
-      `bootstrap adoption is forbidden — start from an empty database and apply the single baseline`,
+      "schema migration ledger: bootstrap only accepts a complete canonical migration head; " +
+      "apply pending migrations with the offline migration runner before bootstrap",
     );
   }
 }
@@ -202,10 +196,10 @@ function createSqliteLedgerTable(db: DatabaseSync): void {
   );
 }
 
-function insertSqliteLedgerRow(db: DatabaseSync, baseline: (typeof migrationDefinitions)[number]): void {
+function insertSqliteLedgerRow(db: DatabaseSync, migration: (typeof migrationDefinitions)[number]): void {
   db.prepare(
     `INSERT INTO ${quoteSqliteIdent(MIGRATION_LEDGER_TABLE)} (version, name, checksum, applied_at) VALUES (?, ?, ?, ?)`,
-  ).run(0, baseline.name, migrationChecksum(baseline), Date.now());
+  ).run(migration.version, migration.name, migrationChecksum(migration), Date.now());
 }
 
 // 兼容既有 import：Manifest→DDL builder 流程、类型映射类型与严格兼容性 preflight 各自

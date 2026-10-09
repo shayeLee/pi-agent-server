@@ -6,7 +6,10 @@ import {
   MIGRATION_BASELINE_GOLDEN_CHECKSUM,
   MIGRATION_BASELINE_GOLDEN_DDL_SNAPSHOT,
   stableSerialize,
+  initialSchemaManifest,
   schemaManifest,
+  MIGRATION_V1_GOLDEN_CHECKSUM,
+  MIGRATION_V1_GOLDEN_DDL_SNAPSHOT,
   SQLITE_PHYSICAL_TYPES,
   POSTGRES_PHYSICAL_TYPES,
 } from "../../src/storage/migration-manifest.js";
@@ -18,7 +21,7 @@ function tables(db: DatabaseSync): unknown[] {
 
 function futureMigration() {
   return Object.freeze({
-    version: 1,
+    version: 3,
     name: "test-future",
     manifest: schemaManifest,
     physicalTypeMaps: { SQLite: SQLITE_PHYSICAL_TYPES, PostgreSQL: POSTGRES_PHYSICAL_TYPES },
@@ -32,7 +35,7 @@ function futureMigration() {
 
 function failingMigration() {
   return Object.freeze({
-    version: 1,
+    version: 3,
     name: "test-failure",
     manifest: schemaManifest,
     physicalTypeMaps: { SQLite: SQLITE_PHYSICAL_TYPES, PostgreSQL: POSTGRES_PHYSICAL_TYPES },
@@ -67,18 +70,20 @@ function unsupportedLedger(db: DatabaseSync): void {
 }
 
 describe("Manifest-driven migration engine (SQLite, single baseline)", () => {
-  it("fresh apply is atomic, records the single baseline v0, is idempotent, and preserves data", async () => {
+  it("fresh apply is atomic, records v0 and additive v1, is idempotent, and preserves data", async () => {
     const db = new DatabaseSync(":memory:");
     try {
       const first = await runSqliteMigrations(db);
       expect(first.status).toBe("applied");
-      expect(first.appliedVersion).toBe(0);
+      expect(first.appliedVersion).toBe(2);
       expect((db.prepare("SELECT version, name, length(checksum) AS n FROM schema_migrations ORDER BY version").all() as Array<Record<string, unknown>>)).toEqual([
         { version: 0, name: "initial-schema", n: 64 },
+        { version: 1, name: "uploaded-files-and-idempotency-fingerprint", n: 64 },
+        { version: 2, name: "native-shared-sessions", n: 64 },
       ]);
-      // The complete schema (incl. file_operations) exists after the single apply.
       const names = (db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all() as Array<{ name: string }>).map((row) => row.name);
-      expect(names).toEqual(["file_operations", "idempotency", "projects", "schema_migrations", "sessions"]);
+      expect(names).toEqual(["file_operations", "idempotency", "native_session_sources", "projects", "schema_migrations", "sessions", "uploaded_files"]);
+      expect(db.prepare("PRAGMA table_info(idempotency)").all()).toEqual(expect.arrayContaining([expect.objectContaining({ name: "fingerprint", type: "TEXT", notnull: 0 })]));
       db.prepare("INSERT INTO projects (id, name, cwd, owner_key, created_at) VALUES (?, ?, ?, ?, ?)").run(
         "data-project", "Data", "/data", "owner", 1,
       );
@@ -93,13 +98,32 @@ describe("Manifest-driven migration engine (SQLite, single baseline)", () => {
     }
   });
 
+  it("upgrades an already-applied v0 database additively and preserves idempotency rows", async () => {
+    const db = new DatabaseSync(":memory:");
+    try {
+      await runSqliteMigrationsForTest(db, { migrations: [migrationDefinitions[0]!] });
+      db.prepare("INSERT INTO idempotency (session_id, request_id, result, created_at) VALUES (?, ?, ?, ?)")
+        .run("session-v0", "request-v0", '{"ok":true}', 5);
+
+      const upgraded = await runSqliteMigrations(db);
+      expect(upgraded.appliedVersion).toBe(2);
+      expect(db.prepare("SELECT session_id, request_id, result, created_at, fingerprint FROM idempotency").get()).toEqual({
+        session_id: "session-v0", request_id: "request-v0", result: '{"ok":true}', created_at: 5, fingerprint: null,
+      });
+      expect(db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'uploaded_files'").get()).toEqual({ name: "uploaded_files" });
+      expect(db.prepare("SELECT version FROM schema_migrations ORDER BY version").all()).toEqual([{ version: 0 }, { version: 1 }, { version: 2 }]);
+    } finally {
+      db.close();
+    }
+  });
+
   it("dry-run and verify never bootstrap an empty database", async () => {
     const db = new DatabaseSync(":memory:");
     try {
       const before = tables(db);
       const dry = await runSqliteMigrations(db, { mode: "dry-run" });
       expect(dry.status).toBe("planned");
-      expect(dry.pending.map((item) => item.version)).toEqual([0]);
+      expect(dry.pending.map((item) => item.version)).toEqual([0, 1, 2]);
       expect(tables(db)).toEqual(before);
       await expect(runSqliteMigrations(db, { mode: "verify" })).rejects.toThrow(/not been initialized/);
       expect(tables(db)).toEqual(before);
@@ -114,7 +138,7 @@ describe("Manifest-driven migration engine (SQLite, single baseline)", () => {
     try {
       const result = await runSqliteMigrations(empty, { assertEmptySchema: true });
       expect(result.status).toBe("applied");
-      expect(result.appliedVersion).toBe(0);
+      expect(result.appliedVersion).toBe(2);
       expect(result.pending).toEqual([]);
     } finally {
       empty.close();
@@ -158,7 +182,8 @@ describe("Manifest-driven migration engine (SQLite, single baseline)", () => {
     try {
       await runSqliteMigrations(initialized);
       await expect(runSqliteMigrations(initialized, { assertEmptySchema: true })).rejects.toThrow(/non-empty SQLite|user object/);
-      expect(initialized.prepare("SELECT count(*) AS n FROM schema_migrations").get()).toEqual({ n: 1 });
+      expect(migrationDefinitions.map(({ version }) => version)).toEqual([0, 1, 2]);
+      expect(initialized.prepare("SELECT count(*) AS n FROM schema_migrations").get()).toEqual({ n: migrationDefinitions.length });
     } finally {
       initialized.close();
     }
@@ -185,7 +210,7 @@ describe("Manifest-driven migration engine (SQLite, single baseline)", () => {
     try {
       unsupportedLedger(db);
       const before = tables(db);
-      await expect(runSqliteMigrations(db)).rejects.toThrow(/single-baseline registry has 1; recreate the database/);
+      await expect(runSqliteMigrations(db)).rejects.toThrow(/checksum mismatch/);
       expect(tables(db)).toEqual(before);
     } finally {
       db.close();
@@ -229,7 +254,7 @@ describe("Manifest-driven migration engine (SQLite, single baseline)", () => {
       db.prepare("UPDATE schema_migrations SET checksum = ? WHERE version = 0").run(migrationChecksum(migrationDefinitions[0]!));
       db.exec("DROP INDEX idx_projects_owner");
       await expect(runSqliteMigrations(db)).rejects.toThrow(/不兼容|physical schema/);
-      expect(db.prepare("SELECT COUNT(*) AS n FROM schema_migrations").get()).toEqual({ n: 1 });
+      expect(db.prepare("SELECT COUNT(*) AS n FROM schema_migrations").get()).toEqual({ n: 3 });
     } finally {
       db.close();
     }
@@ -277,7 +302,7 @@ describe("Manifest-driven migration engine (SQLite, single baseline)", () => {
   it("discards the SQLite connection and preserves cleanup context when rollback fails", async () => {
     const db = new DatabaseSync(":memory:");
     const rollbackFailure = Object.freeze({
-      version: 1,
+      version: 3,
       name: "rollback-failure",
       manifest: schemaManifest,
       physicalTypeMaps: { SQLite: SQLITE_PHYSICAL_TYPES, PostgreSQL: POSTGRES_PHYSICAL_TYPES },
@@ -300,8 +325,9 @@ describe("Manifest-driven migration engine (SQLite, single baseline)", () => {
     expect(stableSerialize({ z: 1, a: { d: true, c: false } })).toBe(stableSerialize({ a: { c: false, d: true }, z: 1 }));
   });
 
-  it("keeps the released single-baseline snapshot and descriptor frozen, with a golden checksum", () => {
-    expect(schemaManifest).toBe(migrationDefinitions[0]!.manifest);
+  it("keeps the released v0 snapshot frozen and checks v1 additive DDL against its own golden", () => {
+    expect(initialSchemaManifest).toBe(migrationDefinitions[0]!.manifest);
+    expect(schemaManifest).toBe(migrationDefinitions[2]!.manifest);
     expect(Object.isFrozen(schemaManifest)).toBe(true);
     expect(Object.isFrozen(schemaManifest.tables)).toBe(true);
     expect(Object.isFrozen(migrationDefinitions[0])).toBe(true);
@@ -309,10 +335,12 @@ describe("Manifest-driven migration engine (SQLite, single baseline)", () => {
     expect(Object.isFrozen(migrationDefinitions[0]!.operations)).toBe(true);
     for (const dialect of ["SQLite", "PostgreSQL"] as const) {
       expect(migrationDefinitions[0]!.operations[dialect].map((operation) => operation.sql)).toEqual(MIGRATION_BASELINE_GOLDEN_DDL_SNAPSHOT[dialect]);
+      expect(migrationDefinitions[1]!.operations[dialect].map((operation) => operation.sql)).toEqual(MIGRATION_V1_GOLDEN_DDL_SNAPSHOT[dialect]);
     }
     expect(schemaManifest.tables[1]!.columns[2]!.default).toBe("6f1a2b3c-4d5e-4f6a-8b9c-0d1e2f3a4b5c");
     expect(schemaManifest.tables.some((table) => table.name === "file_operations")).toBe(true);
     expect(migrationChecksum(migrationDefinitions[0]!)).toBe(MIGRATION_BASELINE_GOLDEN_CHECKSUM);
+    expect(migrationChecksum(migrationDefinitions[1]!)).toBe(MIGRATION_V1_GOLDEN_CHECKSUM);
 
     const descriptor = migrationDefinitions[0]!;
     expect(migrationChecksum({ ...descriptor, name: "changed" })).not.toBe(MIGRATION_BASELINE_GOLDEN_CHECKSUM);

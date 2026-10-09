@@ -1,38 +1,32 @@
 // Transport and application-state contracts for pi-agent-server clients.
+import type { UsageSnapshot } from "../core/usage-snapshot.js";
+export type { UsageSnapshot, UsageTokens, LastResponseUsage, ExecutionSnapshot } from "../core/usage-snapshot.js";
 
 /**
  * turn 关联字段：同一轮对话的所有 SSE 事件都携带产生它们的 `requestId`，
  * 前端据此把迟到/补发的旧事件与新请求隔离。可选仅用于非 turn 遗留场景。
  */
-export type SseRequestId = { readonly requestId?: string };
+export type { SseRequestId, SseEvent, ModelOutputProgress } from "../shared/events.js";
 
-export type SseEvent =
-  | ({ type: "text_delta"; text: string } & SseRequestId)
-  | ({ type: "thinking_delta"; text: string } & SseRequestId)
-  | ({ type: "tool_start"; toolCallId: string; toolName: string; args: unknown } & SseRequestId)
-  | ({ type: "tool_update"; toolCallId: string; toolName: string; partialResult: unknown } & SseRequestId)
-  | ({ type: "tool_end"; toolCallId: string; toolName: string; result: unknown; isError: boolean } & SseRequestId)
-  | ({ type: "status"; phase: "agent_start" | "turn_start" } & SseRequestId)
-  | ({ type: "queued"; position?: number } & SseRequestId)
-  | ({ type: "usage"; promptTokens: number; completionTokens: number; totalTokens: number; durationMs: number; ttftMs: number } & SseRequestId)
-  | ({ type: "model_failback"; phase: "start" | "end"; attemptId: string; outcome?: "switched" | "no-target" | "failed" | "cancelled"; from?: string; to?: string; reason?: string } & SseRequestId)
-  | ({ type: "error"; message: string } & SseRequestId)
-  | ({ type: "completed" } & SseRequestId)
-  | ({ type: "aborted" } & SseRequestId);
-
-export type UsageStats = {
+export type UsageStats = UsageSnapshot & {
   durationMs: number;
   ttftMs: number;
-  promptTokens: number;
-  completionTokens: number;
-  totalTokens: number;
+  /** null means unavailable; zero is a measured SDK value. */
+  promptTokens: number | null;
+  completionTokens: number | null;
+  totalTokens: number | null;
 };
 
 export type SessionRecord = {
   id: string;
   ownerKey: string;
+  /** Missing fields in older servers mean private/managed. */
+  visibility?: "private" | "shared";
+  origin?: "managed" | "native";
   projectId: string;
   title: string;
+  /** Read-only first user prompt; empty string means the first message had no text. */
+  firstPrompt?: string | null;
   createdAt: number;
   updatedAt: number;
   modelProvider: string | null;
@@ -54,9 +48,11 @@ export type Project = {
   cwd: string;
   /**
    * 默认项目（服务端固定 AGENT_CWD：共享、不可删，id 为服务端 DEFAULT_PROJECT_ID 常量）。
-   * Web 不硬编码任何默认项目 id，一律由该字段从项目列表中推导 active project。
+   * Empty default projects may be omitted; DEFAULT_PROJECT_ID remains a valid creation target.
    */
   isDefault: boolean;
+  canDelete?: boolean;
+  canCreateSession?: boolean;
 };
 
 /** 可用模型信息。 */
@@ -80,11 +76,13 @@ export type ToolCall = {
 
 /** 聊天区按时间顺序的统一条目：消息、思考或工具调用，按 SSE 事件到达顺序交错排列。 */
 export type TimelineItem =
+  | ({ kind: "notification"; id: string } & Omit<import("../shared/events.js").NotificationEvent, "type" | "requestId">)
   | {
       kind: "message";
       id: string;
       role: "user" | "assistant";
       text: string;
+      images?: readonly { mediaType: string; base64: string }[];
       /** 是否仍在流式接收增量（未完成）。 */
       streaming: boolean;
     }

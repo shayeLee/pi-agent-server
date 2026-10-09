@@ -1,11 +1,8 @@
 // 可用模型目录端口：application/server 仅依赖稳定的展示描述，不感知 Pi SDK 模型类型。
 
 /** 可供客户端选择和展示的模型。 */
-export type ModelDescriptor = {
-  provider: string;
-  id: string;
-  name: string;
-};
+export type { ModelDescriptor } from "../../shared/api-types.js";
+import type { ModelDescriptor } from "../../shared/api-types.js";
 
 /** 查询当前可用模型的应用端口。 */
 export interface ModelCatalogPort {

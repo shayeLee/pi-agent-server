@@ -3,7 +3,10 @@
 
 export interface SessionRecord {
   id: string;
-  ownerKey: string; // = identityKey(UserIdentity)，用于按 owner 隔离（needs.md §4.2）
+  ownerKey: string; // Managed ownership; for native sessions this is not an authorization grant.
+  /** Absent on older adapters means private/managed, never shared. */
+  visibility?: "private" | "shared";
+  origin?: "managed" | "native";
   /** 所属项目 id；默认项目恒为 DEFAULT_PROJECT_ID（服务端固定工作目录，见 project-store-port.ts）。 */
   projectId: string;
   title: string;

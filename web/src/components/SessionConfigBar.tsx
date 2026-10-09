@@ -1,3 +1,4 @@
+import { IconSelect } from "./IconSelect.js";
 import type { ModelInfo, SessionRecord } from "pi-agent-server/client";
 
 export type SessionConfigBarProps = {
@@ -19,7 +20,7 @@ export function SessionConfigBar({ session, models, thinkingLevels, onChange }: 
     <div className="session-config" data-testid="session-config">
       <div className="field">
         <label htmlFor="model-select">模型</label>
-        <select
+        <IconSelect
           id="model-select"
           data-testid="model-select"
           aria-label="选择模型"
@@ -35,11 +36,11 @@ export function SessionConfigBar({ session, models, thinkingLevels, onChange }: 
               {m.provider} / {m.name}
             </option>
           ))}
-        </select>
+        </IconSelect>
       </div>
       <div className="field">
         <label htmlFor="thinking-level-select">思考级别</label>
-        <select
+        <IconSelect
           id="thinking-level-select"
           data-testid="thinking-level-select"
           aria-label="选择思考级别"
@@ -52,7 +53,7 @@ export function SessionConfigBar({ session, models, thinkingLevels, onChange }: 
               {l}
             </option>
           ))}
-        </select>
+        </IconSelect>
       </div>
     </div>
   );

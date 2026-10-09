@@ -1,4 +1,4 @@
-// 运行时 Schema Manifest —— projects / sessions / idempotency / file_operations 表、列、逻辑类型、
+// 运行时 Schema Manifest —— projects / sessions / idempotency / file_operations / uploaded_files 表、列、逻辑类型、
 // nullable、default、主键、外键、索引的**唯一手工声明来源**。
 //
 // 设计要点：
@@ -351,7 +351,7 @@ function deepFreeze<T>(value: T): T {
 // ---------------------------------------------------------------------------
 
 /**
- * 完整运行时 Schema Manifest（唯一来源；new-baseline 单一版本）。
+ * v0 发布时的完整 Schema Manifest 快照，作为不可变 migration history 保留。
  * 表顺序即 bootstrap 建表顺序（FK 目标必须先于引用表：projects → sessions → idempotency → file_operations）。
  *
  * 与「当前 DDL」的对应关系（工作包 B/C）：
@@ -365,10 +365,9 @@ function deepFreeze<T>(value: T): T {
  *   key 唯一索引与 claim 索引；
  * - file_operations 刻意不设 FK：projects/sessions 删除提交后，待处理 outbox 必须保留。
  *
- * 新基线迁移（migration-manifest.ts）以本 Manifest 为单一 head：迁移引擎/verify/bootstrap 都是
- * 同一个完整 schema 的消费者，不存在 v0/v1 历史版本。
+ * v0 migration checksum/golden 由 migration-manifest.ts 固定，后续 schema 只追加迁移。
  */
-export const schemaManifest = defineSchema([
+export const initialSchemaManifest = defineSchema([
   {
     name: "projects",
     columns: [
@@ -474,6 +473,81 @@ export const schemaManifest = defineSchema([
     indexes: [
       { name: "idx_file_operations_key", columns: [{ name: "operation_key" }], unique: true },
       { name: "idx_file_operations_claim", columns: [{ name: "state" }, { name: "available_at" }] },
+    ],
+  },
+]);
+
+/** Latest schema after v1. Keep initialSchemaManifest above as the immutable v0 snapshot. */
+export const uploadedFilesSchemaManifest = defineSchema([
+  initialSchemaManifest.tables[0],
+  initialSchemaManifest.tables[1],
+  {
+    ...initialSchemaManifest.tables[2],
+    columns: [
+      ...initialSchemaManifest.tables[2].columns,
+      { name: "fingerprint", type: "text", nullable: true },
+    ],
+  },
+  initialSchemaManifest.tables[3],
+  {
+    name: "uploaded_files",
+    columns: [
+      { name: "id", type: "uuid", nullable: false },
+      { name: "owner_key", type: "text", nullable: false },
+      { name: "project_id", type: "uuid", nullable: false },
+      { name: "upload_key", type: "text", nullable: false },
+      { name: "name", type: "text", nullable: false },
+      { name: "media_type", type: "text", nullable: false },
+      { name: "size", type: "bigint", nullable: false },
+      { name: "checksum", type: "text", nullable: false },
+      { name: "storage_key", type: "text", nullable: false },
+      { name: "agent_path", type: "text", nullable: false },
+      { name: "status", type: "text", nullable: false },
+      { name: "created_at", type: "integer", nullable: false },
+      { name: "session_id", type: "uuid", nullable: true },
+    ],
+    primaryKey: { columns: ["id"] },
+    // Deliberately no project/session FKs: deleting either parent must never erase upload metadata.
+    foreignKeys: [],
+    indexes: [
+      {
+        name: "idx_uploaded_files_upload_key",
+        columns: [{ name: "owner_key" }, { name: "project_id" }, { name: "upload_key" }],
+        unique: true,
+      },
+    ],
+  },
+]);
+
+/** v2: native bindings deliberately have no FK so deletion keeps durable tombstones. */
+export const schemaManifest = defineSchema([
+  uploadedFilesSchemaManifest.tables[0],
+  {
+    ...uploadedFilesSchemaManifest.tables[1],
+    columns: [
+      ...uploadedFilesSchemaManifest.tables[1].columns,
+      { name: "visibility", type: "text", nullable: false, default: "private" },
+      { name: "origin", type: "text", nullable: false, default: "managed" },
+    ],
+  },
+  uploadedFilesSchemaManifest.tables[2],
+  uploadedFilesSchemaManifest.tables[3],
+  uploadedFilesSchemaManifest.tables[4],
+  {
+    name: "native_session_sources",
+    columns: [
+      { name: "source_path", type: "text", nullable: false },
+      { name: "source_id", type: "text", nullable: false },
+      { name: "session_id", type: "uuid", nullable: false },
+      { name: "project_id", type: "uuid", nullable: false },
+      { name: "binding", type: "json", nullable: false },
+      { name: "deleted", type: "integer", nullable: false, default: 0 },
+    ],
+    primaryKey: { columns: ["source_path"] },
+    foreignKeys: [],
+    indexes: [
+      { name: "idx_native_source_id", columns: [{ name: "source_id" }], unique: true },
+      { name: "idx_native_session_id", columns: [{ name: "session_id" }], unique: true },
     ],
   },
 ]);

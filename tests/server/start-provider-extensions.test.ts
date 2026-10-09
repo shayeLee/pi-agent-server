@@ -5,7 +5,7 @@
 // - 显式配置但加载失败（路径不存在）→ 在任何存储/网络资源创建前拒绝启动；
 // - 相对路径 → 拒绝启动（绝对路径约束）。
 
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readdirSync } from "node:fs";import { tmpdir } from "node:os";
+import { mkdtempSync, realpathSync, mkdirSync, rmSync, writeFileSync, readdirSync } from "node:fs";import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, describe, expect, it } from "vitest";
@@ -19,7 +19,7 @@ afterEach(() => {
 });
 
 function makeTempDir(): string {
-  const dir = mkdtempSync(join(tmpdir(), "pi-start-provider-ext-"));
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "pi-start-provider-ext-")));
   cleanups.push(dir);
   return dir;
 }
@@ -69,6 +69,7 @@ function baseConfig(overrides: Partial<StartConfig> = {}): StartConfig {
     port: 0,
     ipAccess: makeTestIpAccess(),
     dataDir: dir,
+    nativeSessionSourceDir: join(dir, "native-fixture"),
     authPath: join(dir, "auth.json"),
     ...overrides,
   };

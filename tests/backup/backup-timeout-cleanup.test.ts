@@ -8,7 +8,7 @@ import { Readable, Writable } from "node:stream";
 import { afterEach, describe, expect, it } from "vitest";
 import { migrationChecksum, migrationDefinitions } from "../../src/storage/migration-manifest.js";
 import { DEFAULT_PROJECT_ID } from "../../src/application/ports/project-store-port.js";
-import { createCanonicalSqliteBaseline } from "./sqlite-fixture.js";
+import { createCanonicalSqliteHead } from "./sqlite-fixture.js";
 import {
   AGE_PROCESS_TIMEOUT_MS,
   createSqliteBackup,
@@ -60,7 +60,7 @@ function baseFixture(prefix: string): {
 function sqliteDb(dataDir: string): string {
   const dbPath = path.join(dataDir, "pi-agent-server.db");
   const db = new DatabaseSync(dbPath);
-  createCanonicalSqliteBaseline(db);
+  createCanonicalSqliteHead(db);
   db.close();
   return dbPath;
 }
@@ -119,7 +119,8 @@ function pgSourceClient(fixture: ReturnType<typeof baseFixture>) {
         const table = values?.[1];
         return { rows: [{ present: table === "schema_migrations" || table === "sessions" }] as unknown as readonly T[] };
       }
-      if (text.includes("FROM \"app_schema\".\"schema_migrations\"")) return { rows: [{ version: 0, name: "initial-schema", checksum: migrationChecksum(migrationDefinitions[0]!), applied_at: 1 }] as unknown as readonly T[] };
+      if (text.includes("FROM \"app_schema\".\"schema_migrations\"")) return { rows: migrationDefinitions.filter(migration => migration.version <= 1).map((migration) => ({ version: migration.version, name: migration.name, checksum: migrationChecksum(migration), applied_at: 1 })) as unknown as readonly T[] };
+      if (text.includes("FROM \"app_schema\".\"uploaded_files\"")) return { rows: [] as unknown as readonly T[] };
       if (text.includes("FROM \"app_schema\".\"sessions\"")) return { rows: [{ id: "session-1", project_id: DEFAULT_PROJECT_ID, agent_kind: "pi", conversation_format: "pi-jsonl-v3", conversation_ref: session }] as unknown as readonly T[] };
       throw new Error(`unexpected fake source query: ${text}`);
     },
@@ -183,7 +184,7 @@ describe("stage timeout cleanup: hung pg_dump child (confirmed settle, zero leak
       pgPool: source.pool,
       pgProcess: hungDump,
       stageTimeoutMs: { pgDump: 400 },
-}, async () => ({ version: 0, pending: 0 })).catch((caught: unknown) => caught);
+}, async () => ({ version: 1, pending: 0 })).catch((caught: unknown) => caught);
     // The rejection happened ONLY after the aborted action really settled:
     // never earlier, and bounded by the confirmed settle (not an unbounded hang).
     expect(settledAt).toBeGreaterThan(0);
@@ -254,7 +255,7 @@ describe("stage timeout cleanup: hung pg_dump child (confirmed settle, zero leak
       pgPool: source.pool,
       pgProcess: adapter,
       stageTimeoutMs: { pgDump: 300 },
-}, async () => ({ version: 0, pending: 0 })).catch((caught: unknown) => caught);
+}, async () => ({ version: 1, pending: 0 })).catch((caught: unknown) => caught);
     // The run promise was NOT settled by the kill error: the gate rejected the
     // timeout only after the killed child's close was confirmed, and only then
     // did the transaction rollback / staging removal run.

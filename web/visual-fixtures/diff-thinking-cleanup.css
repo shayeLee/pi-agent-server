@@ -1,0 +1,7 @@
+/* Isolated scaffold; component styles remain production styles. */
+html, body, #root { min-height: 100%; }
+body { margin: 0; background: var(--bg-page); color: var(--text-primary); }
+.fixture-shell { max-width: 808px; margin: auto; padding: 24px; }
+.fixture-title { font-size: 15px; font-weight: 600; margin-bottom: 16px; }
+.fixture-timeline { padding-top: 16px; }
+@media (max-width: 767px) { .fixture-shell { padding: 16px; } }

@@ -1,4 +1,6 @@
 import { useState } from "react";
+import { IconSelect } from "./IconSelect.js";
+import { Icon } from "./Icon.js";
 import type { EventLogEntry } from "../types.js";
 
 /** 把 unknown 值序列化为可读文本（字符串原样，其它 JSON 美化）。 */
@@ -42,7 +44,7 @@ export function EventLog({ entries, onClear, showHeader = true }: EventLogProps)
         <header className="panel-header">
           <h3>事件流</h3>
           <div className="panel-actions">
-            <select
+            <IconSelect
               data-testid="event-filter"
               value={filter}
               onChange={(e) => setFilter(e.target.value)}
@@ -54,7 +56,7 @@ export function EventLog({ entries, onClear, showHeader = true }: EventLogProps)
                   {t}
                 </option>
               ))}
-            </select>
+            </IconSelect>
             <button data-testid="event-clear" onClick={onClear}>
               清空
             </button>
@@ -62,7 +64,7 @@ export function EventLog({ entries, onClear, showHeader = true }: EventLogProps)
         </header>
       ) : (
         <div className="event-log-toolbar">
-          <select
+          <IconSelect
             data-testid="event-filter"
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
@@ -74,7 +76,7 @@ export function EventLog({ entries, onClear, showHeader = true }: EventLogProps)
                 {t}
               </option>
             ))}
-          </select>
+          </IconSelect>
           <button data-testid="event-clear" onClick={onClear}>
             清空
           </button>
@@ -88,11 +90,12 @@ export function EventLog({ entries, onClear, showHeader = true }: EventLogProps)
         ) : (
           filtered.map((e) => (
             <details key={e.seq} className="event-entry" data-testid={`event-${e.seq}`}>
-              <summary>
+              <summary className="chevron-trigger">
                 <span className="event-seq">#{e.seq}</span>
                 <span className="event-type" data-type={e.type}>
                   {e.type}
                 </span>
+                <Icon name="chevron" className="disclosure-chevron details-chevron" />
                 <span className="event-time">{e.time}</span>
               </summary>
               <pre className="event-data">{stringify(e.data)}</pre>

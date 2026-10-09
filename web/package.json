@@ -24,6 +24,7 @@
     "vitest": "^4.1.10"
   },
   "dependencies": {
+    "lowlight": "^3.3.0",
     "pi-agent-server": "workspace:*",
     "react-markdown": "^10.1.0",
     "remark-gfm": "^4.0.1"

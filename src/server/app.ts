@@ -20,6 +20,7 @@ import {
   normalizeImageInputs,
 } from "../agent/image-input.js";
 import { TURN_TEXT_LIMITS, checkTurnText } from "../core/text-input.js";
+import { DEFAULT_PROJECT_ID } from "../application/ports/index.js";
 import type {
   IdempotencyStorePort,
   ModelCatalogPort,
@@ -45,6 +46,7 @@ import {
 } from "./ops-status.js";
 import {
   FORBIDDEN_BODY,
+  ROUTE_PERMISSIONS,
   projectAccessCapabilities,
   requirePermission,
   routeRbacOnRequest,
@@ -53,6 +55,8 @@ import { formatSseEvent } from "./sse-format.js";
 import { nextBackpressureState, SSE_BACKPRESSURE_THRESHOLD } from "./sse-backpressure.js";
 import { defaultSseSocket, type SseReplyRaw, type SseRequestRaw, type SseSocket } from "./sse-socket.js";
 import { FilePreviewError, previewProjectFile } from "./session-file-preview.js";
+import { ATTACHMENT_MAX_BYTES } from "../attachments/file-policy.js";
+import { UploadService } from "../application/upload-service.js";
 
 export type ServerDeps = {
   sessions: SessionStorePort;
@@ -63,6 +67,8 @@ export type ServerDeps = {
    */
   ipAccess: IpAccessResolveInput;
   projects: ProjectStorePort;
+  /** Optional only for custom test hosts; production injects a configured upload service. */
+  uploads?: UploadService;
   defaultProjectCwd: string;
   defaultProjectName?: string;
   modelCatalog?: ModelCatalogPort;
@@ -72,6 +78,7 @@ export type ServerDeps = {
   createAdapter: (sessionId: string) => Promise<AgentAdapter>;
   /** 生产组合根注入的通用会话存储 registry；用于未实例化会话的只读导出。 */
   conversationStorage?: ConversationStorageRegistry;
+  nativeSessions?: import("../application/ports/native-session-port.js").NativeSessionPort;
   /**
    * 可注入的 RuntimeRegistry（默认内部创建）：测试注入共享 registry 以便预置 runtime
    * 验证 SSE viewer 已有 runtime 的订阅路径；生产组合不传。
@@ -134,6 +141,7 @@ const MESSAGES_BODY_SCHEMA = {
     requestId: { type: "string", maxLength: TURN_TEXT_LIMITS.maxRequestIdLength },
     prompt: { type: "string", maxLength: TURN_TEXT_LIMITS.maxPromptLength },
     parentId: { type: "string" },
+    fileIds: { type: "array", maxItems: 5, items: { type: "string", minLength: 1, maxLength: 64 } },
     images: {
       type: "array",
       maxItems: IMAGE_INPUT_LIMITS.maxImages,
@@ -150,6 +158,17 @@ const MESSAGES_BODY_SCHEMA = {
   },
   required: ["requestId", "prompt"],
   additionalProperties: false,
+} as const;
+const STEERING_BODY_SCHEMA = {
+  type: "object",
+  properties: { text: { type: "string", maxLength: TURN_TEXT_LIMITS.maxPromptLength },
+    controlId: { type: "string", minLength: 1, maxLength: 128 },
+    acknowledgementId: { type: "string", minLength: 1, maxLength: 128 },
+    requestId: MESSAGES_BODY_SCHEMA.properties.requestId,
+    images: MESSAGES_BODY_SCHEMA.properties.images },
+  required: ["text"], additionalProperties: false,
+  anyOf: [{ required: ["controlId", "acknowledgementId", "requestId"] },
+    { not: { anyOf: [{ required: ["controlId"] }, { required: ["acknowledgementId"] }, { required: ["requestId"] }, { required: ["images"] }] } }],
 } as const;
 const TEXT_BODY_SCHEMA = {
   type: "object",
@@ -194,6 +213,7 @@ const SESSION_CONFIG_BODY_SCHEMA = {
 const SESSIONS_BODY_SCHEMA = {
   type: "object",
   properties: {
+    createRequestId: { type: "string", minLength: 1, maxLength: 128 },
     title: { type: "string" },
     projectId: { type: "string" },
     ...MODEL_CONFIG_PROPERTIES,
@@ -224,6 +244,15 @@ const CONFLICT = (reply: FastifyReply, code?: "MODEL_FAILBACK_IN_PROGRESS") =>
 
 function hashIdentity(identity: UserIdentity): string {
   return createHash("sha256").update(identityKey(identity)).digest("hex").slice(0, 16);
+}
+
+/** Opaque, owner-scoped UUID for an opt-in creation retry key; clients cannot choose a session ID. */
+function creationSessionId(ownerKey: string, key: string): string {
+  const bytes = createHash("sha256").update("pi-session-create-v1\0").update(ownerKey).update("\0").update(key).digest();
+  bytes[6] = (bytes[6]! & 0x0f) | 0x40;
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
+  const hex = bytes.subarray(0, 16).toString("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
 // WP5D-2 请求日志脱敏（安全 serializer，纵深防线）：Fastify 默认 req serializer 会输出
@@ -273,6 +302,9 @@ export function buildApp(deps: ServerDeps): FastifyInstance {
       ...(deps.requestLogStream ? { stream: deps.requestLogStream } : {}),
     },
   });
+  // A single raw, bounded file per request; no multipart parser or new dependency.
+  app.addContentTypeParser("application/octet-stream", { parseAs: "buffer", bodyLimit: ATTACHMENT_MAX_BYTES },
+    (_request, body, done) => done(null, body));
   const concurrency = deps.concurrency ?? new ConcurrencyController(DEFAULT_CONCURRENCY);
   const registry = deps.registry ?? new RuntimeRegistry({
     concurrency,
@@ -310,6 +342,9 @@ export function buildApp(deps: ServerDeps): FastifyInstance {
     systemPromptResolver: deps.systemPromptResolver,
     capabilityVersions: deps.capabilityVersions,
     conversationStorage: deps.conversationStorage,
+    nativeSessions: deps.nativeSessions,
+    uploads: deps.uploads,
+    idempotencyRepo: deps.idempotencyRepo,
     createId: randomUUID,
     now: Date.now,
   });
@@ -429,7 +464,35 @@ export function buildApp(deps: ServerDeps): FastifyInstance {
       reply.header("cache-control", "private, no-store").send(projectAccessCapabilities(request.access.role)),
     );
     api.get("/models", { ...requirePermission("models:list") }, async () => sessions.models());
-    api.get("/projects", { ...requirePermission("projects:list") }, async (request) => sessions.listProjects(ownerKeyOf(request)));
+    api.get("/projects", { ...requirePermission("projects:list") }, async (request) =>
+      (await sessions.listProjects(ownerKeyOf(request))).map(project => ({ ...project,
+        canCreateSession: project.canCreateSession !== false && ROUTE_PERMISSIONS["sessions:create"].includes(request.access.role),
+      })));
+    api.post<{ Body: Buffer }>("/files", { ...requirePermission("files:upload"), bodyLimit: ATTACHMENT_MAX_BYTES }, async (request, reply) => {
+      if (!deps.uploads) return reply.code(503).send({ statusCode: 503, error: "Service Unavailable", message: "文件上传尚未配置" });
+      const header = (key: string): string | null => {
+        const value = request.headers[key];
+        return typeof value === "string" ? value : null;
+      };
+      let name: string;
+      try { name = decodeURIComponent(header("x-upload-name") ?? ""); }
+      catch { return reply.code(400).send({ statusCode: 400, error: "Bad Request", message: "文件名非法" }); }
+      if (!Buffer.isBuffer(request.body)) return reply.code(400).send({ statusCode: 400, error: "Bad Request", message: "仅接受二进制原文件" });
+      const result = await deps.uploads.upload({
+        ownerKey: ownerKeyOf(request), projectId: header("x-upload-project-id") ?? "",
+        uploadKey: header("x-upload-key") ?? "", originalName: name,
+        declaredMediaType: header("x-upload-type") ?? "application/octet-stream",
+        kind: header("x-upload-kind") ?? "", bytes: request.body,
+      });
+      if (result.kind === "ready") {
+        const file = result.file;
+        return reply.code(201).send({ fileId: file.fileId, name: file.name, mediaType: file.mediaType,
+          size: file.size, status: file.status, agentPath: file.agentPath });
+      }
+      const status = result.kind === "not-found" ? 404 : result.kind === "invalid" ? 400 :
+        result.kind === "conflict" ? 409 : result.kind === "quota" ? 507 : 503;
+      return reply.code(status).send({ statusCode: status, error: "Upload Failed", message: result.message });
+    });
     api.post<{ Body: { name: string; cwd: string } }>(
       "/projects",
       { schema: { body: CREATE_PROJECT_BODY_SCHEMA }, ...requirePermission("projects:create") },
@@ -451,11 +514,30 @@ export function buildApp(deps: ServerDeps): FastifyInstance {
       }
     });
 
-    api.post<{ Body: { title?: string; projectId?: string; modelProvider?: string; modelId?: string; thinkingLevel?: string } }>(
+    api.post<{ Body: { createRequestId?: string; title?: string; projectId?: string; modelProvider?: string; modelId?: string; thinkingLevel?: string } }>(
       "/sessions",
       { schema: { body: SESSIONS_BODY_SCHEMA }, ...requirePermission("sessions:create") },
       async (request, reply) => {
-        const result = await sessions.createSession(ownerKeyOf(request), request.body);
+        const { createRequestId, ...input } = request.body;
+        const owner = ownerKeyOf(request);
+        const sessionId = createRequestId === undefined ? undefined : creationSessionId(owner, createRequestId);
+        const sameRequest = (session: { projectId: string; title: string; modelProvider: string | null; modelId: string | null; thinkingLevel: string | null }) =>
+          session.projectId === (input.projectId ?? DEFAULT_PROJECT_ID) &&
+          session.title === (input.title ?? "") &&
+          session.modelProvider === (input.modelProvider ?? null) &&
+          session.modelId === (input.modelId ?? null) &&
+          session.thinkingLevel === (input.thinkingLevel ?? null);
+        if (sessionId) {
+          const previous = await sessions.getSession(owner, sessionId);
+          if (previous) return sameRequest(previous)
+            ? reply.code(200).send(previous)
+            : reply.code(409).send({ statusCode: 409, error: "Conflict", message: "同一 createRequestId 不能用于不同配置" });
+        }
+        const result = await sessions.createSession(owner, sessionId ? { ...input, sessionId } : input);
+        if (result.kind === "id-conflict" && sessionId) {
+          const previous = await sessions.getSession(owner, sessionId);
+          if (previous && sameRequest(previous)) return reply.code(200).send(previous);
+        }
         switch (result.kind) {
           case "created":
             return reply.code(201).send(result.session);
@@ -473,8 +555,13 @@ export function buildApp(deps: ServerDeps): FastifyInstance {
         }
       },
     );
-    api.get<{ Querystring: { projectId?: string } }>("/sessions", { ...requirePermission("sessions:list") }, async (request) =>
-      sessions.listSessions(ownerKeyOf(request), request.query.projectId));
+    api.get<{ Querystring: { projectId?: string } }>("/sessions", { ...requirePermission("sessions:list") }, async (request, reply) =>
+      sessions.listSessions(ownerKeyOf(request), request.query.projectId, warnings => {
+        // Fixed, bounded codes only: never paths, header values or transcript content.
+        const allowed = ["native-source-unavailable", "native-source-skipped", "native-scan-truncated"];
+        const safe = allowed.filter(code => warnings.includes(code));
+        if (safe.length) reply.header("X-Pi-Native-Scan-Warnings", safe.join(","));
+      }));
     api.delete<{ Params: { id: string } }>("/sessions/:id", { ...requirePermission("sessions:delete") }, async (request, reply) =>
       (await sessions.deleteSession(ownerKeyOf(request), request.params.id)) ? reply.code(204).send() : NOT_FOUND(reply));
     api.patch<{ Params: { id: string }; Body: { title: string } }>(
@@ -504,7 +591,7 @@ export function buildApp(deps: ServerDeps): FastifyInstance {
         }
       },
     );
-    api.post<{ Params: { id: string }; Body: { requestId: string; prompt: string; parentId?: string; images?: { mediaType: string; base64: string }[] } }>(
+    api.post<{ Params: { id: string }; Body: { requestId: string; prompt: string; parentId?: string; fileIds?: string[]; images?: { mediaType: string; base64: string }[] } }>(
       "/sessions/:id/messages",
       { schema: { body: MESSAGES_BODY_SCHEMA }, ...requirePermission("sessions:send-message") },
       async (request, reply) => {
@@ -523,7 +610,7 @@ export function buildApp(deps: ServerDeps): FastifyInstance {
         // 仅图片消息是公开会话通道的合法输入：至少一张图片通过权威校验时允许空 prompt；
         // 无图消息和插件 runTurn 仍必须包含非空文本。
         const promptCheck = checkTurnText(request.body.prompt, TURN_TEXT_LIMITS.maxPromptLength, {
-          allowEmpty: images.images.length > 0,
+          allowEmpty: images.images.length > 0 || (request.body.fileIds?.length ?? 0) > 0,
         });
         if (!promptCheck.ok) {
           return reply.code(400).send({ statusCode: 400, error: "Bad Request", message: "prompt 非法" });
@@ -533,11 +620,20 @@ export function buildApp(deps: ServerDeps): FastifyInstance {
           images: images.images.length > 0 ? [...images.images] : undefined,
         });
         if (!result.found) return NOT_FOUND(reply);
+        if ("fileError" in result) {
+          const status = result.fileError === "invalid" ? 400 : result.fileError === "not-found" ? 404 :
+            result.fileError === "conflict" ? 409 : 503;
+          return reply.code(status).send({ statusCode: status, error: "File Rejected", message: result.message });
+        }
         switch (result.decision.kind) {
           case "run": return reply.code(202).send({ status: "accepted" });
           case "queued": return reply.code(202).send({ status: "queued", position: result.decision.position });
           case "rejected": return reply.code(429).send({ statusCode: 429, error: "Too Many Requests", message: result.decision.reason === "user-queue-full" ? "用户队列已满" : "服务过载，请稍后重试" });
-          case "conflict": return reply.code(409).send({ statusCode: 409, error: "Conflict", message: result.decision.reason === "poisoned" ? "会话任务异常，请新建会话" : result.decision.reason === "payload-mismatch" ? "同一 requestId 不能用于不同内容" : "会话已有活动任务" });
+          case "conflict": return reply.code(409).send({ statusCode: 409, error: "Conflict",
+            ...(result.decision.reason === "idempotency-unknown" ? { code: "REQUEST_STATUS_UNKNOWN" } : {}),
+            message: result.decision.reason === "poisoned" ? "会话任务异常，请新建会话" :
+              result.decision.reason === "payload-mismatch" ? "同一 requestId 不能用于不同内容" :
+              result.decision.reason === "idempotency-unknown" ? "原请求已登记但执行结果未确认，请先核对历史，不得自动重发" : "会话已有活动任务" });
           case "done": return reply.code(200).send(result.decision.result);
         }
       },
@@ -568,12 +664,17 @@ export function buildApp(deps: ServerDeps): FastifyInstance {
       ["/sessions/:id/steer", "steer"],
       ["/sessions/:id/follow-ups", "follow-up"],
     ] as const) {
-      api.post<{ Params: { id: string }; Body: { text: string } }>(
+      api.post<{ Params: { id: string }; Body: { text: string } & Partial<import("../shared/steering.js").SteeringInput> }>(
         path,
-        { schema: { body: TEXT_BODY_SCHEMA }, ...requirePermission("sessions:control") },
+        { schema: { body: operation === "steer" ? STEERING_BODY_SCHEMA : TEXT_BODY_SCHEMA }, ...requirePermission("sessions:control") },
         async (request, reply) => {
-          const result = await sessions.controlSession(ownerKeyOf(request), request.params.id, operation, request.body.text);
-          return result === "not-found" ? NOT_FOUND(reply) : result.kind === "ok" ? reply.code(204).send() : CONFLICT(reply);
+          const normalized = normalizeImageInputs(request.body.images);
+          if (!normalized.ok) return reply.code(400).send({ statusCode: 400, error: "Bad Request", message: IMAGE_INPUT_REJECTION_MESSAGES[normalized.reason] });
+          const steering = request.body.controlId ? { controlId: request.body.controlId,
+            acknowledgementId: request.body.acknowledgementId!, requestId: request.body.requestId!,
+            images: [...normalized.images] } : undefined;
+          const result = await sessions.controlSession(ownerKeyOf(request), request.params.id, operation, request.body.text, undefined, steering);
+          return result === "not-found" ? NOT_FOUND(reply) : result.kind === "ok" ? reply.code(steering ? 202 : 204).send() : CONFLICT(reply);
         },
       );
     }
@@ -669,6 +770,13 @@ export function buildApp(deps: ServerDeps): FastifyInstance {
         releaseSlot();
         throw new Error("会话事件启动失败", { cause: error });
       }
+      let outputAllowed: () => boolean;
+      try {
+        outputAllowed = await sessions.prepareOutputGuard(ownerKeyOf(request), request.params.id);
+      } catch (error) {
+        releaseSlot();
+        throw new Error("会话事件启动失败", { cause: error });
+      }
       const { events } = found;
       const lastEventId = parseLastEventId(request.headers["last-event-id"]);
       const clientEpoch = request.headers["x-client-epoch"];
@@ -740,6 +848,12 @@ export function buildApp(deps: ServerDeps): FastifyInstance {
       }
       function writeRaw(data: string): boolean {
         if (cleaned) return false;
+        if (!outputAllowed()) {
+          shouldClose = true;
+          safeClose();
+          void found.runtime.abort().catch(() => {});
+          return false;
+        }
         let ok: boolean;
         try {
           ok = socket.write(data);
@@ -765,7 +879,7 @@ export function buildApp(deps: ServerDeps): FastifyInstance {
       }, effectiveLastEventId);
       subscribed = true;
       maybeClose();
-      if (cleaned) return;
+      if (cleaned) { unsubscribe(); return; }
       unregisterClose = events.registerClose(() => { safeClose(); });
     });
   }, { prefix: "/v1" });

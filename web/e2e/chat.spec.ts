@@ -32,7 +32,8 @@ test("端到端：会话列表展示与删除", async ({ page }) => {
   await page.reload();
   await expect(page.getByTestId("new-session")).toBeVisible();
 
-  // 会话列表里有会话（delete- 按钮说明有会话项）
+  // 删除操作仅在会话项悬停或获得焦点时显示。
+  await page.locator(".session-item").first().hover();
   const deleteButtons = page.locator('[data-testid^="delete-"]');
   await expect(deleteButtons.first()).toBeVisible();
   const before = await deleteButtons.count();

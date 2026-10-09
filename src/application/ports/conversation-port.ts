@@ -38,6 +38,8 @@ export type PreparedAgentSession = {
    * durably addressable through the session row and its cleanup outbox entry.
    */
   readonly proposedConversation: ConversationDescriptor & { readonly conversationRef: string };
+  /** Source-owned tombstone authority when files are retained rather than unlinked. */
+  readonly sourceReservationKey?: string;
   readonly open: () => Promise<OpenedAgentSession>;
 };
 
@@ -88,6 +90,10 @@ export interface ConversationStorage {
   readonly conversationFormat: string;
   /** Read-only export; the implementation validates session/project ownership context. */
   readExport(conversation: ConversationDescriptor, context: ConversationReadContext): Promise<unknown>;
+  /** Read only the first persisted user prompt, without exporting full history or creating a runtime. */
+  readFirstPrompt?(conversation: ConversationDescriptor, context: ConversationReadContext): Promise<string | null>;
+  /** Display-only native metadata; never persists a rename into the index. */
+  readTitle?(conversation: ConversationDescriptor, context: ConversationReadContext): Promise<string | null>;
   /** Return a cleanup operation or null for an unmaterialized conversation. */
   planCleanup(input: CleanupConversationInput): ConversationCleanupPlan | null;
   /** DB-only lexical reference analysis for reconcile. */

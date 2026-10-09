@@ -1,0 +1,47 @@
+// Pure wire types shared by the server and browser clients.
+import type { UsageSnapshot } from "../core/usage-snapshot.js";
+
+/** Dedicated durable display marker; never infer notifications from user text. */
+export type SubagentNotification = {
+  version: 1;
+  notificationId: string;
+  runIds: string[];
+  text: string;
+};
+export type NotificationEvent = SubagentNotification & {
+  type: "notification";
+  entryId: string;
+  timestamp: string;
+  requestId?: never;
+};
+
+/** Character-based delivery estimate, never SDK token usage. */
+export type ModelOutputProgress = {
+  ordinal: number;
+  phase: "start" | "delta" | "end";
+  tokensPerSecondEstimate: number | null;
+  includesThinking: boolean;
+  /** SSE replay must not renew model activity. */
+  replay?: boolean;
+  /** Age of the last source delta at publication (trailing flush is not new output). */
+  activityAgeMs?: number;
+};
+
+/** Turn correlation; optional only for legacy/non-turn events. */
+export type SseRequestId = { readonly requestId?: string };
+export type SseEvent =
+  | NotificationEvent
+  | ({ type: "steering_consumed" } & import("./steering.js").SteeringIdentity)
+  | ({ type: "model_output_progress" } & ModelOutputProgress & SseRequestId)
+  | ({ type: "text_delta"; text: string } & SseRequestId)
+  | ({ type: "thinking_delta"; text: string } & SseRequestId)
+  | ({ type: "tool_start"; toolCallId: string; toolName: string; args: unknown } & SseRequestId)
+  | ({ type: "tool_update"; toolCallId: string; toolName: string; partialResult: unknown } & SseRequestId)
+  | ({ type: "tool_end"; toolCallId: string; toolName: string; result: unknown; isError: boolean } & SseRequestId)
+  | ({ type: "status"; phase: "agent_start" | "turn_start"; execution?: import("../core/usage-snapshot.js").ExecutionSnapshot | null } & SseRequestId)
+  | ({ type: "queued"; position?: number } & SseRequestId)
+  | ({ type: "usage"; promptTokens: number | null; completionTokens: number | null; totalTokens: number | null; durationMs: number; ttftMs: number } & UsageSnapshot & SseRequestId)
+  | ({ type: "model_failback"; phase: "start" | "end"; attemptId: string; outcome?: "switched" | "no-target" | "failed" | "cancelled"; from?: string; to?: string; reason?: string } & SseRequestId)
+  | ({ type: "error"; message: string } & SseRequestId)
+  | ({ type: "completed" } & SseRequestId)
+  | ({ type: "aborted" } & SseRequestId);

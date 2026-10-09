@@ -418,6 +418,27 @@ describe("HTTP 层：messages / steer / follow-ups / abort（needs.md §4.2）",
       expect((await post(app, `/v1/sessions/${id}/abort`, TOKEN)).statusCode).toBe(409);
     });
 
+    it("correlated steer admits empty 202, deduplicates and rejects mismatched primary/identity", async () => {
+      const { app, adapters } = await makeApp(async () => new ManualAdapter());
+      const id = await createSession(app, TOKEN);
+      await post(app, `/v1/sessions/${id}/messages`, TOKEN, { requestId: "primary", prompt: "same" });
+      const input = { text: "same", controlId: "control", acknowledgementId: "token", requestId: "primary" };
+      try {
+        const admission = await post(app, `/v1/sessions/${id}/steer`, TOKEN, input);
+        expect(admission.statusCode).toBe(202); expect(admission.body).toBeUndefined();
+        expect((await post(app, `/v1/sessions/${id}/steer`, TOKEN, input)).statusCode).toBe(202);
+        for (const mismatch of [{ requestId: "wrong" }, { acknowledgementId: "wrong" }, { text: "different" }]) {
+          expect((await post(app, `/v1/sessions/${id}/steer`, TOKEN, { ...input, ...mismatch })).statusCode).toBe(409);
+        }
+        expect((await post(app, `/v1/sessions/${id}/steer`, TOKEN, { text: "same", controlId: "partial" })).statusCode).toBe(400);
+        expect((await post(app, `/v1/sessions/${id}/steer`, OTHER_TOKEN, input)).statusCode).toBe(404);
+        expect((adapters.get(id) as ManualAdapter).calls.filter(call => call.method === "steer")).toHaveLength(1);
+      } finally {
+        await post(app, `/v1/sessions/${id}/abort`, TOKEN);
+        (adapters.get(id) as ManualAdapter).finishStream(); await flush();
+      }
+    });
+
     it("流式中 steer/follow-up 返回 204 并转发 adapter", async () => {
       const { app, adapters } = await makeApp(async () => new ManualAdapter());
       const id = await createSession(app, TOKEN);
@@ -593,9 +614,11 @@ describe("HTTP 层：messages / steer / follow-ups / abort（needs.md §4.2）",
         async () => new MockAgentAdapter(),
         { db, idempotencyRepo },
       );
-      const second = await post(app2, `/v1/sessions/${id}/messages`, TOKEN, { requestId: "r1", prompt: "重复" });
+      const second = await post(app2, `/v1/sessions/${id}/messages`, TOKEN, { requestId: "r1", prompt: "首次" });
       expect(second.statusCode).toBe(200);
       expect(second.body).toEqual({ status: "completed" });
+      const mismatch = await post(app2, `/v1/sessions/${id}/messages`, TOKEN, { requestId: "r1", prompt: "不同内容" });
+      expect(mismatch.statusCode).toBe(409);
 
       const adapter2 = adapters2.get(id) as MockAgentAdapter;
       expect(adapter2.calls.filter((c) => c.method === "prompt")).toHaveLength(0);

@@ -37,6 +37,35 @@ describe("SSE 背压判定（纯逻辑）", () => {
 });
 
 describe("SSE 背压集成（fake socket）", () => {
+  it("rechecks the transport capability during replay and never writes content after revocation", async () => {
+    const { projects, sessions } = await makeInitializedMemoryDb({ cwd: "/tmp/sse-revoke" });
+    let allowed = true;
+    const writes: string[] = [];
+    const app = buildApp({ sessions, projects, defaultProjectCwd: "/tmp/sse-revoke", ipAccess: makeTestIpAccess(),
+      onSessionServiceReady: service => {
+        // The event-bus proxy's guard remains valid: exercise the independent transport guard.
+        let prepared = 0;
+        service.prepareOutputGuard = async () => ++prepared === 1 ? () => true : () => allowed;
+      },
+      sseSocketFactory: (reply, request) => ({ writeHead: (status, headers) => reply.writeHead(status, headers),
+        flushHeaders: () => reply.flushHeaders(), onClose: cb => request.on("close", cb), end: () => reply.end(),
+        write: data => { writes.push(data); allowed = false; return true; } }),
+      createAdapter: async () => new MockAgentAdapter([
+        { type: "agent_start" },
+        { type: "message_update", message: {}, assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "revoked-content" } },
+        { type: "agent_end", messages: [], willRetry: false },
+      ]),
+    });
+    try {
+      const created = await app.inject({ method: "POST", url: "/v1/sessions", payload: { title: "revoke" } });
+      const id = created.json().id;
+      await app.inject({ method: "POST", url: `/v1/sessions/${id}/messages`, payload: { requestId: "r1", prompt: "hello" } });
+      await new Promise(resolve => setTimeout(resolve, 0));
+      await app.inject({ method: "GET", url: `/v1/sessions/${id}/events`, headers: { "last-event-id": "0" } });
+      expect(writes).toHaveLength(1);
+      expect(writes.join("")).not.toContain("revoked-content");
+    } finally { await app.close(); }
+  });
   async function makeAppWithSlowSocket() {
     const { projects, sessions } = await makeInitializedMemoryDb({ cwd: "/tmp/backpressure" });
     let ended = false;

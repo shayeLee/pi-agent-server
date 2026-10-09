@@ -36,6 +36,13 @@ const timeline: TimelineItem[] = [
 function setup(partial: Partial<Parameters<typeof Chat>[0]> = {}) {
   const props = {
     session,
+    projects: [
+      { id: "p1", name: "我的仓库", cwd: "/workspace/repo", isDefault: false },
+      { id: "p2", name: "示例项目", cwd: "/workspace/example", isDefault: false },
+    ],
+    activeProjectId: "p1",
+    onSelectProject: vi.fn(),
+    canCreateSession: true,
     timeline,
     streaming: false,
     queued: false,
@@ -47,6 +54,7 @@ function setup(partial: Partial<Parameters<typeof Chat>[0]> = {}) {
     connected: true,
     stats: null,
     onSend: vi.fn(),
+    onAddFile: vi.fn(async () => undefined),
     onSteer: vi.fn(),
     onFollowUp: vi.fn(),
     onAbort: vi.fn(),
@@ -54,17 +62,115 @@ function setup(partial: Partial<Parameters<typeof Chat>[0]> = {}) {
     onConfigChange: vi.fn(),
     ...partial,
   };
-  render(<Chat {...props} />);
-  return props;
+  const view = render(<Chat {...props} />);
+  return { ...props, update: (partial: Partial<Parameters<typeof Chat>[0]>) => {
+    Object.assign(props, partial);
+    view.rerender(<Chat {...props} />);
+  } };
 }
 
 describe("Chat（聊天区）", () => {
-  it("渲染时间线（user + assistant + 工具卡片）", () => {
+  function metrics() {
+    const el = screen.getByTestId("chat-body");
+    let height = 1000;
+    Object.defineProperties(el, {
+      scrollHeight: { configurable: true, get: () => height },
+      clientHeight: { configurable: true, value: 300 },
+    });
+    return { el, grow: () => { height += 200; } };
+  }
+
+  it("follows growth, preserves upward reading across updates, resumes at bottom or via SVG button", () => {
+    const props = setup();
+    const { el, grow } = metrics();
+    props.update({ timeline: [...timeline] });
+    // jsdom does not clamp scrollTop like a browser.
+    el.scrollTop = 700; fireEvent.scroll(el);
+    grow(); props.update({ timeline: [...timeline] });
+    expect(el.scrollTop).toBe(1200);
+    el.scrollTop = 900; fireEvent.scroll(el);
+    el.scrollTop = 300; fireEvent.scroll(el);
+    for (let i = 0; i < 3; i++) {
+      grow(); props.update({ timeline: [...timeline] });
+      expect(el.scrollTop).toBe(300);
+    }
+    const button = screen.getByRole("button", { name: "回到最新" });
+    expect(button).toHaveAttribute("aria-label", "回到最新");
+    expect(button).toHaveAttribute("title", "回到最新");
+    expect(button).toHaveTextContent("");
+    expect(button.querySelector('svg[data-icon="down"]')).toHaveAttribute("aria-hidden", "true");
+    const slot = button.parentElement;
+    fireEvent.click(button);
+    expect(el.scrollTop).toBe(1800);
+    expect(screen.queryByRole("button", { name: "回到最新" })).not.toBeInTheDocument();
+    expect(document.querySelector(".chat-latest-row")).toBe(slot);
+    el.scrollTop = 1500; fireEvent.scroll(el);
+    grow(); props.update({ timeline: [...timeline] });
+    expect(el.scrollTop).toBe(2000);
+    el.scrollTop = 1700; fireEvent.scroll(el);
+    el.scrollTop = 200; fireEvent.scroll(el);
+    el.scrollTop = 1680; fireEvent.scroll(el); // within 48px
+    grow(); props.update({ timeline: [...timeline] });
+    expect(el.scrollTop).toBe(2200);
+  });
+
+  it("only unmodified, non-composing End on the body resumes following", () => {
+    const props = setup();
+    const { el, grow } = metrics();
+    props.update({ timeline: [...timeline] });
+    el.scrollTop = 700; fireEvent.scroll(el);
+    el.scrollTop = 100; fireEvent.scroll(el);
+    const input = screen.getByTestId("composer-input");
+    const child = screen.getByRole("button", { name: /工具调用 weather/ });
+    expect(fireEvent.keyDown(input, { key: "End" })).toBe(true);
+    expect(fireEvent.keyDown(child, { key: "End" })).toBe(true);
+    for (const modifier of ["altKey", "ctrlKey", "metaKey", "shiftKey", "isComposing"]) {
+      expect(fireEvent.keyDown(el, { key: "End", [modifier]: true })).toBe(true);
+    }
+    grow(); props.update({ timeline: [...timeline] });
+    expect(el.scrollTop).toBe(100);
+    expect(fireEvent.keyDown(el, { key: "End" })).toBe(false);
+    expect(el.scrollTop).toBe(1200);
+    for (let i = 0; i < 4; i++) {
+      grow(); props.update({ timeline: [...timeline] });
+      expect(el.scrollTop).toBe(1400 + i * 200);
+    }
+  });
+
+  it("waits for new-session history, initializes once, and does not follow manual disclosure", () => {
+    const props = setup();
+    const { el, grow } = metrics();
+    props.update({ timeline: [...timeline] });
+    el.scrollTop = 700; fireEvent.scroll(el);
+    fireEvent.click(screen.getByRole("button", { name: /工具调用 weather/ }));
+    grow(); props.update({ timeline: [...timeline] });
+    expect(el.scrollTop).toBe(700);
+    props.update({ session: { ...session, id: "s2" }, timeline: [], historyLoading: true });
+    props.update({ historyLoading: false });
+    el.scrollTop = 0;
+    props.update({ timeline: [...timeline] });
+    expect(el.scrollTop).toBe(1200);
+    el.scrollTop = 900; fireEvent.scroll(el);
+    el.scrollTop = 200; fireEvent.scroll(el);
+    grow(); props.update({ timeline: [...timeline], session: { ...session, id: "s2" } });
+    expect(el.scrollTop).toBe(200);
+  });
+
+  it("按时间线原顺序区分用户、助手和工具行（无来源槽标签）", () => {
     setup();
     expect(screen.getByText("帮我查天气")).toBeInTheDocument();
     expect(screen.getByText("好的")).toBeInTheDocument();
     expect(screen.getByTestId("tool-call-card")).toBeInTheDocument();
     expect(screen.getByTestId("tool-name")).toHaveTextContent("weather");
+    expect(screen.getByTestId("message-list").children).toHaveLength(3);
+    expect(screen.getByTestId("message-list").children[0]).toHaveClass("row-user");
+    expect(screen.getByTestId("message-list").children[1]).toHaveClass("row-assistant");
+    expect(screen.getByTestId("message-list").children[2]).toHaveClass("tool-call");
+    // Reading-first：旧 Crossband 固定来源槽及其标签已废除。
+    expect(screen.queryByText("用户原文")).not.toBeInTheDocument();
+    expect(screen.queryByText("模型正文")).not.toBeInTheDocument();
+    expect(screen.queryByText("工具过程")).not.toBeInTheDocument();
+    expect(document.querySelector(".band-source")).toBeNull();
   });
 
   it("空时间线显示空状态", () => {
@@ -72,9 +178,49 @@ describe("Chat（聊天区）", () => {
     expect(screen.getByTestId("chat-empty")).toBeInTheDocument();
   });
 
-  it("未选择会话显示提示", () => {
+  it("未选择会话显示可操作的说明而不添加虚假快捷按钮", () => {
     setup({ session: null });
-    expect(screen.getByTestId("no-session-hint")).toBeInTheDocument();
+    const welcome = screen.getByTestId("no-session-hint");
+    expect(welcome).toHaveTextContent("选择项目并发送第一条消息");
+    expect(welcome.querySelector("button")).toBeNull();
+  });
+
+  it("无会话时显示项目选择器并通过 onSend 提交创建消息", () => {
+    const props = setup({ session: null, timeline: [] });
+    const projectSelect = screen.getByTestId("composer-project-select");
+    expect(screen.queryByText("新会话设置")).not.toBeInTheDocument();
+    expect(projectSelect).toHaveAttribute("data-value", "p1");
+    expect(projectSelect).toHaveTextContent("我的仓库");
+    expect(screen.queryByText("工作区内修改")).not.toBeInTheDocument();
+
+    fireEvent.click(projectSelect);
+    fireEvent.click(screen.getByRole("option", { name: "示例项目" }));
+    expect(props.onSelectProject).toHaveBeenCalledWith("p2");
+    fireEvent.change(screen.getByTestId("composer-input"), { target: { value: "创建前提问" } });
+    fireEvent.click(screen.getByTestId("send-button"));
+    expect(props.onSend).toHaveBeenCalledWith("创建前提问");
+  });
+
+  it("项目未加载时隐藏无会话 composer", () => {
+    setup({ session: null, projects: null, canCreateSession: false });
+    expect(screen.queryByTestId("composer")).not.toBeInTheDocument();
+  });
+
+  it("没有有效项目时禁用创建和项目选择", () => {
+    setup({
+      session: null,
+      projects: [{ id: "p1", name: "我的仓库", cwd: "/workspace/repo", isDefault: false }],
+      activeProjectId: null,
+      canCreateSession: false,
+    });
+    expect(screen.getByTestId("composer-project-select")).toBeDisabled();
+    expect(screen.getByTestId("send-button")).toBeDisabled();
+  });
+
+  it("有会话时隐藏项目选择器", () => {
+    setup();
+    expect(screen.queryByTestId("composer-project-select")).not.toBeInTheDocument();
+    expect(screen.queryByText("工作区内修改")).not.toBeInTheDocument();
   });
 
   it("发送按钮触发 onSend(text) 并清空输入框", () => {
@@ -86,18 +232,44 @@ describe("Chat（聊天区）", () => {
     expect(input).toHaveValue("");
   });
 
+  it("Enter 发送、Shift+Enter 换行，输入法合成中不误发", () => {
+    const { onSend } = setup();
+    const input = screen.getByTestId("composer-input");
+    fireEvent.change(input, { target: { value: "输入中" } });
+    fireEvent.keyDown(input, { key: "Enter", isComposing: true });
+    fireEvent.keyDown(input, { key: "Enter", shiftKey: true });
+    expect(onSend).not.toHaveBeenCalled();
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(onSend).toHaveBeenCalledTimes(1);
+  });
+
   it("会话未覆盖配置时显示实际默认模型与思考级别", () => {
     setup({
       defaultModel: { provider: "openai-codex", id: "gpt-5.5", name: "GPT-5.5" },
       defaultThinkingLevel: "medium",
     });
-    expect(screen.getByRole("option", { name: "openai-codex / gpt-5.5" })).toBeInTheDocument();
-    expect(screen.getByRole("option", { name: "medium" })).toBeInTheDocument();
+    expect(screen.getByTestId("model-thinking-trigger")).toHaveTextContent("gpt-5.5");
+    expect(screen.getByTestId("model-thinking-trigger")).not.toHaveTextContent("openai-codex");
+    expect(screen.getByTestId("model-thinking-trigger")).toHaveTextContent("medium");
+    fireEvent.click(screen.getByTestId("model-thinking-trigger"));
+    expect(screen.getByRole("radio", { name: "openai-codex/gpt-5.5 (GPT-5.5)" })).toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: "medium" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "添加附件" })).toBeEnabled();
+  });
+
+  it("模型和思考深度共用触发器且选择思考深度会真实更新配置", () => {
+    const props = setup();
+    expect(screen.getByTestId("model-thinking-trigger")).toBeVisible();
+    fireEvent.click(screen.getByTestId("model-thinking-trigger"));
+    fireEvent.click(screen.getByRole("radio", { name: "high" }));
+    expect(props.onConfigChange).toHaveBeenCalledWith({ thinkingLevel: "high" });
+    expect(screen.getByRole("dialog", { name: "模型与思考深度" })).toBeInTheDocument();
   });
 
   it("流式时显示中止按钮", () => {
     setup({ streaming: true });
-    expect(screen.getByTestId("abort-button")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "中止" })).toContainElement(screen.getByTestId("abort-button").querySelector("svg"));
+    expect(screen.getByTestId("abort-button")).toHaveTextContent("");
     expect(screen.queryByTestId("send-button")).not.toBeInTheDocument();
   });
 

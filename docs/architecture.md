@@ -125,6 +125,16 @@ Factory 创建或恢复具体 Agent Session；Storage 解释引用、导出历�
 
 依赖方向为 `core/application/runtime → ports ← server/storage/agent`：核心不依赖 Fastify、数据库或 Pi SDK。厂商协议适配仅归一化事件；工具执行仍走 Pi 原生白名单与授权路径。
 
+### 统一 Pi JSONL 落点与访问策略
+
+生产新建 Web 会话和 CLI 来源共用 `PI_SESSION_SOURCE_DIR`（默认 CLI agent 的 `sessions`，通常为 `~/.pi/agent/sessions`），按 canonical cwd 编码目录和 SDK header timestamp/original ID 命名。`DATA_DIR` 默认 `~/.pi/agent`，覆盖它不覆盖 source root；隔离部署/测试必须显式设置来源根。旧 server-ID 路径仅兼容读取，不移动文件。
+
+Web 会话保持 private/managed，来源发现保持 shared/native；不新增第三种格式。既有 v2 `native_session_sources.binding` JSON 增加可选 `private` 标记，不改 schema/migration/checksum。source path 与 original ID 的既有唯一约束在排他创建文件前预约，随后写回 dev/ino；失败和删除保留 source 墓碑，扫描不得将私有文件认领为共享。源文件仅逻辑删除，不经 managed outbox 物理 unlink。准备中的 inode 使用 -1 哨兵，不可恢复；完成前中断保持 fail-closed。后续若确需新列，须新增 canonical migration，不重写 frozen v2。
+
+`PI_SESSION_SHARE_EXCLUDE_CWDS` 只限制共享，不禁止该 cwd 使用 Web 私有会话；私有 FD 仍校验 canonical cwd/inode 与固定来源 allowroot，但不套 share exclusions。新建及恢复均由 FD `_persist` 追加，不调用 SDK 路径迁移。原始 Pi ID 与 server registry ID 分别保留，由 source claim 一对一绑定。没有 CLI/服务跨进程锁，禁止同时写同一文件。共享及私有 source claim 的文件预览仅采用校验后的 binding cwd；SSE live/replay/heartbeat 共用当前写入 FD 的 size/mtime/ctime/path identity 与 poison 校验（无 runtime 时仅校验有界 header），检测到外部修改即撤销旧 runtime，不逐 delta 重读全文。
+
+SSE HTTP 层一次预取 output guard，在 heartbeat/live/replay 的每次 socket write 前同步检查。共享来源撤权关闭流并中止 runtime；私有 HTTP guard 不访问文件系统。检查不读取 JSONL full entries，路径政策失效不能只在 HTTP 入口拦截。
+
 ### 相关设计
 
 - [IP RBAC](ip-rbac-design.md)

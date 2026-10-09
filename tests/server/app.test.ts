@@ -122,6 +122,23 @@ describe("HTTP 层：鉴权与会话 CRUD（needs.md §4.2）", () => {
       const created = await createSession(app, IP_A);
       expect(created.title).toBe("");
     });
+
+    it("createRequestId 重试复用已创建 session，变更配置冲突且跨 owner 不共享", async () => {
+      const { app } = await makeApp();
+      const post = (ip: string, title: string) => app.inject({
+        method: "POST", url: "/v1/sessions", remoteAddress: ip, headers: JSON_HEADERS,
+        payload: JSON.stringify({ createRequestId: "first-message-1", title }),
+      });
+      const first = await post(IP_A, "同一创建");
+      expect(first.statusCode).toBe(201);
+      const repeat = await post(IP_A, "同一创建");
+      expect(repeat.statusCode).toBe(200);
+      expect(repeat.json().id).toBe(first.json().id);
+      expect((await post(IP_A, "不同载荷")).statusCode).toBe(409);
+      const anotherOwner = await post(IP_B, "同一创建");
+      expect(anotherOwner.statusCode).toBe(201);
+      expect(anotherOwner.json().id).not.toBe(first.json().id);
+    });
   });
 
   describe("GET /v1/sessions", () => {
@@ -284,8 +301,12 @@ describe("HTTP 层：鉴权与会话 CRUD（needs.md §4.2）", () => {
 
     it("GET /v1/projects 返回默认项目 + 该用户项目", async () => {
       const { app } = await makeApp();
-      await createProject(app, IP_A, "我的仓库", "/path/a");
+      const mine = await createProject(app, IP_A, "我的仓库", "/path/a");
       await createProject(app, IP_B, "他人项目", "/path/b");
+      expect((await app.inject({ method: "GET", url: "/v1/projects", remoteAddress: IP_A })).json()).toEqual([]);
+      await createSession(app, IP_A, "默认项目会话");
+      await app.inject({ method: "POST", url: "/v1/sessions", remoteAddress: IP_A,
+        headers: JSON_HEADERS, payload: { projectId: mine.id, title: "仓库会话" } });
 
       const res = await app.inject({
         method: "GET",
@@ -691,7 +712,10 @@ describe("HTTP 层：鉴权与会话 CRUD（needs.md §4.2）", () => {
         url: "/v1/projects",
         headers: JSON_HEADERS, remoteAddress: IP_B,
       });
-      expect(list.json()).toContainEqual(expect.objectContaining({ id: projectId }));
+      expect(list.json()).toEqual([]); // Empty rows are hidden, not deleted.
+      const session = await app.inject({ method: "POST", url: "/v1/sessions", remoteAddress: IP_B,
+        headers: JSON_HEADERS, payload: { projectId, title: "first" } });
+      expect(session.statusCode).toBe(201);
     });
 
     it("用他人 projectId 创建会话返回 404", async () => {

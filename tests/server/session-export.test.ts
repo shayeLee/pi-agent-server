@@ -79,7 +79,7 @@ function makeJsonlFixture(): string {
     [
       '{"type":"session","version":3,"id":"sess-1","timestamp":"2026-01-01T00:00:00.000Z","cwd":"/tmp/project"}',
       '{"type":"message","id":"m1","parentId":null,"timestamp":"2026-01-01T00:00:01.000Z","message":{"role":"user","content":[{"type":"text","text":"hi"}]}}',
-      '{"type":"message","id":"m2","parentId":"m1","timestamp":"2026-01-01T00:00:02.000Z","message":{"role":"assistant","content":[{"type":"text","text":"hello"},{"type":"thinking","text":"思考"}]}}',
+      '{"type":"message","id":"m2","parentId":"m1","timestamp":"2026-01-01T00:00:02.000Z","message":{"role":"assistant","content":[{"type":"text","text":"hello"},{"type":"thinking","thinking":"思考 原文"}]}}',
       '{"type":"message","id":"m3","parentId":"m2","timestamp":"2026-01-01T00:00:03.000Z","message":{"role":"toolResult","content":[{"type":"text","text":"工具"}]}}',
       "",
     ].join("\n"),
@@ -125,6 +125,28 @@ describe("HTTP 层：会话导出（GET /v1/sessions/:id/export）", () => {
     expect(res.statusCode).toBe(200);
     expect((res.body as { messages: unknown }).messages).toEqual(messages);
     expect((res.body as { lastEventId: number }).lastEventId).toBeGreaterThan(0);
+  });
+
+  it("passes optional authorized usage snapshots without instantiating other sessions", async () => {
+    let creates = 0;
+    const usageSnapshot = { lastResponse: null, sessionTotals: null,
+      context: { tokens: 10, window: 1000, percent: 1, estimate: true as const } };
+    const { app } = await makeApp({ createAdapter: async () => {
+      creates++;
+      const adapter = new MockAgentAdapter();
+      adapter.exportData = { messages: [], timeline: [], usageSnapshot };
+      return adapter;
+    } });
+    const id = await createSession(app, TOKEN);
+    const other = await createSession(app, TOKEN);
+    await app.inject({ method: "POST", url: `/v1/sessions/${id}/messages`, headers: JSON_HEADERS,
+      remoteAddress: TOKEN, payload: JSON.stringify({ requestId: "snapshot", prompt: "go" }) });
+    await flush();
+    expect((await get(app, `/v1/sessions/${id}/export`, TOKEN)).body).toMatchObject({ usageSnapshot });
+    expect((await get(app, `/v1/sessions/${id}/export`, OTHER_TOKEN)).statusCode).toBe(404);
+    expect((await get(app, `/v1/sessions/${other}/export`, TOKEN)).body).not.toHaveProperty("usageSnapshot");
+    expect(creates).toBe(1);
+    await app.close();
   });
 
   it("deep tool JSON is actually serialized through app.inject without breaking the export", async () => {

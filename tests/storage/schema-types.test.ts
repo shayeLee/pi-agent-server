@@ -39,6 +39,7 @@ describe("Schema 类型推导（DatabaseSchema 由 Manifest 推导）", () => {
     expectTypeOf<DatabaseSchema["idempotency"]["request_id"]>().toEqualTypeOf<string>();
     expectTypeOf<DatabaseSchema["idempotency"]["result"]>().toEqualTypeOf<string>();
     expectTypeOf<DatabaseSchema["idempotency"]["created_at"]>().toEqualTypeOf<number>();
+    expectTypeOf<DatabaseSchema["idempotency"]["fingerprint"]>().toEqualTypeOf<string | null>();
   });
 
   it("整表形状（列名与顺序、nullability）与历史手工 interface 完全一致", () => {
@@ -57,6 +58,8 @@ describe("Schema 类型推导（DatabaseSchema 由 Manifest 推导）", () => {
       thinking_level: string | null;
       system_prompt: string | null;
       capability_versions: string | null;
+      visibility: string;
+      origin: string;
     };
     expectTypeOf<DatabaseSchema["sessions"]>().toEqualTypeOf<ExpectedSessions>();
     expectTypeOf<keyof DatabaseSchema["sessions"]>().toEqualTypeOf<keyof ExpectedSessions>();
@@ -74,12 +77,13 @@ describe("Schema 类型推导（DatabaseSchema 由 Manifest 推导）", () => {
       request_id: string;
       result: string;
       created_at: number;
+      fingerprint: string | null;
     }>();
   });
 
   it("Manifest 值保留字面量：表名与列名可直接做 keyof 约束（推导的依据）", () => {
     type TableNames = (typeof schemaManifest)["tables"][number]["name"];
-    expectTypeOf<TableNames>().toEqualTypeOf<"projects" | "sessions" | "idempotency" | "file_operations">();
+    expectTypeOf<TableNames>().toEqualTypeOf<"projects" | "sessions" | "idempotency" | "file_operations" | "uploaded_files" | "native_session_sources">();
     expectTypeOf<keyof DatabaseSchema>().toEqualTypeOf<TableNames>();
 
     // 列名来自 Manifest（而非手写表 interface）
@@ -95,6 +99,9 @@ describe("Schema 类型推导（DatabaseSchema 由 Manifest 推导）", () => {
       .insertInto("projects")
       .values({ id: "p-1", name: "P", cwd: "/p", owner_key: "o", created_at: 1 })
       .execute();
+    await kysely.insertInto("idempotency").values({
+      session_id: "s-1", request_id: "request-1", result: '{"ok":true}', created_at: 1, fingerprint: null,
+    }).execute();
     await kysely
       .insertInto("sessions")
       .values({
@@ -112,6 +119,7 @@ describe("Schema 类型推导（DatabaseSchema 由 Manifest 推导）", () => {
         thinking_level: null,
         system_prompt: null,
         capability_versions: null,
+        visibility: "private", origin: "managed",
       })
       .execute();
 

@@ -16,7 +16,7 @@
 //
 // 计数/标记经 `globalThis.__piProviderProbe` 由扩展模块写入（扩展与测试同进程）。
 
-import { mkdtempSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
@@ -96,7 +96,7 @@ afterEach(async () => {
 });
 
 function makeTempDir(prefix: string): string {
-  const dir = mkdtempSync(join(tmpdir(), prefix));
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), prefix)));
   cleanups.push(dir);
   return dir;
 }
@@ -236,6 +236,7 @@ function baseConfig(fixture: Fixture, overrides: Partial<StartConfig> = {}): Sta
     port: 0,
     ipAccess: makeTestIpAccess(),
     dataDir: fixture.root,
+    nativeSessionSourceDir: join(fixture.root, "sessions"),
     authPath: join(fixture.root, "auth.json"),
     dbPath: fixture.dbPath,
     providerExtensionPaths: [fixture.extensionDir],
@@ -594,6 +595,7 @@ describe("显式 provider 扩展：真实会话打开、恢复与 loader 隔离�
       port: 0,
       ipAccess: makeTestIpAccess(),
       dataDir: root,
+      nativeSessionSourceDir: join(root, "native-fixture"),
       authPath: join(root, "auth.json"),
       dbPath,
       providerExtensionPaths: [extensionDir],

@@ -2,7 +2,9 @@
 // 通用层只通过 ConversationStorage 访问本模块，不解释 conversationRef。
 
 import { createHash } from "node:crypto";
-import { readFileSync, statSync } from "node:fs";
+import { constants, lstatSync, readFileSync, statSync, type Stats } from "node:fs";
+import { open, type FileHandle } from "node:fs/promises";
+import { firstUserPrompt } from "../client/session-title.js";
 import path from "node:path";
 import {
   parseSessionEntries,
@@ -11,6 +13,7 @@ import {
   type SessionEntry,
   type SessionHeader,
 } from "@earendil-works/pi-coding-agent";
+import { projectExecutionSnapshot } from "./execution-metrics.js";
 import { projectExportSnapshot } from "./session-export.js";
 import { readSessionCwdIdentity, type SessionCwdIdentity } from "./session-cwd-identity.js";
 import type {
@@ -23,6 +26,9 @@ import type {
 } from "../application/ports/conversation-port.js";
 import { PI_AGENT_KIND, PI_CONVERSATION_FORMAT } from "../application/ports/conversation-port.js";
 import { artifactDeleteOperationKey, relativeWhitelistedPath } from "../storage/file-operation-policy.js";
+import { NativePiConversationStorage } from "./native-pi-conversation-storage.js";
+import type { NativeSessionSource } from "./native-session-source.js";
+import type { NativeSessionIndexPort } from "../application/native-session-service.js";
 import { classifyPiJsonlReference, requirePiDataDir } from "./pi-jsonl-reference.js";
 
 interface FileFingerprint {
@@ -175,20 +181,21 @@ export function openPiRuntimeSessionFile(
 
 /** 只读解析 Pi JSONL，返回与活 AgentAdapter 相同的导出投影。 */
 export async function readPiJsonlExport(conversationRef: string | null): Promise<unknown> {
-  if (conversationRef === null) return { messages: [], timeline: [] };
+  if (conversationRef === null) return { messages: [], timeline: [], usageSnapshot: { execution: projectExecutionSnapshot([]) } };
   const before = fileFingerprint(conversationRef);
   let messages: unknown;
   try {
     const content = readFileSync(conversationRef, "utf8");
     if (content.trim().length === 0) {
-      messages = { messages: [], timeline: [] };
+      messages = { messages: [], timeline: [], usageSnapshot: { execution: projectExecutionSnapshot([]) } };
     } else {
       const parsed = parseSessionEntries(content);
       assertCurrentPiJsonl(content);
       if (parsed.length === 0) throw new Error("cannot parse session file");
       const manager = buildPersistedSessionManager(conversationRef, parsed as SessionEntry[]);
       // getBranch() is the SDK's selected current path: orphaned sibling branches never leak.
-      messages = projectExportSnapshot(manager.buildSessionContext().messages as unknown[], manager.getBranch());
+      messages = { ...projectExportSnapshot(manager.buildSessionContext().messages as unknown[], manager.getBranch()),
+        usageSnapshot: { execution: projectExecutionSnapshot(manager.getEntries()) } };
     }
   } catch (error) {
     throw new Error("会话历史读取失败", { cause: error });
@@ -199,16 +206,157 @@ export async function readPiJsonlExport(conversationRef: string | null): Promise
   return messages;
 }
 
+export const FIRST_PROMPT_MAX_BYTES = 256 * 1024;
+export const FIRST_PROMPT_MAX_LINE_BYTES = 64 * 1024;
+export const FIRST_PROMPT_MAX_LINES = 1024;
+const FIRST_PROMPT_CACHE_BYTES = 4 * 1024 * 1024;
+const FIRST_PROMPT_NEGATIVE_TTL_MS = 2000;
+
+function promptFileIdentity(stat: Stats): string {
+  return `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
+}
+
+// Same snapshot/open/fstat/recheck pattern as session-file-preview. The managed root
+// and every descendant must not be symlinks. This is not openat/ABA isolation from
+// a malicious local writer; the service-maintained DATA_DIR is not a sandbox.
+function snapshotPromptPath(root: string, file: string): Array<{ file: string; stat: Stats }> {
+  const relative = path.relative(root, file);
+  if (!relative || relative.startsWith(`..${path.sep}`) || relative === ".." || path.isAbsolute(relative)) throw new Error("history unavailable");
+  const parts = relative.split(path.sep);
+  const nodes = [root];
+  for (const part of parts) nodes.push(path.join(nodes.at(-1)!, part));
+  return nodes.map((node, index) => {
+    const stat = lstatSync(node);
+    if (stat.isSymbolicLink() || (index === nodes.length - 1 ? !stat.isFile() : !stat.isDirectory())) throw new Error("history unavailable");
+    return { file: node, stat };
+  });
+}
+function unchangedPromptPath(nodes: ReturnType<typeof snapshotPromptPath>): boolean {
+  return nodes.every(({ file, stat }) => {
+    const now = lstatSync(file);
+    return !now.isSymbolicLink() && promptFileIdentity(now) === promptFileIdentity(stat);
+  });
+}
+
+/** Bounded descriptor reads, no readline buffering or whole-file scan. */
+export async function readPiJsonlFirstPrompt(file: string, root = path.dirname(file)): Promise<string | null> {
+  let handle: FileHandle | undefined;
+  try {
+    const nodes = snapshotPromptPath(root, file);
+    const before = nodes.at(-1)!.stat;
+    handle = await open(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    const opened = await handle.stat();
+    if (!opened.isFile() || promptFileIdentity(opened) !== promptFileIdentity(before) || !unchangedPromptPath(nodes)) return null;
+    const prompt = await readPromptPrefix(handle);
+    if (promptFileIdentity(await handle.stat()) !== promptFileIdentity(opened) || !unchangedPromptPath(nodes)) return null;
+    return prompt;
+  } catch {
+    return null;
+  } finally {
+    await handle?.close().catch(() => {});
+  }
+}
+
+async function readPromptPrefix(handle: FileHandle): Promise<string | null> {
+  const chunk = Buffer.allocUnsafe(8192);
+  let pending = Buffer.alloc(0);
+  let bytes = 0;
+  let lines = 0;
+  let header = false;
+  while (bytes < FIRST_PROMPT_MAX_BYTES) {
+    const { bytesRead } = await handle.read(chunk, 0, Math.min(chunk.length, FIRST_PROMPT_MAX_BYTES - bytes), bytes);
+    if (!bytesRead) return null; // No user, or incomplete final line: unknown, not empty-history proof.
+    bytes += bytesRead;
+    pending = Buffer.concat([pending, chunk.subarray(0, bytesRead)]);
+    let newline: number;
+    while ((newline = pending.indexOf(10)) >= 0) {
+      if (++lines > FIRST_PROMPT_MAX_LINES || newline > FIRST_PROMPT_MAX_LINE_BYTES) return null;
+      const line = new TextDecoder("utf-8", { fatal: true }).decode(pending.subarray(0, newline));
+      pending = pending.subarray(newline + 1);
+      if (!line.trim()) continue;
+      const entry = JSON.parse(line);
+      if (!header) {
+        if (entry?.type !== "session" || entry.version !== 3 || typeof entry.id !== "string") return null;
+        header = true;
+      } else {
+        if (!entry || typeof entry.id !== "string" || !(entry.parentId === null || typeof entry.parentId === "string")) return null;
+        if (entry.type === "message" && entry.message?.role === "user") return firstUserPrompt([entry.message]);
+      }
+    }
+    if (pending.length > FIRST_PROMPT_MAX_LINE_BYTES || lines >= FIRST_PROMPT_MAX_LINES) return null;
+  }
+  return null;
+}
+
 export class PiJsonlConversationStorage implements ConversationStorage {
   readonly agentKind = PI_AGENT_KIND;
   readonly conversationFormat = PI_CONVERSATION_FORMAT;
   private readonly dataDir: string;
 
-  constructor(dataDir: string) {
+  private readonly unifiedStorage?: NativePiConversationStorage;
+  constructor(dataDir: string, private readonly unified?: { source: NativeSessionSource; index: NativeSessionIndexPort }) {
     this.dataDir = requirePiDataDir(dataDir);
+    if (unified) this.unifiedStorage = new NativePiConversationStorage(unified.source, unified.index);
+  }
+
+  private isUnified(file: string | null): boolean {
+    if (!file || !this.unified) return false;
+    const relative = path.relative(this.unified.source.root, file).split(path.sep);
+    return relative.length === 2 && /^--.*--$/.test(relative[0]!) && relative[1]!.endsWith(".jsonl");
+  }
+
+  private async unifiedConversation(conversation: ConversationDescriptor, context: ConversationReadContext) {
+    const binding = await this.unified!.index.binding(context.sessionId);
+    if (!binding?.private || binding.sourcePath !== conversation.conversationRef) throw new Error("private source unavailable");
+    return { ...conversation, conversationFormat: "pi-native-jsonl-v3" };
+  }
+
+  private readonly firstPrompts = new Map<string, { identity: string; prompt: string | null; expires: number; bytes: number }>();
+  private firstPromptCacheBytes = 0;
+
+  async readFirstPrompt(conversation: ConversationDescriptor, context: ConversationReadContext): Promise<string | null> {
+    try {
+      if (this.isUnified(conversation.conversationRef)) return this.unifiedStorage!.readFirstPrompt(await this.unifiedConversation(conversation, context), context);
+      this.assertReadReference(conversation, context);
+      const file = conversation.conversationRef;
+      if (file === null) return null;
+      const nodes = snapshotPromptPath(this.dataDir, file);
+      const identity = promptFileIdentity(nodes.at(-1)!.stat);
+      const cached = this.firstPrompts.get(file);
+      if (cached?.identity === identity && cached.expires > Date.now()) return cached.prompt;
+      if (cached) {
+        this.firstPromptCacheBytes -= cached.bytes;
+        this.firstPrompts.delete(file);
+      }
+      const prompt = await readPiJsonlFirstPrompt(file, this.dataDir);
+      if (!unchangedPromptPath(nodes)) return null;
+      // Charge UTF-16 string storage plus fixed entry overhead (not a total heap quota).
+      const bytes = 2 * (file.length + (prompt?.length ?? 0)) + 256;
+      while (this.firstPrompts.size >= 256 || this.firstPromptCacheBytes + bytes > FIRST_PROMPT_CACHE_BYTES) {
+        const key = this.firstPrompts.keys().next().value;
+        if (key === undefined) break;
+        this.firstPromptCacheBytes -= this.firstPrompts.get(key)!.bytes;
+        this.firstPrompts.delete(key);
+      }
+      // Concurrent reads may have installed this entry while awaiting I/O.
+      const previous = this.firstPrompts.get(file);
+      if (previous) this.firstPromptCacheBytes -= previous.bytes;
+      this.firstPrompts.set(file, { identity, prompt, bytes,
+        expires: prompt === null ? Date.now() + FIRST_PROMPT_NEGATIVE_TTL_MS : Infinity });
+      this.firstPromptCacheBytes += bytes;
+      return prompt;
+    } catch {
+      return null;
+    }
   }
 
   async readExport(conversation: ConversationDescriptor, context: ConversationReadContext): Promise<unknown> {
+    if (this.isUnified(conversation.conversationRef)) return this.unifiedStorage!.readExport(await this.unifiedConversation(conversation, context), context);
+    this.assertReadReference(conversation, context);
+    return readPiJsonlExport(conversation.conversationRef);
+  }
+
+  private assertReadReference(conversation: ConversationDescriptor, context: ConversationReadContext): void {
     this.assertDescriptor(conversation);
     if (conversation.conversationRef !== null) {
       if (!path.isAbsolute(conversation.conversationRef)) throw new Error("Pi conversation reference must be absolute");
@@ -224,7 +372,6 @@ export class PiJsonlConversationStorage implements ConversationStorage {
         throw new Error("Pi conversation reference does not match its session");
       }
     }
-    return readPiJsonlExport(conversation.conversationRef);
   }
 
   planCleanup(input: {
@@ -233,7 +380,7 @@ export class PiJsonlConversationStorage implements ConversationStorage {
     readonly conversation: ConversationDescriptor;
   }): ConversationCleanupPlan | null {
     this.assertDescriptor(input.conversation);
-    if (input.conversation.conversationRef === null) return null;
+    if (input.conversation.conversationRef === null || this.isUnified(input.conversation.conversationRef)) return null;
     const classification = classifyPiJsonlReference(this.dataDir, {
       sessionId: input.sessionId,
       projectId: input.projectId,
@@ -267,6 +414,9 @@ export class PiJsonlConversationStorage implements ConversationStorage {
 
   classifyReference(record: ConversationReferenceRecord, dataDir: string): ConversationReferenceClassification {
     this.assertDescriptor(record.conversation);
+    if (this.isUnified(record.conversation.conversationRef)) return {
+      kind: "valid", canonical: path.relative(this.unified!.source.root, record.conversation.conversationRef!).split(path.sep).join("/"), idsMatch: true,
+    };
     return classifyPiJsonlReference(dataDir, {
       sessionId: record.sessionId,
       projectId: record.projectId,

@@ -5,6 +5,8 @@
 // 本类不识别任何底层错误码。
 
 import { sql, type Kysely } from "kysely";
+import { canonicalCwdIdentity } from "../core/native-session-policy.js";
+import { DuplicateProjectCwdError, InvalidProjectCwdError } from "../core/project-cwd-error.js";
 import {
   DEFAULT_PROJECT_ID,
   type ProjectRecord,
@@ -31,6 +33,9 @@ function toRecord(row: ProjectRow): ProjectRecord {
 }
 
 export interface KyselyProjectRepositoryOptions {
+  /** Production canonical uniqueness; legacy adapters may retain lexical fixture paths. */
+  readonly enforceCanonicalCwd?: boolean;
+  readonly defaultProjectCwd?: string;
   /** 共享的 file_operations writer；必须与本 repository 使用同一 Kysely/事务。 */
   readonly fileOperations?: FileOperationTransactionWriter;
   /** 将通用会话引用转换为事务内可入队的清理操作；具体格式由 Agent storage 实现解释。 */
@@ -49,12 +54,16 @@ export class KyselyProjectRepository implements ProjectStorePort {
   private readonly fileOperations: FileOperationTransactionWriter;
   private readonly cleanupPlan?: KyselyProjectRepositoryOptions["cleanupPlan"];
   private readonly dialect: "sqlite" | "postgres";
+  private readonly enforceCanonicalCwd: boolean;
+  private readonly defaultProjectCwd?: string;
 
   constructor(db: Kysely<DatabaseSchema>, constraintMapper: ConstraintErrorMapper, options: KyselyProjectRepositoryOptions = {}) {
     this.db = db;
     this.constraintMapper = constraintMapper;
     this.fileOperations = options.fileOperations ?? new KyselyFileOperationRepository(db);
     this.cleanupPlan = options.cleanupPlan;
+    this.enforceCanonicalCwd = options.enforceCanonicalCwd ?? false;
+    this.defaultProjectCwd = options.defaultProjectCwd;
     this.dialect = options.dialect ??
       (options.fileOperations instanceof KyselyFileOperationRepository ? options.fileOperations.dialect : undefined) ??
       constraintMapper.dialect ?? "sqlite";
@@ -65,14 +74,27 @@ export class KyselyProjectRepository implements ProjectStorePort {
     if (record.id === DEFAULT_PROJECT_ID) {
       throw new Error("默认项目 id 由 ensureDefaultProject 独占，不可通过 create 写入");
     }
-    await this.withWriteLock(async () => {
+    await this.withWriteLock(() => this.db.transaction().execute(async tx => {
+      let cwd = record.cwd;
+      if (this.enforceCanonicalCwd) {
+        // Serialize all new registrations across owners, including symlink aliases. Existing
+        // duplicate rows are kept untouched; migration never resolves them by deleting data.
+        if (this.dialect === "postgres") await acquireTombstoneAdvisoryXactLock(tx, "canonical-project-cwd");
+        try { cwd = canonicalCwdIdentity(cwd).cwd; } catch { throw new InvalidProjectCwdError(); }
+        if (this.defaultProjectCwd && canonicalCwdIdentity(this.defaultProjectCwd).cwd === cwd) throw new DuplicateProjectCwdError();
+        for (const existing of await tx.selectFrom("projects").select("cwd").execute()) {
+          let canonical: string;
+          try { canonical = canonicalCwdIdentity(existing.cwd).cwd; } catch { continue; }
+          if (canonical === cwd) throw new DuplicateProjectCwdError();
+        }
+      }
       try {
-        await this.db
+        await tx
           .insertInto("projects")
           .values({
             id: record.id,
             name: record.name,
-            cwd: record.cwd,
+            cwd,
             owner_key: record.ownerKey,
             created_at: record.createdAt,
           })
@@ -81,7 +103,7 @@ export class KyselyProjectRepository implements ProjectStorePort {
         // 撞主键/唯一约束 → 存储无关 DuplicateIdError（应用层有界重试）；其余错误原样抛出
         this.constraintMapper.throwDuplicateIdOrOriginal(error, "projects");
       }
-    });
+    }));
   }
 
   async get(id: string): Promise<ProjectRecord | null> {
@@ -91,6 +113,10 @@ export class KyselyProjectRepository implements ProjectStorePort {
       .where("id", "=", id)
       .executeTakeFirst();
     return row ? toRecord(row) : null;
+  }
+
+  async listRegistered(): Promise<ProjectRecord[]> {
+    return (await this.db.selectFrom("projects").selectAll().orderBy("created_at", "asc").orderBy("id", "asc").execute()).map(toRecord);
   }
 
   async listByOwner(ownerKey: string): Promise<ProjectRecord[]> {
@@ -116,6 +142,7 @@ export class KyselyProjectRepository implements ProjectStorePort {
       if (!(await this.lockProject(tx, id))) return false;
       const sessions = await this.listProjectSessionsForDelete(tx, id);
       await this.enqueueSessionDeletes(tx, sessions);
+      await tx.updateTable("native_session_sources").set({ deleted: 1 }).where("project_id", "=", id).execute();
       const result = await tx.deleteFrom("projects").where("id", "=", id).executeTakeFirst();
       return Number(result?.numDeletedRows ?? 0) > 0;
     }));
@@ -171,6 +198,7 @@ export class KyselyProjectRepository implements ProjectStorePort {
       if (!(await this.lockProject(tx, projectId))) return [];
       const sessions = await this.listProjectSessionsForDelete(tx, projectId);
       await this.enqueueSessionDeletes(tx, sessions);
+      await tx.updateTable("native_session_sources").set({ deleted: 1 }).where("project_id", "=", projectId).execute();
       await tx.deleteFrom("sessions").where("project_id", "=", projectId).execute();
       await tx.deleteFrom("projects").where("id", "=", projectId).execute();
       return sessions.map((session) => session.id);

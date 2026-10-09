@@ -33,7 +33,7 @@ function withLedger(setup: (db: DatabaseSync) => void, check: (db: DatabaseSync)
   );
 }
 
-describe("SQLite schema_migrations strict contract (single baseline)", () => {
+describe("SQLite schema_migrations strict contract (v0 + additive v1)", () => {
   it("rejects empty, partial and extra-column ledgers without DDL or deletion", async () => {
     await withLedger((db) => db.exec(ledgerDdl), (db) => {
       expect(db.prepare("SELECT COUNT(*) AS n FROM schema_migrations").get()).toEqual({ n: 0 });
@@ -84,7 +84,7 @@ describe("SQLite schema_migrations strict contract (single baseline)", () => {
       db.exec(ledgerDdl);
       db.prepare("INSERT INTO schema_migrations VALUES (0, 'initial-schema', ?, 1)").run("a".repeat(64));
       db.prepare("INSERT INTO schema_migrations VALUES (1, 'old-extra', ?, 1)").run("b".repeat(64));
-    }, () => {}, /single-baseline registry has 1; recreate the database/);
+    }, () => {}, /checksum mismatch/);
 
     await withLedger((db) => {
       db.exec(ledgerDdl);

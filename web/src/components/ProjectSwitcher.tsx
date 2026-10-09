@@ -1,5 +1,7 @@
 import { useState } from "react";
+import { Icon } from "./Icon.js";
 import type { Project } from "pi-agent-server/client";
+import { SelectMenu } from "./SelectMenu.js";
 
 export type ProjectSwitcherProps = {
   projects: Project[];
@@ -28,30 +30,30 @@ export function ProjectSwitcher({ projects, activeId, onSelect, onCreate, onDele
   }
 
   return (
-    <div className="project-switcher" data-testid="project-switcher">
-      <div className="project-row">
-        <select
-          data-testid="project-select"
+    <div className="project-switcher workbench-project-tree" data-testid="project-switcher">
+      <div className="project-row workbench-project-row">
+        <span className="workbench-project-icon" aria-hidden="true">
+          <Icon name="folder" />
+        </span>
+        <SelectMenu
+          className="workbench-project-select"
+          options={projects.map((project) => ({ value: project.id, label: project.name, title: project.cwd }))}
           value={active?.id ?? ""}
-          onChange={(e) => onSelect(e.target.value)}
-          aria-label="选择项目"
-        >
-          {projects.map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.name}
-            </option>
-          ))}
-        </select>
-        <div className="project-actions">
+          onChange={onSelect}
+          ariaLabel="选择项目"
+          testId="project-select"
+        />
+        <div className="project-actions workbench-project-actions">
           <button
             className="btn-ghost btn-icon"
             data-testid="new-project"
             onClick={() => setCreating((v) => !v)}
             title="新建项目"
+            aria-label="新建项目"
           >
-            +
+            <Icon name="plus" />
           </button>
-          {active && !active.isDefault && (
+          {active && !active.isDefault && active.canDelete !== false && (
             <button
               className="btn-danger btn-icon"
               data-testid="delete-project"
@@ -61,14 +63,15 @@ export function ProjectSwitcher({ projects, activeId, onSelect, onCreate, onDele
                 }
               }}
               title="删除项目"
+              aria-label="删除项目"
             >
-              删
+              <Icon name="trash" />
             </button>
           )}
         </div>
       </div>
       {creating && (
-        <div className="project-create" data-testid="project-create-form">
+        <div className="project-create workbench-project-create" data-testid="project-create-form">
           <input
             data-testid="project-name-input"
             placeholder="项目名"

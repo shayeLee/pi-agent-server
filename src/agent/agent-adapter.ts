@@ -2,11 +2,13 @@
 // 方法签名对齐 pi-sdk-api.md §3：prompt / steer / followUp / abort / subscribe / exportSession。
 // 单元测试一律用 MockAgentAdapter，绝不碰真实 Pi SDK。
 
+import type { UsageSnapshot } from "../core/usage-snapshot.js";
 import type { AgentSdkEvent } from "./events.js";
 import type { FailbackLifecycleEvent } from "./failback-lifecycle.js";
 
 /** HTTP/接口层的图片输入（轻量结构，mediaType + base64；SDK ImageContent 只在 pi-agent-adapter 内转换）。 */
-export type ImageInput = { mediaType: string; base64: string };
+import type { ImageInput } from "../shared/api-types.js";
+export type { ImageInput } from "../shared/api-types.js";
 
 /** 模型用量信息（从 SDK assistant message 的 usage 提取）。 */
 export type UsageInfo = {
@@ -23,11 +25,19 @@ export type AgentConfigurationSnapshot = {
 };
 
 export interface AgentAdapter {
+  /** Internal session-local extension capability, installed before SDK extension binding. */
+  bindSubagentHostTransport?(transport: import("./subagent-host-transport.js").SubagentHostTransport): () => void;
+  isSdkStreaming?(): boolean;
+  queueCustomFollowUp?(message: import("./subagent-host-transport.js").ExtensionCustomMessage): Promise<void>;
+  promptCustom?(message: import("./subagent-host-transport.js").ExtensionCustomMessage): Promise<void>;
+  /** Optional live character estimate, separate from actual SDK usage. */
+  subscribeModelOutputProgress?(listener: (progress: import("./model-output-sampler.js").ModelOutputProgress) => void): () => void;
   /** 空闲时发送输入（needs.md §4.2 的 POST /v1/sessions/:id/messages）；images 可选图片附件。 */
   prompt(text: string, options?: { images?: ImageInput[] }): Promise<void>;
 
   /** 流式生成中插入指令（POST /v1/sessions/:id/steer）。 */
-  steer(text: string): Promise<void>;
+  steer(text: string, input?: import("../shared/steering.js").SteeringInput): Promise<void>;
+  subscribeSteeringConsumed?(listener: (identity: import("../shared/steering.js").SteeringIdentity) => void): () => void;
 
   /** 流式生成中追加指令（POST /v1/sessions/:id/follow-ups）。 */
   followUp(text: string): Promise<void>;
@@ -47,6 +57,8 @@ export interface AgentAdapter {
   /** 订阅 SDK 事件流；返回退订函数（SSE 事件源，needs.md §4.2）。 */
   subscribe(listener: (event: AgentSdkEvent) => void): () => void;
 
+  subscribeNotifications?(listener: (event: import("./subagent-notification.js").NotificationEvent) => void): () => void;
+
   /** 订阅同一 session ResourceLoader 的 model-failback 生命周期（可选扩展能力）。 */
   subscribeFailbackLifecycle?(listener: (event: FailbackLifecycleEvent) => void): () => void;
 
@@ -59,6 +71,11 @@ export interface AgentAdapter {
 
   /** 读取最近一条 assistant 消息的 usage（用于 turn 结束后推送 stats）。 */
   getLastUsage(): Promise<UsageInfo | null>;
+
+  /** Current authorized SDK instance only; additive to legacy usage. */
+  getUsageSnapshot?(): Promise<UsageSnapshot>;
+  /** O(1) event-driven durable loop/turn snapshot. */
+  getExecutionSnapshot?(): import("../core/usage-snapshot.js").ExecutionSnapshot;
 
   /** 释放底层会话资源（退订监听、dispose SDK session）；删除会话/关闭时调用。 */
   dispose(): void;

@@ -1,10 +1,10 @@
 import { test, expect } from "@playwright/test";
 
-// mock server 以 MAX_SSE_PER_USER=2 / MAX_SSE_GLOBAL=10 启动，并允许 vite(5173) 跨域。
-// 浏览器从 vite 页面直连 8081 测 SSE（vite 代理对 hijack SSE 响应头转发不可靠）。
+// mock server 以 MAX_SSE_PER_USER=2 / MAX_SSE_GLOBAL=10 启动，并允许专用 vite(5189) 跨域。
+// 浏览器从 vite 页面直连测试专用 8089 测 SSE（vite 代理对 hijack SSE 响应头转发不可靠）。
 // 内网（127.0.0.1）免 token，无 authorization 头时为简单 GET（不触发 CORS preflight）。
 
-const API = "http://127.0.0.1:8081";
+const API = "http://127.0.0.1:8089";
 
 test("SSE 连接配额：超过每用户上限返回 429，断开后可重连", async ({ page, request }) => {
   // 创建会话（request fixture 跑在 Node，不经浏览器 CORS）

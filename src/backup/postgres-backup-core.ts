@@ -29,6 +29,7 @@ import {
   collectWhitelistedFiles,
   encryptFileTo,
   encryptStableSource,
+  encryptNativePayloads,
   hashFile,
   openPlaintextStaging,
   syncDirectoryBestEffort,
@@ -47,19 +48,20 @@ import {
 } from "./backup-core.js";
 import {
   migrationPrefixForLedger,
-  POSTGRES_PHYSICAL_TYPES,
   stableSerialize,
   type MigrationLedgerSnapshot,
 } from "../storage/migration-manifest.js";
-import { schemaManifest } from "../storage/schema-manifest.js";
 import { assertSchemaCompatible } from "../storage/schema-compatibility.js";
 import { assertPostgresApplicationSchema } from "../storage/postgres-schema-guard.js";
+import { planAttachmentPayloads, snapshotUploadedRows, type AttachmentManifestEntry } from "./attachment-payload.js";
 
 import {
   BACKUP_STAGE_BUDGET_MS,
   withStageTimeout,
   type StageReporter,
 } from "./stage-guard.js";
+
+import { snapshotNativeSources, validateNativeSet, captureNativePayloads, type NativeBackupEntry } from "./native-payload.js";
 
 const PG_PROCESS_TIMEOUT_MS = 120_000;
 const PG_STDERR_MAX_BYTES = 4 * 1024;
@@ -77,13 +79,14 @@ export interface PgBackupClient {
 }
 
 /**
- * Result shape of the canonical physical-schema recoverability gate. The
- * production entry point always requires the canonical single baseline
- * (`version === 0 && pending === 0`); anything else refuses the backup.
+ * Result shape of the authenticated historical-prefix physical-schema gate.
+ * The verifier binds the ledger prefix's exact schema snapshot to the same
+ * PostgreSQL transaction that pg_dump consumes.
  */
 export type VerifyPostgresSourceSchema = (
   client: PgBackupClient,
   schema: string,
+  ledger?: PostgresBackupManifest["migrationLedger"],
 ) => Promise<{ readonly version: number | null; readonly pending: number }>;
 
 /** One dedicated connection leased from a pool; release() returns it. */
@@ -316,8 +319,10 @@ export function createPgProcessAdapter(spawnImpl: typeof spawn = spawn): PgProce
 export const pgProcessAdapter = createPgProcessAdapter();
 
 export interface PostgresBackupPaths {
+  readonly nativeSourceRoot?: string;
   readonly dataDir: string;
   readonly agentDir?: string;
+  readonly uploadRoot?: string;
   /** Actual credential file location (PI_AUTH_PATH or server default); see BackupPaths.authPath. */
   readonly authPath?: string;
   readonly backupRoot: string;
@@ -453,13 +458,17 @@ function within(root: string, candidate: string): boolean {
   return relative === "" || (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
 }
 
-function validatePaths(paths: PostgresBackupPaths): { dataDir: string; agentDir: string; backupRoot: string; recipients: readonly string[] } {
+function validatePaths(paths: PostgresBackupPaths): { dataDir: string; agentDir: string; backupRoot: string; uploadRoot?: string; recipients: readonly string[] } {
   const agentDirInput = paths.agentDir ?? path.join(paths.dataDir, ".pi-agent");
   const values = [["data directory", paths.dataDir], ["agent directory", agentDirInput], ["backup root", paths.backupRoot], ["age recipient file", paths.ageRecipientFile]] as const;
   for (const [label, value] of values) if (!path.isAbsolute(value)) fail(`${label} must be an absolute path`);
   const dataDir = canonicalPath(paths.dataDir, "data directory");
   const agentDir = canonicalPath(agentDirInput, "agent directory");
   const backupRoot = canonicalPath(paths.backupRoot, "backup root");
+  const uploadRoot = paths.uploadRoot ? canonicalPath(paths.uploadRoot, "upload root") : undefined;
+  const nativeRoot = paths.nativeSourceRoot ? canonicalPath(paths.nativeSourceRoot, "native source root") : undefined;
+  if (nativeRoot && (within(nativeRoot, backupRoot) || within(backupRoot, nativeRoot))) fail("backup root overlaps native source root");
+  if (uploadRoot && existsSync(uploadRoot) && (!lstatSync(uploadRoot).isDirectory() || (lstatSync(uploadRoot).mode & 0o077) !== 0)) fail("upload root is not private and accessible");
   if (path.resolve(backupRoot) === path.parse(backupRoot).root) fail("backup root must not be the filesystem root");
   if (!existsSync(paths.dataDir) || !lstatSync(paths.dataDir).isDirectory()) fail("data directory does not exist");
   if ((lstatSync(paths.dataDir).mode & 0o022) !== 0) fail("data directory must not be group/world writable");
@@ -474,7 +483,8 @@ function validatePaths(paths: PostgresBackupPaths): { dataDir: string; agentDir:
   const sessionsRoot = path.join(dataDir, "sessions");
   const projectsRoot = path.join(dataDir, "projects");
   if (within(dataDir, backupRoot) || within(backupRoot, dataDir) || within(agentDir, backupRoot) || within(backupRoot, agentDir) ||
-      within(sessionsRoot, backupRoot) || within(backupRoot, sessionsRoot) || within(projectsRoot, backupRoot) || within(backupRoot, projectsRoot)) {
+      within(sessionsRoot, backupRoot) || within(backupRoot, sessionsRoot) || within(projectsRoot, backupRoot) || within(backupRoot, projectsRoot) ||
+      (uploadRoot !== undefined && (within(uploadRoot, backupRoot) || within(backupRoot, uploadRoot)))) {
     fail("backup root physically overlaps a source path");
   }
   // The actual credential location must never overlap the whitelisted source
@@ -484,12 +494,14 @@ function validatePaths(paths: PostgresBackupPaths): { dataDir: string; agentDir:
   const modelsPath = path.join(agentDir, "models.json");
   for (const [label, root] of [
     ["sessions whitelist root", sessionsRoot], ["projects whitelist root", projectsRoot], ["agentDir/models.json", modelsPath],
+    ...(uploadRoot ? [["upload root", uploadRoot] as const] : []),
+    ...(nativeRoot ? [["native source root", nativeRoot] as const] : []),
   ] as const) {
     if (within(root, authPath) || within(authPath, root)) {
       fail(`the resolved credential path overlaps the ${label}; credentials are never backed up`);
     }
   }
-  return { dataDir, agentDir, backupRoot, recipients };
+  return { dataDir, agentDir, backupRoot, ...(uploadRoot ? { uploadRoot } : {}), recipients };
 }
 
 function quoteIdentifier(name: string): string {
@@ -590,16 +602,14 @@ async function hasTable(client: PgBackupClient, schema: string, table: string): 
   }
 }
 
-function assertCanonicalSingleBaselineLedger(ledger: PostgresBackupManifest["migrationLedger"], label: string): void {
+function assertCanonicalMigrationPrefixLedger(ledger: PostgresBackupManifest["migrationLedger"], label: string): void {
   if (!ledger.present) fail(`${label} has no authenticated migration ledger; refusing to create a backup`);
   try {
     const prefix = migrationPrefixForLedger(ledger as MigrationLedgerSnapshot);
-    if (prefix.length !== 1 || prefix[0]!.version !== 0) {
-      fail(`${label} is not the canonical single-baseline migration ledger; refusing to create a backup`);
-    }
+    if (prefix.length === 0) fail(`${label} has no authenticated canonical migration history; refusing to create a backup`);
   } catch (error) {
     if (error instanceof Error && error.message.startsWith("backup:")) throw error;
-    fail(`${label} is not the canonical single-baseline migration ledger; refusing to create a backup`);
+    fail(`${label} is not an authenticated canonical migration history; refusing to create a backup`);
   }
 }
 
@@ -622,7 +632,7 @@ async function readLedger(client: PgBackupClient, schema: string): Promise<Postg
     }
     if (rows.some((row, index) => row.version !== index)) fail("PostgreSQL migration ledger is not contiguous");
     const ledger = { present: true, appliedCount: rows.length, appliedVersion: rows.length ? rows.at(-1)!.version : null, checksums: rows.map((row) => row.checksum), rows, pending: 0 };
-    assertCanonicalSingleBaselineLedger(ledger, "source PostgreSQL migration ledger");
+    assertCanonicalMigrationPrefixLedger(ledger, "source PostgreSQL migration ledger");
     return ledger;
   } catch (error) {
     if (error instanceof Error && error.message.startsWith("backup:")) throw error;
@@ -638,6 +648,7 @@ async function defaultSessionReferences(client: PgBackupClient, schema: string):
     );
     return result.rows.flatMap((row) => {
       if (typeof row.id !== "string" || typeof row.project_id !== "string" || typeof row.agent_kind !== "string" || typeof row.conversation_format !== "string" || (row.conversation_ref !== null && typeof row.conversation_ref !== "string")) fail("PostgreSQL session conversation reference is malformed");
+      if (row.conversation_format === "pi-native-jsonl-v3") return [];
       if (row.agent_kind !== "pi" || row.conversation_format !== "pi-jsonl-v3") fail("unsupported conversation kind or format");
       return row.conversation_ref === null ? [] : [{ sessionId: row.id, projectId: row.project_id, agentKind: row.agent_kind, conversationFormat: row.conversation_format, conversationRef: row.conversation_ref }];
     });
@@ -879,7 +890,7 @@ function buildPostgresKyselyOnClient(client: PgBackupClient): Kysely<DatabaseSch
  * runs on the dump's snapshot connection, a schema drift can never slip
  * between verification and dump.
  */
-export async function defaultVerifyPostgresSourceSchema(client: PgBackupClient, schema: string): Promise<{ readonly version: number | null; readonly pending: number }> {
+export async function defaultVerifyPostgresSourceSchema(client: PgBackupClient, schema: string, ledger?: PostgresBackupManifest["migrationLedger"]): Promise<{ readonly version: number | null; readonly pending: number }> {
   // The caller's dedicated client is already inside the REPEATABLE READ READ
   // ONLY snapshot transaction: run the catalog verification on it without ever
   // opening/closing a nested transaction (a nested COMMIT would end the
@@ -889,12 +900,12 @@ export async function defaultVerifyPostgresSourceSchema(client: PgBackupClient, 
     const effectiveSchema = await assertPostgresApplicationSchema(kysely);
     if (effectiveSchema !== schema) fail("PostgreSQL verify current_schema does not match the authenticated target schema; refusing a backup");
     await assertPostgresMigrationLedgerContract(kysely);
-    const verdict = await assertSchemaCompatible(kysely, "PostgreSQL", POSTGRES_PHYSICAL_TYPES, schemaManifest);
-    if (verdict !== "complete") fail("PostgreSQL backup source is not the canonical single-baseline physical schema; refusing to create a backup");
-    // The single canonical baseline ledger (version 0, no pending) is validated
-    // by the backup's own readLedger; the recoverability contract above is the
-    // complete physical schema + ledger form in the dump snapshot.
-    return { version: 0, pending: 0 };
+    const migrations = ledger ? migrationPrefixForLedger(ledger as MigrationLedgerSnapshot) : [];
+    const migration = migrations.at(-1);
+    if (!migration) fail("PostgreSQL backup source has no authenticated migration history; refusing to create a backup");
+    const verdict = await assertSchemaCompatible(kysely, "PostgreSQL", migration.physicalTypeMaps.PostgreSQL, migration.manifest);
+    if (verdict !== "complete") fail("PostgreSQL backup source is not the canonical physical schema for its migration history; refusing to create a backup");
+    return { version: migration.version, pending: 0 };
   } finally {
     // destroy() only ends the faux pool; the caller-owned dedicated client is preserved.
     await kysely.destroy();
@@ -912,7 +923,7 @@ async function runPostgresBackup(options: PostgresBackupOptions, verifySourceSch
   const processAdapter = options.pgProcess ?? pgProcessAdapter;
   const now = options.now ?? (() => new Date());
   const resolved = validatePaths(options.paths);
-  const sourceRoots: PostgresBackupSourceRoots = { dataDir: resolved.dataDir, agentDir: resolved.agentDir };
+  let sourceRoots: PostgresBackupSourceRoots = { dataDir: resolved.dataDir, agentDir: resolved.agentDir };
   const startedAt = now().toISOString();
   // Same-connection binding: every identity/catalog query, the
   // pg_export_snapshot() call, and the pg_dump child bind to ONE dedicated
@@ -966,6 +977,8 @@ async function runPostgresBackup(options: PostgresBackupOptions, verifySourceSch
   let collected!: ReturnType<typeof collectWhitelistedFiles>;
   let missing!: MissingSessionReference[];
   let ledger!: PostgresBackupManifest["migrationLedger"];
+  let attachments: AttachmentManifestEntry[] = [];
+  let nativeSessionSources: NativeBackupEntry[] = [];
   let snapshotId: string | undefined;
   try {
     await withStageTimeout("target-resolve", budgets.targetResolve, async () => {
@@ -1004,22 +1017,36 @@ async function runPostgresBackup(options: PostgresBackupOptions, verifySourceSch
       // The dedicated REPEATABLE READ transaction is the same snapshot consumed
       // by pg_dump. Bind every reference from it to either an exact payload
       // path or a missing-as-empty manifest row; no second directory walk.
-      const bound = bindReferencesToPayload(references, resolved.dataDir, collected.files);
-      collected = { ...collected, files: bound.files };
-      missing = bound.missing;
       ledger = await readLedger(tx, target.schema);
       // Recoverability gate: after the schema guard (which already rejected
-      // public/system first) and the canonical ledger check, verify that the
-      // source is the complete current canonical physical schema exactly as
-      // restore's strict migrate-verify requires. It runs on the SAME dedicated
+      // public/system first) and the authenticated ledger-prefix check, verify
+      // the corresponding canonical physical schema exactly as restore does.
+      // It runs on the SAME dedicated
       // REPEATABLE READ READ ONLY transaction (tx) that pg_dump consumes, so the
       // verified schema and the dumped schema are one and the same snapshot;
       // a separate-connection verify would be a same-snapshot bypass. The
       // production entry point always runs the canonical gate on tx; the
       // test-only factory injects a verifier ONLY for offline unit tests.
-      const sourceCheck = await verifySourceSchema(tx, target.schema);
-      if (sourceCheck.version !== 0 || sourceCheck.pending !== 0) {
-        fail("PostgreSQL backup source is not the canonical single-baseline physical schema; refusing to create a backup");
+      const sourceCheck = await verifySourceSchema(tx, target.schema, ledger);
+      if (sourceCheck.version !== ledger.appliedVersion || sourceCheck.pending !== 0) {
+        fail("PostgreSQL backup source is not the canonical physical schema for its authenticated migration history; refusing to create a backup");
+      }
+      const latestMigration = migrationPrefixForLedger(ledger as MigrationLedgerSnapshot).at(-1)!;
+      const nativeRows = latestMigration.manifest.tables.some(table => table.name === "native_session_sources")
+        ? (await tx.query<Record<string, unknown>>(`SELECT * FROM ${quoteIdentifier(target.schema)}."native_session_sources" ORDER BY source_path`)).rows : [];
+      nativeSessionSources = snapshotNativeSources(nativeRows);
+      validateNativeSet(nativeSessionSources.length ? nativeSessionSources : undefined, nativeRows,
+        (await tx.query<Record<string, unknown>>(`SELECT id, project_id, agent_kind, conversation_format, conversation_ref${nativeRows.length ? ", visibility, origin" : ""} FROM ${quoteIdentifier(target.schema)}."sessions"`)).rows);
+      const bound = bindReferencesToPayload(references.filter(ref => !nativeSessionSources.some(entry => !entry.deleted && entry.session_id === ref.sessionId)), resolved.dataDir, collected.files);
+      collected = { ...collected, files: bound.files };
+      missing = bound.missing;
+      if (latestMigration.manifest.tables.some((table) => table.name === "uploaded_files")) {
+        const rows = snapshotUploadedRows((await tx.query<Record<string, unknown>>(`SELECT * FROM ${quoteIdentifier(target.schema)}."uploaded_files" ORDER BY id`)).rows);
+        if (rows.length && !resolved.uploadRoot) fail("uploaded_files require an explicit original-byte upload root");
+        const planned = rows.length ? planAttachmentPayloads(resolved.uploadRoot!, rows) : { entries: [], plans: [] };
+        attachments = planned.entries;
+        collected = { ...collected, files: [...collected.files, ...planned.plans] };
+        if (attachments.length) sourceRoots = { ...sourceRoots, uploadRoot: resolved.uploadRoot! };
       }
       // Same-transaction snapshot export: pg_dump --snapshot consumes exactly
       // this snapshot for as long as this transaction stays open. A server
@@ -1038,12 +1065,14 @@ async function runPostgresBackup(options: PostgresBackupOptions, verifySourceSch
       snapshotId = exported;
     }, undefined, report);
     if (options.dryRun === true) {
+      const native = captureNativePayloads(nativeSessionSources, options.paths.nativeSourceRoot);
       await rollbackDedicated();
       await releaseDedicated();
       return {
         dryRun: true,
         finalPath: null,
-        files: collected.files.map((item) => ({ path: `payload/${item.relativePath}.age`, kind: item.kind, size: 0, sha256: "0".repeat(64) })),
+        files: [...collected.files.map((item) => ({ path: `payload/${item.relativePath}.age`, kind: item.kind, size: 0, sha256: "0".repeat(64) })),
+          ...native.filter(item => item.bytes).map(item => ({ path: item.entry.payloadPath!, kind: "jsonl" as const, size: item.bytes!.length, sha256: createHash("sha256").update(item.bytes!).digest("hex") }))],
         missingSessionReferences: missing,
         manifest: null,
         publishedIdentity: null,
@@ -1129,13 +1158,19 @@ async function runPostgresBackup(options: PostgresBackupOptions, verifySourceSch
       rmSync(dumpPlain, { force: true });
       for (const item of collected.files) {
         plainStaging!.revalidate();
-        files.push(await encryptStableSource(plainStaging!.path, publishStaging!, item, options.paths.ageRecipientFile, age, ageBudget));
+        const record = await encryptStableSource(plainStaging!.path, publishStaging!, item, options.paths.ageRecipientFile, age, ageBudget);
+        if (item.kind === "attachment") {
+          const entry = attachments.find((value) => item.relativePath === `attachments/${value.storageKey}`);
+          if (!entry || record.size !== entry.size || record.sha256 !== entry.sha256) fail("attachment bytes changed since the PostgreSQL snapshot");
+        }
+        files.push(record);
       }
+      nativeSessionSources = await encryptNativePayloads(nativeSessionSources, options.paths.nativeSourceRoot, plainStaging!.path, publishStaging!, options.paths.ageRecipientFile, age, files, ageBudget);
     }, { abort: () => abortActiveAgeChild() }, report);
     const finishedAt = now().toISOString();
     const rootsHash = sourceRootsSha256(sourceRoots);
     const manifest: PostgresBackupManifest = {
-      format: "pi-agent-server.backup-manifest.v1",
+      format: attachments.length ? "pi-agent-server.backup-manifest.v2" : "pi-agent-server.backup-manifest.v1",
       kind: options.backupKind ?? "postgresql",
       dialect: "PostgreSQL",
       createdAt: finishedAt,
@@ -1159,6 +1194,8 @@ async function runPostgresBackup(options: PostgresBackupOptions, verifySourceSch
       credentials: { included: false, policy: "whitelist-excludes-credentials" },
       encryption: { format: "age-v1", recipients: resolved.recipients },
       files,
+      ...(nativeSessionSources.length ? { nativeSessionSources } : {}),
+      ...(attachments.length ? { attachments } : {}),
       missingSessionReferences: missing,
       excludedFiles: collected.excluded,
     };

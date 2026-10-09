@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
-import { SessionRuntime, getExpireHandler } from "../../src/runtime/session-runtime.js";
+import { DatabaseSync } from "node:sqlite";
+import { SessionDeletedError, SessionRuntime, getExpireHandler } from "../../src/runtime/session-runtime.js";
 import {
   ConcurrencyController,
   type ConcurrencyConfig,
@@ -7,7 +8,8 @@ import {
 import { MockAgentAdapter } from "../../src/agent/mock-agent-adapter.js";
 import type { ImageInput } from "../../src/agent/agent-adapter.js";
 import type { SseEvent } from "../../src/agent/events.js";
-import type { ObservabilityEvent, ObservabilityPort } from "../../src/application/ports/index.js";
+import type { IdempotencyStorePort, ObservabilityEvent, ObservabilityPort } from "../../src/application/ports/index.js";
+import { initStorage } from "../helpers/sqlite.js";
 import { TURN_ERROR_CODES } from "../../src/application/ports/session-runtime-port.js";
 import { JPEG_2X2_BASE64, PNG_2X2_BASE64 } from "../helpers/image-fixtures.js";
 
@@ -87,6 +89,7 @@ function makeRuntime(opts: {
   sessionId?: string;
   adapter?: MockAgentAdapter;
   observability?: ObservabilityPort;
+  idempotencyRepo?: IdempotencyStorePort;
   now?: () => number;
 } = {}) {
   const events: SseEvent[] = [];
@@ -102,11 +105,31 @@ function makeRuntime(opts: {
     now: opts.now ?? (() => 0),
     onEvent: (e) => events.push(e),
     observability: opts.observability,
+    idempotencyRepo: opts.idempotencyRepo,
   });
   return { runtime, events, concurrency, adapter, sessionId };
 }
 
 describe("SessionRuntime（needs.md §4.2 会话任务编排）", () => {
+  it("session notifications bypass idle/abort filters but not dispose; late text/status remain filtered", async () => {
+    class NotificationsAdapter extends MockAgentAdapter {
+      notify?: (event: import("../../src/agent/subagent-notification.js").NotificationEvent) => void;
+      subscribeNotifications(listener: NonNullable<NotificationsAdapter["notify"]>) {
+        this.notify = listener;
+        return () => {}; // Deliberately retain callback to test dispose guard.
+      }
+    }
+    const adapter = new NotificationsAdapter([]);
+    const { runtime, events, concurrency } = makeRuntime({ adapter });
+    const notification = { type: "notification" as const, version: 1 as const, notificationId: "8b58f83a-b77d-4e31-99de-47753962fb0f", runIds: ["run"], text: "stopped", entryId: "marker", timestamp: "2026-01-01T00:00:00Z" };
+    const lateText = { type: "message_update" as const, message: {}, assistantMessageEvent: { type: "text_delta" as const, contentIndex: 0, delta: "late" } };
+    adapter.emit(lateText); adapter.emit({ type: "agent_start" }); adapter.notify?.(notification);
+    expect(events).toEqual([notification]); expect(runtime.state).toBe("idle"); expect(concurrency.activeCount()).toBe(0);
+    await adapter.abort(); adapter.emit(lateText); adapter.notify?.(notification);
+    expect(events).toEqual([notification, notification]); expect(events.every(event => event.requestId === undefined)).toBe(true);
+    runtime.dispose(); adapter.notify?.(notification);
+    expect(events).toHaveLength(2);
+  });
   describe("submitMessage：幂等与状态机", () => {
     it("idle submit 成功进 streaming，SDK 事件翻译输出、完成合成 completed 并回 idle", async () => {
       const adapter = new MockAgentAdapter([
@@ -237,6 +260,8 @@ describe("SessionRuntime（needs.md §4.2 会话任务编排）", () => {
         images: [{ mediaType: "image/png", base64: PNG_2X2_BASE64 }],
       });
       expect(differentImages).toEqual({ kind: "conflict", reason: "payload-mismatch" });
+      const differentFiles = await runtime.submitMessage({ requestId: "r1", userId: "user-1", prompt: "首次", fileIds: ["different-file"] });
+      expect(differentFiles).toEqual({ kind: "conflict", reason: "payload-mismatch" });
       expect(adapter.calls).toEqual([{ method: "prompt", text: "首次" }]); // 只有首次执行
     });
 
@@ -396,6 +421,151 @@ describe("SessionRuntime（needs.md §4.2 会话任务编排）", () => {
       });
       expect(d).toEqual({ kind: "rejected", reason: "global-overload" });
       expect(runtime.state).toBe("idle");
+    });
+
+    it("容量晋升发生在 beforeAccept await 内时 deferred，claim 完成前不启动 Agent", async () => {
+      const concurrency = new ConcurrencyController({ ...baseConfig, globalLimit: 1, perUserLimit: 1 });
+      const holderAdapter = new ManualAdapter();
+      const holder = makeRuntime({ concurrency, sessionId: "holder-session", adapter: holderAdapter });
+      await holder.runtime.submitMessage({ requestId: "holder", userId: "holder-user", prompt: "占槽" });
+
+      const adapter = new ManualAdapter();
+      const { runtime } = makeRuntime({ concurrency, adapter, sessionId: "admission-session" });
+      let resolveAdmission!: () => void;
+      const admission = new Promise<void>((resolve) => { resolveAdmission = resolve; });
+      const submitted = runtime.submitMessage({
+        requestId: "queued", userId: "queued-user", prompt: "等待 claim", beforeAccept: () => admission,
+      });
+      const taskId = "admission-session:queued";
+      expect(runtime.state).toBe("queued");
+      expect(getExpireHandler(taskId)).toBeTypeOf("function");
+
+      await holder.runtime.abort();
+      await flush();
+      holderAdapter.finishStream();
+      holder.runtime.dispose();
+      expect(concurrency.activeCount()).toBe(1);
+      expect(runtime.state).toBe("queued");
+      expect(adapter.calls.filter((call) => call.method === "prompt")).toHaveLength(0);
+
+      resolveAdmission();
+      await expect(submitted).resolves.toEqual({ kind: "run" });
+      await flush();
+      expect(adapter.calls.filter((call) => call.method === "prompt")).toHaveLength(1);
+      await runtime.abort();
+      adapter.finishStream();
+    });
+
+    it("排队 admission 超时后不启动 Agent，迟到的成功 claim 作为已接受终态保留", async () => {
+      const concurrency = new ConcurrencyController({ ...baseConfig, globalLimit: 1, queueTimeoutMs: 10 });
+      concurrency.submit("holder", "holder-user", 0);
+      const { runtime, events, adapter, sessionId } = makeRuntime({ concurrency });
+      let resolveAdmission!: () => void;
+      const admission = new Promise<void>((resolve) => { resolveAdmission = resolve; });
+      const submitted = runtime.submitMessage({
+        requestId: "r1", userId: "user-1", prompt: "超时", beforeAccept: () => admission,
+      });
+      const taskId = `${sessionId}:r1`;
+      expect(concurrency.expireQueued(10)).toContain(taskId);
+      getExpireHandler(taskId)?.();
+      expect(runtime.state).toBe("idle");
+      expect(events).toContainEqual({ type: "error", message: "排队超时", requestId: "r1" });
+
+      resolveAdmission();
+      await expect(submitted).resolves.toEqual({ kind: "run" });
+      expect(adapter.calls.filter((call) => call.method === "prompt")).toHaveLength(0);
+      await expect(runtime.submitMessage({ requestId: "r1", userId: "user-1", prompt: "超时" })).resolves.toEqual({
+        kind: "done", result: { status: "error", message: "排队超时" },
+      });
+    });
+
+    it("abort/dispose admission await 时回收槽位；迟到 claim 不会误报未接受或启动 Agent", async () => {
+      for (const action of ["abort", "dispose"] as const) {
+        const adapter = new ManualAdapter();
+        const { runtime, concurrency, events } = makeRuntime({ adapter, sessionId: `admission-${action}` });
+        let resolveAdmission!: () => void;
+        const admission = new Promise<void>((resolve) => { resolveAdmission = resolve; });
+        const submitted = runtime.submitMessage({
+          requestId: "r1", userId: "user-1", prompt: "取消", beforeAccept: () => admission,
+        });
+        expect(runtime.state).toBe("queued");
+        if (action === "abort") {
+          await expect(runtime.abort("r1")).resolves.toEqual({ kind: "ok" });
+          expect(events).toContainEqual({ type: "aborted", requestId: "r1" });
+        } else {
+          runtime.dispose();
+        }
+        expect(concurrency.activeCount()).toBe(0);
+        resolveAdmission();
+        if (action === "abort") {
+          await expect(submitted).resolves.toEqual({ kind: "run" });
+          runtime.dispose();
+        } else {
+          await expect(submitted).rejects.toBeInstanceOf(SessionDeletedError);
+        }
+        expect(adapter.calls.filter((call) => call.method === "prompt")).toHaveLength(0);
+      }
+    });
+
+    it("beforeAccept 失败不污染会话或容量，后续 request 可正常执行", async () => {
+      const { runtime, concurrency, adapter } = makeRuntime();
+      await expect(runtime.submitMessage({
+        requestId: "retryable", userId: "user-1", prompt: "同一请求", beforeAccept: async () => { throw new Error("claim failed"); },
+      })).rejects.toThrow("claim failed");
+      expect(runtime.state).toBe("idle");
+      expect(concurrency.activeCount()).toBe(0);
+      expect(concurrency.queuedCount()).toBe(0);
+      await expect(runtime.submitMessage({ requestId: "retryable", userId: "user-1", prompt: "同一请求" })).resolves.toEqual({ kind: "run" });
+      await flush();
+      expect(adapter.calls.filter((call) => call.method === "prompt")).toHaveLength(1);
+    });
+
+    it("跨 runtime 恢复未确认预约返回明确冲突，不重复执行；文件指纹仍区分载荷", async () => {
+      const storage = await initStorage(new DatabaseSync(":memory:"));
+      try {
+        const firstAdapter = new ManualAdapter();
+        const first = makeRuntime({ adapter: firstAdapter, sessionId: "durable-session", idempotencyRepo: storage.idempotency });
+        let resolveAdmission!: () => void;
+        let signalStarted!: () => void;
+        const started = new Promise<void>((resolve) => { signalStarted = resolve; });
+        const admission = new Promise<void>((resolve) => { resolveAdmission = resolve; });
+        const submitted = first.runtime.submitMessage({
+          requestId: "same-key", userId: "user-1", prompt: "same", fileIds: ["file-a"],
+          beforeAccept: () => { signalStarted(); return admission; },
+        });
+        await started;
+        first.runtime.dispose();
+
+        const secondAdapter = new ManualAdapter();
+        const second = makeRuntime({ adapter: secondAdapter, sessionId: "durable-session", idempotencyRepo: storage.idempotency });
+        await expect(second.runtime.submitMessage({
+          requestId: "same-key", userId: "user-1", prompt: "same", fileIds: ["file-b"],
+        })).resolves.toEqual({ kind: "conflict", reason: "payload-mismatch" });
+        await expect(second.runtime.submitMessage({
+          requestId: "same-key", userId: "user-1", prompt: "same", fileIds: ["file-a"],
+        })).resolves.toEqual({ kind: "conflict", reason: "idempotency-unknown" });
+        expect(secondAdapter.calls.filter((call) => call.method === "prompt")).toHaveLength(0);
+
+        await storage.idempotency.put("durable-session", "legacy-no-files", { status: "completed" });
+        const legacyNoFiles = makeRuntime({ sessionId: "durable-session", idempotencyRepo: storage.idempotency });
+        await expect(legacyNoFiles.runtime.submitMessage({
+          requestId: "legacy-no-files", userId: "user-1", prompt: "legacy replay",
+        })).resolves.toEqual({ kind: "done", result: { status: "completed" } });
+        await storage.idempotency.put("durable-session", "legacy-with-files", { status: "completed" });
+        const legacyWithFiles = makeRuntime({ sessionId: "durable-session", idempotencyRepo: storage.idempotency });
+        await expect(legacyWithFiles.runtime.submitMessage({
+          requestId: "legacy-with-files", userId: "user-1", prompt: "legacy replay", fileIds: ["file-a"],
+        })).resolves.toEqual({ kind: "conflict", reason: "payload-mismatch" });
+        legacyNoFiles.runtime.dispose();
+        legacyWithFiles.runtime.dispose();
+
+        resolveAdmission();
+        await expect(submitted).rejects.toBeInstanceOf(SessionDeletedError);
+        expect(firstAdapter.calls.filter((call) => call.method === "prompt")).toHaveLength(0);
+        second.runtime.dispose();
+      } finally {
+        await storage.close();
+      }
     });
 
     it("排队超时：expireQueued 触发 handleExpired，清理排队、合成 error、释放幂等", async () => {
@@ -1452,6 +1622,32 @@ describe("SessionRuntime（needs.md §4.2 会话任务编排）", () => {
         status: "error",
         code: TURN_ERROR_CODES.durationBudget,
       });
+    });
+  });
+
+  describe("usage measurement contract", () => {
+    it.each([null, { promptTokens: 0, completionTokens: 0, totalTokens: 0 }, { promptTokens: 120, completionTokens: 8, totalTokens: 160 }])("emits required nullable tokens without synthesizing zeros: %j", async (usage) => {
+      const adapter = new MockAgentAdapter([{ type: "agent_end", messages: [], willRetry: false }]);
+      adapter.lastUsage = usage;
+      let clock = 0;
+      const { runtime, events } = makeRuntime({ adapter, now: () => clock++ });
+      await runtime.submitMessage({ requestId: "usage", userId: "user-1", prompt: "fixture" });
+      await flush();
+      expect(events.find(e => e.type === "usage")).toEqual({ type: "usage", requestId: "usage", promptTokens: usage?.promptTokens ?? null, completionTokens: usage?.completionTokens ?? null, totalTokens: usage?.totalTokens ?? null, durationMs: 1, ttftMs: 1 });
+    });
+
+    it("usage timeout emits unknown and releases the request", async () => {
+      vi.useFakeTimers();
+      try {
+        const adapter = new MockAgentAdapter([{ type: "agent_end", messages: [], willRetry: false }]);
+        adapter.getLastUsage = () => new Promise(() => {});
+        let clock = 0;
+        const { runtime, events } = makeRuntime({ adapter, now: () => clock++ });
+        await runtime.submitMessage({ requestId: "timeout", userId: "user-1", prompt: "fixture" });
+        await vi.advanceTimersByTimeAsync(5000);
+        expect(events.find(e => e.type === "usage")).toMatchObject({ requestId: "timeout", promptTokens: null, completionTokens: null, totalTokens: null });
+        expect(events.at(-1)).toMatchObject({ type: "completed", requestId: "timeout" });
+      } finally { vi.useRealTimers(); }
     });
   });
 

@@ -1,7 +1,7 @@
 // Agent 事件类型（needs.md §4.2 / docs/pi-sdk-api.md §9）
 // SDK 事件：Pi AgentSession.subscribe 产生的 AgentSessionEvent 相关子集，结构定义、不依赖真实 SDK 类型，
 // 便于 mock 与纯逻辑单测（docs/architecture.md §2）。
-// SSE 事件：服务层协议（12 种）。queued / aborted / error 无直接 SDK 事件，由服务层合成；
+// SSE 事件：服务层协议（含可选实时估算事件）。queued / aborted / error 无直接 SDK 事件，由服务层合成；
 // translate 只产出由 SDK 事件映射得到的部分。
 
 // --- SDK 事件（相关子集） ---
@@ -10,6 +10,7 @@
 export type SdkAssistantMessageEvent =
   | { type: "text_delta"; contentIndex: number; delta: string }
   | { type: "thinking_delta"; contentIndex: number; delta: string }
+  | { type: "toolcall_delta"; contentIndex: number; delta: string }
   | { type: "text_start"; contentIndex: number }
   | { type: "text_end"; contentIndex: number; content: string }
   | { type: "start" };
@@ -97,7 +98,7 @@ export function extractFinalStop(
   return { stopReason: null, errorMessage: null };
 }
 
-// --- SSE 事件（needs.md §4.2，11 种） ---
+// --- SSE 事件（needs.md §4.2，增量兼容） ---
 
 /**
  * turn 关联字段（P7b）：同一轮对话的所有事件都携带产生它们的 `requestId`，
@@ -106,18 +107,4 @@ export function extractFinalStop(
  * 可选仅用于**非 turn 遗留场景**（如宿主合成的无请求上下文事件）；正常 turn 的
  * 发射路径（`SessionRuntime`）必须携带具体值，且测试断言其存在。
  */
-export type SseRequestId = { readonly requestId?: string };
-
-export type SseEvent =
-  | ({ type: "text_delta"; text: string } & SseRequestId)
-  | ({ type: "thinking_delta"; text: string } & SseRequestId)
-  | ({ type: "tool_start"; toolCallId: string; toolName: string; args: unknown } & SseRequestId)
-  | ({ type: "tool_update"; toolCallId: string; toolName: string; partialResult: unknown } & SseRequestId)
-  | ({ type: "tool_end"; toolCallId: string; toolName: string; result: unknown; isError: boolean } & SseRequestId)
-  | ({ type: "status"; phase: "agent_start" | "turn_start" } & SseRequestId)
-  | ({ type: "queued"; position?: number } & SseRequestId)
-  | ({ type: "usage"; promptTokens: number; completionTokens: number; totalTokens: number; durationMs: number; ttftMs: number } & SseRequestId)
-  | ({ type: "model_failback"; phase: "start" | "end"; attemptId: string; outcome?: "switched" | "no-target" | "failed" | "cancelled"; from?: string; to?: string; reason?: string } & SseRequestId)
-  | ({ type: "error"; message: string } & SseRequestId)
-  | ({ type: "completed" } & SseRequestId)
-  | ({ type: "aborted" } & SseRequestId);
+export type { SseEvent, SseRequestId } from "../shared/events.js";

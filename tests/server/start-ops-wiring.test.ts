@@ -9,7 +9,7 @@ import { DatabaseSync } from "node:sqlite";
 import {
   createHash,
 } from "node:crypto";
-import { mkdtempSync, readFileSync, rmSync, statSync, existsSync } from "node:fs";
+import { mkdtempSync, realpathSync, readFileSync, rmSync, statSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, it } from "vitest";
@@ -21,7 +21,7 @@ const cleanups: string[] = [];
 afterEach(() => { for (const directory of cleanups.splice(0)) rmSync(directory, { recursive: true, force: true }); });
 
 function makeTempDir(): string {
-  const dir = mkdtempSync(join(tmpdir(), "pi-start-ops-"));
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), "pi-start-ops-")));
   cleanups.push(dir);
   return dir;
 }
@@ -33,6 +33,7 @@ function baseConfig(overrides: Partial<StartConfig> = {}): StartConfig {
     // WP5D-3：/metrics 仅 admin/operator；探针测试以 inject 默认来源 127.0.0.1 访问，登记为 admin。
     ipAccess: makeTestIpAccess({ policy: makePolicy([{ ip: "127.0.0.1", role: "admin" }]) }),
     dataDir: dir,
+    nativeSessionSourceDir: join(dir, "native-fixture"),
     authPath: join(dir, "auth.json"),
     ...overrides,
   };

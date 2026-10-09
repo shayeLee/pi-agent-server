@@ -26,13 +26,20 @@ import {
 import { StringDecoder } from "node:string_decoder";
 import { homedir } from "node:os";
 import path from "node:path";
-import { runSqliteMigrations } from "../storage/migration-engine.js";
+import { assertSqliteMigrationLedgerContract } from "../storage/migration-engine.js";
+import { assertSchemaCompatible } from "../storage/schema-compatibility.js";
+import { Kysely, SqliteDialect } from "kysely";
+import { NodeSqliteAdapter } from "../storage/node-sqlite-adapter.js";
+import type { DatabaseSchema } from "../storage/db-schema.js";
 import { classifyPiJsonlReference } from "../agent/pi-jsonl-reference.js";
 import {
   migrationPrefixForLedger,
   stableSerialize,
   type MigrationLedgerSnapshot,
 } from "../storage/migration-manifest.js";
+import { planAttachmentPayloads, snapshotUploadedRows, type AttachmentManifestEntry } from "./attachment-payload.js";
+
+import { snapshotNativeSources, validateNativeSet, captureNativePayloads, type NativeBackupEntry } from "./native-payload.js";
 
 const MAX_FILE_RETRIES = 3;
 const READ_CHUNK_SIZE = 64 * 1024;
@@ -48,7 +55,7 @@ const AUTH_FILE_NAME = "auth.json";
  */
 export const AGE_PROCESS_TIMEOUT_MS = 60_000;
 
-type FileKind = "jsonl" | "config";
+type FileKind = "jsonl" | "config" | "attachment";
 /**
  * "pre-owner-transfer" is published only by the offline owner-transfer tool
  * (WP5D-4) and uses the full DB/WAL/SHM tree binding captured around the snapshot.
@@ -91,7 +98,7 @@ export interface ConversationReference {
 
 export interface BackupFileRecord {
   readonly path: string;
-  readonly kind: "sqlite-snapshot" | "postgres-dump" | "jsonl" | "config";
+  readonly kind: "sqlite-snapshot" | "postgres-dump" | "jsonl" | "config" | "attachment";
   readonly size: number;
   readonly sha256: string;
   readonly encryptedSize?: number;
@@ -108,6 +115,7 @@ export interface BackupSourceRoots {
   readonly dataDir: string;
   readonly agentDir: string;
   readonly dbPath: string;
+  readonly uploadRoot?: string;
 }
 
 /**
@@ -176,7 +184,8 @@ export interface PublishedBackupIdentity {
 }
 
 export interface BackupManifest {
-  readonly format: "pi-agent-server.backup-manifest.v1";
+  readonly nativeSessionSources?: readonly NativeBackupEntry[];
+  readonly format: "pi-agent-server.backup-manifest.v1" | "pi-agent-server.backup-manifest.v2";
   readonly kind: BackupKind;
   readonly dialect: "SQLite";
   readonly createdAt: string;
@@ -205,6 +214,7 @@ export interface BackupManifest {
   /** Public age recipient metadata; no identity/private-key material is stored. */
   readonly encryption: { readonly format: "age-v1"; readonly recipients: readonly string[] };
   readonly files: readonly BackupFileRecord[];
+  readonly attachments?: readonly import("./attachment-payload.js").AttachmentManifestEntry[];
   readonly missingSessionReferences: readonly MissingSessionReference[];
   readonly excludedFiles: readonly { readonly path: string; readonly reason: "auth-file" }[];
 }
@@ -212,6 +222,7 @@ export interface BackupManifest {
 export interface PostgresBackupSourceRoots {
   readonly dataDir: string;
   readonly agentDir: string;
+  readonly uploadRoot?: string;
 }
 
 export interface PostgresSnapshotMetadata {
@@ -258,7 +269,8 @@ export interface PostgresSnapshotIdentity {
 }
 
 export interface PostgresBackupManifest {
-  readonly format: "pi-agent-server.backup-manifest.v1";
+  readonly nativeSessionSources?: readonly NativeBackupEntry[];
+  readonly format: "pi-agent-server.backup-manifest.v1" | "pi-agent-server.backup-manifest.v2";
   readonly kind: "postgresql" | "pre-migration" | "pre-owner-transfer";
   readonly dialect: "PostgreSQL";
   readonly createdAt: string;
@@ -271,6 +283,7 @@ export interface PostgresBackupManifest {
   readonly credentials: { readonly included: false; readonly policy: "whitelist-excludes-credentials" };
   readonly encryption: { readonly format: "age-v1"; readonly recipients: readonly string[] };
   readonly files: readonly BackupFileRecord[];
+  readonly attachments?: readonly import("./attachment-payload.js").AttachmentManifestEntry[];
   readonly missingSessionReferences: readonly MissingSessionReference[];
   readonly excludedFiles: readonly { readonly path: string; readonly reason: "auth-file" }[];
 }
@@ -278,9 +291,13 @@ export interface PostgresBackupManifest {
 export type AnyBackupManifest = BackupManifest | PostgresBackupManifest;
 
 export interface BackupPaths {
+  /** Fixed admin allowroot, independent of shared-session exclusion policy. */
+  readonly nativeSourceRoot?: string;
   readonly dataDir: string;
   readonly agentDir?: string;
   readonly dbPath: string;
+  /** Exact original-byte root; required if the frozen DB contains uploaded_files rows. */
+  readonly uploadRoot?: string;
   /**
    * The actual credential file location (e.g. PI_AUTH_PATH or its server
    * default). Optional so injected test paths stay valid, but when provided
@@ -439,7 +456,7 @@ function realpathNoSymlink(existing: string): string {
   return realpathSync(existing);
 }
 
-function validateTarget(paths: BackupPaths): { dataDir: string; agentDir: string; dbPath: string; backupRoot: string; recipients: readonly string[] } {
+function validateTarget(paths: BackupPaths): { dataDir: string; agentDir: string; dbPath: string; backupRoot: string; uploadRoot?: string; recipients: readonly string[] } {
   for (const [label, value] of [
     ["data directory", paths.dataDir], ["agent directory", paths.agentDir ?? path.join(paths.dataDir, ".pi-agent")],
     ["source database", paths.dbPath], ["backup root", paths.backupRoot], ["age recipient file", paths.ageRecipientFile],
@@ -450,6 +467,12 @@ function validateTarget(paths: BackupPaths): { dataDir: string; agentDir: string
   const agentDir = canonicalForComparison(paths.agentDir ?? path.join(paths.dataDir, ".pi-agent"));
   const backupRoot = canonicalForComparison(paths.backupRoot);
   const dbPath = canonicalForComparison(paths.dbPath);
+  const uploadRoot = paths.uploadRoot ? canonicalForComparison(paths.uploadRoot) : undefined;
+  if (uploadRoot) validateDirectory(uploadRoot, "upload root");
+  if (paths.nativeSourceRoot) {
+    const nativeRoot = canonicalForComparison(paths.nativeSourceRoot);
+    if (isWithin(nativeRoot, backupRoot) || isWithin(backupRoot, nativeRoot)) fail("backup root overlaps native source root");
+  }
   const modelsPath = path.join(agentDir, "models.json");
   const sessionsRoot = path.join(dataDir, "sessions");
   const projectsRoot = path.join(dataDir, "projects");
@@ -475,13 +498,16 @@ function validateTarget(paths: BackupPaths): { dataDir: string; agentDir: string
       isWithin(agentDir, backupRoot) || isWithin(backupRoot, agentDir) ||
       isWithin(sessionsRoot, backupRoot) || isWithin(backupRoot, sessionsRoot) ||
       isWithin(projectsRoot, backupRoot) || isWithin(backupRoot, projectsRoot) ||
-      isWithin(backupRoot, dbPath)) fail("backup root physically overlaps a source path");
+      isWithin(backupRoot, dbPath) ||
+      (uploadRoot !== undefined && (isWithin(uploadRoot, backupRoot) || isWithin(backupRoot, uploadRoot)))) fail("backup root physically overlaps a source path");
 
   // The credential must never sit inside (or contain) any whitelisted source
   // root, the service config, or the SQLite DB sidecar surface.
   for (const [label, root] of [
     ["sessions whitelist root", sessionsRoot], ["projects whitelist root", projectsRoot],
     ["agentDir/models.json", modelsPath], ["source database", dbPath],
+    ...(uploadRoot ? [["upload root", uploadRoot] as const] : []),
+    ...(paths.nativeSourceRoot ? [["native source root", canonicalForComparison(paths.nativeSourceRoot)] as const] : []),
   ] as const) {
     if (isWithin(root, authPath) || isWithin(authPath, root)) {
       fail(`the resolved credential path overlaps the ${label}; credentials are never backed up and the reset surface must never cover them`);
@@ -496,7 +522,7 @@ function validateTarget(paths: BackupPaths): { dataDir: string; agentDir: string
   }
   if (recipientText.includes("AGE-SECRET-KEY-")) fail("age recipient file contains a private key");
   validateRegular(modelsPath, "agentDir/models.json", false);
-  return { dataDir, agentDir, dbPath, backupRoot, recipients: recipientLines };
+  return { dataDir, agentDir, dbPath, backupRoot, ...(uploadRoot ? { uploadRoot } : {}), recipients: recipientLines };
 }
 
 function openNoFollow(file: string, flags: number, mode?: number): number {
@@ -629,7 +655,11 @@ function walkAllowedDirectory(root: string, dataDir: string, output: PlannedSour
   for (const entry of readdirSync(root, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) {
     const sourcePath = path.join(root, entry.name);
     if (entry.isSymbolicLink()) fail("symbolic links are not allowed in whitelisted data");
-    if (entry.isDirectory()) walkAllowedDirectory(sourcePath, dataDir, output, excluded);
+    if (entry.isDirectory()) {
+      // Shared native directories are captured only by exact frozen source claims.
+      if (entry.name.startsWith("--") && entry.name.endsWith("--") && root === path.join(dataDir, "sessions")) continue;
+      walkAllowedDirectory(sourcePath, dataDir, output, excluded);
+    }
     else if (entry.isFile()) {
       const relativePath = path.relative(dataDir, sourcePath).split(path.sep).join("/");
       if (entry.name.toLowerCase() === AUTH_FILE_NAME) {
@@ -673,6 +703,7 @@ function defaultSessionReferences(db: DatabaseSync): readonly ConversationRefere
   const rows = db.prepare("SELECT id, project_id, agent_kind, conversation_format, conversation_ref FROM sessions").all() as Array<{ id: unknown; project_id: unknown; agent_kind: unknown; conversation_format: unknown; conversation_ref: unknown }>;
   return rows.flatMap((row) => {
     if (typeof row.id !== "string" || typeof row.project_id !== "string" || typeof row.agent_kind !== "string" || typeof row.conversation_format !== "string" || (row.conversation_ref !== null && typeof row.conversation_ref !== "string")) fail("sessions conversation reference contains a malformed value");
+    if (row.conversation_format === "pi-native-jsonl-v3") return [];
     if (row.agent_kind !== "pi" || row.conversation_format !== "pi-jsonl-v3") fail("unsupported conversation kind or format");
     return row.conversation_ref === null ? [] : [{ sessionId: row.id, projectId: row.project_id, agentKind: row.agent_kind, conversationFormat: row.conversation_format, conversationRef: row.conversation_ref }];
   });
@@ -697,6 +728,7 @@ export function bindReferencesToPayload(references: readonly ConversationReferen
   const missing: MissingSessionReference[] = [];
   const referenceKeys = new Set<string>();
   for (const reference of references) {
+    if (reference.conversationFormat === "pi-native-jsonl-v3") fail("native session references are not supported by backup/restore");
     if (typeof reference.sessionId !== "string" || reference.sessionId.length === 0 || reference.agentKind !== "pi" || reference.conversationFormat !== "pi-jsonl-v3" || !path.isAbsolute(reference.conversationRef)) fail("session conversation reference is malformed");
     const referenceKey = `${reference.sessionId}\u0000${reference.conversationRef}`;
     if (referenceKeys.has(referenceKey)) fail("session conversation references are not unique");
@@ -725,16 +757,14 @@ export function validateReferences(references: readonly ConversationReference[],
   return bindReferencesToPayload(references, dataDir, files).missing;
 }
 
-function assertCanonicalSingleBaselineLedger(ledger: BackupManifest["migrationLedger"], label: string): void {
+function assertCanonicalMigrationPrefixLedger(ledger: BackupManifest["migrationLedger"], label: string): void {
   if (!ledger.present) fail(`${label} has no authenticated migration ledger; refusing to create a backup`);
   try {
     const prefix = migrationPrefixForLedger(ledger as MigrationLedgerSnapshot);
-    if (prefix.length !== 1 || prefix[0]!.version !== 0) {
-      fail(`${label} is not the canonical single-baseline migration ledger; refusing to create a backup`);
-    }
+    if (prefix.length === 0) fail(`${label} has no authenticated canonical migration history; refusing to create a backup`);
   } catch (error) {
     if (error instanceof Error && error.message.startsWith("backup:")) throw error;
-    fail(`${label} is not the canonical single-baseline migration ledger; refusing to create a backup`);
+    fail(`${label} is not an authenticated canonical migration history; refusing to create a backup`);
   }
 }
 
@@ -745,7 +775,7 @@ function migrationLedgerSummary(db: DatabaseSync): BackupManifest["migrationLedg
   if (rows.some((row) => !Number.isSafeInteger(row.version) || Number(row.version) < 0 || typeof row.name !== "string" || typeof row.checksum !== "string" || row.checksum.length === 0 || !Number.isSafeInteger(row.applied_at) || Number(row.applied_at) < 0)) fail("migration ledger contains malformed rows");
   const normalized = rows.map((row) => ({ version: Number(row.version), name: row.name as string, checksum: row.checksum as string, applied_at: Number(row.applied_at) }));
   const ledger = { present: true, appliedCount: normalized.length, appliedVersion: normalized.length === 0 ? null : normalized.at(-1)!.version, checksums: normalized.map((row) => row.checksum), rows: normalized, pending: 0 };
-  assertCanonicalSingleBaselineLedger(ledger, "source SQLite migration ledger");
+  assertCanonicalMigrationPrefixLedger(ledger, "source SQLite migration ledger");
   return ledger;
 }
 
@@ -983,6 +1013,19 @@ export async function encryptStableSource(plainRoot: string, outputRoot: string,
     } finally { rmSync(prepared.plaintextPath, { force: true }); }
   }
   fail(`${lastReason}; exceeded ${MAX_FILE_RETRIES} stability attempts`);
+}
+
+export async function encryptNativePayloads(entries: readonly NativeBackupEntry[], sourceRoot: string | undefined, plainRoot: string, outputRoot: string, recipient: string, age: AgeAdapter, files: BackupFileRecord[], options?: AgeEncryptFileOptions): Promise<NativeBackupEntry[]> {
+  const captures = captureNativePayloads(entries, sourceRoot);
+  for (const capture of captures) {
+    if (!capture.bytes) continue;
+    const plain = path.join(plainRoot, `.native-${randomUUID()}`);
+    try {
+      writePrivate(plain, capture.bytes);
+      files.push(await encryptFileTo(outputRoot, capture.entry.payloadPath!, plain, hashFile(plain), recipient, age, "jsonl", options));
+    } finally { rmSync(plain, { force: true }); }
+  }
+  return captures.map(capture => capture.entry);
 }
 
 /**
@@ -1242,40 +1285,67 @@ function openSource(dbPath: string): DatabaseSync {
 }
 
 /**
- * Read-only canonical-schema recoverability gate shared with restore's strict
- * verify. The source must be a canonical single-baseline database whose
- * complete current physical schema (tables / columns / PK / FK / indexes and
- * the ledger table's own physical contract) matches the immutable manifest.
- * A database that can be backed up but not restored fails here, before any
- * staging, encryption, or publication. The migration verify is strictly
- * read-only and never writes or checkpoints the source.
+ * Read-only historical-schema recoverability gate shared with restore. The
+ * source must match the authenticated migration prefix's immutable physical
+ * schema (tables / columns / PK / FK / indexes and the ledger table's own
+ * physical contract). A database that can be backed up but not restored fails
+ * here, before any staging, encryption, or publication. Verification is
+ * strictly read-only and never writes or checkpoints the source.
  */
-async function assertSqliteSourceCanonical(db: DatabaseSync): Promise<void> {
-  await runSqliteMigrations(db, { mode: "verify" });
+async function assertSqliteSourceCanonical(db: DatabaseSync, ledger: BackupManifest["migrationLedger"]): Promise<void> {
+  const migrations = migrationPrefixForLedger(ledger as MigrationLedgerSnapshot);
+  const migration = migrations.at(-1);
+  if (!migration) fail("source SQLite migration ledger has no authenticated canonical history; refusing backup");
+  assertSqliteMigrationLedgerContract(db);
+  const kysely = new Kysely<DatabaseSchema>({
+    dialect: new SqliteDialect({ database: new NodeSqliteAdapter(db, false, false) }),
+  });
+  try {
+    const verdict = await assertSchemaCompatible(kysely, "SQLite", migration.physicalTypeMaps.SQLite, migration.manifest);
+    if (verdict !== "complete") fail("source SQLite database is not the canonical physical schema for its migration history; refusing backup");
+  } finally { await kysely.destroy(); }
 }
 
-async function inspectSource(options: BackupOptions, db: DatabaseSync, dataDir: string, agentDir: string): Promise<{ files: PlannedSourceFile[]; excluded: { path: string; reason: "auth-file" }[]; missing: MissingSessionReference[]; ledger: BackupManifest["migrationLedger"] }> {
+function sqliteNativeSources(db: DatabaseSync, ledger: BackupManifest["migrationLedger"]): NativeBackupEntry[] {
+  const rows = ledger.appliedVersion !== null && ledger.appliedVersion >= 2
+    ? db.prepare("SELECT * FROM native_session_sources ORDER BY source_path").all() as Record<string, unknown>[] : [];
+  const entries = snapshotNativeSources(rows);
+  validateNativeSet(entries.length ? entries : undefined, rows, db.prepare("SELECT * FROM sessions").all() as Record<string, unknown>[]);
+  return entries;
+}
+
+async function inspectSource(options: BackupOptions, db: DatabaseSync, dataDir: string, agentDir: string): Promise<{ files: PlannedSourceFile[]; excluded: { path: string; reason: "auth-file" }[]; missing: MissingSessionReference[]; ledger: BackupManifest["migrationLedger"]; attachments: AttachmentManifestEntry[]; nativeSessionSources: NativeBackupEntry[] }> {
   const collected = collectWhitelistedFiles(dataDir, agentDir);
   const query = options.querySessionReferences ?? defaultSessionReferences;
-  const bound = bindReferencesToPayload(query(db), dataDir, collected.files);
   const ledger = migrationLedgerSummary(db);
-  assertCanonicalSingleBaselineLedger(ledger, "source SQLite migration ledger");
-  await assertSqliteSourceCanonical(db);
-  return { files: bound.files, excluded: collected.excluded, missing: bound.missing, ledger };
+  assertCanonicalMigrationPrefixLedger(ledger, "source SQLite migration ledger");
+  await assertSqliteSourceCanonical(db, ledger);
+  const rows = ledger.appliedVersion !== null && ledger.appliedVersion >= 1
+    ? snapshotUploadedRows(db.prepare("SELECT * FROM uploaded_files").all() as Record<string, unknown>[]) : [];
+  if (rows.length && !options.paths.uploadRoot) fail("uploaded_files require an explicit original-byte upload root");
+  const attachments = rows.length ? planAttachmentPayloads(options.paths.uploadRoot!, rows) : { entries: [], plans: [] };
+  const nativeSessionSources = sqliteNativeSources(db, ledger);
+  const bound = bindReferencesToPayload(query(db).filter(ref => !nativeSessionSources.some(entry => !entry.deleted && entry.session_id === ref.sessionId)), dataDir, collected.files);
+  return { files: [...bound.files, ...attachments.plans], excluded: collected.excluded, missing: bound.missing, ledger, attachments: attachments.entries, nativeSessionSources };
 }
 
 /** Read the final SQLite snapshot only; exact referenced files can be appended without a second directory scan. */
-async function inspectSqliteSnapshot(options: BackupOptions, snapshotPath: string, dataDir: string, initial: { readonly files: PlannedSourceFile[]; readonly excluded: { path: string; reason: "auth-file" }[] }): Promise<{ files: PlannedSourceFile[]; excluded: { path: string; reason: "auth-file" }[]; missing: MissingSessionReference[]; ledger: BackupManifest["migrationLedger"] }> {
+async function inspectSqliteSnapshot(options: BackupOptions, snapshotPath: string, dataDir: string, initial: { readonly files: PlannedSourceFile[]; readonly excluded: { path: string; reason: "auth-file" }[] }): Promise<{ files: PlannedSourceFile[]; excluded: { path: string; reason: "auth-file" }[]; missing: MissingSessionReference[]; ledger: BackupManifest["migrationLedger"]; attachments: AttachmentManifestEntry[]; nativeSessionSources: NativeBackupEntry[] }> {
   const snapshot = openSource(snapshotPath);
   try {
     const query = options.querySessionReferences ?? defaultSessionReferences;
-    const bound = bindReferencesToPayload(query(snapshot), dataDir, initial.files);
     const ledger = migrationLedgerSummary(snapshot);
-    assertCanonicalSingleBaselineLedger(ledger, "snapshot SQLite migration ledger");
+    assertCanonicalMigrationPrefixLedger(ledger, "snapshot SQLite migration ledger");
     // The published snapshot is the database restore reads; it must satisfy the
-    // same canonical physical-schema contract as the live source.
-    await assertSqliteSourceCanonical(snapshot);
-    return { files: bound.files, excluded: initial.excluded, missing: bound.missing, ledger };
+    // same authenticated historical physical-schema contract as the live source.
+    await assertSqliteSourceCanonical(snapshot, ledger);
+    const rows = ledger.appliedVersion !== null && ledger.appliedVersion >= 1
+      ? snapshotUploadedRows(snapshot.prepare("SELECT * FROM uploaded_files").all() as Record<string, unknown>[]) : [];
+    if (rows.length && !options.paths.uploadRoot) fail("snapshot uploaded_files require an explicit original-byte upload root");
+    const attachments = rows.length ? planAttachmentPayloads(options.paths.uploadRoot!, rows) : { entries: [], plans: [] };
+    const nativeSessionSources = sqliteNativeSources(snapshot, ledger);
+    const bound = bindReferencesToPayload(query(snapshot).filter(ref => !nativeSessionSources.some(entry => !entry.deleted && entry.session_id === ref.sessionId)), dataDir, initial.files.filter((item) => item.kind !== "attachment"));
+    return { files: [...bound.files, ...attachments.plans], excluded: initial.excluded, missing: bound.missing, ledger, attachments: attachments.entries, nativeSessionSources };
   } finally { snapshot.close(); }
 }
 
@@ -1317,6 +1387,9 @@ export async function createSqliteBackup(options: BackupOptions): Promise<Backup
           const stat = hashFile(prepared.plaintextPath);
           rmSync(prepared.plaintextPath, { force: true });
           files.push({ path: `payload/${item.relativePath}.age`, kind: item.kind, size: stat.size, sha256: stat.sha256 });
+        }
+        for (const payload of captureNativePayloads(inspection.nativeSessionSources, options.paths.nativeSourceRoot)) {
+          if (payload.bytes) files.push({ path: payload.entry.payloadPath!, kind: "jsonl", size: payload.bytes.length, sha256: createHash("sha256").update(payload.bytes).digest("hex") });
         }
         assertTreeUnchanged(sourceBefore, options.paths.dbPath);
         files.unshift({ path: "payload/database.sqlite.age", kind: "sqlite-snapshot", size: 0, sha256: "(VACUUM INTO at create time)" });
@@ -1389,11 +1462,18 @@ export async function createSqliteBackup(options: BackupOptions): Promise<Backup
     rmSync(plainSnapshot, { force: true });
     for (const item of snapshotInspection.files) {
       plainStaging.revalidate();
-      files.push(await encryptStableSource(plainStaging.path, publishStaging, item, options.paths.ageRecipientFile, age, ageBudget));
+      const record = await encryptStableSource(plainStaging.path, publishStaging, item, options.paths.ageRecipientFile, age, ageBudget);
+      if (item.kind === "attachment") {
+        const entry = snapshotInspection.attachments.find((value) => item.relativePath === `attachments/${value.storageKey}`);
+        if (!entry || record.size !== entry.size || record.sha256 !== entry.sha256) fail("attachment bytes changed since the frozen SQLite snapshot");
+      }
+      files.push(record);
     }
 
+    const nativeSessionSources = await encryptNativePayloads(snapshotInspection.nativeSessionSources, options.paths.nativeSourceRoot, plainStaging.path, publishStaging, options.paths.ageRecipientFile, age, files, ageBudget);
     const finishedAt = now().toISOString();
-    const roots = { dataDir: resolved.dataDir, agentDir: resolved.agentDir, dbPath: resolved.dbPath };
+    const roots: BackupSourceRoots = { dataDir: resolved.dataDir, agentDir: resolved.agentDir, dbPath: resolved.dbPath,
+      ...(snapshotInspection.attachments.length ? { uploadRoot: resolved.uploadRoot! } : {}) };
     const rootsHash = sourceRootsSha256(roots);
     // Snapshot-generation-time binding. For pre-owner-transfer this is the
     // immutable full DB/WAL/SHM tree fixed directly after VACUUM INTO; other
@@ -1402,7 +1482,7 @@ export async function createSqliteBackup(options: BackupOptions): Promise<Backup
       ? { dialect: "sqlite", dev: treeBinding.db.dev, ino: treeBinding.db.ino, nlink: treeBinding.db.nlink, mode: treeBinding.db.mode, size: treeBinding.db.size, mtimeMs: treeBinding.db.mtimeMs, sha256: treeBinding.db.sha256! }
       : sqliteSourceBinding(options.paths.dbPath);
     const manifest: BackupManifest = {
-      format: "pi-agent-server.backup-manifest.v1", kind: backupKind, dialect: "SQLite", createdAt: finishedAt,
+      format: snapshotInspection.attachments.length ? "pi-agent-server.backup-manifest.v2" : "pi-agent-server.backup-manifest.v1", kind: backupKind, dialect: "SQLite", createdAt: finishedAt,
       sourceRoots: roots,
       sourceBinding,
       ...(treeBinding ? { sourceTreeBinding: treeBinding } : {}),
@@ -1411,6 +1491,8 @@ export async function createSqliteBackup(options: BackupOptions): Promise<Backup
       timeWindow: { startedAt, finishedAt }, migrationLedger: snapshotInspection.ledger,
       credentials: { included: false, policy: "whitelist-excludes-credentials" },
       encryption: { format: "age-v1", recipients: resolved.recipients }, files,
+      ...(nativeSessionSources.length ? { nativeSessionSources } : {}),
+      ...(snapshotInspection.attachments.length ? { attachments: snapshotInspection.attachments } : {}),
       missingSessionReferences: snapshotInspection.missing, excludedFiles: snapshotInspection.excluded,
     };
     const manifestPath = path.join(plainStaging.path, ".manifest.json");
@@ -1733,7 +1815,15 @@ export function verifyPublishedBackup(result: {
   }
   if (marker !== manifestInfo.sha256) fail("published COMPLETE marker does not match the manifest");
   if (result.manifest.kind !== "pre-migration" && result.manifest.kind !== "pre-owner-transfer") fail("pre-owner-transfer/migration pre-backup has the wrong kind");
-  if (result.manifest.format !== "pi-agent-server.backup-manifest.v1" || result.manifest.files.length === 0) fail("published backup manifest is incomplete");
+  if ((result.manifest.format !== "pi-agent-server.backup-manifest.v1" && result.manifest.format !== "pi-agent-server.backup-manifest.v2") || result.manifest.files.length === 0) fail("published backup manifest is incomplete");
+  const packagedAttachments = result.manifest.files.filter((file) => file.kind === "attachment");
+  if (result.manifest.format === "pi-agent-server.backup-manifest.v2") {
+    if (!result.manifest.attachments?.length || packagedAttachments.length !== result.manifest.attachments.length ||
+      result.manifest.attachments.some((item) => !packagedAttachments.some((file) =>
+        file.path === `payload/attachments/${item.storageKey}.age` && file.size === item.size && file.sha256 === item.sha256))) {
+      fail("published backup attachment binding is incomplete");
+    }
+  } else if (result.manifest.attachments !== undefined || packagedAttachments.length > 0) fail("legacy package must not contain attachments");
   if (!result.manifest.sourceRoots || typeof result.manifest.sourceRoots !== "object") fail("published backup manifest has no authenticated source roots");
   const rootsDigest = recomputedRootsSha256(result.manifest.sourceRoots);
   if (rootsDigest !== result.manifest.sourceRootsSha256 || rootsDigest !== result.manifest.sourceRootsHash || rootsDigest !== result.publishedIdentity.sourceRootsSha256) {

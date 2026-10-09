@@ -55,7 +55,7 @@ async function isolated<T>(action: (pool: Pool, kysely: Kysely<DatabaseSchema>, 
 }
 
 const futureMigration = Object.freeze({
-  version: 1,
+  version: 2,
   name: "test-future",
   manifest: schemaManifest,
   physicalTypeMaps: { SQLite: SQLITE_PHYSICAL_TYPES, PostgreSQL: POSTGRES_PHYSICAL_TYPES },
@@ -67,7 +67,7 @@ const futureMigration = Object.freeze({
 });
 
 const futureFailure = Object.freeze({
-  version: 1,
+  version: 2,
   name: "test-failure",
   manifest: schemaManifest,
   physicalTypeMaps: { SQLite: SQLITE_PHYSICAL_TYPES, PostgreSQL: POSTGRES_PHYSICAL_TYPES },
@@ -94,7 +94,7 @@ describePg("Manifest-driven migration engine (real PostgreSQL)", () => {
     }
   });
 
-  it("applies the single baseline on an empty schema, preserving data and the UUID default, and is idempotent", async () => {
+  it("applies v0 then additive v1 on an empty schema, preserving data and the UUID default, and is idempotent", async () => {
     await isolated(async (pool, kysely) => {
       const baseline = migrationDefinitions[0]!;
       const first = await runPostgresMigrationsForTest(kysely, { migrations: [baseline] });
@@ -134,7 +134,24 @@ describePg("Manifest-driven migration engine (real PostgreSQL)", () => {
     });
   });
 
-  it("empty bootstrap follows the full baseline manifest, writes the single-baseline ledger, and keeps the UUID default", async () => {
+  it("upgrades a v0 ledger to v1 without losing existing idempotency rows", async () => {
+    await isolated(async (pool, kysely) => {
+      await runPostgresMigrationsForTest(kysely, { migrations: [migrationDefinitions[0]!] });
+      const sessionId = randomUUID();
+      await pool.query("INSERT INTO idempotency (session_id, request_id, result, created_at) VALUES ($1, $2, $3, $4)", [sessionId, "legacy-request", '{"ok":true}', 5]);
+
+      const result = await runPostgresMigrations(kysely);
+      expect(result.appliedVersion).toBe(1);
+      expect((await pool.query("SELECT session_id, request_id, result, created_at, fingerprint FROM idempotency")).rows).toEqual([
+        { session_id: sessionId, request_id: "legacy-request", result: '{"ok":true}', created_at: 5, fingerprint: null },
+      ]);
+      expect((await pool.query("SELECT table_name FROM information_schema.tables WHERE table_schema = current_schema() AND table_name = 'uploaded_files'")).rows).toEqual([
+        { table_name: "uploaded_files" },
+      ]);
+    });
+  });
+
+  it("empty bootstrap follows the migration head, writes the complete ledger, and keeps the UUID default", async () => {
     await isolated(async (pool, kysely) => {
       void kysely;
       const initialized = await initializePostgresDatabase(pool);
@@ -144,6 +161,7 @@ describePg("Manifest-driven migration engine (real PostgreSQL)", () => {
         expect(tables.rows.map((row) => row.table_name)).toEqual([...expectedTables, "schema_migrations"].sort());
         expect((await pool.query("SELECT version, name FROM schema_migrations ORDER BY version")).rows).toEqual([
           { version: 0, name: "initial-schema" },
+          { version: 1, name: "uploaded-files-and-idempotency-fingerprint" },
         ]);
 
         const sessions = migrationDefinitions[0]!.manifest.tables.find((table) => table.name === "sessions")!;
@@ -159,31 +177,32 @@ describePg("Manifest-driven migration engine (real PostgreSQL)", () => {
     });
   });
 
-  it("applies the single baseline on an empty random schema and is idempotent", async () => {
+  it("applies v0 and v1 on an empty random schema and is idempotent", async () => {
     await isolated(async (pool, kysely) => {
       const first = await runPostgresMigrations(kysely);
-      expect(first.appliedVersion).toBe(0);
+      expect(first.appliedVersion).toBe(1);
       expect((await pool.query("SELECT version, name, length(checksum) AS n, pg_typeof(applied_at)::text AS t FROM schema_migrations ORDER BY version")).rows).toEqual([
         { version: 0, name: "initial-schema", n: 64, t: "bigint" },
+        { version: 1, name: "uploaded-files-and-idempotency-fingerprint", n: 64, t: "bigint" },
       ]);
       expect((await runPostgresMigrations(kysely)).pending).toEqual([]);
     });
   });
 
   it("apply with assertEmptySchema bootstraps only a completely empty schema and refuses any pre-existing object", async () => {
-    // An empty schema applies the single baseline.
+    // An empty schema applies the complete migration head.
     await isolated(async (pool, kysely) => {
       const result = await runPostgresMigrations(kysely, { assertEmptySchema: true });
-      expect(result.appliedVersion).toBe(0);
+      expect(result.appliedVersion).toBe(1);
       expect(result.pending).toEqual([]);
-      expect((await pool.query("SELECT table_name FROM information_schema.tables WHERE table_schema = current_schema() ORDER BY table_name")).rows.map((row) => row.table_name)).toEqual(["file_operations", "idempotency", "projects", "schema_migrations", "sessions"]);
+      expect((await pool.query("SELECT table_name FROM information_schema.tables WHERE table_schema = current_schema() ORDER BY table_name")).rows.map((row) => row.table_name)).toEqual(["file_operations", "idempotency", "projects", "schema_migrations", "sessions", "uploaded_files"]);
     });
 
     // An already-initialized schema (ledger present) refuses: bootstrap is strictly empty-only.
     await isolated(async (pool, kysely) => {
       await runPostgresMigrations(kysely);
       await expect(runPostgresMigrations(kysely, { assertEmptySchema: true })).rejects.toThrow(/non-empty PostgreSQL|user object/);
-      expect((await pool.query("SELECT count(*)::int AS n FROM schema_migrations")).rows[0]?.n).toBe(1);
+      expect((await pool.query("SELECT count(*)::int AS n FROM schema_migrations")).rows[0]?.n).toBe(2);
     });
 
     // A standalone view (no base table) refuses: information_schema.tables would have missed it.
@@ -265,7 +284,7 @@ describePg("Manifest-driven migration engine (real PostgreSQL)", () => {
       await pool.query("CREATE TABLE schema_migrations (version BIGINT PRIMARY KEY NOT NULL, name TEXT UNIQUE NOT NULL, checksum TEXT NOT NULL, applied_at BIGINT NOT NULL)");
       await pool.query("INSERT INTO schema_migrations VALUES (0, 'initial-schema', $1, 1)", ["a".repeat(64)]);
       await pool.query("INSERT INTO schema_migrations VALUES (1, 'old-extra', $1, 1)", ["b".repeat(64)]);
-      await expect(runPostgresMigrations(kysely)).rejects.toThrow(/single-baseline registry has 1; recreate the database/);
+      await expect(runPostgresMigrations(kysely)).rejects.toThrow(/checksum mismatch/);
       expect((await pool.query("SELECT table_name FROM information_schema.tables WHERE table_schema = current_schema() AND table_name <> 'schema_migrations'")).rows).toEqual([]);
     });
   });
@@ -397,7 +416,7 @@ describePg("Manifest-driven migration engine (real PostgreSQL)", () => {
         const projects = new KyselyProjectRepository(initialized, pgConstraintErrorMapper);
         await projects.create({ id: "00000000-0000-4000-8000-000000000001", name: "kept", cwd: "/kept", ownerKey: "owner", createdAt: 1 });
         expect((await projects.get("00000000-0000-4000-8000-000000000001"))?.name).toBe("kept");
-        expect((await pool.query("SELECT count(*)::int AS n FROM schema_migrations")).rows[0]?.n).toBe(1);
+        expect((await pool.query("SELECT count(*)::int AS n FROM schema_migrations")).rows[0]?.n).toBe(2);
       } finally {
         await initialized.destroy();
       }

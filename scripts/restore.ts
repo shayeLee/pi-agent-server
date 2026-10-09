@@ -64,6 +64,9 @@ async function main(): Promise<void> {
     inputBackup: cli.inputBackup,
     targetRoot: cli.targetRoot,
     ageIdentityFile: cli.ageIdentityFile,
+    ...(process.env.PI_RESTORE_UPLOAD_AGENT_ROOT ? { uploadAgentRoot: process.env.PI_RESTORE_UPLOAD_AGENT_ROOT } : {}),
+    ...(process.env.PI_RESTORE_NATIVE_SOURCE_ROOT ? { nativeSourceRoot: process.env.PI_RESTORE_NATIVE_SOURCE_ROOT } : {}),
+    ...(process.env.PI_RESTORE_NATIVE_CWD_MAP ? { nativeCwdMap: JSON.parse(process.env.PI_RESTORE_NATIVE_CWD_MAP) } : {}),
   };
   if (cli.targetPgUrl !== undefined) {
     const result = await restorePostgresBackup({ paths, targetDatabaseUrl: cli.targetPgUrl, safetyContract: POSTGRES_RESTORE_SAFETY_CONTRACT, dryRun: cli.dryRun });

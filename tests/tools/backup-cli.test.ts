@@ -6,13 +6,13 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { parseBackupArgs, redactMessage, backupMachineReportLine, BACKUP_MACHINE_REPORT_PREFIX } from "../../scripts/backup.js";
 import { resolveBackupCliPaths } from "../../src/storage/storage-config.js";
-import { createCanonicalSqliteBaseline, insertCanonicalSession } from "../backup/sqlite-fixture.js";
+import { createCanonicalSqliteHead, insertCanonicalSession } from "../backup/sqlite-fixture.js";
 
 const cleanups: string[] = [];
 afterEach(() => { for (const directory of cleanups.splice(0)) rmSync(directory, { recursive: true, force: true }); });
 
 function createCanonicalLedger(db: DatabaseSync): void {
-  createCanonicalSqliteBaseline(db);
+  createCanonicalSqliteHead(db);
 }
 
 describe("offline backup CLI", () => {

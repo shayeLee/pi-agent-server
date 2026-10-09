@@ -166,11 +166,11 @@ describe("逻辑列类型 → 方言物理类型映射（同一 Manifest，SQLit
 });
 
 describe("bootstrapSchemaFromManifest（spy Kysely，PG 类型映射）", () => {
-  it("按 Manifest 顺序建 4 张表：列物理类型（uuid/text→TEXT 同构、integer→BIGINT、json→TEXT）、FK、复合主键、索引", async () => {
+  it("按 Manifest 顺序建 5 张表：列物理类型（uuid/text→TEXT 同构、integer→BIGINT、json→TEXT）、FK、复合主键、索引", async () => {
     const { kysely, tables, indexes } = createSpyKysely();
     await bootstrapSchemaFromManifest(kysely, POSTGRES_LOGICAL_TYPE);
 
-    expect(tables.map((t) => t.name)).toEqual(["projects", "sessions", "idempotency", "file_operations"]);
+    expect(tables.map((t) => t.name)).toEqual(["projects", "sessions", "idempotency", "file_operations", "uploaded_files", "native_session_sources"]);
 
     const projects = tables[0]!;
     expect(projects.columns).toEqual([
@@ -200,6 +200,7 @@ describe("bootstrapSchemaFromManifest（spy Kysely，PG 类型映射）", () => 
       ["thinking_level", "text", false],
       ["system_prompt", "text", false],
       ["capability_versions", "text", false], // json → TEXT（非 JSONB）
+      ["visibility", "text", true], ["origin", "text", true],
     ]);
     // project_id 默认值引用 DEFAULT_PROJECT_ID 常量（PG 侧 uuid 列 default 为字面量字符串）
     expect(sessions.columns.find((c) => c.name === "project_id")!.default).toBe(DEFAULT_PROJECT_ID);
@@ -221,9 +222,20 @@ describe("bootstrapSchemaFromManifest（spy Kysely，PG 类型映射）", () => 
       ["request_id", "text"], // request_id 保持 TEXT
       ["result", "text"], // json → TEXT（非 JSONB）
       ["created_at", "bigint"],
+      ["fingerprint", "text"],
     ]);
 
-    // 7 个索引：名称/表/列（含 updated_at DESC）/unique
+    expect(tables[4]!.columns.map((c) => [c.name, c.type, c.notNull])).toEqual([
+      ["id", "uuid", true], ["owner_key", "text", true], ["project_id", "uuid", true],
+      ["upload_key", "text", true], ["name", "text", true], ["media_type", "text", true],
+      ["size", "bigint", true], ["checksum", "text", true], ["storage_key", "text", true],
+      ["agent_path", "text", true], ["status", "text", true], ["created_at", "bigint", true],
+      ["session_id", "uuid", false],
+    ]);
+    expect(tables[4]!.fks).toEqual([]);
+
+    // 8 indexes: existing indexes plus the unique owner/project/upload key.
+
     expect(indexes.map((i) => [i.name, i.table, i.columns, i.unique])).toEqual([
       ["idx_projects_owner", "projects", ["owner_key"], false],
       ["idx_sessions_owner_updated", "sessions", ["owner_key", "updated_at desc"], false],
@@ -232,6 +244,9 @@ describe("bootstrapSchemaFromManifest（spy Kysely，PG 类型映射）", () => 
       ["idx_idempotency_created_at", "idempotency", ["created_at"], false],
       ["idx_file_operations_key", "file_operations", ["operation_key"], true],
       ["idx_file_operations_claim", "file_operations", ["state", "available_at"], false],
+      ["idx_uploaded_files_upload_key", "uploaded_files", ["owner_key", "project_id", "upload_key"], true],
+      ["idx_native_source_id", "native_session_sources", ["source_id"], true],
+      ["idx_native_session_id", "native_session_sources", ["session_id"], true],
     ]);
   });
 
@@ -250,6 +265,7 @@ describe("bootstrapSchemaFromManifest（spy Kysely，PG 类型映射）", () => 
       ["request_id", "text"],
       ["result", "text"],
       ["created_at", "integer"],
+      ["fingerprint", "text"],
     ]);
   });
 });
@@ -282,8 +298,8 @@ describe("createTableFromManifest 防御性 PK notNull（schema-builder 方言�
 
   it("Manifest 声明仍是唯一来源：schemaManifest 表/索引数量与 DDL builder 消费的完全一致", () => {
     const manifest = schemaManifest.tables;
-    expect(manifest).toHaveLength(4);
+    expect(manifest).toHaveLength(6);
     const indexCount = manifest.reduce((n, t) => n + (t.indexes?.length ?? 0), 0);
-    expect(indexCount).toBe(7);
+    expect(indexCount).toBe(10);
   });
 });

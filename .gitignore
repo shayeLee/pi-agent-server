@@ -29,3 +29,4 @@ pi-agent-server.db-wal
 .pi-agent
 sessions/
 .onev-publication-locks/
+docs/screenshots/

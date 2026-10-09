@@ -1,10 +1,8 @@
+/** 空历史（已有会话且确认历史为空）：单行次要文字，与起始态文案/位置可区分。 */
 export function EmptyState() {
   return (
-    <div className="empty-state" data-testid="chat-empty">
-      <div className="empty-state-title">
-        <span>pi-agent-server</span>
-      </div>
-      <span className="empty-state-subtitle">Agent harness</span>
-    </div>
+    <p className="chat-empty-history" data-testid="chat-empty">
+      该会话暂无历史消息。
+    </p>
   );
 }

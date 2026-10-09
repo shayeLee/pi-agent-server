@@ -1,14 +1,26 @@
 // pi-agent-server HTTP API client. Uses only the Fetch API and can be adapted per host.
 
+import type { Export } from "../public-api/contract.js";
 import type { AccessCapabilities, ModelInfo, Project, SessionRecord } from "./types.js";
 import { defaultFetch, hasHeader, resolveHeaders } from "./transport.js";
 import type { AuthToken, FetchLike, HeadersProvider } from "./transport.js";
+
+export type UploadedFile = {
+  fileId: string;
+  name: string;
+  mediaType: string;
+  size: number;
+  status: "ready";
+  agentPath: string;
+};
 
 export type SendMessageInput = {
   requestId: string;
   prompt: string;
   parentId?: string;
   images?: { mediaType: string; base64: string }[];
+  /** Server-verified non-image upload IDs, in the order referenced by this message. */
+  fileIds?: string[];
 };
 
 /** Fetch implementation and host-specific request resolution options. */
@@ -55,7 +67,7 @@ export class ApiClient {
         : baseUrlOrOptions;
   }
 
-  private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
+  private async request<T>(method: string, path: string, body?: unknown, response: "json" | "void" = "json"): Promise<T> {
     const headers = await resolveHeaders(this.options.headers);
     if (body !== undefined && !hasHeader(headers, "content-type")) {
       headers["content-type"] = "application/json";
@@ -79,12 +91,41 @@ export class ApiClient {
       const text = await res.text().catch(() => "");
       throw new ApiError(res.status, `HTTP ${res.status}${text ? `: ${text}` : ""}`);
     }
-    if (res.status === 204) return undefined as T;
+    if (res.status === 204 || response === "void") return undefined as T;
     return (await res.json()) as T;
   }
 
-  createSession(title?: string, projectId?: string): Promise<SessionRecord> {
-    return this.request("POST", "/v1/sessions", { title, projectId });
+  createSession(title?: string, projectId?: string, createRequestId?: string): Promise<SessionRecord> {
+    return this.request("POST", "/v1/sessions", { title, projectId, createRequestId });
+  }
+
+  /** Upload exact non-image bytes before a session exists. The caller retains only IDs in unsent UI state. */
+  async uploadFile(input: {
+    projectId: string;
+    uploadKey: string;
+    name: string;
+    mediaType: string;
+    kind: "text" | "code" | "csv" | "json" | "pdf" | "docx" | "xlsx" | "pptx";
+    bytes: Uint8Array;
+  }): Promise<UploadedFile> {
+    const headers = await resolveHeaders(this.options.headers);
+    const token = typeof this.options.token === "function" ? await this.options.token() : this.options.token;
+    if (token) headers.authorization = `Bearer ${token}`;
+    headers["content-type"] = "application/octet-stream";
+    headers["x-upload-project-id"] = input.projectId;
+    headers["x-upload-key"] = input.uploadKey;
+    headers["x-upload-name"] = encodeURIComponent(input.name);
+    headers["x-upload-type"] = input.mediaType;
+    headers["x-upload-kind"] = input.kind;
+    const url = this.options.resolveUrl ? this.options.resolveUrl("/v1/files") : `${this.options.baseUrl ?? ""}/v1/files`;
+    const response = await (this.options.fetch ?? defaultFetch)(url, {
+      method: "POST", headers, body: new Blob([new Uint8Array(input.bytes)]),
+    });
+    if (!response.ok) {
+      const message = await response.text().catch(() => "");
+      throw new ApiError(response.status, `HTTP ${response.status}${message ? `: ${message}` : ""}`);
+    }
+    return (await response.json()) as UploadedFile;
   }
 
   listSessions(): Promise<SessionRecord[]> {
@@ -140,8 +181,8 @@ export class ApiClient {
     return this.request("POST", `/v1/sessions/${sessionId}/messages`, input);
   }
 
-  steer(sessionId: string, text: string): Promise<void> {
-    return this.request("POST", `/v1/sessions/${sessionId}/steer`, { text });
+  steer(sessionId: string, text: string, input?: import("../shared/steering.js").SteeringInput): Promise<void> {
+    return this.request("POST", `/v1/sessions/${sessionId}/steer`, { text, ...input }, "void");
   }
 
   followUp(sessionId: string, text: string): Promise<void> {
@@ -152,7 +193,7 @@ export class ApiClient {
     return this.request("POST", `/v1/sessions/${sessionId}/abort`);
   }
 
-  exportSession(id: string): Promise<unknown> {
+  exportSession(id: string): Promise<Export> {
     return this.request("GET", `/v1/sessions/${id}/export`);
   }
 }

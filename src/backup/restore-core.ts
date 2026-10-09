@@ -23,12 +23,20 @@ import {
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { DatabaseSync } from "node:sqlite";
-import { runSqliteMigrations } from "../storage/migration-engine.js";
+import { assertSqliteMigrationLedgerContract } from "../storage/migration-engine.js";
+import { assertSchemaCompatible } from "../storage/schema-compatibility.js";
+import { isDurableIdempotencyReservation } from "../storage/kysely-idempotency-repository.js";
+import { Kysely, SqliteDialect } from "kysely";
+import { NodeSqliteAdapter } from "../storage/node-sqlite-adapter.js";
+import type { DatabaseSchema } from "../storage/db-schema.js";
 import { classifyPiJsonlReference } from "../agent/pi-jsonl-reference.js";
 import { migrationPrefixForLedger, type MigrationDefinition, type MigrationLedgerSnapshot } from "../storage/migration-manifest.js";
 import { stableSerialize } from "../storage/migration-manifest.js";
 import { validateRestoredFileOperations } from "./restore-validation.js";
+import { snapshotUploadedRows, validateAttachmentSet, verifyAttachmentBlob } from "./attachment-payload.js";
 import type { BackupFileRecord, BackupManifest, BackupSourceRoots } from "./backup-core.js";
+
+import { validateNativeManifest, validateNativeSet, unauthorisedRestoreBinding, planNativeRestore, publishNativeRestore, recordNativeRestore, finalizeNativeRestore, type NativeRestorePhase, type NativeRestoreOptions, type NativeRestoreClaim, type NativeBackupEntry } from "./native-payload.js";
 
 const AGE_TIMEOUT_MS = 60_000;
 const READ_CHUNK_SIZE = 64 * 1024;
@@ -36,10 +44,12 @@ const RESTORE_DIR_PREFIX = "restore-";
 
 type RestoreFile = BackupFileRecord & { readonly path: string };
 
-export interface RestorePaths {
+export interface RestorePaths extends NativeRestoreOptions {
   readonly inputBackup: string;
   readonly targetRoot: string;
   readonly ageIdentityFile: string;
+  /** Explicit path mapped to restored <finalPath>/uploads in the Pi runtime. Required for v2. */
+  readonly uploadAgentRoot?: string;
 }
 
 /** Injectable decryption boundary used by all restore-core tests. */
@@ -70,12 +80,14 @@ export interface RestoreOptions {
   readonly age?: RestoreAgeAdapter;
   readonly crypto?: RestoreAgeAdapter;
   readonly cryptoAdapter?: RestoreAgeAdapter;
+  /** Test-only process crash checkpoints; production leaves this unset. */
+  readonly nativeRestoreCheckpoint?: (phase: NativeRestorePhase) => void;
 }
 
 export interface RestoreDrillReport {
   readonly status: "success";
   readonly dialect: "SQLite";
-  readonly format: "pi-agent-server.backup-manifest.v1";
+  readonly format: "pi-agent-server.backup-manifest.v1" | "pi-agent-server.backup-manifest.v2";
   readonly counts: {
     readonly payloads: number;
     readonly jsonlFiles: number;
@@ -90,6 +102,7 @@ export interface RestoreDrillReport {
     readonly invalidSessionHistories: number;
     readonly foreignKeyViolations: number;
   };
+  readonly nativeSessionSources?: readonly NativeBackupEntry[];
   readonly migration: {
     readonly version: number | null;
     readonly pending: number;
@@ -357,7 +370,8 @@ export function relativePayloadPath(value: unknown): string {
 export function isJsonlRelative(value: string): boolean {
   const parts = value.split("/");
   return value.endsWith(".jsonl") && ((parts[0] === "sessions" && parts.length === 3) ||
-    (parts[0] === "projects" && parts.length === 5 && parts[2] === "sessions"));
+    (parts[0] === "projects" && parts.length === 5 && parts[2] === "sessions") ||
+    (parts[0] === "native" && parts.length === 3 && parts[1]!.startsWith("--") && parts[1]!.endsWith("--")));
 }
 
 function validateManifest(value: unknown): BackupManifest {
@@ -369,9 +383,9 @@ function validateManifest(value: unknown): BackupManifest {
     createdAt?: unknown;
     timeWindow?: { startedAt?: unknown; finishedAt?: unknown };
     migrationLedger?: { present?: unknown; appliedCount?: unknown; appliedVersion?: unknown; checksums?: unknown[]; rows?: unknown[]; pending?: unknown };
-    files?: unknown[]; missingSessionReferences?: unknown[]; excludedFiles?: unknown[];
+    files?: unknown[]; attachments?: unknown; nativeSessionSources?: unknown; missingSessionReferences?: unknown[]; excludedFiles?: unknown[];
   };
-  if (manifest.format !== "pi-agent-server.backup-manifest.v1") fail("unsupported backup format");
+  if (manifest.format !== "pi-agent-server.backup-manifest.v1" && manifest.format !== "pi-agent-server.backup-manifest.v2") fail("unsupported backup format");
   if (manifest.dialect === "PostgreSQL" || manifest.kind === "postgresql-online") fail("PostgreSQL backup requires an explicit temporary target PG connection");
   if ((manifest.kind !== "sqlite-online" && manifest.kind !== "pre-migration" && manifest.kind !== "pre-owner-transfer") || manifest.dialect !== "SQLite") fail("unsupported backup format or dialect");
   if (!manifest.credentials || manifest.credentials.included !== false || manifest.credentials.policy !== "whitelist-excludes-credentials") fail("manifest credential policy is invalid");
@@ -379,6 +393,10 @@ function validateManifest(value: unknown): BackupManifest {
   if (!sourceRoots || typeof sourceRoots.dataDir !== "string" || !path.isAbsolute(sourceRoots.dataDir) ||
     typeof sourceRoots.agentDir !== "string" || !path.isAbsolute(sourceRoots.agentDir) ||
     typeof sourceRoots.dbPath !== "string" || !path.isAbsolute(sourceRoots.dbPath)) fail("manifest must include explicit authenticated source roots");
+  const uploadRoot = (sourceRoots as { uploadRoot?: unknown }).uploadRoot;
+  if (manifest.format === "pi-agent-server.backup-manifest.v2"
+    ? typeof uploadRoot !== "string" || !path.isAbsolute(uploadRoot) || !Array.isArray(manifest.attachments) || manifest.attachments.length === 0
+    : uploadRoot !== undefined || manifest.attachments !== undefined) fail("manifest attachment metadata is invalid");
   if (typeof manifest.sourceRootsSha256 !== "string" || !/^[0-9a-f]{64}$/.test(manifest.sourceRootsSha256) ||
     typeof manifest.sourceRootsHash !== "string" || manifest.sourceRootsHash !== manifest.sourceRootsSha256 ||
     sourceRootsSha256(sourceRoots as BackupSourceRoots) !== manifest.sourceRootsSha256) fail("manifest source roots hash is invalid");
@@ -413,13 +431,15 @@ function validateManifest(value: unknown): BackupManifest {
     seen.add(relative);
     const encryptedSize = record.encryptedSize;
     const encryptedSha256 = record.encryptedSha256;
-    if (!(record.kind === "sqlite-snapshot" || record.kind === "jsonl" || record.kind === "config") ||
+    if (!(record.kind === "sqlite-snapshot" || record.kind === "jsonl" || record.kind === "config" || record.kind === "attachment") ||
       !Number.isSafeInteger(record.size) || record.size < 0 || typeof record.sha256 !== "string" || !/^[0-9a-f]{64}$/.test(record.sha256) ||
       typeof encryptedSize !== "number" || !Number.isSafeInteger(encryptedSize) || encryptedSize <= 0 || typeof encryptedSha256 !== "string" || !/^[0-9a-f]{64}$/.test(encryptedSha256)) fail("manifest contains an invalid file hash or size");
     const expectedKind = relative === "payload/database.sqlite.age" ? "sqlite-snapshot" :
+      /^payload\/attachments\/[0-9a-f-]{36}\.age$/.test(relative) ? "attachment" :
       relative.endsWith(".jsonl.age") ? "jsonl" : "config";
     if (record.kind !== expectedKind || (expectedKind === "sqlite-snapshot" && relative !== "payload/database.sqlite.age") ||
       (expectedKind === "jsonl" && !isJsonlRelative(relative.slice("payload/".length, -4))) ||
+      (expectedKind === "attachment" && manifest.format !== "pi-agent-server.backup-manifest.v2") ||
       (expectedKind === "config" && relative !== "payload/.pi-agent/models.json.age" && relative !== "payload/agentDir/models.json.age")) fail("manifest contains a path outside the payload whitelist");
   }
   const missing = manifest.missingSessionReferences;
@@ -444,6 +464,11 @@ function validateManifest(value: unknown): BackupManifest {
     const entry = value as Record<string, unknown>;
     if (typeof entry.path !== "string" || entry.reason !== "auth-file" || entry.path.includes("..") || path.isAbsolute(entry.path)) fail("manifest excluded-file metadata is invalid");
   }
+  validateNativeManifest(manifest.nativeSessionSources);
+  const native = (manifest.nativeSessionSources ?? []) as NativeBackupEntry[];
+  if (native.some(entry => entry.status === "external-required")) fail("native external-required package lacks external bytes; complete restore refused");
+  for (const entry of native) if (entry.status === "archived" && !seen.has(entry.payloadPath!)) fail("native archived payload is missing");
+  for (const relative of seen) if (relative.startsWith("payload/native/") && !native.some(entry => entry.payloadPath === relative)) fail("unclaimed native payload");
   return manifest as unknown as BackupManifest;
 }
 
@@ -579,18 +604,18 @@ type RestoreMigrationContext = {
 };
 
 /**
- * Authenticate the package's migration ledger before any restored data is
- * trusted. Restore accepts ONLY the canonical single baseline: a package
- * without a ledger (legacy RC shape) or with any other ledger history is
- * rejected here, before any payload is decrypted or staged.
+ * Authenticate the package's immutable migration prefix before any restored
+ * data is trusted. The exact recorded historical schema is verified without
+ * applying migrations; unknown, truncated, or altered histories are rejected
+ * before any payload is decrypted or staged.
  */
 function selectRestoreMigrationContext(ledger: MigrationLedgerSnapshot): RestoreMigrationContext {
   if (!ledger.present) {
-    fail("backup carries no authenticated migration ledger; only packages with the exact canonical single baseline are recoverable");
+    fail("backup carries no authenticated migration ledger; restore refuses packages without a canonical migration history");
   }
   try {
     const migrations = migrationPrefixForLedger(ledger);
-    if (migrations.length !== 1 || migrations[0]!.version !== 0) fail("restore accepts only the canonical single-baseline migration ledger");
+    if (migrations.length === 0) fail("restore requires an authenticated canonical migration history");
     return { migrations };
   } catch (error) {
     fail(error instanceof Error ? error.message.replace(/^schema migration ledger:\s*/, "") : "authenticated migration history is invalid");
@@ -607,18 +632,28 @@ function selectRestoreMigrationContext(ledger: MigrationLedgerSnapshot): Restore
  * structural verdict from the restore's own payload inspection (see
  * parseJsonl), computed without opening the SDK.
  */
-function remapDatabase(dbPath: string, finalPath: string, manifest: BackupManifest, included: Set<string>, invalidHistories: ReadonlySet<string>): { missing: number } {
+function remapDatabase(dbPath: string, finalPath: string, manifest: BackupManifest, included: Set<string>, invalidHistories: ReadonlySet<string>, agentRoot?: string, nativeClaims: readonly NativeRestoreClaim[] = []): { missing: number } {
   const db = new DatabaseSync(dbPath, { timeout: 5000, enableForeignKeyConstraints: true });
   try {
     const table = db.prepare("SELECT 1 AS present FROM sqlite_master WHERE type='table' AND name='sessions'").get();
     if (!table) fail("restored database has no sessions table");
     const missingKeys = new Set(manifest.missingSessionReferences.map((reference) => `${reference.sessionId}\u0000${reference.path}`));
     const consumedMissing = new Set<string>();
+    const hasNative = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='native_session_sources'").get();
+    const nativeRows = hasNative ? db.prepare("SELECT * FROM native_session_sources ORDER BY source_path").all() as Record<string, unknown>[] : [];
+    const nativeEntries = validateNativeSet(manifest.nativeSessionSources, nativeRows, db.prepare("SELECT * FROM sessions").all() as Record<string, unknown>[]);
     const rows = db.prepare("SELECT id, project_id, agent_kind, conversation_format, conversation_ref FROM sessions WHERE conversation_ref IS NOT NULL").all() as Array<{ id: unknown; project_id: unknown; agent_kind: unknown; conversation_format: unknown; conversation_ref: unknown }>;
     let missing = 0;
     db.exec("BEGIN IMMEDIATE");
     try {
+      for (const entry of nativeEntries) {
+        // Source-host inode/cwd identities are NOT local authorization.
+        const claim = nativeClaims.find(claim => claim.entry.source_path === entry.source_path);
+        db.prepare("UPDATE native_session_sources SET source_path = ?, binding = ? WHERE source_path = ?").run(claim?.target ?? entry.source_path, claim?.binding ?? unauthorisedRestoreBinding(entry.binding), entry.source_path);
+        if (claim) db.prepare("UPDATE sessions SET conversation_ref = ? WHERE id = ?").run(claim.target, entry.session_id);
+      }
       for (const row of rows) {
+        if (row.conversation_format === "pi-native-jsonl-v3" || nativeClaims.some(claim => claim.entry.session_id === row.id)) continue;
         if (typeof row.id !== "string" || typeof row.project_id !== "string" || row.agent_kind !== "pi" || row.conversation_format !== "pi-jsonl-v3" || typeof row.conversation_ref !== "string") fail("restored session conversation reference is malformed");
         const relative = deriveRelativeSessionPath(row.conversation_ref);
         const payloadRelative = `payload/${relative}.age`;
@@ -656,6 +691,17 @@ function remapDatabase(dbPath: string, finalPath: string, manifest: BackupManife
         db.prepare("UPDATE sessions SET conversation_ref = ? WHERE id = ?").run(restored, row.id);
       }
       if (consumedMissing.size !== missingKeys.size) fail("manifest missing session references do not match the database exactly");
+      const hasUploads = db.prepare("SELECT 1 AS present FROM sqlite_master WHERE type='table' AND name='uploaded_files'").get();
+      const uploadRows = hasUploads ? snapshotUploadedRows(db.prepare("SELECT * FROM uploaded_files").all() as Record<string, unknown>[]) : [];
+      validateAttachmentSet(manifest.format, manifest.attachments, uploadRows, manifest.files);
+      if (uploadRows.length && !agentRoot) fail("v2 attachment restore requires a Pi-visible target mapping");
+      for (const row of uploadRows) {
+        const entry = manifest.attachments!.find((item) => item.fileId === row.id)!;
+        if (!included.has(`payload/attachments/${row.storage_key}.age`)) fail("restored attachment payload is missing");
+        verifyAttachmentBlob(path.join(path.dirname(dbPath), "uploads"), entry);
+        db.prepare("UPDATE uploaded_files SET storage_key = ?, agent_path = ? WHERE id = ?")
+          .run(entry.storageKey, path.join(agentRoot!, entry.storageKey), row.id);
+      }
       db.exec("COMMIT");
     } catch (error) { try { db.exec("ROLLBACK"); } catch { /* preserve validation error */ } throw error; }
     return { missing };
@@ -666,6 +712,9 @@ async function validateDatabase(
   dbPath: string,
   finalPath: string,
   migrationContext: RestoreMigrationContext,
+  manifest: BackupManifest,
+  agentRoot?: string,
+  nativeClaims: readonly NativeRestoreClaim[] = [],
 ): Promise<{
   version: number | null;
   pending: number;
@@ -683,14 +732,28 @@ async function validateDatabase(
     const integrity = db.prepare("PRAGMA integrity_check").get() as { integrity_check?: unknown } | undefined;
     if (integrity?.integrity_check !== "ok") fail("restored database integrity check failed");
 
-    // Verify exactly the authenticated canonical single baseline. Restore
-    // remains read-only and never applies migrations.
-    const checked = await runSqliteMigrations(db, { mode: "verify" });
-    const migration = { appliedVersion: checked.appliedVersion, pending: checked.pending };
-    if (migration.pending.length !== 0 || migration.appliedVersion !== migrationContext.migrations.at(-1)!.version) {
-      fail("restored database did not reach the authenticated migration head");
-    }
+    // Verify the authenticated historical schema and strict ledger-table
+    // contract read-only. A restore never applies migrations.
+    const migrationDefinition = migrationContext.migrations.at(-1)!;
+    assertSqliteMigrationLedgerContract(db);
+    const kysely = new Kysely<DatabaseSchema>({
+      dialect: new SqliteDialect({ database: new NodeSqliteAdapter(db, false, false) }),
+    });
+    try {
+      const verdict = await assertSchemaCompatible(kysely, "SQLite", migrationDefinition.physicalTypeMaps.SQLite, migrationDefinition.manifest);
+      if (verdict !== "complete") fail("restored database does not match the authenticated migration schema");
+    } finally { await kysely.destroy(); }
+    const migration = { appliedVersion: migrationDefinition.version, pending: 0 };
 
+    const uploadRows = migrationDefinition.manifest.tables.some((table) => table.name === "uploaded_files")
+      ? snapshotUploadedRows(db.prepare("SELECT * FROM uploaded_files").all() as Record<string, unknown>[]) : [];
+    if (uploadRows.length !== (manifest.attachments?.length ?? 0)) fail("restored uploaded_files row count differs from package");
+    for (const row of uploadRows) {
+      const entry = manifest.attachments!.find((item) => item.fileId === row.id);
+      if (!entry || row.storage_key !== entry.storageKey || row.size !== entry.size || row.checksum !== entry.sha256 ||
+        !agentRoot || row.agent_path !== path.join(agentRoot, entry.storageKey)) fail("restored attachment metadata differs from target mapping");
+      verifyAttachmentBlob(path.join(path.dirname(dbPath), "uploads"), entry);
+    }
     const foreignKeys = db.prepare("PRAGMA foreign_key_check").all();
     if (foreignKeys.length !== 0) fail("restored database has foreign-key violations");
     const ledgerRows = db.prepare("SELECT version, name, checksum, applied_at FROM schema_migrations ORDER BY version").all() as Array<{ version: unknown; name: unknown; checksum: unknown; applied_at: unknown }>;
@@ -698,25 +761,37 @@ async function validateDatabase(
     const normalizedLedger = ledgerRows.map((row) => ({ version: Number(row.version), name: row.name as string, checksum: row.checksum as string, applied_at: Number(row.applied_at) }));
     const projects = db.prepare("SELECT id, name, cwd, owner_key FROM projects").all() as Array<Record<string, unknown>>;
     const sessions = db.prepare("SELECT id, owner_key, project_id, title, agent_kind, conversation_format, conversation_ref, capability_versions FROM sessions").all() as Array<Record<string, unknown>>;
-    const idempotency = db.prepare("SELECT session_id, request_id, result FROM idempotency").all() as Array<Record<string, unknown>>;
-    // The canonical single baseline always ships file_operations; restore
-    // validates its rows but never executes any pending deletion task.
+    const hasFingerprint = migrationDefinition.manifest.tables.find((table) => table.name === "idempotency")?.columns.some((col) => col.name === "fingerprint") === true;
+    const idempotency = db.prepare(hasFingerprint
+      ? "SELECT session_id, request_id, result, fingerprint FROM idempotency"
+      : "SELECT session_id, request_id, result FROM idempotency").all() as Array<Record<string, unknown>>;
+    // Every released migration prefix ships file_operations; restore validates
+    // its rows but never executes any pending deletion task.
     const fileOperations = db.prepare("SELECT id, operation_key, kind, relative_path, session_id, project_id, state, attempt_count, available_at, lease_until, lease_token, last_error, created_at, updated_at FROM file_operations").all() as Array<Record<string, unknown>>;
     validateRestoredFileOperations(fileOperations);
     for (const row of projects) if (![row.id, row.name, row.cwd, row.owner_key].every((value) => typeof value === "string")) fail("restored project data is malformed");
     for (const row of sessions) {
       if (![row.id, row.owner_key, row.project_id, row.title, row.agent_kind, row.conversation_format].every((value) => typeof value === "string")) fail("restored session data is malformed");
+      if (row.conversation_format === "pi-native-jsonl-v3" || nativeClaims.some(claim => claim.entry.session_id === row.id)) {
+        const entry = manifest.nativeSessionSources?.find(entry => entry.session_id === row.id && entry.deleted === 0);
+        const claim = nativeClaims.find(claim => claim.entry.session_id === row.id);
+        if (!entry || !claim || claim.target !== row.conversation_ref || entry.project_id !== row.project_id) fail("restored native reference differs from validated target mapping");
+        const binding = db.prepare("SELECT binding FROM native_session_sources WHERE source_path = ?").get(claim.target);
+        if (binding?.binding !== claim.binding) fail("restored native source binding differs from staged file");
+        continue;
+      }
       if (row.agent_kind !== "pi" || row.conversation_format !== "pi-jsonl-v3") fail("restored session uses an unsupported conversation kind or format");
       if (row.conversation_ref !== null && (typeof row.conversation_ref !== "string" || !path.isAbsolute(row.conversation_ref) || !within(finalPath, row.conversation_ref))) fail("restored session conversation reference was not safely remapped");
       if (row.capability_versions !== null) { try { JSON.parse(String(row.capability_versions)); } catch { fail("restored capability_versions is invalid JSON"); } }
     }
     for (const row of idempotency) {
       if (typeof row.session_id !== "string" || typeof row.request_id !== "string") fail("restored idempotency key is malformed");
+      if (hasFingerprint && isDurableIdempotencyReservation(row.result, row.fingerprint)) continue;
       try { JSON.parse(String(row.result)); } catch { fail("restored idempotency result is invalid JSON"); }
     }
     return {
       version: migration.appliedVersion,
-      pending: migration.pending.length,
+      pending: migration.pending,
       ledgerCount: normalizedLedger.length,
       ledgerChecksums: normalizedLedger.map((row) => row.checksum),
       ledgerRows: normalizedLedger,
@@ -743,6 +818,7 @@ export async function restoreSqliteBackup(options: RestoreOptions): Promise<Rest
   const manifestStaging = createPrivateManifestStaging(path.dirname(resolved.target));
   let staging: string | undefined;
   let published = false;
+  let rollbackNative: (() => void) | undefined;
   let targetCreated = false;
   let finalPath: string | undefined;
   let target = resolved.target;
@@ -751,10 +827,14 @@ export async function restoreSqliteBackup(options: RestoreOptions): Promise<Rest
     if (hashFile(packageLayout.manifestCiphertext).sha256 !== packageLayout.manifestCiphertextSha256) fail("manifest ciphertext does not match COMPLETE");
     await decryptWithAdapter(age, packageLayout.manifestCiphertext, manifestPlain, resolved.identity);
     const manifest = validateManifest(JSON.parse(readFileSync(manifestPlain, "utf8")));
-    // Authenticate the canonical single-baseline migration ledger before any
-    // payload is staged or decrypted.  Legacy packages (no ledger or any
-    // non-canonical ledger) fail here.  Restore never applies a migration.
+    // Authenticate the canonical migration prefix before any payload is staged
+    // or decrypted. Legacy packages (no ledger or any non-canonical history)
+    // fail here. Restore never applies a migration.
     const migrationContext = selectRestoreMigrationContext(manifest.migrationLedger as MigrationLedgerSnapshot);
+    if (options.paths.nativeSourceRoot) {
+      const root = canonicalPath(options.paths.nativeSourceRoot, "native restore source root");
+      if (root === path.parse(root).root || pathsOverlap(root, resolved.input) || pathsOverlap(root, resolved.identity)) fail("native restore root overlaps protected paths");
+    }
     rmSync(manifestPlain, { force: true });
 
     // The source roots are authenticated metadata recorded on the backup host;
@@ -765,12 +845,20 @@ export async function restoreSqliteBackup(options: RestoreOptions): Promise<Rest
     // input/target/identity policy (canonicalPath/checkAncestors) is unchanged.
     target = canonicalPath(options.paths.targetRoot, "target root");
     const targetLexical = path.resolve(options.paths.targetRoot);
-    const sourceRoots = [manifest.sourceRoots.dataDir, manifest.sourceRoots.agentDir, manifest.sourceRoots.dbPath]
+    const sourceRoots = [manifest.sourceRoots.dataDir, manifest.sourceRoots.agentDir, manifest.sourceRoots.dbPath,
+      ...(manifest.sourceRoots.uploadRoot ? [manifest.sourceRoots.uploadRoot] : [])]
       .map((root, index) => resolveSourceReference(root, `manifest source root ${index}`));
     if (sourceRoots.some((source) =>
       pathsOverlap(source.lexical, targetLexical) || pathsOverlap(source.lexical, target) ||
       pathsOverlap(source.physical, targetLexical) || pathsOverlap(source.physical, target))) {
       fail("target root overlaps an authenticated source root");
+    }
+    const agentBase = manifest.format === "pi-agent-server.backup-manifest.v2"
+      ? canonicalPath(options.paths.uploadAgentRoot ?? fail("v2 restore requires explicit Pi upload mount mapping"), "Pi upload mount mapping")
+      : undefined;
+    if (agentBase && (pathsOverlap(agentBase, resolved.input) || pathsOverlap(agentBase, resolved.identity) ||
+      sourceRoots.some((source) => pathsOverlap(source.lexical, agentBase) || pathsOverlap(source.physical, agentBase)))) {
+      fail("Pi upload mount mapping overlaps a protected source or credential path");
     }
 
     // Only the authenticated, physically isolated path may now receive a
@@ -816,10 +904,12 @@ export async function restoreSqliteBackup(options: RestoreOptions): Promise<Rest
     chmodSync(database, 0o600);
     const dataRoot = assembledRoot;
     for (const record of records.values()) {
-      if (record.kind === "jsonl" || record.kind === "config") {
+      if (record.kind === "jsonl" || record.kind === "config" || record.kind === "attachment") {
         const relative = record.path.slice("payload/".length, -4);
         const source = path.join(decryptedRoot, relative);
-        const destination = path.join(dataRoot, relative);
+        const destination = record.kind === "attachment"
+          ? path.join(dataRoot, "uploads", path.basename(relative))
+          : path.join(dataRoot, relative);
         mkdirSync(path.dirname(destination), { recursive: true, mode: 0o700 });
         copyFileSync(source, destination);
         chmodSync(destination, 0o600);
@@ -844,20 +934,24 @@ export async function restoreSqliteBackup(options: RestoreOptions): Promise<Rest
         // Only confirmed semantic JSONL invalidity may degrade. I/O, assembly,
         // age/hash/manifest and every other operational failure remains
         // fail-closed for the whole restore.
-        if (!(error instanceof InvalidSessionHistoryError)) throw error;
+        if (!(error instanceof InvalidSessionHistoryError) || relative.startsWith("native/")) throw error;
         invalidHistories.add(relative);
         rmSync(file, { force: true });
       }
     }
 
+    const nativeClaims = planNativeRestore(manifest.nativeSessionSources, assembledRoot, options.paths);
     const included = new Set(records.keys());
-    const remap = remapDatabase(database, finalPath, manifest, included, invalidHistories);
-    const dbCheck = await validateDatabase(database, finalPath, migrationContext);
+    const remap = remapDatabase(database, finalPath, manifest, included, invalidHistories,
+      agentBase ? path.join(agentBase, path.basename(finalPath), "uploads") : undefined, nativeClaims);
+    const dbCheck = await validateDatabase(database, finalPath, migrationContext, manifest,
+      agentBase ? path.join(agentBase, path.basename(finalPath), "uploads") : undefined, nativeClaims);
     if (manifest.migrationLedger.appliedCount !== dbCheck.ledgerCount || manifest.migrationLedger.appliedVersion !== dbCheck.version ||
       manifest.migrationLedger.checksums.length !== dbCheck.ledgerChecksums.length || manifest.migrationLedger.checksums.some((checksum, index) => checksum !== dbCheck.ledgerChecksums[index]) ||
       stableSerialize(manifest.migrationLedger.rows) !== stableSerialize(dbCheck.ledgerRows)) fail("manifest migration ledger does not match the restored database");
     const report: RestoreDrillReport = {
-      status: "success", dialect: "SQLite", format: "pi-agent-server.backup-manifest.v1",
+      status: "success", dialect: "SQLite", format: manifest.format,
+      ...(manifest.nativeSessionSources ? { nativeSessionSources: manifest.nativeSessionSources } : {}),
       counts: {
         payloads: records.size, jsonlFiles: jsonlFiles.length, projects: dbCheck.projects, sessions: dbCheck.sessions,
         idempotencyRows: dbCheck.idempotencyRows, fileOperations: dbCheck.fileOperations, sessionEntries,
@@ -872,11 +966,20 @@ export async function restoreSqliteBackup(options: RestoreOptions): Promise<Rest
     if (existsSync(target)) safeDirectory(target, "target root");
     else { mkdirSync(target, { recursive: true, mode: 0o700 }); chmodSync(target, 0o700); targetCreated = true; }
     if (existsSync(finalPath)) fail("restore target already exists");
+    recordNativeRestore(nativeClaims, assembledRoot, finalPath);
+    options.nativeRestoreCheckpoint?.("prepared");
+    rollbackNative = publishNativeRestore(nativeClaims);
+    options.nativeRestoreCheckpoint?.("linked");
+    // Keep both links until the remapped database has been published. Native
+    // scanning rejects nlink=2 files; a killed restore cannot expose orphan bytes.
     renameSync(assembledRoot, finalPath);
     published = true;
+    options.nativeRestoreCheckpoint?.("renamed");
+    finalizeNativeRestore(nativeClaims, assembledRoot, finalPath, options.nativeRestoreCheckpoint);
+    options.nativeRestoreCheckpoint?.("finalized");
     return { dryRun: false, finalPath, report };
   } finally {
-    if (!published && finalPath) rmSync(finalPath, { recursive: true, force: true });
+    if (!published) rollbackNative?.();
     if (targetCreated && finalPath && existsSync(target) && readdirSync(target).length === 0) rmSync(target, { recursive: true, force: true });
     if (staging) rmSync(staging, { recursive: true, force: true });
     rmSync(manifestStaging, { recursive: true, force: true });

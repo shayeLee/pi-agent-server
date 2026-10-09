@@ -8,7 +8,7 @@
  * （defaultTo(DEFAULT_PROJECT_ID)）、ensureDefaultProject 种子、服务端默认 cwd 解析、
  * DELETE 防护与 Web 侧默认项目推导均不得硬编码字符串。
  */
-export const DEFAULT_PROJECT_ID = "6f1a2b3c-4d5e-4f6a-8b9c-0d1e2f3a4b5c";
+export { DEFAULT_PROJECT_ID } from "../../shared/project-identity.js";
 
 export interface ProjectRecord {
   id: string;
@@ -23,6 +23,8 @@ export interface ProjectStorePort {
   create(record: ProjectRecord): Promise<void>;
   get(id: string): Promise<ProjectRecord | null>;
   listByOwner(ownerKey: string): Promise<ProjectRecord[]>;
+  /** Internal discovery only; never expose other owners' private projects directly. */
+  listRegistered?(): Promise<ProjectRecord[]>;
   /** 删除项目及其文件清理操作入队由 repository 同一事务完成；不执行 unlink。 */
   delete(id: string): Promise<boolean>;
   /**

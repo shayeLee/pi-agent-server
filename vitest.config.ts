@@ -1,4 +1,5 @@
-import { mkdirSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { defineConfig } from "vitest/config";
@@ -10,6 +11,10 @@ import { defineConfig } from "vitest/config";
 // node_modules keeps every test run hermetic and off the shared OS temp tree.
 // The directory chain is current-user owned and created 0700 on first use.
 const projectRoot = path.dirname(fileURLToPath(import.meta.url));
+// Never let a default native source resolve into the invoking user's home.
+const nativeTestRoot = realpathSync(mkdtempSync(path.join(tmpdir(), "pi-test-native-source-")));
+process.env.PI_SESSION_SOURCE_DIR = nativeTestRoot;
+process.once("exit", () => rmSync(nativeTestRoot, { recursive: true, force: true }));
 process.env.PI_BACKUP_STAGING_ROOT = path.join(projectRoot, "node_modules", ".pi-test-staging");
 mkdirSync(process.env.PI_BACKUP_STAGING_ROOT, { recursive: true, mode: 0o700 });
 

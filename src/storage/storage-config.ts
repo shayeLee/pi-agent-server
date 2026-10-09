@@ -19,6 +19,8 @@ export interface StorageEnvironment {
   readonly PI_DATABASE_URL?: string;
   /** Explicit absolute plaintext-staging root for backup/migration CLIs (optional). */
   readonly PI_BACKUP_STAGING_ROOT?: string;
+  /** Explicit original-byte root for offline encrypted backup. */
+  readonly PI_UPLOAD_STORAGE_ROOT?: string;
 }
 
 export type ResolvedStorage =
@@ -53,7 +55,7 @@ export function resolveStoragePaths(
   baseCwd: string,
 ): { readonly cwd: string; readonly dataDir: string; readonly dbPath: string } {
   const cwd = path.resolve(configured(config.cwd, environment.AGENT_CWD) ?? baseCwd);
-  const dataDir = path.resolve(configured(config.dataDir, environment.DATA_DIR) ?? cwd);
+  const dataDir = path.resolve(configured(config.dataDir, environment.DATA_DIR) ?? path.join(homedir(), ".pi", "agent"));
   const dbPath = path.resolve(
     configured(config.dbPath, environment.DB_PATH) ?? path.join(dataDir, "pi-agent-server.db"),
   );

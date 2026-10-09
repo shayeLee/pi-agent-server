@@ -1,26 +1,13 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { ToolStatusIcon } from "./ToolStatusIcon.js";
+import { Icon } from "./Icon.js";
+import { Modal } from "./Modal.js";
 import type { ToolCall } from "pi-agent-server/client";
-
-/** 把 unknown 值转成可读文本：字符串原样展示，其它 JSON 美化序列化。 */
-export function stringify(value: unknown): string {
-  if (typeof value === "string") return value;
-  try {
-    return JSON.stringify(value, null, 2) ?? String(value);
-  } catch {
-    return String(value);
-  }
-}
-
-/** 一块可折叠的 JSON 区块。 */
-function JsonBlock({ label, value }: { label: string; value: unknown }) {
-  if (value === undefined) return null;
-  return (
-    <div className="json-block">
-      <div className="json-label">{label}</div>
-      <pre className="json-value">{stringify(value)}</pre>
-    </div>
-  );
-}
+import { CodeBlock } from "./CodeBlock.js";
+import { rawToolData } from "../tools/raw.js";
+import { toolPresentation } from "../tools/presentation.js";
+// Existing callers/tests may keep these imports during migration.
+export { rawToolData, stringify } from "../tools/raw.js";
 
 /**
  * 一次工具调用的流式卡片。
@@ -28,7 +15,46 @@ function JsonBlock({ label, value }: { label: string; value: unknown }) {
  * tool_end → 展示 result 并标记完成（done=true）。
  */
 export function ToolCallCard({ call }: { call: ToolCall }) {
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(!call.done);
+  const userToggled = useRef(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [rawModalOpen, setRawModalOpen] = useState(false);
+  const [copyStatus, setCopyStatus] = useState("");
+  const menuRoot = useRef<HTMLDivElement>(null);
+  const moreButton = useRef<HTMLButtonElement>(null);
+  const menu = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!menuOpen) return;
+    menu.current?.querySelector<HTMLButtonElement>("button")?.focus();
+    const outside = (event: PointerEvent) => {
+      if (!menuRoot.current?.contains(event.target as Node)) setMenuOpen(false);
+    };
+    document.addEventListener("pointerdown", outside);
+    return () => document.removeEventListener("pointerdown", outside);
+  }, [menuOpen]);
+  function closeMenu() {
+    setMenuOpen(false);
+    moreButton.current?.focus();
+  }
+  function viewRaw() {
+    closeMenu();
+    setRawModalOpen(true);
+  }
+  async function copyRaw() {
+    setCopyStatus("");
+    try {
+      await navigator.clipboard.writeText(rawToolData(call));
+      setCopyStatus("已复制原始数据");
+    } catch {
+      setCopyStatus("复制失败，请查看原始数据并选择原文复制");
+    }
+  }
+  useEffect(() => {
+    if (!userToggled.current) setExpanded(!call.done);
+  }, [call.done]);
+  const status = call.done ? (call.isError ? "失败" : "已完成") : "进行中";
+  const { header, Arguments, Result } = toolPresentation(call);
+  const { summary, badge, priorityLabels, preview } = header;
 
   return (
     <div
@@ -37,29 +63,65 @@ export function ToolCallCard({ call }: { call: ToolCall }) {
       data-tool-call-id={call.toolCallId}
       data-done={String(call.done)}
     >
+      <div className="tool-call-heading">
       <button
-        className="tool-call-header"
-        onClick={() => setExpanded((v) => !v)}
+        type="button"
+        className={`tool-call-header chevron-trigger${badge ? " tool-parallel-header" : ""}`}
+        onClick={() => {
+          userToggled.current = true;
+          setExpanded((v) => !v);
+        }}
         aria-expanded={expanded}
+        aria-label={`工具调用 ${call.toolName}，状态：${status}`}
       >
-        <span className="tool-indicator">{call.done ? "✓" : "⟳"}</span>
-        <span className="tool-name" data-testid="tool-name">
+        <Icon name={header.icon} className="tool-call-category" />
+        <span className="tool-name" data-testid="tool-name" title={call.toolName}>
           {call.toolName}
         </span>
-        {call.done && call.isError && <span className="tool-badge tool-error-badge">失败</span>}
-        {!call.done && <span className="tool-badge tool-running-badge">运行中</span>}
-        <span className="tool-toggle">{expanded ? "▾" : "▸"}</span>
+        {badge && <span className="tool-parallel-count">{badge}</span>}
+        {summary && <span className="tool-summary-preview" title={summary}>{priorityLabels
+          ? <><span className="tool-parallel-names">{priorityLabels.join("、")}</span><span className="tool-parallel-preview">{preview}</span></>
+          : summary}</span>}
+        <span className="tool-header-icons">
+          <ToolStatusIcon done={call.done} isError={call.isError} />
+          <Icon name={expanded ? "down" : "chevron"} className="disclosure-chevron tool-toggle" />
+        </span>
       </button>
+      <div className="tool-more" ref={menuRoot} onBlur={event => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setMenuOpen(false);
+      }}>
+        <button type="button" className="tool-more-trigger" ref={moreButton} aria-label="工具更多操作" aria-haspopup="menu" aria-expanded={menuOpen}
+          onClick={() => setMenuOpen(v => !v)} onKeyDown={event => {
+            if (event.key === "ArrowDown" || event.key === "ArrowUp") { event.preventDefault(); setMenuOpen(true); }
+          }}><Icon name="ellipsis" /></button>
+        {menuOpen && <div className="tool-more-menu" role="menu" aria-label="工具更多操作" ref={menu} onKeyDown={event => {
+          const items = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>("button"));
+          const index = items.indexOf(document.activeElement as HTMLButtonElement);
+          if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); closeMenu(); }
+          else if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
+            event.preventDefault();
+            items[event.key === "Home" ? 0 : event.key === "End" ? items.length - 1 : (index + (event.key === "ArrowUp" ? -1 : 1) + items.length) % items.length]?.focus();
+          }
+        }}>
+          <button type="button" role="menuitem" onClick={viewRaw}>查看原始数据</button>
+          <button type="button" role="menuitem" onClick={() => { void copyRaw(); closeMenu(); }}>复制原始数据</button>
+        </div>}
+      </div>
+      </div>
+      <div role="status" className="tool-raw-copy-status">{copyStatus}</div>
       {expanded && (
         <div className="tool-call-body">
-          <JsonBlock label="参数" value={call.args} />
+          <Arguments value={call.args} args={call.args} />
           {call.done ? (
-            <JsonBlock label="结果" value={call.result} />
+            <Result label="结果" value={call.result} args={call.args} onViewRaw={viewRaw} />
           ) : call.partialResult !== undefined ? (
-            <JsonBlock label="部分结果" value={call.partialResult} />
+            <Result label="部分结果" value={call.partialResult} args={call.args} onViewRaw={viewRaw} />
           ) : null}
         </div>
       )}
+      <Modal open={rawModalOpen} onClose={() => setRawModalOpen(false)} title={`原始数据 · ${call.toolName}`}>
+        {rawModalOpen && <CodeBlock code={rawToolData(call)} language="json" copyLabel="复制原始数据" />}
+      </Modal>
     </div>
   );
 }

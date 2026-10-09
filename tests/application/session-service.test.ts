@@ -342,7 +342,7 @@ describe("SessionService", () => {
 
     const created = await service.createProject("owner-a", { name: " 项目A ", cwd: " /var/a " });
 
-    expect(created).toEqual({ id: "id-2", name: "项目A", cwd: "/var/a", isDefault: false });
+    expect(created).toEqual({ id: "id-2", name: "项目A", cwd: "/var/a", isDefault: false, canCreateSession: true });
     expect(projects.createAttempts).toEqual(["id-2"]); // 未调用 repository.create 处理保留 id
     // 默认项目记录保持 ensureDefaultProject 种子的样子（owner 为空、剩余普通项目名称未被覆盖）
     expect(projects.records.get(DEFAULT_PROJECT_ID)).toMatchObject({ ownerKey: "" });
@@ -358,7 +358,7 @@ describe("SessionService", () => {
 
     const created = await service.createProject("owner-a", { name: "项目B", cwd: "/var/b" });
 
-    expect(created).toEqual({ id: "id-2", name: "项目B", cwd: "/var/b", isDefault: false });
+    expect(created).toEqual({ id: "id-2", name: "项目B", cwd: "/var/b", isDefault: false, canCreateSession: true });
     expect(projects.createAttempts).toEqual(["id-1", "id-2"]); // 首次冲突 → 新 ID 重试
     expect(projects.records.get("id-1")).toBeUndefined(); // 冲突尝试未落库
     expect(projects.records.get("id-2")).toMatchObject({ ownerKey: "owner-a" });
@@ -675,7 +675,7 @@ describe("SessionService", () => {
 
     const created = await service.createProject("owner-a", { name: "R", cwd: "/r" });
 
-    expect(created).toEqual({ id: "id-2", name: "R", cwd: "/r", isDefault: false });
+    expect(created).toEqual({ id: "id-2", name: "R", cwd: "/r", isDefault: false, canCreateSession: true });
     expect(nowCalls).toBe(1); // 重试（id-2 尝试）不得重新计算 createdAt
     expect(projects.records.get("id-2")?.createdAt).toBe(1000);
   });

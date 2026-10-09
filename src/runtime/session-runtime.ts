@@ -3,6 +3,9 @@
 // - SDK 事件经 translateSdkEvent 翻译后输出；queued / completed / aborted / error 由本编排层合成。
 // - 返回决策为判别联合类型（run / queued / rejected / conflict / done；控制接口 ok / conflict）。
 
+import { createHash, randomUUID } from "node:crypto";
+import { notificationMessage, validNotification, type AdmissionAck, type ExtensionCustomMessage } from "../agent/subagent-host-transport.js";
+import type { SubagentNotification } from "../agent/subagent-notification.js";
 import { transition, type TaskState, type TaskEvent } from "../core/task-state-machine.js";
 import type { ConcurrencyController } from "../core/concurrency-control.js";
 import { IdempotencyStore } from "../core/idempotency.js";
@@ -59,26 +62,40 @@ export type SessionRuntimeOptions = {
   observability?: ObservabilityPort;
 };
 
+type TaskInput =
+  | { kind: "userPrompt"; prompt: string; parentId?: string; images?: ImageInput[] }
+  | { kind: "extensionCustom"; message: ExtensionCustomMessage; generation: number };
+type TaskSubmission =
+  | (SubmitInput & { kind: "userPrompt" })
+  | { kind: "extensionCustom"; requestId: string; userId: string; message: ExtensionCustomMessage; generation: number;
+      prompt?: never; parentId?: never; images?: never; fileIds?: never; beforeAccept?: never };
 type PendingTask = {
   requestId: string;
   userId: string;
-  prompt: string;
-  parentId?: string;
-  images?: ImageInput[];
+  input: TaskInput;
   key: string;
   fingerprint: string;
+  admissionToken: symbol;
+  admissionReady: boolean;
+  promoted: boolean;
+  slotState: "active" | "queued" | "promoted";
+  claimCommitted: boolean;
+  cancelled?: "abort" | "expired" | "disposed";
+  reservationToken?: string;
 };
 
-// 排队中任务的接续执行注册表（taskId → 拥有该排队任务的 runtime 的启动函数）。
-// concurrency.finish 释放槽位后返回的出队 taskId 可能属于其他会话（全局/每用户队列跨会话），
-// 由注册表把任务交还给所属 runtime 执行（dequeue：queued → streaming）。
-const RESUME_REGISTRY = new Map<string, (taskId: string) => void>();
-/** 排队任务的过期处理注册表（taskId → 过期回调，供调度器触发排队超时）。 */
-const EXPIRY_REGISTRY = new Map<string, () => void>();
+type AdmissionRegistration = {
+  token: symbol;
+  resume: (taskId: string) => void;
+  expire: () => void;
+};
+// 登记在容量预约前沿同步完成。回调携带 task token，过期/晋升只能影响原任务实例。
+const RESUME_REGISTRY = new Map<string, AdmissionRegistration>();
+const EXPIRY_REGISTRY = new Map<string, AdmissionRegistration>();
 
 /** 供调度器查询排队任务的过期回调。 */
 export function getExpireHandler(taskId: string): (() => void) | undefined {
-  return EXPIRY_REGISTRY.get(taskId);
+  return EXPIRY_REGISTRY.get(taskId)?.expire;
 }
 
 /** abort 超时（毫秒）：避免上游 abort 永不返回时卡死并发槽位。 */
@@ -113,8 +130,19 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
   private readonly idempotencyRepo?: IdempotencyStorePort;
   private readonly observability?: ObservabilityPort;
   private readonly unsubscribe: () => void;
+  private readonly unsubscribeSteering: () => void;
+  private readonly steeringAdmissions = new Map<string, { actorKey: string; fingerprint: string;
+    identity: import("../shared/steering.js").SteeringIdentity; consumed: boolean; promise: Promise<ControlDecision> }>();
+  private readonly unsubscribeNotifications: () => void;
+  private readonly unsubscribeOutputProgress: () => void;
   private readonly unsubscribeFailbackLifecycle: () => void;
   private disposed = false;
+  private readonly unbindSubagentTransport: () => void;
+  private notificationGeneration = 0;
+  private notificationsBlocked = false;
+  private readonly notificationPosts = new Map<string, { fingerprint: string; promise: Promise<AdmissionAck> }>();
+  private readonly releaseNotifications: Array<{ payload: SubagentNotification; requestId: string; generation: number }> = [];
+  private notificationDrainScheduled = false;
   /** 当前 failback 尝试锁：只拦用户 abort；关闭/删除/断连走强制路径。 */
   private failbackAttemptId: string | null = null;
   /** abort 超时/失败后标记：底层可能仍在运行，拒绝复用（避免旧事件混入新任务）。 */
@@ -145,10 +173,12 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
 
   private taskState: TaskState = "idle";
   private currentTaskId: string | null = null;
+  private currentInputKind: TaskInput["kind"] | null = null;
   private currentKey: string | null = null;
   private currentRequestId: string | null = null;
   /** 当前任务的载荷指纹（settle 时随终态一并落账，供进程内载荷冲突识别）。 */
   private currentFingerprint: string | null = null;
+  private currentReservationToken: string | null = null;
   private readonly pending = new Map<string, PendingTask>();
   /**
    * 同步轮次（runTurn）的 per-request 等待者与文本累计，键为 `${sessionId}:${requestId}`。
@@ -167,7 +197,24 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
     this.onEvent = options.onEvent;
     this.idempotencyRepo = options.idempotencyRepo;
     this.observability = options.observability;
+    this.unbindSubagentTransport = this.adapter.bindSubagentHostTransport?.({ post: payload => this.postNotification(payload) }) ?? (() => {});
     this.unsubscribe = this.adapter.subscribe((event) => this.handleSdkEvent(event));
+    this.unsubscribeSteering = this.adapter.subscribeSteeringConsumed?.(identity => {
+      const admission = this.steeringAdmissions.get(identity.controlId);
+      if (this.disposed || this.aborting || this.currentRequestId !== identity.requestId ||
+          !admission || admission.consumed || admission.identity.acknowledgementId !== identity.acknowledgementId ||
+          admission.identity.requestId !== identity.requestId) return;
+      admission.consumed = true;
+      this.emitEvent({ type: "steering_consumed", ...identity });
+    }) ?? (() => {});
+    this.unsubscribeNotifications = this.adapter.subscribeNotifications?.((event) => {
+      if (!this.disposed) this.emitEvent(event);
+    }) ?? (() => {});
+    this.unsubscribeOutputProgress = this.adapter.subscribeModelOutputProgress?.((progress) => {
+      if (!this.disposed && this.taskState === "streaming" && !this.aborting && this.currentRequestId) {
+        this.emitEvent({ type: "model_output_progress", ...progress, requestId: this.currentRequestId });
+      }
+    }) ?? (() => {});
     this.unsubscribeFailbackLifecycle = this.adapter.subscribeFailbackLifecycle?.((event) =>
       this.handleFailbackLifecycle(event),
     ) ?? (() => {});
@@ -177,11 +224,38 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
+    this.cancelReleaseNotifications();
+    this.unbindSubagentTransport();
     this.unsubscribe();
+    this.unsubscribeSteering();
+    this.unsubscribeNotifications();
+    this.unsubscribeOutputProgress();
     this.unsubscribeFailbackLifecycle();
     this.failbackAttemptId = null;
     // 清除本 turn 的墙钟 deadline timer，绝不泄漏。
     this.clearTurnDeadline();
+    // 先收回尚在 admission await 中的容量。回调可能已经原子 claim；这类任务保留持久预约，
+    // 等回调返回后由 doSubmit 记为已接受的 aborted 终态，避免错误声称未消费。
+    for (const [taskId, task] of this.pending) {
+      if (!task.admissionReady) {
+        task.cancelled = "disposed";
+        this.releaseTaskSlot(taskId, task);
+      } else if (task.claimCommitted) {
+        task.cancelled = "disposed";
+        this.releaseTaskSlot(taskId, task);
+        void this.completeTaskIdempotency(task, { status: "aborted" });
+      } else {
+        this.idempotency.fail(task.key);
+        this.releaseTaskSlot(taskId, task);
+        void this.releasePersistentReservation(task);
+      }
+      this.unregisterPending(taskId, task);
+      if (task.input.kind === "extensionCustom") this.emitEvent({ type: "aborted", requestId: task.requestId });
+    }
+    if (this.currentInputKind === "extensionCustom" && this.currentRequestId) {
+      this.emitEvent({ type: "aborted", requestId: this.currentRequestId });
+    }
+    this.currentInputKind = null;
     // 释放 active 任务占用的并发槽位（触发 drain 接续其他会话）；不依赖调用方先 abort
     if (this.currentTaskId !== null) {
       this.continuePromoted(this.concurrency.finish(this.currentTaskId));
@@ -190,13 +264,7 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
     this.currentKey = null;
     this.currentRequestId = null;
     this.currentFingerprint = null;
-    // 清理排队任务：取消占位、释放幂等重试资格、清注册表
-    for (const [taskId, task] of this.pending) {
-      this.idempotency.fail(task.key);
-      this.concurrency.cancelQueued(taskId);
-      RESUME_REGISTRY.delete(taskId);
-      EXPIRY_REGISTRY.delete(taskId);
-    }
+    this.currentReservationToken = null;
     this.pending.clear();
     // 资源释放时同步终结未结算的同步轮次（如尚未 settle 的 runTurn），避免插件请求永久挂起。
     for (const key of [...this.turnWaiters.keys()]) {
@@ -208,6 +276,79 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
   /** 当前任务状态（idle/queued/streaming/terminal）。 */
   get state(): TaskState {
     return this.taskState;
+  }
+
+  /** Host-only notification admission. Register in-flight before any reentrant SDK callback. */
+  private postNotification(payload: SubagentNotification): Promise<AdmissionAck> {
+    if (!validNotification(payload)) return Promise.resolve({ accepted: false, reason: "invalid" });
+    const fingerprint = createHash("sha256").update(JSON.stringify(payload)).digest("hex");
+    const prior = this.notificationPosts.get(payload.notificationId);
+    if (prior) return prior.fingerprint === fingerprint ? prior.promise : Promise.resolve({ accepted: false, reason: "invalid" });
+    let resolve!: (ack: AdmissionAck) => void;
+    const promise = new Promise<AdmissionAck>(r => { resolve = r; });
+    this.notificationPosts.set(payload.notificationId, { fingerprint, promise });
+    // Keep rejected IDs too: retries cannot submit the same notification twice.
+    const copy = { ...payload, runIds: [...payload.runIds] };
+    try {
+      void this.admitNotification(copy, randomUUID(), this.notificationGeneration).then(resolve,
+        () => resolve({ accepted: false, reason: "failed" }));
+    } catch { resolve({ accepted: false, reason: "failed" }); }
+    return promise;
+  }
+
+  private async admitNotification(payload: SubagentNotification, requestId: string, generation: number): Promise<AdmissionAck> {
+    if (this.disposed) return { accepted: false, reason: "disposed" };
+    if (this.poisoned || this.aborting || this.notificationsBlocked || generation !== this.notificationGeneration) {
+      return { accepted: false, reason: "cancelled" };
+    }
+    // Check + enqueue is synchronous until the SDK has queued this custom follow-up.
+    if (this.currentRequestId && this.taskState === "streaming" && this.adapter.isSdkStreaming?.()) {
+      if (!this.adapter.queueCustomFollowUp) return { accepted: false, reason: "notready" };
+      const ownedRequestId = this.currentRequestId;
+      try {
+        await this.adapter.queueCustomFollowUp(notificationMessage(payload));
+        if (this.disposed || this.aborting || generation !== this.notificationGeneration) return { accepted: false, reason: "cancelled" };
+        return { accepted: true, mode: "followUp", requestId: ownedRequestId };
+      } catch { return { accepted: false, reason: "failed" }; }
+    }
+    // preflight, settled callbacks and terminal accounting still own the host slot.
+    // ACK the bounded host queue immediately; never await the run from its own settled handler.
+    if (this.taskState !== "idle" || this.currentTaskId !== null) {
+      if (this.releaseNotifications.length >= 32) return { accepted: false, reason: "full" };
+      this.releaseNotifications.push({ payload, requestId, generation });
+      return { accepted: true, mode: "pending", requestId };
+    }
+    if (this.adapter.isSdkStreaming?.()) return { accepted: false, reason: "busy" };
+    const fingerprint = createHash("sha256").update("extensionCustom:").update(JSON.stringify(payload)).digest("hex");
+    const decision = await this.doSubmit({ kind: "extensionCustom", requestId, userId: this.ownerKey,
+      message: notificationMessage(payload), generation }, fingerprint);
+    if (decision.kind === "run" || decision.kind === "queued") return { accepted: true, mode: decision.kind, requestId };
+    return { accepted: false, reason: decision.kind === "rejected" ? "full" : "busy" };
+  }
+
+  private cancelReleaseNotifications(): void {
+    this.notificationGeneration++;
+    this.notificationsBlocked = true;
+    const cancelled = this.releaseNotifications.splice(0);
+    for (const task of cancelled) this.emitEvent({ type: "aborted", requestId: task.requestId });
+  }
+
+  private scheduleNotificationDrain(): void {
+    if (this.notificationDrainScheduled || !this.releaseNotifications.length || this.disposed || this.notificationsBlocked || this.poisoned) return;
+    this.notificationDrainScheduled = true;
+    queueMicrotask(() => {
+      this.notificationDrainScheduled = false;
+      if (this.disposed || this.notificationsBlocked || this.poisoned || this.taskState !== "idle") return;
+      const next = this.releaseNotifications.shift();
+      if (!next) return;
+      void this.admitNotification(next.payload, next.requestId, next.generation).then(ack => {
+        if (!ack.accepted) this.emitEvent({ type: "error", message: `子代理通知任务未准入: ${ack.reason}`, requestId: next.requestId });
+        this.scheduleNotificationDrain();
+      }).catch(() => {
+        this.emitEvent({ type: "error", message: "子代理通知任务准入失败", requestId: next.requestId });
+        this.scheduleNotificationDrain();
+      });
+    });
   }
 
   /** POST /v1/sessions/:id/messages：同 requestId 并发去重 → 幂等 → 状态机 → 并发控制 → Agent 执行。
@@ -228,7 +369,7 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
         ? inFlight.promise
         : { kind: "conflict", reason: "payload-mismatch" };
     }
-    const promise = this.doSubmit(input, fingerprint);
+    const promise = this.doSubmit({ ...input, kind: "userPrompt" }, fingerprint);
     this.inFlightSubmits.set(key, { fingerprint, promise });
     try {
       return await promise;
@@ -253,8 +394,8 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
    *   工具次数 > 墙钟 > 助手文本的固定优先级取 code；
    * - 三个上限都是 runTurn 专属预算，不传时为无限制（与不引入预算时逐字节等价）。
    *
-   * 已知限制：跨进程重启后，持久化幂等表不保存载荷指纹（见 src/core/payload-fingerprint.ts），
-   * 因此同一 requestId 以不同 prompt 重放会命中旧终态并返回 busy/旧结果；本任务不引入 schema 变更。
+   * 已知限制：跨进程重启后的未结算任务没有可恢复的运行时执行状态；
+   * 已结算且持久化成功的请求可凭指纹拒绝不同载荷重放。
    */
   async runTurn(input: RunTurnInput): Promise<SessionTurnResult> {
     if (this.disposed) throw new SessionDeletedError(this.sessionId);
@@ -370,114 +511,186 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
     }
   }
 
-  private async doSubmit(input: {
-    requestId: string;
-    userId: string;
-    prompt: string;
-    parentId?: string;
-    images?: ImageInput[];
-  }, fingerprint: string): Promise<SubmitDecision> {
+  private async doSubmit(input: TaskSubmission, fingerprint: string): Promise<SubmitDecision> {
     const key = `${this.sessionId}:${input.requestId}`;
     const idem = this.idempotency.check(key, fingerprint);
-    if (idem.status === "payload-conflict") {
-      // 同 requestId 不同载荷（进程内可识别）：拒绝，不返回旧结果，也不重复执行。
-      return { kind: "conflict", reason: "payload-mismatch" };
-    }
-    if (idem.status === "done") {
-      // 已处理过：返回原结果，不重复执行
-      return { kind: "done", result: idem.result };
-    }
-    // 重启恢复：内存 miss 时查持久化，命中则加载并返回 done 不重复执行
+    if (idem.status === "payload-conflict") return { kind: "conflict", reason: "payload-mismatch" };
+    if (idem.status === "done") return { kind: "done", result: idem.result };
+
+    let reservationToken: string | undefined;
     if (idem.status === "new" && this.idempotencyRepo) {
       try {
-        const persisted = await this.idempotencyRepo.get(this.sessionId, input.requestId);
-        if (this.disposed) throw new SessionDeletedError(this.sessionId); // 查库期间被删除
-        if (persisted !== null) {
-          this.idempotency.complete(key, persisted, fingerprint);
-          return { kind: "done", result: persisted };
+        const repo = this.idempotencyRepo;
+        if (repo.reserve && repo.completeReservation && repo.releaseReservation) {
+          const reservation = await repo.reserve(this.sessionId, input.requestId, fingerprint);
+          if (this.disposed) {
+            if (reservation.kind === "owner") await repo.releaseReservation(this.sessionId, input.requestId, reservation.token);
+            throw new SessionDeletedError(this.sessionId);
+          }
+          if (reservation.kind === "reserved") {
+            this.idempotency.fail(key);
+            if (reservation.fingerprint !== null && reservation.fingerprint !== fingerprint) {
+              return { kind: "conflict", reason: "payload-mismatch" };
+            }
+            return { kind: "conflict", reason: "idempotency-unknown" };
+          }
+          if (reservation.kind === "done") {
+            this.idempotency.fail(key);
+            if ((reservation.fingerprint !== null && reservation.fingerprint !== fingerprint) ||
+                (input.fileIds?.length && reservation.fingerprint === null)) {
+              return { kind: "conflict", reason: "payload-mismatch" };
+            }
+            this.idempotency.complete(key, reservation.result, fingerprint);
+            return { kind: "done", result: reservation.result };
+          }
+          reservationToken = reservation.token;
+        } else {
+          // Legacy injected ports remain usable, but the production repository implements atomic reserve.
+          const stored = repo.getWithFingerprint
+            ? await repo.getWithFingerprint(this.sessionId, input.requestId)
+            : null;
+          const persisted = stored ? stored.result : await repo.get(this.sessionId, input.requestId);
+          if (this.disposed) throw new SessionDeletedError(this.sessionId);
+          if (persisted !== null) {
+            if ((stored?.fingerprint !== null && stored?.fingerprint !== undefined && stored.fingerprint !== fingerprint) ||
+                (input.fileIds?.length && !stored?.fingerprint)) {
+              this.idempotency.fail(key);
+              return { kind: "conflict", reason: "payload-mismatch" };
+            }
+            this.idempotency.complete(key, persisted, fingerprint);
+            return { kind: "done", result: persisted };
+          }
         }
       } catch (error) {
-        this.idempotency.fail(key); // 查询失败：释放 processing 占位，允许重试
+        this.idempotency.fail(key);
         throw error;
       }
     }
     if (idem.status === "processing") {
-      // 同 requestId 正在处理（运行期重试，如丢失 202 后）：返回「已接受」语义，不重复执行
-      // 省略 position：真实队列位置由全局队列决定，不伪造为固定值
-      if (this.taskState === "queued") {
-        return { kind: "queued" };
-      }
-      // streaming 或 terminal（abort 中，客户端经 SSE 收到 aborted）：都表示任务已被接受
+      if (this.taskState === "queued") return { kind: "queued" };
       return { kind: "run" };
     }
 
-    // 状态机：仅 idle 可 submit（idle+submit → queued）；否则 409
+    // Storage awaits are an admission race boundary. Never revive a cancelled custom task.
+    if (this.disposed || this.poisoned || (input.kind === "extensionCustom" &&
+        (this.notificationsBlocked || input.generation !== this.notificationGeneration))) {
+      this.idempotency.fail(key);
+      if (reservationToken) await this.releasePersistentToken(input.requestId, reservationToken);
+      return { kind: "conflict", reason: "poisoned" };
+    }
     const afterSubmit = transition(this.taskState, "submit");
     if (afterSubmit === null) {
       this.idempotency.fail(key);
+      if (reservationToken) await this.releasePersistentToken(input.requestId, reservationToken);
       return { kind: "conflict", reason: "active" };
     }
     this.taskState = afterSubmit;
 
-    const taskId = key; // taskId 与会话+请求一一对应，全局唯一
+    const taskId = key;
     const decision = this.concurrency.submit(taskId, input.userId, this.now());
+    if (decision.kind === "reject") {
+      this.taskState = transition("queued", "abort")!;
+      this.idempotency.fail(key);
+      if (reservationToken) await this.releasePersistentToken(input.requestId, reservationToken);
+      return { kind: "rejected", reason: decision.reason };
+    }
+
+    const admissionToken = Symbol(taskId);
+    const task: PendingTask = {
+      requestId: input.requestId,
+      userId: input.userId,
+      input: input.kind === "extensionCustom"
+        ? { kind: "extensionCustom", message: input.message, generation: input.generation }
+        : { kind: "userPrompt", prompt: input.prompt, parentId: input.parentId, images: input.images },
+      key,
+      fingerprint,
+      admissionToken,
+      admissionReady: input.beforeAccept === undefined,
+      promoted: false,
+      slotState: decision.kind === "run" ? "active" : "queued",
+      claimCommitted: false,
+      ...(reservationToken !== undefined ? { reservationToken } : {}),
+    };
+    this.pending.set(taskId, task);
+    const registration: AdmissionRegistration = {
+      token: admissionToken,
+      resume: (id) => this.startQueuedTask(id, admissionToken),
+      expire: () => this.handleExpired(taskId, admissionToken),
+    };
+    RESUME_REGISTRY.set(taskId, registration);
+    EXPIRY_REGISTRY.set(taskId, registration);
+
+    if (input.beforeAccept) {
+      try {
+        // The task, token, and promotion/expiry barriers are visible before yielding here.
+        await input.beforeAccept();
+        task.claimCommitted = true;
+      } catch (error) {
+        if (this.pending.get(taskId) === task) {
+          this.releaseTaskSlot(taskId, task);
+          this.unregisterPending(taskId, task);
+          if (this.taskState === "queued") this.taskState = transition("queued", "abort")!;
+          this.scheduleNotificationDrain();
+        }
+        this.idempotency.fail(key);
+        if (reservationToken) await this.releasePersistentToken(input.requestId, reservationToken);
+        throw error;
+      }
+      task.admissionReady = true;
+      if (task.cancelled) {
+        const result = task.cancelled === "expired"
+          ? { status: "error", message: "排队超时" }
+          : { status: "aborted" };
+        await this.completeTaskIdempotency(task, result);
+        if (this.disposed || task.cancelled === "disposed") throw new SessionDeletedError(this.sessionId);
+        // claim 已原子成功：即使 abort/expiry 并发，也不能向调用者谎称未接受。
+        return { kind: "run" };
+      }
+    }
+
+    // Only a newly admitted user task reopens notifications, never an idempotent replay,
+    // conflict, rejection or cancelled beforeAccept. Preserve abort generation fencing.
+    if (input.kind === "userPrompt" && !task.cancelled && !this.aborting && !this.disposed) {
+      this.notificationsBlocked = false;
+    }
     if (decision.kind === "run") {
-      this.taskState = transition(this.taskState, "dequeue")!; // queued → streaming
-      this.currentTaskId = taskId;
-      this.currentKey = key;
-      this.currentRequestId = input.requestId;
-      this.currentFingerprint = fingerprint;
-      // 清空上一任务的终态，避免旧 error/aborted 污染本任务
-      this.lastStopReason = null;
-      this.lastErrorMessage = null;
-      this.turnStartTime = null;
-      this.turnFirstTokenTime = null;
-      // 流式后台执行，不阻塞提交决策（HTTP 立即返回，事件经 onEvent → SSE 推送）
-      this.launchStreamingTask({
-        requestId: input.requestId,
-        userId: input.userId,
-        prompt: input.prompt,
-        parentId: input.parentId,
-        images: input.images,
-        key,
-        fingerprint,
-      });
+      this.startAdmittedTask(taskId, task);
       return { kind: "run" };
     }
-    if (decision.kind === "queue") {
-      const task: PendingTask = {
-        requestId: input.requestId,
-        userId: input.userId,
-        prompt: input.prompt,
-        parentId: input.parentId,
-        images: input.images,
-        key,
-        fingerprint,
-      };
-      this.pending.set(taskId, task);
-      RESUME_REGISTRY.set(taskId, (id) => this.startQueuedTask(id));
-      EXPIRY_REGISTRY.set(taskId, () => this.handleExpired(taskId));
-      this.emitEvent({ type: "queued", position: decision.position, requestId: input.requestId });
-      this.observe({
-        type: "queue",
-        sessionId: this.sessionId,
-        requestId: input.requestId,
-        position: decision.position,
-      });
-      return { kind: "queued", position: decision.position };
+    if (task.promoted) {
+      this.startQueuedTask(taskId, admissionToken);
+      if (this.currentKey === key && this.taskState === "streaming") return { kind: "run" };
     }
-    // reject（429 语义）：任务未执行，状态回 idle（queued→abort→idle），解除幂等占位
-    this.taskState = transition(this.taskState, "abort")!;
-    this.idempotency.fail(key);
-    return { kind: "rejected", reason: decision.reason };
+    this.emitEvent({ type: "queued", position: decision.position, requestId: input.requestId });
+    this.observe({ type: "queue", sessionId: this.sessionId, requestId: input.requestId, position: decision.position });
+    return { kind: "queued", position: decision.position };
   }
 
   /** POST /v1/sessions/:id/steer：仅 streaming 合法，转发给 adapter。 */
-  async steer(text: string): Promise<ControlDecision> {
+  steer(text: string, input?: import("../shared/steering.js").SteeringInput, actorKey = this.ownerKey): Promise<ControlDecision> {
+    if (!input) return this.enqueueSteering(text);
+    const fingerprint = payloadFingerprint({ prompt: text, images: input.images });
+    const old = this.steeringAdmissions.get(input.controlId);
+    if (old) return old.actorKey === actorKey && old.fingerprint === fingerprint &&
+      old.identity.requestId === input.requestId && old.identity.acknowledgementId === input.acknowledgementId
+      ? old.promise : Promise.resolve({ kind: "conflict" });
+    if (this.disposed || input.requestId !== this.currentRequestId || this.taskState !== "streaming" || this.aborting) {
+      return Promise.resolve({ kind: "conflict" });
+    }
+    // Install before invoking SDK, including synchronous/reentrant consumption. Never retry an unknown enqueue.
+    let resolve!: (decision: ControlDecision) => void;
+    let reject!: (error: unknown) => void;
+    const promise = new Promise<ControlDecision>((yes, no) => { resolve = yes; reject = no; });
+    this.steeringAdmissions.set(input.controlId, { actorKey, fingerprint, identity: input, consumed: false, promise });
+    void this.enqueueSteering(text, input).then(resolve, reject);
+    return promise;
+  }
+
+  private async enqueueSteering(text: string, input?: import("../shared/steering.js").SteeringInput): Promise<ControlDecision> {
     if (this.disposed) throw new SessionDeletedError(this.sessionId);
     const key = this.currentKey;
     if (transition(this.taskState, "steer") === null) return { kind: "conflict" };
-    await this.adapter.steer(text);
+    await this.adapter.steer(text, input);
     // await 期间可能被删除/中止：失权返回 conflict（不误报 ok）
     if (this.disposed) throw new SessionDeletedError(this.sessionId);
     if (this.currentKey !== key || this.taskState !== "streaming") return { kind: "conflict" };
@@ -543,27 +756,31 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
     if (expectedRequestId !== undefined && expectedRequestId !== activeRequestId) {
       return { kind: "conflict" };
     }
+    this.cancelReleaseNotifications();
     if (this.taskState === "queued") {
       const taskId = queuedTaskId;
-      // 排队取消也要绑定被取消任务的 requestId（从 pending 取出，可能与后续任务不同）。
       let canceledRequestId: string | undefined;
+      let persistence: Promise<void> | undefined;
       if (taskId !== null) {
-        const canceled = this.concurrency.cancelQueued(taskId);
-        if (!canceled) {
-          // 已被其他会话 finish 出队（转 active）但尚未开始执行：归还槽位并接续其他排队任务
-          this.continuePromoted(this.concurrency.finish(taskId));
-        }
         const task = this.pending.get(taskId);
         if (task) {
           canceledRequestId = task.requestId;
-          this.idempotency.fail(task.key);
+          task.cancelled = "abort";
+          this.releaseTaskSlot(taskId, task);
+          this.unregisterPending(taskId, task);
+          if (task.admissionReady) {
+            if (task.claimCommitted) {
+              persistence = this.completeTaskIdempotency(task, { status: "aborted" });
+            } else {
+              this.idempotency.fail(task.key);
+              persistence = this.releasePersistentReservation(task);
+            }
+          }
         }
-        this.pending.delete(taskId);
-        RESUME_REGISTRY.delete(taskId);
-        EXPIRY_REGISTRY.delete(taskId);
       }
-      this.taskState = transition("queued", "abort")!; // → idle
+      this.taskState = transition("queued", "abort")!; // → idle before asynchronous storage work
       this.emitEvent({ type: "aborted", requestId: canceledRequestId });
+      await persistence;
       return { kind: "ok" };
     }
     if (this.taskState === "streaming") {
@@ -692,7 +909,9 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
     // 所有 turn 相关事件都携带当前 requestId（P7b）：客户端据此把同轮事件归组，
     // 并把迟到/补发的旧事件与新请求隔离。仅在活动窗口（streaming/aborting）处理，
     // 因此 stray 事件与 settle 遗落事件绝不会绑到下一个 request。
-    this.emitEvent({ ...translated, requestId: this.currentRequestId ?? undefined });
+    this.emitEvent({ ...translated,
+      ...(translated.type === "status" && this.adapter.getExecutionSnapshot ? { execution: this.adapter.getExecutionSnapshot() } : {}),
+      requestId: this.currentRequestId ?? undefined });
     // 当前事件先发出再调度自动中止：避免 abort 同步触发的事件在本次 tool_end 之前进入 SSE（顺序倒置）
     if (budgetAbort) {
       void this.abortInternal(undefined, true).catch(() => {
@@ -789,15 +1008,20 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
     this.clearTurnDeadline();
     this.armTurnDeadline(task.key);
     try {
-      if (task.parentId !== undefined) {
-        await this.adapter.navigateTree(task.parentId);
+      if (task.input.kind === "userPrompt" && task.input.parentId !== undefined) {
+        await this.adapter.navigateTree(task.input.parentId);
         // 导航期间失去所有权（abort/dispose 已 settle 本任务）：直接退出，不再启动模型
         if (!this.ownsTask(task.key)) return;
       }
       if (!this.ownsTask(task.key)) return;
       this.turnStartTime = this.now();
       this.turnFirstTokenTime = null;
-      await this.adapter.prompt(task.prompt, { images: task.images });
+      if (task.input.kind === "extensionCustom") {
+        if (!this.adapter.promptCustom) throw new Error("Custom messages unavailable");
+        await this.adapter.promptCustom(task.input.message);
+      } else {
+        await this.adapter.prompt(task.input.prompt, { images: task.input.images });
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       // 只有仍是当前任务且未 settle 才结算（避免误结算后继任务）
@@ -821,43 +1045,109 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
     }
   }
 
-  /** 排队任务出队接续执行（queue 时注册到 RESUME_REGISTRY，被任意 runtime 的 finish 唤醒）。 */
-  private startQueuedTask(taskId: string): void {
+  /** 由并发槽位晋升唤醒；admission 尚未完成时只记 deferred，不启动 Agent。 */
+  private startQueuedTask(taskId: string, admissionToken: symbol): void {
     const task = this.pending.get(taskId);
-    if (!task || this.taskState !== "queued") return;
-    this.pending.delete(taskId);
-    RESUME_REGISTRY.delete(taskId);
-    EXPIRY_REGISTRY.delete(taskId);
-    this.taskState = transition(this.taskState, "dequeue")!; // queued → streaming
+    if (!task || task.admissionToken !== admissionToken || task.cancelled) return;
+    task.promoted = true;
+    task.slotState = "promoted";
+    if (!task.admissionReady) return;
+    this.startAdmittedTask(taskId, task);
+  }
+
+  /** 把已完成 admission 的任务转换为 streaming，始终先校验 pending 实例身份。 */
+  private startAdmittedTask(taskId: string, task: PendingTask): void {
+    if (this.pending.get(taskId) !== task || task.cancelled || !task.admissionReady || this.disposed) return;
+    if (this.taskState !== "queued") return;
+    this.unregisterPending(taskId, task);
+    this.taskState = transition(this.taskState, "dequeue")!;
     this.currentTaskId = taskId;
+    this.currentInputKind = task.input.kind;
     this.currentKey = task.key;
     this.currentRequestId = task.requestId;
     this.currentFingerprint = task.fingerprint;
-    // 清空上一任务的终态，避免旧 error/aborted 污染本任务
+    this.currentReservationToken = task.reservationToken ?? null;
     this.lastStopReason = null;
     this.lastErrorMessage = null;
     this.turnStartTime = null;
     this.turnFirstTokenTime = null;
-    // 出队即已占用并发槽位（concurrency.finish 的 drain 已把任务写入 active）
     this.launchStreamingTask(task);
   }
 
-  /** 排队超时：释放占位、回 idle、合成 error 事件（由调度器触发）。 */
-  private handleExpired(taskId: string): void {
+  /** 排队超时：释放对应槽位、回 idle；admission 在途时等它明确成功/失败再落账。 */
+  private handleExpired(taskId: string, admissionToken: symbol): void {
     const task = this.pending.get(taskId);
-    if (!task || this.taskState !== "queued") return;
-    this.pending.delete(taskId);
-    RESUME_REGISTRY.delete(taskId);
-    EXPIRY_REGISTRY.delete(taskId);
-    this.idempotency.fail(task.key);
-    this.taskState = transition("queued", "abort")!; // → idle
-    // 排队超时用**该排队任务自己的** requestId（而非当前/下一个任务）。
+    if (!task || task.admissionToken !== admissionToken || task.cancelled || this.taskState !== "queued") return;
+    task.cancelled = "expired";
+    this.releaseTaskSlot(taskId, task);
+    this.unregisterPending(taskId, task);
+    this.taskState = transition("queued", "abort")!;
+    if (task.admissionReady) {
+      if (task.claimCommitted) {
+        void this.completeTaskIdempotency(task, { status: "error", message: "排队超时" });
+      } else {
+        this.idempotency.fail(task.key);
+        void this.releasePersistentReservation(task);
+      }
+    }
     this.emitEvent({ type: "error", message: "排队超时", requestId: task.requestId });
-    this.observe({
-      type: "queue_expired",
-      sessionId: this.sessionId,
-      requestId: task.requestId,
-    });
+    this.observe({ type: "queue_expired", sessionId: this.sessionId, requestId: task.requestId });
+    this.scheduleNotificationDrain();
+  }
+
+  private unregisterPending(taskId: string, task: PendingTask): void {
+    if (this.pending.get(taskId) === task) this.pending.delete(taskId);
+    if (RESUME_REGISTRY.get(taskId)?.token === task.admissionToken) RESUME_REGISTRY.delete(taskId);
+    if (EXPIRY_REGISTRY.get(taskId)?.token === task.admissionToken) EXPIRY_REGISTRY.delete(taskId);
+  }
+
+  private releaseTaskSlot(taskId: string, task: PendingTask): void {
+    if (task.slotState === "active" || task.slotState === "promoted") {
+      this.continuePromoted(this.concurrency.finish(taskId));
+    } else {
+      this.concurrency.cancelQueued(taskId);
+    }
+  }
+
+  private async releasePersistentToken(requestId: string, token: string): Promise<void> {
+    const release = this.idempotencyRepo?.releaseReservation;
+    if (!release) return;
+    try {
+      await release.call(this.idempotencyRepo, this.sessionId, requestId, token);
+    } catch {
+      // Failure is conservative: the persisted reservation remains and prevents duplicate execution.
+    }
+  }
+
+  private async releasePersistentReservation(task: PendingTask): Promise<void> {
+    if (task.reservationToken) await this.releasePersistentToken(task.requestId, task.reservationToken);
+  }
+
+  private async completeTaskIdempotency(task: PendingTask, result: unknown): Promise<void> {
+    await this.persistTerminalResult(task.key, task.requestId, task.fingerprint, task.reservationToken, result);
+  }
+
+  private async persistTerminalResult(
+    key: string,
+    requestId: string,
+    fingerprint: string,
+    reservationToken: string | undefined,
+    result: unknown,
+  ): Promise<void> {
+    this.idempotency.complete(key, result, fingerprint);
+    const repo = this.idempotencyRepo;
+    if (!repo) return;
+    try {
+      if (reservationToken && repo.completeReservation) {
+        // Even if storage fails, the original durable reservation remains an unknown-state barrier.
+        await repo.completeReservation(this.sessionId, requestId, reservationToken, result, fingerprint);
+      } else {
+        // Legacy ports have no reservation protocol; await put so a successful response never races a lost write.
+        await repo.put(this.sessionId, requestId, result, fingerprint);
+      }
+    } catch {
+      // Reservation-backed execution stays fail-closed across restart; a legacy storage failure is best effort.
+    }
   }
 
   /** 终态收尾：terminal→release 回 idle、幂等落账、合成 usage + 终态事件、释放槽位并接续排队任务。
@@ -883,14 +1173,17 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
     const key = this.currentKey;
     const requestId = this.currentRequestId;
     const fingerprint = this.currentFingerprint;
+    const reservationToken = this.currentReservationToken;
     // 在清空 currentKey 前捕获本 key 专属的同步轮次文本/超限状态。
     const turnState = key !== null ? this.turnStates.get(key) : undefined;
     const turnText = turnState?.text ?? "";
     const turnOverflow = turnState?.overflow ?? false;
     this.currentTaskId = null;
+    this.currentInputKind = null;
     this.currentKey = null;
     this.currentRequestId = null;
     this.currentFingerprint = null;
+    this.currentReservationToken = null;
     // 无论 extension 是否漏发 end，终态都释放锁，避免异常路径永久 409。
     this.failbackAttemptId = null;
     // 终态结果先用参数确定，保证即使后续 usage/事件异常也会在 finally 中结算等待者。
@@ -910,8 +1203,8 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
               : { status: "error", message: message ?? "任务失败" };
 
     try {
-      // 读取 usage 并发送 timing 统计（仅当存在有效数据时才推送，避免测试/空跑时产生无意义事件）
-      let usage: { promptTokens: number; completionTokens: number; totalTokens: number } | null = null;
+      // SDK usage 缺失/读取超时以 null 表示；已测全零保留，不冒充真实测量。
+      let usage: ({ promptTokens: number | null; completionTokens: number | null; totalTokens: number | null } & import("../core/usage-snapshot.js").UsageSnapshot) | null = null;
       let durationMs = 0;
       let ttftMs = 0;
       if (this.turnStartTime !== null) {
@@ -921,9 +1214,13 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
         if (durationMs > 0 || usage !== null) {
           this.emitEvent({
             type: "usage",
-            promptTokens: usage?.promptTokens ?? 0,
-            completionTokens: usage?.completionTokens ?? 0,
-            totalTokens: usage?.totalTokens ?? 0,
+            ...(usage?.lastResponse !== undefined ? { lastResponse: usage.lastResponse } : {}),
+            ...(usage?.sessionTotals !== undefined ? { sessionTotals: usage.sessionTotals } : {}),
+            ...(usage?.context !== undefined ? { context: usage.context } : {}),
+            ...(usage?.execution !== undefined ? { execution: usage.execution } : {}),
+            promptTokens: usage?.promptTokens ?? null,
+            completionTokens: usage?.completionTokens ?? null,
+            totalTokens: usage?.totalTokens ?? null,
             durationMs,
             ttftMs,
             // requestId 已在清空 currentRequestId 之前捕获：终态系列永远归属本请求。
@@ -944,9 +1241,9 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
             type: "usage",
             sessionId: this.sessionId,
             requestId,
-            promptTokens: usage?.promptTokens ?? 0,
-            completionTokens: usage?.completionTokens ?? 0,
-            totalTokens: usage?.totalTokens ?? 0,
+            promptTokens: usage?.promptTokens ?? null,
+            completionTokens: usage?.completionTokens ?? null,
+            totalTokens: usage?.totalTokens ?? null,
           });
         }
       }
@@ -976,14 +1273,11 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
               : turnResult.code !== undefined
                 ? { status: "error", message: turnResult.message, code: turnResult.code }
                 : { status: "error", message: turnResult.message };
-        this.idempotency.complete(key, result, fingerprint ?? undefined);
-        // 持久化终态（fire-and-forget 但捕获拒绝），重启后重复 requestId 返回同一结果不重复执行
-        if (this.idempotencyRepo && requestId) {
-          void this.idempotencyRepo
-            .put(this.sessionId, requestId, result)
-            .catch(() => {
-              // 持久化失败仅影响重启后的幂等去重，不阻塞当前响应；已在内存落账
-            });
+        if (requestId && fingerprint !== null) {
+          // 持久终态在释放槽位/发出终态响应前 await；CAS 失败时原预约仍阻止重放执行。
+          await this.persistTerminalResult(key, requestId, fingerprint, reservationToken ?? undefined, result);
+        } else {
+          this.idempotency.complete(key, result, fingerprint ?? undefined);
         }
       }
 
@@ -1004,15 +1298,21 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
       }
       // 只结算该 key 的同步轮次等待者；其他请求的等待者不受影响。
       if (key !== null) this.resolveTurnWaiters(key, turnResult);
+      this.scheduleNotificationDrain();
     }
   }
 
   /** 读取 usage，带超时兜底：getLastUsage 挂起时不影响槽位释放。 */
-  private async readUsageWithTimeout(): Promise<{ promptTokens: number; completionTokens: number; totalTokens: number } | null> {
+  private async readUsageWithTimeout(): Promise<({ promptTokens: number | null; completionTokens: number | null; totalTokens: number | null } & import("../core/usage-snapshot.js").UsageSnapshot) | null> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       return await Promise.race([
-        this.adapter.getLastUsage(),
+        Promise.all([
+          this.adapter.getLastUsage().catch(() => null),
+          this.adapter.getUsageSnapshot?.().catch(() => ({})) ?? Promise.resolve({}),
+        ]).then(([legacy, snapshot]) => legacy === null && Object.keys(snapshot).length === 0 ? null :
+          ({ promptTokens: legacy?.promptTokens ?? null, completionTokens: legacy?.completionTokens ?? null,
+            totalTokens: legacy?.totalTokens ?? null, ...snapshot })),
         new Promise<null>((resolve) => {
           timer = setTimeout(() => resolve(null), USAGE_TIMEOUT_MS);
           timer.unref?.();
@@ -1028,8 +1328,8 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
 
   private continuePromoted(promoted: readonly string[]): void {
     for (const id of promoted) {
-      const resume = RESUME_REGISTRY.get(id);
-      if (resume) resume(id);
+      const registration = RESUME_REGISTRY.get(id);
+      if (registration) registration.resume(id);
     }
   }
 

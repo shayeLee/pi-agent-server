@@ -11,7 +11,7 @@
 // 不设置任何模型/凭证配置（不触达网络），与 scripts/mock-server.ts 同级别的本机可运行性。
 
 import { describe, it, expect, vi } from "vitest";
-import { mkdtempSync, rmSync, readdirSync } from "node:fs";
+import { mkdtempSync, realpathSync, rmSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer as createNetServer } from "node:net";
@@ -25,7 +25,7 @@ import type { Kysely } from "kysely";
 import type { DatabaseSchema } from "../../src/storage/db-schema.js";
 
 function makeTempDir(): string {
-  return mkdtempSync(join(tmpdir(), "pi-start-server-"));
+  return realpathSync(mkdtempSync(join(tmpdir(), "pi-start-server-")));
 }
 
 async function createBaseline(dbPath: string): Promise<void> {
@@ -39,6 +39,7 @@ function baseConfig(overrides: Partial<StartConfig> = {}): StartConfig {
     port: 0,
     ipAccess: makeTestIpAccess(),
     dataDir: dir,
+    nativeSessionSourceDir: join(dir, "native-fixture"),
     authPath: join(dir, "auth.json"),
     ...overrides,
   };

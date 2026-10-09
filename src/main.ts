@@ -22,6 +22,8 @@ const ipAccessPolicy = loadIpAccessPolicy(ipAccessEnv);
 const port = Number(process.env.PORT ?? 8080);
 const host = process.env.HOST ?? "127.0.0.1";
 
+// 沿用逗号列表解析：未设置/空/空白（或仅分隔符）视为未配置，允许全部工具。
+// 程序化 StartConfig.tools=[] 则明确禁用全部，不能把空数组误作 all。
 const tools = (process.env.TOOLS ?? "")
   .split(",")
   .map((s) => s.trim())
@@ -84,6 +86,10 @@ const app = await startServer({
   cwd: process.env.AGENT_CWD,
   tools: tools.length > 0 ? tools : undefined,
   dataDir: process.env.DATA_DIR,
+  uploadStorageRoot: process.env.PI_UPLOAD_STORAGE_ROOT,
+  uploadAgentRoot: process.env.PI_UPLOAD_AGENT_ROOT,
+  uploadOwnerQuotaBytes: process.env.PI_UPLOAD_OWNER_QUOTA_BYTES === undefined ? undefined : Number(process.env.PI_UPLOAD_OWNER_QUOTA_BYTES),
+  uploadGlobalQuotaBytes: process.env.PI_UPLOAD_GLOBAL_QUOTA_BYTES === undefined ? undefined : Number(process.env.PI_UPLOAD_GLOBAL_QUOTA_BYTES),
   agentDir: process.env.PI_AGENT_DIR,
   authPath: process.env.PI_AUTH_PATH,
   modelProvider: process.env.PI_MODEL_PROVIDER,
@@ -99,6 +105,8 @@ const app = await startServer({
     | "max"
     | undefined,
   systemPrompt: process.env.PI_SYSTEM_PROMPT,
+  appendSystemPrompt: process.env.PI_APPEND_SYSTEM,
+  appendSystemPromptFile: process.env.PI_APPEND_SYSTEM_FILE,
   plugins: plugins.length > 0 ? plugins : undefined,
   extensionPaths: extensionPaths.length > 0 ? extensionPaths : undefined,
   // PI_DATA_MODE 仅保留为部署分类；它不能放宽 migration gate。服务启动总是 verify，

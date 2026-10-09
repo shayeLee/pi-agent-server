@@ -23,6 +23,7 @@ import { artifactDeleteOperationKey, relativeWhitelistedPath } from "../src/stor
 import { DEFAULT_PROJECT_ID } from "../src/application/ports/project-store-port.js";
 import type { ConversationDescriptor } from "../src/application/ports/conversation-port.js";
 import { MockAgentAdapter } from "../src/agent/mock-agent-adapter.js";
+import type { AgentSdkEvent } from "../src/agent/events.js";
 
 const PORT = Number(process.env.PORT ?? 8081);
 const MOCK_CWD = "/tmp/mock-project";
@@ -83,21 +84,26 @@ try {
     // SSE 连接配额可从环境变量覆盖，便于 e2e 用小值验证配额/断线清理。
     maxSsePerUser: Number(process.env.MAX_SSE_PER_USER ?? 10),
     maxSseGlobal: Number(process.env.MAX_SSE_GLOBAL ?? 100),
-    createAdapter: async () =>
-      new MockAgentAdapter([
+    createAdapter: async () => {
+      const standardEvents: AgentSdkEvent[] = [
         { type: "agent_start" },
-        {
-          type: "message_update",
-          message: {},
-          assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "你好，" },
-        },
-        {
-          type: "message_update",
-          message: {},
-          assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "我是 pi-agent-server 测试助手" },
-        },
+        { type: "message_update", message: {}, assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "你好，" } },
+        { type: "message_update", message: {}, assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "我是 pi-agent-server 测试助手" } },
         { type: "agent_end", messages: [], willRetry: false },
-      ]),
+      ];
+      const richEvents: AgentSdkEvent[] = [
+        { type: "agent_start" },
+        { type: "message_update", message: {}, assistantMessageEvent: { type: "thinking_delta", contentIndex: 0, delta: "先检查项目结构，再定位出错的调用链。\n需要核对错误边界与测试结果。" } },
+        { type: "tool_execution_start", toolCallId: "visual-read", toolName: "read", args: { path: "/workspace/src/application/very-long-directory/agent-runtime.ts" } },
+        { type: "tool_execution_update", toolCallId: "visual-read", toolName: "read", args: {}, partialResult: { lines: 120, status: "读取中" } },
+        { type: "tool_execution_end", toolCallId: "visual-read", toolName: "read", result: { lines: 120, finding: "缺少错误分支的断言" }, isError: false },
+        { type: "tool_execution_start", toolCallId: "visual-test", toolName: "bash", args: { command: "volta run pnpm test" } },
+        { type: "tool_execution_end", toolCallId: "visual-test", toolName: "bash", result: { exitCode: 1, stderr: "Error: expected retry to preserve draft\n    at src/application/agent-runtime.ts:124" }, isError: true },
+        { type: "message_update", message: {}, assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "已定位问题：失败分支没有保留待发送的草稿。\n\n```ts\nif (!created) return { accepted: false, draft };\n```\n\n建议补充错误路径测试，确保用户可以重试。" } },
+        { type: "agent_end", messages: [], willRetry: false },
+      ];
+      return new MockAgentAdapter(process.env.MOCK_SCENARIO === "rich" ? richEvents : standardEvents);
+    },
   });
   app.addHook("onClose", closeStorage);
 

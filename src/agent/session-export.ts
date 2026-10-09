@@ -1,3 +1,4 @@
+import { notificationFromEntry } from "./subagent-notification.js";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import {
   createExportImageProjectionState,
@@ -15,7 +16,9 @@ export type ExportMessage = {
 };
 
 export type ExportTimelineItem =
+  | (Omit<import("./subagent-notification.js").NotificationEvent, "type" | "requestId"> & { id: string; type: "notification"; order: number })
   | { id: string; type: "message"; role: "user" | "assistant"; messageId: string; turnId: string | null; text: string; order: number; timestamp?: string }
+  | { id: string; type: "thinking"; messageId: string; turnId: string | null; text: string; order: number; timestamp?: string }
   | { id: string; type: "tool_call"; messageId: string; turnId: string | null; callId: string; toolCallId: string; toolName: string; args: unknown; status: "completed" | "error" | "no_result"; order: number; timestamp?: string }
   | { id: string; type: "tool_result"; messageId: string | null; turnId: string | null; callId: string; toolCallId: string; toolName: string; result: unknown; isError: boolean; order: number; timestamp?: string }
   | { id: string; type: "system_event"; event: "model_failback"; from: string; to: string; reason: string; order: number; timestamp?: string };
@@ -53,9 +56,9 @@ export function projectExportMessages(messages: readonly unknown[], branch: read
 
 /**
  * Projects only the selected JSONL branch. Content order is preserved at block granularity:
- * assistant text and tool calls are never moved behind a final assistant message. Thinking is
- * deliberately excluded. Tool results are complete persisted values except credential fields and
- * binary image payloads, which follow the host's existing fail-closed image policy.
+ * assistant text, thinking, and tool calls are never moved behind a final assistant message.
+ * Tool results are complete persisted values except credential fields and binary image payloads,
+ * which follow the host's existing fail-closed image policy.
  */
 export function projectExportSnapshot(messages: readonly unknown[], branch: readonly SessionEntry[]): ExportSnapshot {
   const presentation = failbackPresentation(branch);
@@ -81,7 +84,16 @@ export function projectExportSnapshot(messages: readonly unknown[], branch: read
   const timeline: ExportTimelineItem[] = [];
   turnId = null;
   let order = 0;
+  const notificationIds = new Set<string>();
   for (const entry of branch) {
+    const notification = notificationFromEntry(entry);
+    if (notification) {
+      if (!notificationIds.has(notification.notificationId)) {
+        notificationIds.add(notification.notificationId);
+        timeline.push({ ...notification, id: `notification:${notification.notificationId}`, order: order++ });
+      }
+      continue;
+    }
     const failback = presentation.events.get(entry.id);
     if (failback) {
       timeline.push({ id: `system-event:${entry.id}`, type: "system_event", event: "model_failback", from: failback.from, to: failback.to, reason: failback.reason, order: order++, ...(typeof entry.timestamp === "string" ? { timestamp: entry.timestamp } : {}) });
@@ -96,16 +108,19 @@ export function projectExportSnapshot(messages: readonly unknown[], branch: read
       continue;
     }
     if (message.role === "assistant") {
-      if (!hasVisibleAssistantContent(message.content)) continue;
+      if (!hasVisibleAssistantContent(message.content, true)) continue;
       const blocks = Array.isArray(message.content) ? message.content : [];
       const messageOrder = order;
-      let emittedMessageOrTool = false;
+      let emittedTimelineItem = false;
       for (let index = 0; index < blocks.length; index++) {
         const block = asRecord(blocks[index]);
         if (!block) continue;
         if (block.type === "text" && typeof block.text === "string") {
           timeline.push({ id: `assistant-text:${entry.id}:${index}`, type: "message", role: "assistant", messageId: entry.id, turnId, text: block.text, order: order++, ...(timestamp ? { timestamp } : {}) });
-          emittedMessageOrTool = true;
+          emittedTimelineItem = true;
+        } else if (block.type === "thinking" && typeof block.thinking === "string") {
+          timeline.push({ id: `thinking:${entry.id}:${index}`, type: "thinking", messageId: entry.id, turnId, text: block.thinking, order: order++, ...(timestamp ? { timestamp } : {}) });
+          emittedTimelineItem = true;
         } else if (block.type === "toolCall" && typeof block.id === "string" && typeof block.name === "string") {
           const outcome = outcomes.get(block.id);
           timeline.push({
@@ -121,11 +136,11 @@ export function projectExportSnapshot(messages: readonly unknown[], branch: read
             order: order++,
             ...(timestamp ? { timestamp } : {}),
           });
-          emittedMessageOrTool = true;
+          emittedTimelineItem = true;
         }
       }
       // Keep image-only/prototype metadata messages addressable without inventing text.
-      if (!emittedMessageOrTool) {
+      if (!emittedTimelineItem) {
         timeline.push({ id: `assistant-message:${entry.id}`, type: "message", role: "assistant", messageId: entry.id, turnId, text: "", order: messageOrder, ...(timestamp ? { timestamp } : {}) });
         order += 1;
       }
@@ -157,11 +172,12 @@ export function extractText(content: unknown): string {
   return content.map((block) => asRecord(block)).filter((block): block is ContentBlock => block?.type === "text" && typeof block.text === "string").map((block) => block.text as string).join("");
 }
 
-function hasVisibleAssistantContent(content: unknown): boolean {
+function hasVisibleAssistantContent(content: unknown, includeThinking = false): boolean {
   if (!Array.isArray(content)) return false;
   return content.some((value) => {
     const block = asRecord(value);
-    return block?.type === "text" || block?.type === "image" || block?.type === "prototype" || block?.type === "toolCall";
+    return block?.type === "text" || block?.type === "image" || block?.type === "prototype" || block?.type === "toolCall" ||
+      (includeThinking && block?.type === "thinking" && typeof block.thinking === "string");
   });
 }
 

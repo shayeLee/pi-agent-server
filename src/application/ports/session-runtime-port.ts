@@ -2,26 +2,20 @@
 // RuntimeRegistry 的 SessionEntry 通过该 port 接口暴露给 server/app，避免 HTTP 层依赖 SessionRuntime concrete class。
 // SubmitDecision / ControlDecision 定义在此处，由 SessionRuntime 实现并由 HTTP 层消费。
 
-import type { ImageInput } from "../../agent/agent-adapter.js";
+import type { MessageInput } from "../../shared/api-types.js";
 import type { TaskState } from "../../core/task-state-machine.js";
 import type { RuntimeLifecyclePort } from "./runtime-lifecycle-port.js";
 
 /** submitMessage 的入参（精简自 SessionRuntimeOptions 中的提交字段）。 */
-export type SubmitInput = {
-  requestId: string;
-  userId: string;
-  prompt: string;
-  parentId?: string;
-  images?: ImageInput[];
-};
+export type SubmitInput = MessageInput & { userId: string };
 
 /** submitMessage 的返回决策：run（立即执行）/ queued（排队等待）/ rejected（限流）/ conflict（状态不允许）/ done（幂等命中）。 */
 export type SubmitDecision =
   | { kind: "run" }
   | { kind: "queued"; position?: number }
   | { kind: "rejected"; reason: "user-queue-full" | "global-overload" }
-  /** active：会话已有活动任务；poisoned：abort 超时后不可复用；payload-mismatch：同 requestId 不同载荷。 */
-  | { kind: "conflict"; reason?: "processing" | "active" | "poisoned" | "payload-mismatch" }
+  /** idempotency-unknown：恢复到未确认的持久预约，禁止自动重执行；其余为会话/载荷冲突。 */
+  | { kind: "conflict"; reason?: "processing" | "active" | "poisoned" | "payload-mismatch" | "idempotency-unknown" }
   | { kind: "done"; result: unknown };
 
 /** 控制操作（steer/followUp/abort）的返回决策：ok（已执行）/ conflict（状态或 requestId 不允许）。 */
@@ -53,14 +47,7 @@ export type RunTurnInput = {
  * 必须是**运行时冻结**对象：它会经 `PluginHostContext.turnErrorCodes` 直接交给插件，
  * 仅靠 `as const` 只提供编译期只读，插件意外改写会污染宿主单例。
  */
-export const TURN_ERROR_CODES = Object.freeze({
-  /** 本轮工具调用次数超过 maxToolCallsPerTurn。 */
-  toolBudget: "turn_tool_budget_exceeded",
-  /** 本轮耗时超过 maxTurnDurationMs。 */
-  durationBudget: "turn_duration_budget_exceeded",
-  /** 本轮助手文本超过 maxAssistantTextLength。 */
-  assistantTextBudget: "turn_assistant_text_budget_exceeded",
-} as const);
+export { TURN_ERROR_CODES } from "../../shared/api-types.js";
 
 /** requestId 专属的同步轮次结果：文本/终态只属于该请求，绝不来自 session 级事件流。 */
 export type SessionTurnResult =
@@ -80,7 +67,7 @@ export interface SessionRuntimePort {
   /** 发送输入（幂等 + 状态机 + 并发 + 异步流式）。 */
   submitMessage(input: SubmitInput): Promise<SubmitDecision>;
   /** 流式中插入指令。 */
-  steer(text: string): Promise<ControlDecision>;
+  steer(text: string, input?: import("../../shared/steering.js").SteeringInput, actorKey?: string): Promise<ControlDecision>;
   /** 流式中追加指令。 */
   followUp(text: string): Promise<ControlDecision>;
   /** 中止当前任务；提供 expectedRequestId 时仅中止匹配的当前任务。 */

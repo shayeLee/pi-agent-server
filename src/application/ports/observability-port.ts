@@ -15,9 +15,9 @@ export type ObservabilityEvent =
       type: "usage";
       sessionId: string;
       requestId: string;
-      promptTokens: number;
-      completionTokens: number;
-      totalTokens: number;
+      promptTokens: number | null;
+      completionTokens: number | null;
+      totalTokens: number | null;
     }
   | { type: "queue"; sessionId: string; requestId: string; position?: number }
   | { type: "queue_expired"; sessionId: string; requestId: string }

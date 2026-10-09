@@ -98,8 +98,10 @@ export function resolveExtensionPathsFromEnv(input: ExtensionPathsEnvInput): Ext
 const loaderEventBuses = new WeakMap<ResourceLoader, EventBus>();
 
 /** 取与该 ResourceLoader 同源的扩展 EventBus，供会话 adapter 严格绑定。 */
-export function getProviderExtensionEventBus(loader: ResourceLoader): EventBus | undefined {
-  return loaderEventBuses.get(loader);
+export function getProviderExtensionEventBus(loader: ResourceLoader): EventBus {
+  const bus = loaderEventBuses.get(loader);
+  if (!bus) throw new Error("ResourceLoader has no session-local host EventBus");
+  return bus;
 }
 
 /** @deprecated 使用 resolveExtensionPaths；保留仅为兼容既有调用方。 */
@@ -197,7 +199,7 @@ export function flushProviderRegistrations(
   return registered;
 }
 
-/** 会话专属 ResourceLoader 的构造参数（提示词三项互斥由调用方决定，本函数只透传）。 */
+/** 会话专属 ResourceLoader 的构造参数（整体覆盖可与追加共存；冻结 override 路径由调用方不传任何追加项）。 */
 export type SessionResourceLoaderOptions = {
   /**
    * loader 的稳定 cwd：**所有** loader 必须传同一值（服务 cwd），不得随项目 cwd 变化。
@@ -222,6 +224,8 @@ export type SessionResourceLoaderOptions = {
   readonly systemPromptOverride?: () => string;
   /** 追加提示词片段（能力片段；仅新建/首次解析路径使用）。 */
   readonly appendSystemPrompt?: readonly string[];
+  /** 显式追加原文，位于能力片段之前；不经过 SDK 的文本/文件路径解析。 */
+  readonly appendSystemPromptText?: string;
 };
 
 /**
@@ -269,6 +273,10 @@ export async function loadSessionResourceLoader(
       : {}),
     // 恒显式：`[]` 明确关闭 SDK 的 APPEND_SYSTEM.md 自动发现（冻结字面量恢复路径必须零追加）。
     appendSystemPrompt: options.appendSystemPrompt ? [...options.appendSystemPrompt] : [],
+    // override 接收已解析的能力片段；环境原文绝不作为路径交给 resolvePromptInput。
+    ...(options.appendSystemPromptText?.trim()
+      ? { appendSystemPromptOverride: (base: string[]) => [options.appendSystemPromptText!, ...base] }
+      : {}),
     ...(options.extensionFactories !== undefined
       ? { extensionFactories: options.extensionFactories }
       : {}),

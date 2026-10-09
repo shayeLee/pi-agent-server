@@ -1,22 +1,18 @@
-// Shared canonical SQLite baseline builder for backup tests.
+// Shared canonical SQLite head builder for backup tests.
 //
-// Real backup source databases must be the complete current canonical schema
-// (tables / columns / PK / FK / indexes) with the canonical single-baseline
-// ledger, exactly what restore's strict migrate-verify requires. A simplified
-// sessions-only fixture can be backed up but fails restore's strict verify, so
-// every backup fixture that exercises createSqliteBackup builds the real
-// baseline here. The baseline is produced from the immutable registry
-// operations (the same DDL the migrate runner applies) plus the canonical
-// schema_migrations table.
+// Backup fixtures use every immutable migration operation and record the full
+// authenticated ledger through the current head, matching migrate apply/verify.
 
 import { DatabaseSync } from "node:sqlite";
 import { DEFAULT_PROJECT_ID } from "../../src/application/ports/project-store-port.js";
 import { migrationChecksum, migrationDefinitions } from "../../src/storage/migration-manifest.js";
 
-/** Build the complete canonical schema + canonical single-baseline ledger. */
-export function createCanonicalSqliteBaseline(db: DatabaseSync): void {
-  for (const operation of migrationDefinitions[0]!.operations.SQLite) {
-    db.exec(operation.sql);
+/** Build a published canonical migration prefix and its authenticated ledger. */
+export function createCanonicalSqlitePrefix(db: DatabaseSync, appliedThrough: number): void {
+  if (!Number.isSafeInteger(appliedThrough) || appliedThrough < 0 || appliedThrough >= migrationDefinitions.length) throw new Error("invalid canonical SQLite migration prefix");
+  const prefix = migrationDefinitions.slice(0, appliedThrough + 1);
+  for (const migration of prefix) {
+    for (const operation of migration.operations.SQLite) db.exec(operation.sql);
   }
   db.exec(
     "CREATE TABLE schema_migrations (" +
@@ -26,7 +22,15 @@ export function createCanonicalSqliteBaseline(db: DatabaseSync): void {
     "  applied_at INTEGER NOT NULL\n" +
     ")",
   );
-  db.prepare("INSERT INTO schema_migrations VALUES (0, 'initial-schema', ?, 1)").run(migrationChecksum(migrationDefinitions[0]!));
+  const insert = db.prepare("INSERT INTO schema_migrations VALUES (?, ?, ?, ?)");
+  for (const migration of prefix) {
+    insert.run(migration.version, migration.name, migrationChecksum(migration), 1);
+  }
+}
+
+/** Build the complete current canonical schema + authenticated migration ledger. */
+export function createCanonicalSqliteHead(db: DatabaseSync): void {
+  createCanonicalSqlitePrefix(db, migrationDefinitions.at(-1)!.version);
 }
 
 /** Insert one canonical sessions row (only conversation_ref is caller-provided). */
