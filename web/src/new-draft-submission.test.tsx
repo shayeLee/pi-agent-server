@@ -49,6 +49,29 @@ async function setup(kind: "image" | "file") {
   await act(async () => hook.result.current.addUnsentFile(attachment("X", kind)));
   return hook;
 }
+describe("compaction initial export and reconnect wiring", () => {
+  it("restores skipped start as unknown, then confirms end; disconnection never cancels", async () => {
+    vi.mocked(ApiClient.prototype.listSessionsByProject).mockResolvedValue([created]);
+    vi.mocked(ApiClient.prototype.exportSession).mockResolvedValue({ messages: [], timeline: [], lastEventId: 7,
+      compaction: { status: "running", reason: "threshold", requestId: "r1" } });
+    const { result } = renderHook(useWebAppController, { wrapper });
+    await waitFor(() => expect(result.current.sessions).not.toBeNull());
+    act(() => result.current.selectSession("created"));
+    await waitFor(() => expect(result.current.chatState.compaction?.status).toBe("unknown"));
+    const connection = [...vi.mocked(createSseConnection).mock.calls].reverse().find(([options]) => options.url.includes("/created/"))![0];
+    expect(connection.lastEventId).toBe(7);
+    act(() => connection.onEvent({ type: "status", phase: "agent_start", requestId: "r1" }, 8));
+    expect(result.current.chatState.compaction?.status).toBe("unknown");
+    act(() => connection.onEvent({ type: "compaction_start", reason: "threshold", requestId: "r1" }, 9));
+    expect(result.current.chatState.compaction?.status).toBe("running");
+    act(() => connection.onDisconnect?.());
+    expect(result.current.chatState.phase).toBe("streaming");
+    expect(result.current.chatState.compaction?.status).toBe("unknown");
+    act(() => connection.onEvent({ type: "compaction_end", reason: "threshold", requestId: "r1", outcome: "succeeded", willRetry: true, replay: true }, 10));
+    expect(result.current.chatState.compaction?.status).toBe("succeeded");
+  });
+});
+
 describe("first-create project metadata invalidation", () => {
   const defaultProject: Project = { id: DEFAULT_PROJECT_ID, name: "Default", cwd: "/fixture/default", isDefault: true };
 
@@ -259,6 +282,8 @@ describe("pending first-create snapshot ownership", () => {
     ["file", "queued", "http-first"], ["file", "status", "http-first"],
     ["image", "queued", "sse-first"], ["image", "status", "sse-first"],
     ["file", "queued", "sse-first"], ["file", "status", "sse-first"],
+    ["image", "compaction_start", "http-first"], ["image", "compaction_start", "sse-first"],
+    ["file", "compaction_start", "http-first"], ["file", "compaction_start", "sse-first"],
   ] as const)("navigated %s owner confirms by %s (%s), once and only by transport identity", async (kind, type, order) => {
     const { result } = await setup(kind);
     const creation = deferred<SessionRecord>();
@@ -278,7 +303,9 @@ describe("pending first-create snapshot ownership", () => {
     expect(draft(result.current)).toBe(other);
     const requestId = vi.mocked(ApiClient.prototype.sendMessage).mock.calls[0]![1].requestId;
     const event = (id = requestId): SseEvent => type === "queued"
-      ? { type: "queued", requestId: id } : { type: "status", phase: "agent_start", requestId: id };
+      ? { type: "queued", requestId: id } : type === "compaction_start"
+        ? { type: "compaction_start", reason: "threshold", requestId: id }
+        : { type: "status", phase: "agent_start", requestId: id };
     if (order === "http-first") await act(async () => { response.reject(new Error("lost response")); expect(await sending).toBe(false); });
     // Wrong session, even with the exact request id, cannot consume the original owner's input.
     act(() => result.current.selectSession("wrong-session"));

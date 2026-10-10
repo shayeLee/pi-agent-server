@@ -245,8 +245,8 @@ describe("public host API v1 contract", () => {
     }
     expect(Object.keys(document.paths)).not.toContain("/v1/capabilities");
     expect(JSON.stringify(document)).not.toContain("/v1/capabilities");
-    expect(SSE_EVENT_TYPES).toHaveLength(15);
-    expect(document.components.schemas.SseEvent!.oneOf).toHaveLength(15);
+    expect(SSE_EVENT_TYPES).toHaveLength(17);
+    expect(document.components.schemas.SseEvent!.oneOf).toHaveLength(17);
     const discriminants = (document.components.schemas.SseEvent!.oneOf as Record<string, any>[]).map(schema => {
       const resolved = schema.$ref ? document.components.schemas[schema.$ref.split("/").at(-1)!]! : schema;
       return (resolved.properties as Record<string, any>).type.const;

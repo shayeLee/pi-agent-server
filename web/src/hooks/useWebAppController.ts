@@ -7,7 +7,7 @@ import {
   useSyncExternalStore,
 } from "react";
 import { DEFAULT_PROJECT_ID, ApiClient, ApiError, createChatStore, createSseConnection, firstUserPrompt, ownsSseEvent } from "pi-agent-server/client";
-import type { AccessCapabilities, ChatStore, ModelInfo, Project, SessionRecord, SseEvent, TimelineItem, UsageSnapshot } from "pi-agent-server/client";
+import type { AccessCapabilities, ChatState, ChatStore, ModelInfo, Project, SessionRecord, SseEvent, TimelineItem, UsageSnapshot } from "pi-agent-server/client";
 import type { EventLogEntry } from "../types.js";
 import { EMPTY_MESSAGE, validateSelection, type SubmissionState, type SubmitOutcome, type SubmitSnapshot, type UnsentAttachment, type UnsentMessage } from "../attachment-state.js";
 
@@ -507,6 +507,7 @@ export function useWebAppController() {
           timeline?: unknown;
           lastEventId?: number;
           usageSnapshot?: UsageSnapshot;
+          compaction?: ChatState["compaction"];
         };
         if (cancelled) return;
         const messages = data?.messages ?? data;
@@ -551,7 +552,10 @@ export function useWebAppController() {
         }
         // Only the initial export baseline may skip events already represented by history.
         // Returning sessions keep their cached timeline and replay all missed lifecycle/data.
-        if (!eventCursorsRef.current.has(sessionId) && untouchedUsage && typeof data?.lastEventId === "number") cursor = data.lastEventId;
+        if (!eventCursorsRef.current.has(sessionId) && untouchedUsage && typeof data?.lastEventId === "number") {
+          store.restoreCompaction(data.compaction);
+          cursor = data.lastEventId;
+        }
         }
       } catch (error) {
         if (cancelled) return;
@@ -574,21 +578,21 @@ export function useWebAppController() {
           if (!cancelled) setConnected(true);
         },
         onError: () => {
-          store.clearModelOutput();
+          store.markDisconnected();
           if (!cancelled) setConnected(false);
         },
         onDisconnect: () => {
-          store.clearModelOutput();
+          store.markDisconnected();
           if (!cancelled) setConnected(false);
         },
         onNoLiveStream: () => {
-          store.clearModelOutput();
+          store.markDisconnected();
           if (!cancelled) setConnected(false);
         },
         onEvent: (event, lastEventId) => {
           if (cancelled) return;
           if (Number.isFinite(lastEventId)) eventCursorsRef.current.set(sessionId, lastEventId);
-          if (ownsSseEvent(store.getState(), event) && (event.type === "queued" || event.type === "status") && event.requestId) {
+          if (ownsSseEvent(store.getState(), event) && (event.type === "queued" || event.type === "status" || event.type === "compaction_start") && event.requestId) {
             // Input ownership can remain in new:<project> after navigation during creation.
             // Match transport identity, never editor text or the currently selected scope.
             const match = Object.entries(submitStatesRef.current).find(([, pending]) =>
@@ -638,7 +642,7 @@ export function useWebAppController() {
     return () => {
       cancelled = true;
       connection?.close();
-      store.clearModelOutput();
+      store.markDisconnected();
       setConnected(false);
     };
   }, [api, activeSessionId, chatStore]);

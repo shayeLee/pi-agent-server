@@ -4,6 +4,7 @@ import type { ChatState, ModelInfo, Project, SessionRecord, UsageStats } from "p
 import { Timeline } from "./Timeline.js";
 import type { DraftSource } from "../draft-store.js";
 import { Composer } from "./Composer.js";
+import { CompactionBanner, type CompactionState } from "./CompactionBanner.js";
 import { StatsBar } from "./StatsBar.js";
 import { ChatHeader } from "./ChatHeader.js";
 import { EmptyState } from "./EmptyState.js";
@@ -28,6 +29,7 @@ export type ChatProps = {
   defaultThinkingLevel: string;
   connected: boolean;
   stats: UsageStats | null;
+  compaction?: CompactionState | null;
   modelOutput?: import("pi-agent-server/client").ChatState["modelOutput"];
   activeTools?: boolean;
   onSend: (text: string) => void | Promise<boolean>;
@@ -71,6 +73,7 @@ export function Chat({
   defaultThinkingLevel,
   connected,
   stats,
+  compaction,
   modelOutput,
   activeTools,
   onSend,
@@ -232,6 +235,7 @@ export function Chat({
       )}
       {(session || projects !== null) && (
         <div className="chat-footer">
+          <CompactionBanner compaction={compaction} connected={connected} />
           <Composer
             session={session}
             projects={projects}

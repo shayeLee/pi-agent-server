@@ -73,7 +73,7 @@ describe("authorized SDK usage snapshots", () => {
   it("context is reread across compaction, model changes, navigation; separate restored session has no historical speed", async () => {
     const f = fixture(); await f.adapter.prompt("p"); f.start(); f.at(100); f.delta(); f.at(50); f.end();
     expect((await f.adapter.getUsageSnapshot()).lastResponse?.speed.generationDurationMs).toBeNull();
-    f.context({ tokens: null, contextWindow: 1000, percent: null }); f.emit({ type: "compaction_end" });
+    f.context({ tokens: null, contextWindow: 1000, percent: null }); f.emit({ type: "compaction_end", reason: "threshold", aborted: false, willRetry: false });
     expect((await f.adapter.getUsageSnapshot()).context?.tokens).toBeNull();
     f.context({ tokens: 20, contextWindow: 2000, percent: 1 }); await f.adapter.setModel("p", "m");
     expect((await f.adapter.getUsageSnapshot()).context?.window).toBe(2000);

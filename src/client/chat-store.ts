@@ -1,4 +1,4 @@
-import { addUserMessage, applySseEvent, createChatState, mergeExecution } from "./chat-state.js";
+import { addUserMessage, applySseEvent, createChatState, mergeExecution, finishCompaction, retireRequest } from "./chat-state.js";
 import type { ChatState } from "./chat-state.js";
 import type { SseEvent, TimelineItem } from "./types.js";
 
@@ -8,11 +8,14 @@ export type ChatStateListener = (state: ChatState) => void;
 export type ChatStore = {
   getState(): ChatState;
   clearModelOutput(): ChatState;
+  /** Clear transient output and mark running compaction as unconfirmed after connection loss. */
+  markDisconnected(): ChatState;
   applyEvent(event: SseEvent): ChatState;
   addUserMessage(text: string, messageId?: string, requestId?: string): ChatState;
   beginRequest(requestId: string): ChatState;
   /** Replace the visible timeline with restored session history. */
   restoreHistory(timeline: TimelineItem[]): ChatState;
+  restoreCompaction(compaction: ChatState["compaction"]): ChatState;
   restoreExecution(execution: import("./types.js").ExecutionSnapshot | null | undefined): ChatState;
   /** Set or clear the most recent chat error. */
   setError(error: string | null): ChatState;
@@ -39,15 +42,19 @@ export function createChatStore(initialState: ChatState = createChatState()): Ch
   return {
     getState: () => state,
     clearModelOutput: () => update({ ...state, modelOutput: null }),
+    markDisconnected: () => update({ ...state, modelOutput: null, compaction: finishCompaction(state.compaction, "unknown") }),
     applyEvent: (event) => update(applySseEvent(state, event)),
     addUserMessage: (text, messageId, requestId) => update(addUserMessage(state, text, messageId, requestId)),
-    beginRequest: (requestId) => update({ ...state, activeRequestId: requestId, phase: "queued", modelOutput: null, activeToolCallIds: [] }),
+    beginRequest: (requestId) => update({ ...state, activeRequestId: requestId, retiredRequestIds: retireRequest(state, requestId), phase: "queued", compaction: null, modelOutput: null, activeToolCallIds: [] }),
+    restoreCompaction: (compaction) => compaction === undefined ? state : update({ ...state,
+      compaction: finishCompaction(compaction, "unknown"),
+      ...(compaction?.status === "running" && compaction.requestId ? { activeRequestId: compaction.requestId } : {}) }),
     restoreExecution: (execution) => execution === undefined ? state : update({ ...state, stats: {
       durationMs: NaN, ttftMs: NaN, promptTokens: null, completionTokens: null, totalTokens: null,
       ...state.stats, execution: mergeExecution(state.stats?.execution, execution),
     } }),
-    restoreHistory: (timeline) => update({ ...state, modelOutput: null, activeToolCallIds: [], timeline }),
-    setError: (error) => update({ ...state, error, modelOutput: error ? null : state.modelOutput }),
+    restoreHistory: (timeline) => update({ ...state, modelOutput: null, compaction: finishCompaction(state.compaction, "unknown"), activeToolCallIds: [], timeline }),
+    setError: (error) => update({ ...state, error, compaction: error ? finishCompaction(state.compaction, "unknown") : state.compaction, modelOutput: error ? null : state.modelOutput }),
     rollbackUserMessage: (messageId, error) => {
       const last = state.timeline[state.timeline.length - 1];
       if (

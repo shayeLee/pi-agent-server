@@ -133,8 +133,6 @@ describe("SDK 事件 → SSE 事件翻译（docs/pi-sdk-api.md §9）", () => {
       ["turn_end", { type: "turn_end" }],
       ["agent_settled", { type: "agent_settled" }],
       ["queue_update", { type: "queue_update", steering: [], followUp: ["x"] }],
-      ["compaction_start", { type: "compaction_start", reason: "threshold" }],
-      ["compaction_end", { type: "compaction_end" }],
       ["auto_retry_start", { type: "auto_retry_start", attempt: 1, maxAttempts: 3 }],
       ["auto_retry_end", { type: "auto_retry_end" }],
       ["bash_execution_update", { type: "bash_execution_update", delta: "out" }],

@@ -38,7 +38,7 @@ export type ExportTimelineItem =
   | { id: string; type: "system_event"; event: "model_failback"; from: string; to: string; reason: string; order: number; timestamp?: string };
 /** Read-only session snapshot returned by `GET /v1/sessions/:id/export`. `timeline` is additive; Pi `messages[].sourceId` exactly joins `timeline[].messageId`. */
 export type { UsageSnapshot, UsageTokens, LastResponseUsage, ExecutionSnapshot } from "../core/usage-snapshot.js";
-export type Export = { messages: ExportMessage[]; timeline: ExportTimelineItem[]; lastEventId: number; usageSnapshot?: import("../core/usage-snapshot.js").UsageSnapshot };
+export type Export = { messages: ExportMessage[]; timeline: ExportTimelineItem[]; lastEventId: number; compaction?: import("../shared/events.js").CompactionState; usageSnapshot?: import("../core/usage-snapshot.js").UsageSnapshot };
 /** Owner/session-scoped UTF-8 text preview. `path` is always project-relative; no root is client supplied. */
 export type FilePreview = { path: string; content: string; lineCount: number; requestedLine?: number };
 
@@ -58,6 +58,8 @@ export { TURN_ERROR_CODES } from "../shared/api-types.js";
 
 /** Event discriminants supported by SSE v1 (additive optional progress). */
 export const SSE_EVENT_TYPES = [
+  "compaction_start",
+  "compaction_end",
   "notification",
   "steering_consumed",
   "text_delta",

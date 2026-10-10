@@ -68,8 +68,6 @@ export type SdkIgnoredEvent =
   | { type: "message_end"; message?: unknown }
   | { type: "turn_end" }
   | { type: "queue_update"; steering: readonly string[]; followUp: readonly string[] }
-  | { type: "compaction_start"; reason: "manual" | "threshold" | "overflow" }
-  | { type: "compaction_end" }
   | { type: "auto_retry_start"; attempt: number; maxAttempts: number }
   | { type: "auto_retry_end" }
   | { type: "bash_execution_update"; delta: string };
@@ -84,6 +82,8 @@ export type AgentSdkEvent =
   | SdkAgentEndEvent
   | SdkAgentSettledEvent
   | SdkTurnStartEvent
+  | { type: "compaction_start"; reason: import("../shared/events.js").CompactionReason }
+  | { type: "compaction_end"; reason: import("../shared/events.js").CompactionReason; result?: { tokensBefore: number; estimatedTokensAfter?: number; summary?: string }; aborted: boolean; willRetry: boolean; errorMessage?: string }
   | SdkIgnoredEvent;
 
 /** 从 agent_end 的 messages 中提取最终 assistant 消息的 stopReason/errorMessage（结果权威，needs.md §4.2）。 */

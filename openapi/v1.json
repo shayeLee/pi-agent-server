@@ -3370,9 +3370,53 @@
           },
           "usageSnapshot": {
             "$ref": "#/components/schemas/UsageSnapshot"
+          },
+          "compaction": {
+            "$ref": "#/components/schemas/CompactionState"
           }
         },
         "additionalProperties": false
+      },
+      "CompactionState": {
+        "type": "object",
+        "required": [
+          "status",
+          "reason"
+        ],
+        "properties": {
+          "status": {
+            "enum": [
+              "running",
+              "succeeded",
+              "failed",
+              "aborted",
+              "unknown"
+            ]
+          },
+          "reason": {
+            "enum": [
+              "manual",
+              "threshold",
+              "overflow"
+            ]
+          },
+          "requestId": {
+            "type": "string"
+          },
+          "tokensBefore": {
+            "type": "number",
+            "minimum": 0
+          },
+          "tokensAfter": {
+            "type": "number",
+            "minimum": 0
+          },
+          "willRetry": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false,
+        "description": "Ephemeral runtime metadata at lastEventId; absent without an observed live compaction. Restore running as unknown until live confirmation. No summary or SDK error."
       },
       "TimelineItem": {
         "oneOf": [
@@ -3847,6 +3891,78 @@
       },
       "SseEvent": {
         "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "type",
+              "reason"
+            ],
+            "properties": {
+              "type": {
+                "const": "compaction_start"
+              },
+              "reason": {
+                "enum": [
+                  "manual",
+                  "threshold",
+                  "overflow"
+                ]
+              },
+              "requestId": {
+                "type": "string"
+              },
+              "replay": {
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "required": [
+              "type",
+              "reason",
+              "outcome",
+              "willRetry"
+            ],
+            "properties": {
+              "type": {
+                "const": "compaction_end"
+              },
+              "reason": {
+                "enum": [
+                  "manual",
+                  "threshold",
+                  "overflow"
+                ]
+              },
+              "outcome": {
+                "enum": [
+                  "succeeded",
+                  "failed",
+                  "aborted"
+                ]
+              },
+              "willRetry": {
+                "type": "boolean"
+              },
+              "tokensBefore": {
+                "type": "number",
+                "minimum": 0
+              },
+              "tokensAfter": {
+                "type": "number",
+                "minimum": 0
+              },
+              "requestId": {
+                "type": "string"
+              },
+              "replay": {
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": false
+          },
           {
             "$ref": "#/components/schemas/SteeringConsumed"
           },

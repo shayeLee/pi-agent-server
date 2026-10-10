@@ -178,6 +178,8 @@ const mocks = vi.hoisted(() => {
     onEvent: null as null | ((event: SseEvent, lastEventId?: number) => void),
     onOpen: null as null | (() => void),
     onNoLiveStream: null as null | (() => void),
+    onError: null as null | (() => void),
+    onDisconnect: null as null | (() => void),
     close: vi.fn(),
   };
   const createSseConnection = vi.fn(
@@ -185,10 +187,14 @@ const mocks = vi.hoisted(() => {
       onEvent: (event: SseEvent, lastEventId?: number) => void;
       onOpen?: () => void;
       onNoLiveStream?: () => void;
+      onError?: () => void;
+      onDisconnect?: () => void;
     }): { close: () => void } => {
       sse.onEvent = options.onEvent;
       sse.onOpen = options.onOpen ?? null;
       sse.onNoLiveStream = options.onNoLiveStream ?? null;
+      sse.onError = options.onError ?? null;
+      sse.onDisconnect = options.onDisconnect ?? null;
       return { close: sse.close };
     },
   );
@@ -238,6 +244,8 @@ beforeEach(() => {
   mocks.sse.onEvent = null;
   mocks.sse.onOpen = null;
   mocks.sse.onNoLiveStream = null;
+  mocks.sse.onError = null;
+  mocks.sse.onDisconnect = null;
   mocks.resetProjects();
   mocks.setProjectListPending(false);
   mocks.setProjectsFail(false);
@@ -963,6 +971,38 @@ describe("App（顶层流程）", () => {
       timeline: [{ type: "message", id: "message:jsonl-user", messageId: "jsonl-user", role: "user", text: "" }] });
     fireEvent.click(screen.getByTestId("session-s1"));
     await waitFor(() => expect(screen.getByAltText("已发送图片 1")).toHaveAttribute("src", `data:image/png;base64,${png}`));
+  });
+
+  it("cancel button keeps running compaction until actual aborted terminal", async () => {
+    const inst = await enterChat();
+    act(() => { mocks.sse.onOpen?.(); mocks.sse.onEvent?.({ type: "compaction_start", reason: "threshold", requestId: "r1" }); });
+    expect(screen.getByTestId("compaction-banner")).toHaveAttribute("data-status", "running");
+    fireEvent.click(screen.getByTestId("abort-button"));
+    expect(inst.abort).toHaveBeenCalledWith("s1");
+    expect(screen.getByTestId("compaction-banner")).toHaveAttribute("data-status", "running");
+    act(() => mocks.sse.onEvent?.({ type: "aborted", requestId: "r1" }));
+    expect(screen.getByTestId("compaction-banner")).toHaveAttribute("data-status", "aborted");
+  });
+
+  it.each(["onError", "onDisconnect", "onNoLiveStream"] as const)("%s marks compaction unknown even after reconnect and terminal", async callback => {
+    await enterChat();
+    act(() => { mocks.sse.onOpen?.(); mocks.sse.onEvent?.({ type: "compaction_start", reason: "threshold", requestId: "r1" }); });
+    expect(screen.getByTestId("compaction-banner")).toHaveAttribute("data-status", "running");
+    act(() => mocks.sse[callback]?.());
+    expect(screen.getByTestId("compaction-banner")).toHaveAttribute("data-status", "unknown");
+    act(() => { mocks.sse.onOpen?.(); mocks.sse.onEvent?.({ type: "aborted", requestId: "r1" }); });
+    expect(screen.getByTestId("compaction-banner")).toHaveAttribute("data-status", "unknown");
+  });
+
+  it("switching connections marks running compaction unknown", async () => {
+    await enterChat();
+    act(() => { mocks.sse.onOpen?.(); mocks.sse.onEvent?.({ type: "compaction_start", reason: "threshold", requestId: "r1" }); });
+    fireEvent.click(screen.getByTestId("session-s2"));
+    await waitFor(() => expect(mocks.createSseConnection).toHaveBeenCalledTimes(2));
+    fireEvent.click(screen.getByTestId("session-s1"));
+    await waitFor(() => expect(mocks.createSseConnection).toHaveBeenCalledTimes(3));
+    act(() => mocks.sse.onOpen?.());
+    expect(screen.getByTestId("compaction-banner")).toHaveAttribute("data-status", "unknown");
   });
 
   it("流式阶段可中止", async () => {

@@ -63,6 +63,8 @@ export interface SessionRuntimePort {
   readonly sessionId: string;
   /** 当前任务状态（idle/queued/streaming/terminal）。 */
   readonly state: TaskState;
+  /** Ephemeral metadata only, absent when no runtime compaction has been observed. */
+  readonly compaction?: import("../../shared/events.js").CompactionState;
 
   /** 发送输入（幂等 + 状态机 + 并发 + 异步流式）。 */
   submitMessage(input: SubmitInput): Promise<SubmitDecision>;

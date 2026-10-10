@@ -288,6 +288,7 @@ export default function App() {
         defaultThinkingLevel={controller.defaultThinkingLevel}
         connected={controller.connected}
         stats={controller.chatState.stats}
+        compaction={controller.chatState.compaction}
         modelOutput={controller.chatState.modelOutput}
         activeTools={!!controller.chatState.activeToolCallIds?.length}
         draftSource={controller.draftSource}

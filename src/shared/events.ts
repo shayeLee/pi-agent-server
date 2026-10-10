@@ -27,10 +27,23 @@ export type ModelOutputProgress = {
   activityAgeMs?: number;
 };
 
+export type CompactionReason = "manual" | "threshold" | "overflow";
+/** Pure metadata: never contains summaries or SDK errors. */
+export type CompactionState = {
+  status: "running" | "succeeded" | "failed" | "aborted" | "unknown";
+  reason: CompactionReason;
+  requestId?: string;
+  tokensBefore?: number;
+  tokensAfter?: number;
+  willRetry?: boolean;
+};
+
 /** Turn correlation; optional only for legacy/non-turn events. */
 export type SseRequestId = { readonly requestId?: string };
 export type SseEvent =
   | NotificationEvent
+  | ({ type: "compaction_start"; reason: CompactionReason; replay?: boolean } & SseRequestId)
+  | ({ type: "compaction_end"; reason: CompactionReason; outcome: "succeeded" | "failed" | "aborted"; willRetry: boolean; tokensBefore?: number; tokensAfter?: number; replay?: boolean } & SseRequestId)
   | ({ type: "steering_consumed" } & import("./steering.js").SteeringConsumed)
   | ({ type: "model_output_progress" } & ModelOutputProgress & SseRequestId)
   | ({ type: "text_delta"; text: string } & SseRequestId)

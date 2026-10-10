@@ -19,6 +19,12 @@ function tools(s: ChatState): Array<Extract<(typeof s.timeline)[number], { kind:
   return s.timeline.filter((i) => i.kind === "tool").map((i) => i.call);
 }
 
+const terminalRegressionCases = (["text_delta", "thinking_delta"] as const).flatMap(deltaType =>
+  (["aborted", "completed", "error"] as const).flatMap(terminal =>
+    [false, true].map(withNotification => [deltaType, terminal, withNotification] as const),
+  ),
+);
+
 describe("chat-state（SSE 事件 → 时间线 UI 状态映射）", () => {
   it("初始状态：空时间线、idle、无错误", () => {
     const s = createChatState();
@@ -157,6 +163,39 @@ describe("chat-state（SSE 事件 → 时间线 UI 状态映射）", () => {
 
   it("aborted 标记中止", () => {
     expect(run([{ type: "aborted" }]).phase).toBe("aborted");
+  });
+
+  it.each(terminalRegressionCases)("%s → %s（notification=%s）关闭全部流式内容", (deltaType, terminal, withNotification) => {
+    let state = addUserMessage(createChatState(), "问题", "user-1", "request-1");
+    state = applySseEvent(state, { type: "tool_start", toolCallId: "tool-1", toolName: "search", args: null, requestId: "request-1" });
+    state = applySseEvent(state, { type: deltaType, text: "流式内容", requestId: "request-1" });
+    if (withNotification) {
+      state = applySseEvent(state, { type: "notification", version: 1, notificationId: "notification-1", runIds: ["run-1"], text: "通知", entryId: "entry-1", timestamp: "2026-01-01T00:00:00Z" });
+    }
+    const original = state;
+    const originalTimeline = state.timeline;
+    const notification = state.timeline.find(item => item.kind === "notification");
+    const terminalEvent: SseEvent = terminal === "error"
+      ? { type: "error", message: "失败", requestId: "request-1" }
+      : { type: terminal, requestId: "request-1" };
+    const result = applySseEvent(state, terminalEvent);
+
+    expect(result.timeline.filter(item => (item.kind === "thinking" || (item.kind === "message" && item.role === "assistant")) && item.streaming)).toEqual([]);
+    expect(result.timeline.find(item => item.kind === "message" && item.role === "user")).toMatchObject({ text: "问题" });
+    expect(result.timeline.find(item => item.kind === "tool")).toBeDefined();
+    if (withNotification) expect(result.timeline.find(item => item.kind === "notification")).toBe(notification);
+    expect(original.timeline).toBe(originalTimeline);
+    expect(original.timeline.some(item => (item.kind === "thinking" || (item.kind === "message" && item.role === "assistant")) && item.streaming)).toBe(true);
+  });
+
+  it("旧 request 的终止事件不关闭新 request 的流式内容", () => {
+    let state = applySseEvent(createChatState(), { type: "text_delta", text: "旧回答", requestId: "old" });
+    state = applySseEvent(state, { type: "completed", requestId: "old" });
+    state = applySseEvent(state, { type: "text_delta", text: "新回答", requestId: "new" });
+    const result = applySseEvent(state, { type: "aborted", requestId: "old" });
+    expect(result).toBe(state);
+    expect(result.timeline.at(-1)).toMatchObject({ kind: "message", text: "新回答", streaming: true });
+    expect(result.phase).toBe("streaming");
   });
 
   it("error 显示错误消息；之后的 text_delta 另起新消息", () => {

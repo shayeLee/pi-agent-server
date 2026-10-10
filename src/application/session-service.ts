@@ -581,15 +581,17 @@ export class SessionService {
    * ConversationStorage 只读解析（与活会话导出同一 role/text 投影），绝不
    * createAdapter / 写 DB / 改写会话历史。
    */
-  async exportSession(ownerKey: string, id: string): Promise<{ messages: unknown; timeline: unknown[]; lastEventId: number; usageSnapshot?: import("../core/usage-snapshot.js").UsageSnapshot } | null> {
+  async exportSession(ownerKey: string, id: string): Promise<{ messages: unknown; timeline: unknown[]; lastEventId: number; usageSnapshot?: import("../core/usage-snapshot.js").UsageSnapshot; compaction?: import("../shared/events.js").CompactionState } | null> {
     const record = await this.findOwned(ownerKey, id);
     if (!record) return null;
     // 已实例化 runtime：活会话导出（registry.get 仅读取，绝不因导出触发创建）。
     const existing = this.deps.registry.get(id);
     if (existing) {
+      // Metadata and cursor share a synchronous baseline before the asynchronous history read.
       const lastEventId = existing.events.lastEventId;
+      const compaction = existing.runtime.compaction;
       const exported = normalizeExportSnapshot(await existing.runtime.exportSession());
-      return { ...exported, lastEventId };
+      return { ...exported, lastEventId, ...(compaction ? { compaction } : {}) };
     }
     // 无 runtime：从未活跃（或重启后未实例化）的会话——零写入只读路径。
     const conversation = {

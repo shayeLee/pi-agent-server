@@ -63,7 +63,7 @@ export class SessionEventBus {
       for (const item of this.buffer) {
         if (item.id > lastEventId) {
           try {
-            listener(item.event.type === "model_output_progress"
+            listener(item.event.type === "model_output_progress" || item.event.type === "compaction_start" || item.event.type === "compaction_end"
               ? { ...item, event: { ...item.event, replay: true } } : item);
           } catch {
             // 补发期间监听器异常不得中断后续补发

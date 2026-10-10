@@ -97,6 +97,31 @@ function fileFingerprint(file: string): string {
 }
 
 describe("HTTP 层：会话导出（GET /v1/sessions/:id/export）", () => {
+  it("exports compaction metadata at cursor before async history read; absent without runtime", async () => {
+    let release: (() => void) | undefined;
+    const adapter = new MockAgentAdapter();
+    adapter.prompt = async () => { adapter.emit({ type: "compaction_start", reason: "threshold" });
+      await new Promise<void>(resolve => { release = resolve; }); };
+    const { app } = await makeApp({ createAdapter: async () => adapter });
+    const id = await createSession(app, TOKEN);
+    expect((await get(app, `/v1/sessions/${id}/export`, TOKEN)).body).not.toHaveProperty("compaction");
+    await app.inject({ method: "POST", url: `/v1/sessions/${id}/messages`, headers: JSON_HEADERS,
+      remoteAddress: TOKEN, payload: JSON.stringify({ requestId: "r1", prompt: "go" }) });
+    await flush();
+    // End arrives while export awaits history. It must remain newer than the captured cursor.
+    const originalExport = adapter.exportSession.bind(adapter);
+    adapter.exportSession = async () => {
+      adapter.emit({ type: "compaction_end", reason: "threshold", aborted: false, willRetry: true,
+        result: { tokensBefore: 100, estimatedTokensAfter: 40, summary: "secret" } });
+      return originalExport();
+    };
+    const snapshot = (await get(app, `/v1/sessions/${id}/export`, TOKEN)).body;
+    expect(snapshot).toMatchObject({ lastEventId: 1, compaction: { status: "running", reason: "threshold", requestId: "r1" } });
+    expect((await get(app, `/v1/sessions/${id}/export`, TOKEN)).body).toMatchObject({ lastEventId: 2,
+      compaction: { status: "succeeded", tokensBefore: 100, tokensAfter: 40, willRetry: true } });
+    expect(JSON.stringify(snapshot)).not.toContain("secret");
+    release?.(); await flush(); await app.close();
+  });
   it("runtime 已实例化（发过消息）：导出活会话数据与事件游标", async () => {
     const messages = [
       { role: "user", content: [{ type: "text", text: "hi" }] },

@@ -1623,6 +1623,31 @@ details[open] > summary > .details-chevron { transform: rotate(90deg); }
   border-top: 1px solid transparent;
 }
 
+.compaction-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  width: 100%;
+  max-width: var(--reading-max);
+  margin: 0 auto 8px;
+  padding: 9px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-control);
+  color: var(--text-secondary);
+  background: var(--bg-page);
+  font-size: 12px;
+  line-height: 1.6;
+}
+.compaction-content { min-width: 0; overflow-wrap: anywhere; }
+.compaction-heading, .compaction-tokens { display: flex; flex-wrap: wrap; column-gap: 12px; }
+.compaction-heading > :first-child { color: var(--text-primary); }
+.compaction-reason { color: var(--text-secondary); }
+.compaction-tokens { font-variant-numeric: tabular-nums; }
+.compaction-indicator { flex: none; width: 6px; height: 6px; margin-top: 7px; border-radius: 50%; background: var(--text-secondary); }
+.compaction-indicator.is-running { background: var(--accent); animation: compaction-pulse 1.6s ease-in-out infinite; }
+@keyframes compaction-pulse { 50% { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) { .compaction-indicator.is-running { animation: none; } }
+
 .composer {
   display: flex;
   flex-direction: column;

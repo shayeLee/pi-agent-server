@@ -13,6 +13,8 @@ export type ChatState = {
   phase: ChatPhase;
   /** Request owning queued/streaming lifecycle. Legacy events without IDs retain their behavior. */
   activeRequestId?: string | null;
+  /** Previously owned requests cannot reclaim compaction after a newer request finishes. */
+  retiredRequestIds?: string[];
   /** Display message from the most recent error event. */
   error: string | null;
   /** Current/most recent turn statistics from a usage event. */
@@ -21,6 +23,7 @@ export type ChatState = {
   modelOutput?: (import("./types.js").ModelOutputProgress & { receivedAt: number }) | null;
   /** Only observed tool_start lifecycle for the active request, not historical timeline cards. */
   activeToolCallIds?: string[];
+  compaction?: import("../shared/events.js").CompactionState | null;
 };
 
 export function createChatState(): ChatState {
@@ -41,6 +44,8 @@ export function addUserMessage(state: ChatState, text: string, messageId?: strin
     timeline: [...state.timeline, message],
     phase: "queued",
     activeRequestId: requestId ?? null,
+    retiredRequestIds: retireRequest(state, requestId),
+    compaction: null,
     modelOutput: null,
     activeToolCallIds: [],
     error: null,
@@ -51,10 +56,12 @@ export function addUserMessage(state: ChatState, text: string, messageId?: strin
  * A new lifecycle may claim an idle/terminal state, but cannot steal an active request. */
 export function ownsSseEvent(state: ChatState, event: SseEvent): boolean {
   if (event.type === "notification") return false;
+  if ((event.type === "compaction_start" || event.type === "compaction_end") && event.requestId &&
+      state.retiredRequestIds?.includes(event.requestId)) return false;
   if (!event.requestId || !state.activeRequestId) return true;
   if (event.requestId === state.activeRequestId) return true;
   return state.phase !== "queued" && state.phase !== "streaming" &&
-    (event.type === "status" || event.type === "queued" || event.type === "text_delta" || event.type === "thinking_delta" || event.type === "tool_start");
+    (event.type === "status" || event.type === "queued" || event.type === "text_delta" || event.type === "thinking_delta" || event.type === "tool_start" || event.type === "compaction_start");
 }
 
 /** Counts are snapshots, never increments. Replayed/stale snapshots cannot roll back a session. */
@@ -74,8 +81,9 @@ export function applySseEvent(state: ChatState, event: SseEvent, now: () => numb
       return event.type === "error" ? { ...state, error: event.message } : state;
     }
     if (event.requestId && (event.type === "status" || event.type === "queued" ||
-        event.type === "text_delta" || event.type === "thinking_delta" || event.type === "tool_start")) {
-      state = { ...state, activeRequestId: event.requestId };
+        event.type === "text_delta" || event.type === "thinking_delta" || event.type === "tool_start" || event.type === "compaction_start")) {
+      state = { ...state, activeRequestId: event.requestId, retiredRequestIds: retireRequest(state, event.requestId),
+        ...(event.requestId !== state.activeRequestId && event.requestId !== state.compaction?.requestId ? { compaction: null } : {}) };
     }
   }
   switch (event.type) {
@@ -98,6 +106,15 @@ export function applySseEvent(state: ChatState, event: SseEvent, now: () => numb
         role: "user", text: message.text, streaming: false,
         ...(message.images?.length ? { images: message.images } : {}) }] };
     }
+    case "compaction_start":
+      return closeCurrentAssistant({ ...state, phase: "streaming", modelOutput: null,
+        compaction: { status: event.replay ? "unknown" : "running", reason: event.reason,
+          ...(event.requestId ? { requestId: event.requestId } : {}) } });
+    case "compaction_end":
+      return { ...state, ...(!state.activeRequestId && event.requestId ? { activeRequestId: event.requestId } : {}), compaction: { status: event.outcome, reason: event.reason,
+        ...(event.requestId ? { requestId: event.requestId } : {}), willRetry: event.willRetry,
+        ...(validTokenCount(event.tokensBefore) ? { tokensBefore: event.tokensBefore } : {}),
+        ...(validTokenCount(event.tokensAfter) ? { tokensAfter: event.tokensAfter } : {}) } };
     case "model_output_progress":
       return { ...state, modelOutput: !event.replay && event.phase === "delta"
         ? { ...event, receivedAt: now() - Math.max(0, event.activityAgeMs ?? 0) } : null };
@@ -154,16 +171,31 @@ export function applySseEvent(state: ChatState, event: SseEvent, now: () => numb
       // Failback metadata is informational and does not change conversation state.
       return state;
     case "completed":
-      return closeCurrentAssistant({ ...state, modelOutput: null, activeToolCallIds: [], phase: "completed", error: null });
+      return closeCurrentAssistant({ ...state, compaction: finishCompaction(state.compaction, "unknown"), modelOutput: null, activeToolCallIds: [], phase: "completed", error: null });
     case "aborted":
-      return closeCurrentAssistant({ ...state, modelOutput: null, activeToolCallIds: [], phase: "aborted" });
+      return closeCurrentAssistant({ ...state, compaction: finishCompaction(state.compaction, "aborted"), modelOutput: null, activeToolCallIds: [], phase: "aborted" });
     case "error":
       // An error ends this answer; subsequent text_delta starts a new message.
-      return closeCurrentAssistant({ ...state, modelOutput: null, activeToolCallIds: [], phase: "idle", error: event.message });
+      return closeCurrentAssistant({ ...state, compaction: finishCompaction(state.compaction, "failed"), modelOutput: null, activeToolCallIds: [], phase: "idle", error: event.message });
     default:
       // Ignore future or malformed events without corrupting the current state.
       return state;
   }
+}
+
+export function retireRequest(state: ChatState, requestId?: string): string[] | undefined {
+  return state.activeRequestId && state.activeRequestId !== requestId
+    ? [...new Set([...(state.retiredRequestIds ?? []), state.activeRequestId])]
+    : state.retiredRequestIds;
+}
+
+function validTokenCount(value: unknown): value is number {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
+/** Missing explicit end is never evidence of success. */
+export function finishCompaction(compaction: ChatState["compaction"], status: "unknown" | "failed" | "aborted"): ChatState["compaction"] {
+  return compaction?.status === "running" ? { ...compaction, status } : compaction;
 }
 
 /** Append text to the current streaming assistant message, or start a new one. */
@@ -217,13 +249,12 @@ function closeCurrentThinking(timeline: TimelineItem[]): TimelineItem[] {
   return timeline;
 }
 
-/** Close the currently streaming assistant message at terminal events. */
+/** Close all streaming assistant messages and thinking segments at terminal events. */
 function closeCurrentAssistant(state: ChatState): ChatState {
-  const timeline = closeCurrentThinking(state.timeline);
-  const last = timeline[timeline.length - 1];
-  if (last && last.kind === "message" && last.streaming) {
-    return { ...state, timeline: [...timeline.slice(0, -1), { ...last, streaming: false }] };
-  }
+  const timeline = state.timeline.map(item =>
+    ((item.kind === "thinking" || (item.kind === "message" && item.role === "assistant")) && item.streaming)
+      ? { ...item, streaming: false } : item,
+  );
   return { ...state, timeline };
 }
 

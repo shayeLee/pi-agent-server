@@ -44,11 +44,7 @@ export const MessageItem = memo(function MessageItem({ item }: MessageItemProps)
     <div className="message-row row-assistant" data-testid={`message-${item.id}`}>
       <div className="message-assistant">
         <div className="assistant-content">
-          {item.text ? (
-            <Markdown text={item.text} />
-          ) : (
-            <Icon name="dot" className="streaming-cursor" />
-          )}
+          {item.text && <Markdown text={item.text} />}
           {item.streaming && <Icon name="dot" className="streaming-cursor" />}
         </div>
       </div>

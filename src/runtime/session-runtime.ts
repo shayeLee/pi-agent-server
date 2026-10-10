@@ -285,6 +285,13 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
     this.adapter.dispose();
   }
 
+  /** Ephemeral pure metadata, independent of task settlement. */
+  private compactionMetadata?: import("../shared/events.js").CompactionState;
+
+  get compaction(): import("../shared/events.js").CompactionState | undefined {
+    return this.compactionMetadata ? { ...this.compactionMetadata } : undefined;
+  }
+
   /** 当前任务状态（idle/queued/streaming/terminal）。 */
   get state(): TaskState {
     return this.taskState;
@@ -623,6 +630,9 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
       claimCommitted: false,
       ...(reservationToken !== undefined ? { reservationToken } : {}),
     };
+    // Only this admission owns the session queue (submit transitioned idle -> queued).
+    // Host notifications waiting alongside an active task must retain its snapshot.
+    this.compactionMetadata = undefined;
     this.pending.set(taskId, task);
     const registration: AdmissionRegistration = {
       token: admissionToken,
@@ -1077,6 +1087,7 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
     this.currentInputKind = task.input.kind;
     this.currentKey = task.key;
     this.currentRequestId = task.requestId;
+    this.compactionMetadata = undefined;
     this.currentFingerprint = task.fingerprint;
     this.currentReservationToken = task.reservationToken ?? null;
     this.lastStopReason = null;
@@ -1351,6 +1362,18 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
   }
 
   private emitEvent(event: SseEvent): void {
+    if (event.type === "compaction_start") {
+      this.compactionMetadata = { status: "running", reason: event.reason, requestId: event.requestId };
+    } else if (event.type === "compaction_end") {
+      this.compactionMetadata = { status: event.outcome, reason: event.reason, requestId: event.requestId,
+        willRetry: event.willRetry,
+        ...(event.tokensBefore !== undefined ? { tokensBefore: event.tokensBefore } : {}),
+        ...(event.tokensAfter !== undefined ? { tokensAfter: event.tokensAfter } : {}) };
+    } else if ((event.type === "completed" || event.type === "error" || event.type === "aborted") &&
+        this.compactionMetadata?.status === "running" && event.requestId === this.compactionMetadata.requestId) {
+      this.compactionMetadata = { ...this.compactionMetadata,
+        status: event.type === "completed" ? "unknown" : event.type === "error" ? "failed" : "aborted" };
+    }
     this.onEvent(event);
   }
 

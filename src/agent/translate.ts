@@ -38,6 +38,17 @@ export function translateSdkEvent(event: AgentSdkEvent): Exclude<SseEvent, { typ
         isError: event.isError,
         ...(toolDurationMs(event.durationMs) !== undefined ? { durationMs: toolDurationMs(event.durationMs) } : {}),
       };
+    case "compaction_start":
+      return { type: "compaction_start", reason: event.reason };
+    case "compaction_end": {
+      const valid = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0;
+      return { type: "compaction_end", reason: event.reason,
+        outcome: event.aborted ? "aborted" : event.result ? "succeeded" : "failed",
+        willRetry: event.willRetry,
+        ...(valid(event.result?.tokensBefore) ? { tokensBefore: event.result.tokensBefore } : {}),
+        ...(valid(event.result?.estimatedTokensAfter) ? { tokensAfter: event.result.estimatedTokensAfter } : {}),
+      };
+    }
     case "agent_start":
     case "turn_start":
       return { type: "status", phase: event.type };

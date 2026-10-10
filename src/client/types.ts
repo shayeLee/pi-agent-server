@@ -6,7 +6,7 @@ export type { UsageSnapshot, UsageTokens, LastResponseUsage, ExecutionSnapshot }
  * turn 关联字段：同一轮对话的所有 SSE 事件都携带产生它们的 `requestId`，
  * 前端据此把迟到/补发的旧事件与新请求隔离。可选仅用于非 turn 遗留场景。
  */
-export type { SseRequestId, SseEvent, ModelOutputProgress } from "../shared/events.js";
+export type { SseRequestId, SseEvent, ModelOutputProgress, CompactionState, CompactionReason } from "../shared/events.js";
 
 export type UsageStats = UsageSnapshot & {
   durationMs: number;

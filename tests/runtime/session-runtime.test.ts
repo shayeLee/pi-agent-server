@@ -12,6 +12,8 @@ import type { IdempotencyStorePort, ObservabilityEvent, ObservabilityPort } from
 import { initStorage } from "../helpers/sqlite.js";
 import { TURN_ERROR_CODES } from "../../src/application/ports/session-runtime-port.js";
 import { JPEG_2X2_BASE64, PNG_2X2_BASE64 } from "../helpers/image-fixtures.js";
+import { createChatStore } from "../../src/client/chat-store.js";
+import { SessionEventBus } from "../../src/runtime/session-event-bus.js";
 
 const baseConfig: ConcurrencyConfig = {
   globalLimit: 2,
@@ -109,6 +111,62 @@ function makeRuntime(opts: {
   });
   return { runtime, events, concurrency, adapter, sessionId };
 }
+
+describe("SessionRuntime compaction metadata", () => {
+  it("clears finished r1 metadata before queued r2 export, then delivers r2 cancellation to restored client", async () => {
+    const adapter = new ManualAdapter();
+    const concurrency = new ConcurrencyController({ ...baseConfig, globalLimit: 1 });
+    const bus = new SessionEventBus();
+    const runtime = new SessionRuntime({ sessionId: "compaction-queue", ownerKey: "owner-1", adapter, concurrency, now: () => Date.now(),
+      onEvent: event => bus.push(event) });
+    await runtime.submitMessage({ requestId: "r1", prompt: "hi", userId: "owner-1" }); await flush();
+    adapter.emit({ type: "compaction_start", reason: "threshold" });
+    adapter.emit({ type: "compaction_end", reason: "threshold", aborted: false, willRetry: false,
+      result: { summary: "summary", tokensBefore: 10 } });
+    adapter.finishStream(); await flush();
+    expect(runtime.compaction?.status).toBe("succeeded");
+    expect(concurrency.submit("blocker:task", "other-user", Date.now()).kind).toBe("run");
+    expect(await runtime.submitMessage({ requestId: "r2", prompt: "next", userId: "owner-1" })).toEqual({ kind: "queued", position: 1 });
+    // Export's cursor includes queued(r2); replay starts after it.
+    const snapshot = { ...(await runtime.exportSession() as object), lastEventId: bus.lastEventId, compaction: runtime.compaction };
+    expect(snapshot.compaction).toBeUndefined();
+    const store = createChatStore(); store.restoreCompaction(snapshot.compaction);
+    const unsubscribe = bus.subscribe(item => store.applyEvent(item.event), snapshot.lastEventId);
+    await runtime.abort("r2");
+    expect(store.getState().phase).toBe("aborted");
+    unsubscribe(); runtime.dispose(); concurrency.finish("blocker:task");
+  });
+  it("conflicting r2 cannot clear active r1 compaction metadata", async () => {
+    const adapter = new ManualAdapter();
+    const { runtime } = makeRuntime({ adapter });
+    await runtime.submitMessage({ requestId: "r1", prompt: "hi", userId: "owner-1" }); await flush();
+    adapter.emit({ type: "compaction_start", reason: "threshold" });
+    expect(await runtime.submitMessage({ requestId: "r2", prompt: "next", userId: "owner-1" })).toEqual({ kind: "conflict", reason: "active" });
+    expect(runtime.compaction).toEqual({ status: "running", reason: "threshold", requestId: "r1" });
+    adapter.finishStream(); await flush(); runtime.dispose();
+  });
+  it("ignores idle manual, binds pre-start and abort-window events, resets next request", async () => {
+    const adapter = new AbortPendingAdapter();
+    const { runtime, events } = makeRuntime({ adapter });
+    adapter.emit({ type: "compaction_start", reason: "manual" });
+    expect(runtime.compaction).toBeUndefined(); expect(events).toEqual([]);
+    await runtime.submitMessage({ requestId: "r1", prompt: "hi", userId: "owner-1" }); await flush();
+    adapter.emit({ type: "compaction_start", reason: "threshold" });
+    expect(events.at(-1)).toEqual({ type: "compaction_start", reason: "threshold", requestId: "r1" });
+    const copy = runtime.compaction!; copy.status = "failed";
+    expect(runtime.compaction?.status).toBe("running");
+    const abort = runtime.abort();
+    adapter.emit({ type: "compaction_end", reason: "threshold", aborted: true, willRetry: false });
+    expect(events.at(-1)).toEqual({ type: "compaction_end", reason: "threshold", outcome: "aborted", willRetry: false, requestId: "r1" });
+    adapter.finishAbort(); await abort; adapter.finishStream(); await flush();
+    expect(runtime.compaction?.status).toBe("aborted");
+    await runtime.submitMessage({ requestId: "r2", prompt: "next", userId: "owner-1" }); await flush();
+    expect(runtime.compaction).toBeUndefined();
+    adapter.emit({ type: "compaction_start", reason: "overflow" }); adapter.finishStream(); await flush();
+    expect(runtime.compaction).toEqual({ status: "unknown", reason: "overflow", requestId: "r2" });
+    runtime.dispose();
+  });
+});
 
 describe("SessionRuntime（needs.md §4.2 会话任务编排）", () => {
   it("session notifications bypass idle/abort filters but not dispose; late text/status remain filtered", async () => {
