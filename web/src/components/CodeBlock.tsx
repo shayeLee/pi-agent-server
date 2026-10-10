@@ -55,6 +55,16 @@ function highlighted(code: string, language?: string): ReactNode {
   } catch { return code; }
 }
 
+/** Read tools prefix lines with the file's own numbers. Keep those out of the text; the gutter is the only numbering. */
+export function stripReadLineNumbers(code: string): string {
+  const lines = code.split("\n");
+  const matches = lines.map((line) => /^(\s*)(\d+)\|(.*)$/.exec(line));
+  const nonempty = lines.filter((line) => line.length > 0).length;
+  const hits = matches.filter(Boolean).length;
+  if (hits === 0 || hits < Math.ceil(nonempty * 0.6)) return code;
+  return lines.map((line, index) => matches[index] ? matches[index]![3] : line).join("\n");
+}
+
 function failLines(code: string): ReactNode {
   const lines = code.split("\n");
   return lines.map((line, index) => (
@@ -74,19 +84,20 @@ export type CodeBlockProps = {
 };
 export function CodeBlock({ code, language, copyLabel = "复制代码", label, lineNumbers = false, emphasizeFail = false }: CodeBlockProps) {
   const resolved = codeLanguage(language);
+  const displayed = lineNumbers ? stripReadLineNumbers(code) : code;
   const content = useMemo(
-    () => emphasizeFail ? failLines(code) : highlighted(code, resolved),
-    [code, resolved, emphasizeFail],
+    () => emphasizeFail ? failLines(displayed) : highlighted(displayed, resolved),
+    [displayed, resolved, emphasizeFail],
   );
-  const lineCount = code.split("\n");
+  const lineCount = displayed.split("\n");
   // Tie feedback to the exact snapshot, not an obsolete streamed value.
   const [copy, setCopy] = useState<{ code: string; message: string } | null>(null);
   return <div className={`code-block${lineNumbers ? " has-line-nums" : ""}`} data-language={resolved ?? "plain"}>
     <div className="code-block-toolbar"><span>{label ?? (resolved ?? (language === "plaintext" ? "plaintext" : "plain"))}</span>
       <button type="button" aria-label={copyLabel} onClick={async () => {
-        try { await navigator.clipboard.writeText(code); setCopy({ code, message: "已复制" }); }
-        catch { setCopy({ code, message: "复制失败，请选择原文复制" }); }
-      }}><Icon name="copy" /></button><span role="status">{copy?.code === code ? copy.message : ""}</span>
+        try { await navigator.clipboard.writeText(displayed); setCopy({ code: displayed, message: "已复制" }); }
+        catch { setCopy({ code: displayed, message: "复制失败，请选择原文复制" }); }
+      }}><Icon name="copy" /></button><span role="status">{copy?.code === displayed ? copy.message : ""}</span>
     </div>
     <div className="code-block-scroll">
       {lineNumbers && <div className="code-line-nums" aria-hidden="true">{lineCount.map((_, index) => <span key={index}>{index + 1}</span>)}</div>}

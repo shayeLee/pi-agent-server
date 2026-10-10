@@ -111,6 +111,7 @@ export function Chat({
   // 48px accommodates fractional scroll metrics and small touch movements.
   // Intent lives outside React updates: content growth must not look like scrolling away.
   const followRef = useRef(true);
+  const leftBottomRef = useRef(false);
   const sessionRef = useRef(session?.id);
   const initialHistoryRef = useRef(true);
   const metricsRef = useRef({ top: 0, height: 0, viewport: 0 });
@@ -118,10 +119,11 @@ export function Chat({
   const nearBottom = (el: HTMLElement) => el.scrollHeight - el.clientHeight - el.scrollTop <= 48;
   const remember = (el: HTMLElement) => {
     metricsRef.current = { top: el.scrollTop, height: el.scrollHeight, viewport: el.clientHeight };
-    setShowLatest(!nearBottom(el));
+    setShowLatest(leftBottomRef.current && !nearBottom(el));
   };
   const goToLatest = () => {
     followRef.current = true;
+    leftBottomRef.current = false;
     const el = bodyRef.current;
     if (!el) return;
     el.scrollTop = el.scrollHeight;
@@ -137,6 +139,7 @@ export function Chat({
       sessionRef.current = session?.id;
       initialHistoryRef.current = true;
       followRef.current = true;
+      leftBottomRef.current = false;
       setShowLatest(false);
     }
     const el = bodyRef.current;
@@ -203,6 +206,7 @@ export function Chat({
           if (event.key === "End") goToLatest();
           else {
             followRef.current = false;
+            leftBottomRef.current = true;
             const el = event.currentTarget;
             el.scrollTop = 0;
             remember(el);
@@ -213,9 +217,12 @@ export function Chat({
           const previous = metricsRef.current;
           // Layout-induced scroll/clamping is not user intent. Upward movement
           // with unchanged dimensions also covers scrollbar, keyboard and touch.
-          if (nearBottom(el)) followRef.current = true;
-          else if (el.scrollTop < previous.top && el.scrollHeight === previous.height && el.clientHeight === previous.viewport) {
+          if (nearBottom(el)) {
+            followRef.current = true;
+            leftBottomRef.current = false;
+          } else if (el.scrollTop < previous.top && el.scrollHeight === previous.height && el.clientHeight === previous.viewport) {
             followRef.current = false;
+            leftBottomRef.current = true;
           }
           remember(el);
         }}
@@ -258,7 +265,7 @@ export function Chat({
         )}
       </div>
       {session && hasMessages && (
-        <div className="chat-latest-row flex h-[44px] shrink-0 items-center justify-center bg-background">
+        <div className={`chat-latest-row flex shrink-0 items-center justify-center bg-background ${showLatest ? "h-11" : "h-0 overflow-hidden"}`}>
           {showLatest && (
             <button type="button" className="chat-latest grid h-[44px] w-[44px] place-items-center bg-transparent text-muted-foreground outline-none" aria-label={t("chat.scrollLatest")} title={t("chat.scrollLatest")} onClick={goToLatest}>
               <span className="chat-latest-face grid size-[34px] place-items-center rounded-full border border-border bg-card shadow-sm" aria-hidden="true"><Icon name="down" /></span>

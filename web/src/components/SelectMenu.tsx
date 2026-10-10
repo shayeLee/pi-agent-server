@@ -1,4 +1,4 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { Icon } from "./Icon.js";
 import type { KeyboardEvent } from "react";
 import { cn } from "../lib/utils.js";
@@ -16,6 +16,8 @@ export type SelectMenuProps = {
   placeholder?: string;
   /** Composer sits on the bottom edge, so its menu opens upward. */
   placement?: "above" | "below";
+  /** Extra controls inside the open list, after the options. */
+  footer?: ReactNode;
 };
 
 /** 通用受控自绘选择器。 */
@@ -29,6 +31,7 @@ export function SelectMenu({
   className,
   placeholder = "请选择",
   placement = "below",
+  footer,
 }: SelectMenuProps) {
   const [open, setOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState(0);
@@ -215,6 +218,7 @@ export function SelectMenu({
               {option.value === value && <Icon name="check" className="select-menu-check" />}
             </div>
           ))}
+          {footer}
         </div>
       )}
     </span>

@@ -14,7 +14,7 @@ import { toastError } from "./lib/toast.js";
 import { isMacPlatform } from "./components/Kbd.js";
 import { cn } from "./lib/utils.js";
 
-const SIDEBAR_DEFAULT = 264;
+const SIDEBAR_DEFAULT = 280;
 const SIDEBAR_MIN = 180;
 const SIDEBAR_MAX = 400;
 const SIDEBAR_RAIL = 56;
@@ -215,7 +215,7 @@ export default function App() {
   }, [mobileSidebarOpen, detailsCollapsed]);
 
   const shellClass = cn(
-    "app-shell relative grid h-dvh w-full overflow-hidden bg-background text-[13px] leading-snug text-foreground",
+    "app-shell relative grid h-dvh max-h-dvh min-h-0 w-full grid-rows-[minmax(0,1fr)] overflow-hidden bg-background text-[13px] leading-snug text-foreground",
     "grid-cols-[var(--layout-sidebar-width)_minmax(0,1fr)_var(--layout-inspector-width)]",
     "max-[1439px]:grid-cols-[var(--layout-sidebar-width)_minmax(0,1fr)_0px]",
     "max-[1179px]:block",
@@ -244,10 +244,10 @@ export default function App() {
           ? "max-[1179px]:visible max-[1179px]:translate-x-0 max-[1179px]:items-stretch"
           : "max-[1179px]:invisible max-[1179px]:-translate-x-[102%]",
       )} data-testid="sidebar">
-        <div className={cn("sidebar-header workbench-sidebar-header flex h-12 shrink-0 items-center justify-between gap-2 px-4", sidebarCollapsed && "w-full justify-center px-1")}>
-          <div className="brand workbench-brand flex min-w-0 items-center gap-2">
-            <span className="brand-mark workbench-brand-mark grid size-6 place-items-center rounded-md bg-primary text-[12px] font-semibold text-primary-foreground" aria-hidden="true">π</span>
-            <span className={cn("brand-text workbench-brand-title truncate font-mono text-[12px] font-semibold text-muted-foreground", sidebarCollapsed && "hidden max-[1179px]:inline")}>{t("app.brand")}</span>
+        <div className={cn("sidebar-header workbench-sidebar-header flex h-14 shrink-0 items-center justify-between gap-2 px-4", sidebarCollapsed && "w-full justify-center px-1")}>
+          <div className="brand workbench-brand flex min-w-0 items-center gap-2.5">
+            <span className="brand-mark workbench-brand-mark grid size-8 shrink-0 place-items-center rounded-lg bg-primary text-[16px] font-bold text-primary-foreground" aria-hidden="true">π</span>
+            <span className={cn("brand-text workbench-brand-title truncate font-sans text-[15px] font-semibold text-foreground", sidebarCollapsed && "hidden max-[1179px]:inline")}>{t("app.brand")}</span>
           </div>
           <button
             className="btn-ghost btn-icon workbench-sidebar-toggle grid size-8 place-items-center rounded-md text-muted-foreground hover:bg-sidebar-accent"
@@ -282,7 +282,7 @@ export default function App() {
             {controller.sessions !== null && (
               <button
                 className={cn(
-                  "new-session workbench-new-session mx-4 mb-2 flex h-10 items-center justify-center gap-2 rounded-lg border border-border bg-background px-3 text-[13px] font-medium hover:bg-accent",
+                  "new-session workbench-new-session mx-4 mb-3 flex h-10 items-center justify-center gap-2 rounded-lg border border-[var(--background-400)] bg-background px-3 text-[13px] font-medium text-foreground hover:bg-accent",
                   sidebarCollapsed && "mx-auto size-10 justify-center px-0",
                   sidebarCollapsed && "max-[1179px]:mx-4 max-[1179px]:h-9 max-[1179px]:w-[calc(100%-2rem)] max-[1179px]:justify-start max-[1179px]:px-3",
                 )}

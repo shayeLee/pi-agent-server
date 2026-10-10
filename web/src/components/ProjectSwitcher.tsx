@@ -36,39 +36,46 @@ export function ProjectSwitcher({ projects, activeId, onSelect, onCreate, onDele
           <Icon name="folder" />
         </span>
         <SelectMenu
+          key={creating ? "creating" : "idle"}
           className="workbench-project-select min-w-0 flex-1"
           options={projects.map((project) => ({ value: project.id, label: project.name, title: project.cwd }))}
           value={active?.id ?? ""}
           onChange={onSelect}
           ariaLabel="选择项目"
           testId="project-select"
-        />
-        <div className="project-actions workbench-project-actions flex shrink-0">
-          <button
-            className="btn-ghost btn-icon grid h-[44px] w-[44px] place-items-center rounded-md p-0 text-muted-foreground hover:bg-sidebar-accent"
-            data-testid="new-project"
-            onClick={() => setCreating((v) => !v)}
-            title="新建项目"
-            aria-label="新建项目"
-          >
-            <Icon name="plus" />
-          </button>
-          {active && !active.isDefault && active.canDelete !== false && (
-            <button
-              className="btn-danger btn-icon grid size-8 place-items-center rounded-md text-destructive hover:bg-destructive/10"
-              data-testid="delete-project"
-              onClick={() => {
-                if (window.confirm(`删除项目「${active.name}」及其下全部会话？`)) {
-                  onDelete(active.id);
-                }
-              }}
-              title="删除项目"
-              aria-label="删除项目"
-            >
-              <Icon name="trash" />
-            </button>
+          footer={(
+            <div className="project-menu-footer mt-1 flex flex-col gap-0.5 border-t border-border pt-1">
+              <button
+                type="button"
+                className="flex min-h-8 w-full items-center gap-2 rounded-md px-2 py-1 text-left text-[13px] text-foreground hover:bg-accent"
+                data-testid="new-project"
+                onClick={() => setCreating((v) => !v)}
+                title="新建项目"
+                aria-label="新建项目"
+              >
+                <Icon name="plus" size={14} />
+                新建项目
+              </button>
+              {active && !active.isDefault && active.canDelete !== false && (
+                <button
+                  type="button"
+                  className="flex min-h-8 w-full items-center gap-2 rounded-md px-2 py-1 text-left text-[13px] text-destructive hover:bg-destructive/10"
+                  data-testid="delete-project"
+                  onClick={() => {
+                    if (window.confirm(`删除项目「${active.name}」及其下全部会话？`)) {
+                      onDelete(active.id);
+                    }
+                  }}
+                  title="删除项目"
+                  aria-label="删除项目"
+                >
+                  <Icon name="trash" size={14} />
+                  删除项目
+                </button>
+              )}
+            </div>
           )}
-        </div>
+        />
       </div>
       {creating && (
         <div className="project-create workbench-project-create mt-2 flex flex-col gap-1.5" data-testid="project-create-form">

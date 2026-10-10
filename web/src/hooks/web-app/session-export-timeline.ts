@@ -17,9 +17,11 @@ export function projectExportTimeline(raw: readonly unknown[], messages: readonl
       const id = `notification:${row.notificationId}`;
       if (!items.some(item => item.id === id)) items.push({ kind: "notification", id, version: 1, notificationId: row.notificationId, entryId: row.entryId, text: row.text, runIds: row.runIds as string[], timestamp: String(row.timestamp ?? "") });
     } else if (row.type === "message" && (row.role === "user" || row.role === "assistant") && typeof row.text === "string") {
+      const timestamp = typeof row.timestamp === "string" && row.timestamp ? row.timestamp : undefined;
       items.push({ kind: "message", id: row.role === "user" && typeof row.messageId === "string" ? `history-message:${row.messageId}` : `history-${String(row.id ?? items.length)}`,
         role: row.role, text: row.text, streaming: false,
-        ...(row.role === "user" && typeof row.messageId === "string" ? { images: imagesBySource.get(row.messageId) } : {}) });
+        ...(timestamp ? { timestamp } : {}),
+        ...(row.role === "user" && typeof row.messageId === "string" ? { images: imagesBySource.get(row.messageId) } : {}) } as TimelineItem);
     } else if (row.type === "thinking" && typeof row.text === "string") {
       items.push({ kind: "thinking", id: `history-${String(row.id ?? items.length)}`,
         text: row.text, streaming: false });

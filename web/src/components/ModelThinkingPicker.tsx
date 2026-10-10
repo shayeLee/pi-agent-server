@@ -147,7 +147,7 @@ export function ModelThinkingPicker({
       <button
         ref={triggerRef}
         type="button"
-        className="model-thinking-trigger chevron-trigger inline-flex min-h-8 max-w-full items-center gap-1 rounded-md border-0 bg-transparent px-1 py-1 text-left text-[13px] text-muted-foreground hover:text-foreground max-[639px]:min-h-[44px]"
+        className="model-thinking-trigger chevron-trigger inline-flex min-h-8 max-w-full items-center gap-4 rounded-md border-0 bg-transparent px-1 py-1 text-left text-[13px] text-muted-foreground hover:text-foreground max-[639px]:min-h-[44px]"
         data-testid="model-thinking-trigger"
         aria-label={`模型：${modelLabel}，思考深度：${selectedThinking || "未设置"}`}
         aria-haspopup="dialog"

@@ -7,7 +7,7 @@ import { CodeBlock } from "./CodeBlock.js";
 import { formatToolDuration } from "../tools/duration.js";
 import { rawToolData } from "../tools/raw.js";
 import { toolPresentation } from "../tools/presentation.js";
-import { toolActionLabel, toolCallStartsOpen, toolResultBadge, type ToolBadge } from "../tools/chrome.js";
+import { formatToolTarget, toolActionLabel, toolCallStartsOpen, toolResultBadge, type ToolBadge } from "../tools/chrome.js";
 // Existing callers/tests may keep these imports during migration.
 export { rawToolData, stringify } from "../tools/raw.js";
 
@@ -72,6 +72,8 @@ export const ToolCallCard = memo(function ToolCallCard({ call }: { call: ToolCal
   const status = call.done ? (call.isError ? "失败" : "已完成") : "进行中";
   const { header, Arguments, Result } = toolPresentation(call);
   const { summary, badge, priorityLabels, preview, target } = header;
+  const customTarget = formatToolTarget(call);
+  const shownTarget = customTarget ?? target ?? summary;
   const resultBadge = toolResultBadge(call);
 
   return (
@@ -98,9 +100,9 @@ export const ToolCallCard = memo(function ToolCallCard({ call }: { call: ToolCal
           {call.toolName}
         </span>
         {badge && <span className="tool-parallel-count">{badge}</span>}
-        {(target || summary) && <span className={`tool-summary-preview${priorityLabels ? "" : " tool-target"}`} title={summary || target}>{priorityLabels
+        {shownTarget && <span className={`tool-summary-preview${priorityLabels || customTarget ? "" : " tool-target"}`} title={shownTarget}>{priorityLabels
           ? <><span className="tool-parallel-names">{priorityLabels.join("、")}</span><span className="tool-parallel-preview">{preview}</span></>
-          : <span>{target || summary}</span>}</span>}
+          : <span>{shownTarget}</span>}</span>}
         {resultBadge && <ResultBadge badge={resultBadge} />}
         <span className="tool-header-icons">
           {duration !== null && <span className="tool-duration" title={durationTitle} aria-label={durationTitle}>{duration}</span>}

@@ -1091,6 +1091,7 @@ describe("App（顶层流程）", () => {
 
     // 删除当前额外项目：确认后回到 isDefault 标示的默认项目
     vi.spyOn(window, "confirm").mockReturnValue(true);
+    fireEvent.click(screen.getByTestId("project-select"));
     fireEvent.click(screen.getByTestId("delete-project"));
     await waitFor(() => {
       expect(screen.getByTestId("project-select")).toHaveAttribute("data-value", mocks.DEFAULT_PROJECT_ID);

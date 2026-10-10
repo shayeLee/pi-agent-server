@@ -185,7 +185,7 @@ export function Composer({
           )}
         </div>
       )}
-      <textarea ref={textareaRef} className="max-h-[220px] min-h-11 w-full resize-none border-0 bg-transparent px-2 py-1 text-[15px] leading-normal text-foreground outline-none placeholder:text-muted-foreground [@media(max-height:480px)]:max-h-[84px]" data-testid="composer-input" rows={1} placeholder={placeholder}
+      <textarea ref={textareaRef} className="max-h-[220px] min-h-10 w-full resize-none border-0 bg-transparent px-2 py-1 text-[14px] leading-normal text-foreground outline-none placeholder:text-muted-foreground [@media(max-height:480px)]:max-h-[84px]" data-testid="composer-input" rows={1} placeholder={placeholder}
         aria-label={t("chat.placeholder")} title={t("chat.composerHint")} value={text}
         onChange={(event) => setText(event.target.value)} onKeyDown={handleKeyDown} onPaste={handlePaste}
         disabled={!canWrite || historyLoading} />
@@ -194,7 +194,7 @@ export function Composer({
         <div className="composer-left flex items-center">
           <input ref={filePickerRef} type="file" multiple className="composer-file-input sr-only"
             data-testid="composer-file-input" aria-label={t("composer.pickFiles")} onChange={chooseFiles} />
-          <button type="button" className="composer-add grid size-8 place-items-center rounded-full text-muted-foreground hover:bg-accent hover:text-foreground max-[640px]:size-11" aria-label={t("composer.addAttachment")} title={t("composer.addAttachment")}
+          <button type="button" className="composer-add grid size-8 place-items-center rounded-full border border-border bg-transparent text-muted-foreground hover:bg-accent hover:text-foreground max-[640px]:size-11" aria-label={t("composer.addAttachment")} title={t("composer.addAttachment")}
             onClick={() => filePickerRef.current?.click()} disabled={!canWrite || !onAddFile || historyLoading}>
             <Icon name="plus" />
           </button>

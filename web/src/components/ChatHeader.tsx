@@ -28,7 +28,7 @@ export function ChatHeader({
     <header className="chat-header workbench-chat-header flex h-12 shrink-0 items-center border-b border-border px-4 max-[1179px]:pl-14" data-testid="chat-header">
       <div className="workbench-topbar flex min-w-0 flex-1 items-center justify-between gap-3">
         <div className="chat-header-left flex min-w-0 items-center gap-3">
-          <span className="session-title-main min-w-0 truncate text-[16px] font-semibold leading-none" data-testid="chat-session-title" title={resolveSessionDisplayTitle(session)}>
+          <span className="session-title-main min-w-0 truncate text-[18px] font-semibold leading-none" data-testid="chat-session-title" title={resolveSessionDisplayTitle(session)}>
             {resolveSessionDisplayTitle(session)}
           </span>
           <nav className="chat-tabs hidden" aria-label={t("chat.view")}>
@@ -61,7 +61,7 @@ export function ChatHeader({
         </div>
         <div className="header-actions">
           <button
-            className="btn-ghost btn-icon grid size-8 place-items-center rounded-md text-foreground hover:bg-accent max-[639px]:size-[44px]"
+            className="btn-ghost btn-icon grid size-7 place-items-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground max-[639px]:size-[44px]"
             data-testid="toggle-events"
             onClick={onToggleDetails}
             title={panelLabel}

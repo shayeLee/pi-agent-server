@@ -9,6 +9,13 @@ export type MessageItemProps = {
   item: Extract<TimelineItem, { kind: "message" | "thinking" }>;
 };
 
+function messageClock(value: unknown): string | null {
+  if (typeof value !== "string" || !value.trim()) return null;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false });
+}
+
 export const MessageItem = memo(function MessageItem({ item }: MessageItemProps) {
   const [preview, setPreview] = useState<string | null>(null);
   const dialogRef = useRef<HTMLDialogElement>(null);
@@ -17,11 +24,13 @@ export const MessageItem = memo(function MessageItem({ item }: MessageItemProps)
     return <ThinkingRow thinking={item} />;
   }
 
+  const clock = messageClock("timestamp" in item ? (item as { timestamp?: unknown }).timestamp : undefined);
+
   if (item.role === "user") {
     return (
-      <div className="message-row row-user flex justify-end" data-testid={`message-${item.id}`}>
+      <div className="message-row row-user flex items-start justify-end gap-2" data-testid={`message-${item.id}`}>
         <div className="message-user max-w-[min(520px,76%)]">
-          <div className="user-bubble whitespace-pre-wrap rounded-xl px-3 py-2 text-[15px] leading-relaxed">
+          <div className="user-bubble whitespace-pre-wrap rounded-xl px-3 py-1.5 text-[14px] leading-normal">
             {item.text && <div>{item.text}</div>}
             {readMessageImages(item.images).length > 0 && <div className="message-images">
               {readMessageImages(item.images).map((image, index) => <button type="button" key={index}
@@ -36,14 +45,16 @@ export const MessageItem = memo(function MessageItem({ item }: MessageItemProps)
             <img src={preview} alt="图片预览" />
           </dialog>}
         </div>
+        {clock && <time className="message-time shrink-0 pt-1 text-[12px] tabular-nums text-muted-foreground" dateTime={String((item as { timestamp?: unknown }).timestamp)}>{clock}</time>}
       </div>
     );
   }
 
   return (
-    <div className="message-row row-assistant" data-testid={`message-${item.id}`}>
-      <div className="message-assistant">
-        <div className="assistant-content text-[15px] leading-relaxed">
+    <div className="message-row row-assistant flex items-start gap-3" data-testid={`message-${item.id}`}>
+      {clock && <time className="message-time w-10 shrink-0 pt-0.5 text-[12px] tabular-nums text-muted-foreground" dateTime={String((item as { timestamp?: unknown }).timestamp)}>{clock}</time>}
+      <div className="message-assistant min-w-0 flex-1">
+        <div className="assistant-content text-[14px] leading-normal">
           {item.text && <Markdown text={item.text} />}
           {item.streaming && <Icon name="caret" className="streaming-cursor" />}
         </div>

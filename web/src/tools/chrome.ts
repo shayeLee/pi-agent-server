@@ -28,13 +28,36 @@ export type ToolBadge =
   | { kind: "passed"; text: string }
   | { kind: "diff"; add: number; del: number };
 
+/** Header target. File paths stay as given; search and shell commands are shortened. */
+export function formatToolTarget(call: ToolCall): string | null {
+  const args = record(call.args);
+  if (call.toolName === "grep" || call.toolName === "search" || call.toolName === "find" || call.toolName === "rg") {
+    const pattern = line(args.pattern ?? args.query ?? args.q ?? args.regex);
+    const path = line(args.path ?? args.paths ?? args.dir ?? args.cwd);
+    if (pattern && path) return `${pattern} in ${path}`;
+  }
+  if ((call.toolName === "bash" || call.toolName === "shell") && typeof args.command === "string") {
+    return shortenCommand(args.command);
+  }
+  return null;
+}
+
+/** Drop `volta run` and shorten file-path arguments to their basename. */
+export function shortenCommand(command: string): string {
+  const flat = command.replace(/\s+/g, " ").trim().replace(/^(?:volta run\s+)+/, "");
+  return flat.replace(/(^|\s)(\S*\/\S+\.[A-Za-z0-9]+)(?=\s|$)/g, (_match, lead: string, path: string) => `${lead}${path.split("/").pop()}`);
+}
+
 /** A badge is a count or a diff, never a snippet of output. */
 export function toolResultBadge(call: ToolCall): ToolBadge | null {
   if (!call.done) return null;
   const output = resultText(call.result);
   const failed = output.match(/(\d+)\s+failed\b/i);
-  const passed = output.match(/(\d+)\s+passed\b/i);
   if (failed && Number(failed[1]) > 0) return null;
+  const testsPassed = output.match(/^\s*Tests\b[^\n]*?\b(\d+)\s+passed\b/im);
+  if (!call.isError && testsPassed) return { kind: "passed", text: `${testsPassed[1]} passed` };
+  if (/^\s*Test Files\b/im.test(output)) return null;
+  const passed = output.match(/(\d+)\s+passed\b/i);
   if (!call.isError && passed) return { kind: "passed", text: `${passed[1]} passed` };
   if (call.isError) return null;
   if (call.toolName === "edit") {

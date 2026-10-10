@@ -58,8 +58,8 @@ describe("ProjectSwitcher（项目切换器）", () => {
       { id: "two", name: "repo", cwd: "/two/repo", isDefault: false, canDelete: false },
     ], activeId: "one" });
     expect(screen.getByTestId("project-select")).toHaveAttribute("title", "/one/repo");
-    expect(screen.queryByTestId("delete-project")).not.toBeInTheDocument();
     fireEvent.click(screen.getByTestId("project-select"));
+    expect(screen.queryByTestId("delete-project")).not.toBeInTheDocument();
     const options = screen.getAllByRole("option", { name: "repo" });
     expect(options[1]).toHaveAttribute("title", "/two/repo");
     fireEvent.click(options[1]!);
@@ -75,12 +75,14 @@ describe("ProjectSwitcher（项目切换器）", () => {
 
   it("默认项目（isDefault）不显示删除按钮；额外项目显示", () => {
     setup({ activeId: DEFAULT_PROJECT_ID });
+    fireEvent.click(screen.getByTestId("project-select"));
     expect(screen.queryByTestId("delete-project")).not.toBeInTheDocument();
   });
 
   it("额外项目显示删除按钮，确认后触发 onDelete", () => {
     const { onDelete } = setup({ activeId: "p1" });
     vi.spyOn(window, "confirm").mockReturnValue(true);
+    fireEvent.click(screen.getByTestId("project-select"));
     fireEvent.click(screen.getByTestId("delete-project"));
     expect(onDelete).toHaveBeenCalledWith("p1");
     vi.restoreAllMocks();
@@ -88,6 +90,7 @@ describe("ProjectSwitcher（项目切换器）", () => {
 
   it("新建项目表单：填入 name + cwd 提交触发 onCreate", () => {
     const { onCreate } = setup();
+    fireEvent.click(screen.getByTestId("project-select"));
     fireEvent.click(screen.getByTestId("new-project"));
     fireEvent.change(screen.getByTestId("project-name-input"), { target: { value: "新项目" } });
     fireEvent.change(screen.getByTestId("project-cwd-input"), { target: { value: "/path/x" } });

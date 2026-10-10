@@ -80,16 +80,16 @@ function SessionRow({
     <li className={cn("session-item group/session relative mx-2 grid grid-cols-[minmax(0,1fr)_auto] items-center rounded-lg", session.id === activeId && "active")}>
       <button
         type="button"
-        className="session-select col-span-2 flex w-full min-w-0 items-center bg-transparent px-2 pt-2 text-left"
+        className="session-select col-span-2 flex w-full min-w-0 items-center bg-transparent px-4 pt-2 text-left"
         aria-label={title}
         aria-current={session.id === activeId ? "true" : undefined}
         aria-describedby={`session-meta-${session.id}`}
         data-testid={`session-${session.id}`}
         onClick={() => onSelect(session.id)}
       >
-        <span className="session-title block min-w-0 truncate text-[13px]" title={title}>{title}</span>
+        <span className="session-title block min-w-0 truncate text-[14px]" title={title}>{title}</span>
       </button>
-      <div className="session-meta flex items-center gap-1.5 px-2 pb-1 text-[12px] text-muted-foreground" id={`session-meta-${session.id}`}>
+      <div className="session-meta flex items-center gap-1.5 px-4 pb-1.5 text-[12px] text-muted-foreground" id={`session-meta-${session.id}`}>
         <time
           className="session-time"
           data-testid={`session-time-${session.id}`}
@@ -159,7 +159,7 @@ export function SessionList({
   const flatSearch = query.trim().length > 0;
 
   return (
-    <section className="session-list flex min-h-0 flex-1 flex-col" data-testid="session-list">
+    <section className="session-list flex min-h-0 flex-1 flex-col overflow-y-auto" data-testid="session-list">
       <div className="session-list-header flex items-center justify-between px-4 pb-1 pt-4 text-[12px] font-semibold text-muted-foreground">
         <span>{t("nav.sessionsSection")}</span>
         <button
@@ -188,7 +188,7 @@ export function SessionList({
         </div>
       )}
       {flatSearch ? (
-        <ul className="session-items">
+        <ul className="session-items m-0 list-none p-0">
           {filtered.map((session) => (
             <SessionRow key={session.id} session={session} activeId={activeId} onSelect={onSelect}
               onDelete={onDelete} onRename={onRename} onExport={onExport} t={t} />
@@ -197,8 +197,8 @@ export function SessionList({
       ) : (
         grouped.map((group) => (
           <div key={group.key} className="session-group" data-testid={`session-group-${group.key}`}>
-            <div className="session-group-label px-4 pb-1 pt-2 text-[12px] font-medium text-muted-foreground">{t(sessionGroupLabelKey[group.key])}</div>
-            <ul className="session-items">
+            <div className="session-group-label py-1 pl-6 pr-4 pt-3 text-[12px] font-medium text-muted-foreground">{t(sessionGroupLabelKey[group.key])}</div>
+            <ul className="session-items m-0 list-none p-0">
               {group.sessions.map((session) => (
                 <SessionRow key={session.id} session={session} activeId={activeId} onSelect={onSelect}
                   onDelete={onDelete} onRename={onRename} onExport={onExport} t={t} />
