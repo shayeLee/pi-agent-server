@@ -1,18 +1,21 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import tailwindcss from "@tailwindcss/vite";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
-import { dirname } from "node:path";
+import { dirname, resolve } from "node:path";
 
 // Resolve the grammars supplied by lowlight without installing a second dependency
 // or relying on pnpm hoisting transitive packages into web/node_modules.
 const lowlightRequire = createRequire(createRequire(import.meta.url).resolve("lowlight"));
 
+const webRoot = dirname(fileURLToPath(import.meta.url));
+
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), tailwindcss()],
   resolve: {
-    // Use client source during dev/tests; production typecheck consumes the root package declarations.
     alias: {
+      "@": resolve(webRoot, "src"),
       "highlight.js/lib/languages": dirname(lowlightRequire.resolve("highlight.js/lib/languages/javascript")),
       "pi-agent-server/client": fileURLToPath(
         new URL("../src/client/index.ts", import.meta.url),

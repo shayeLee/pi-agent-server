@@ -1,6 +1,18 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor, act, within } from "@testing-library/react";
+import { MemoryRouter } from "react-router-dom";
 import App from "./App.js";
+import { I18nProvider } from "./i18n/I18nProvider.js";
+
+function renderApp() {
+  return render(
+    <MemoryRouter>
+      <I18nProvider>
+        <App />
+      </I18nProvider>
+    </MemoryRouter>,
+  );
+}
 import { DEFAULT_PROJECT_ID } from "pi-agent-server/client";
 import type { Project, SseEvent, SessionRecord } from "pi-agent-server/client";
 
@@ -255,7 +267,7 @@ beforeEach(() => {
 /** 内网场景：通过无令牌客户端直接进入会话列表。 */
 async function enterIntranet(list: SessionRecord[] = sessions) {
   mocks.setSessions(list);
-  render(<App />);
+  renderApp();
   await waitFor(() => expect(screen.getByText("会话一")).toBeInTheDocument());
   return mocks.instances.at(-1)!;
 }
@@ -345,7 +357,7 @@ describe("App（顶层流程）", () => {
   it("共享自动项目禁用新建和初始输入，但可打开已有会话继续且不改投默认项目", async () => {
     mocks.setProjects([{ id: "auto", name: "Shared", cwd: "/tmp/shared", isDefault: false, canCreateSession: false }]);
     mocks.setSessions(sessions.map(session => ({ ...session, projectId: "auto" })));
-    render(<App />);
+    renderApp();
     await waitFor(() => expect(screen.getByTestId("new-session")).toBeDisabled());
     expect(screen.getByText("当前权限无法在此项目新建会话")).toBeVisible();
     expect(screen.getByTestId("composer-input")).toBeDisabled();
@@ -372,7 +384,7 @@ describe("App（顶层流程）", () => {
       }),
     });
     try {
-      render(<App />);
+      renderApp();
       const app = screen.getByTestId("app");
       const toggle = screen.getByTestId("theme-toggle");
       expect(app).toHaveAttribute("data-theme", "dark");
@@ -400,7 +412,7 @@ describe("App（顶层流程）", () => {
     const originalMatchMedia = window.matchMedia;
     Object.defineProperty(window, "matchMedia", { configurable: true, value: () => ({ matches: false }) });
     try {
-      render(<App />);
+      renderApp();
       expect(screen.getByTestId("app")).toHaveAttribute("data-theme", "light");
       expect(screen.getByTestId("theme-toggle")).toHaveAttribute("aria-label", "切换为暗色主题");
     } finally {
@@ -524,7 +536,7 @@ describe("App（顶层流程）", () => {
 
   it("首次发送附件后新建会话不会复现已提交的页面起始态附件", async () => {
     mocks.setSessions([]);
-    render(<App />);
+    renderApp();
     await waitFor(() => expect(screen.getByTestId("new-session")).toBeEnabled());
     const inst = mocks.instances.at(-1)!;
     const file = new File(["notes"], "notes.txt", { type: "text/plain" });
@@ -1050,7 +1062,7 @@ describe("App（顶层流程）", () => {
 
   it("项目列表加载完成前不加载会话、不启用新建；默认项目 id 仅从 isDefault 推导", async () => {
     mocks.setProjectListPending(true);
-    render(<App />);
+    renderApp();
 
     // 项目列表请求已发起但仍 pending：会话保持加载中，无新建按钮，未请求任何项目会话
     await waitFor(() => expect(mocks.instances.at(-1)!.listProjects).toHaveBeenCalled());
@@ -1090,7 +1102,7 @@ describe("App（顶层流程）", () => {
 
   it("项目列表失败：侧边栏显示可重试错误、不加载项目会话、不启用新建；重试后推导默认项目并加载", async () => {
     mocks.setProjectsFail(true);
-    render(<App />);
+    renderApp();
 
     // 项目列表请求已发出但失败：不再是永久「加载中…」，而是可重试的错误提示
     await waitFor(() => expect(screen.getByTestId("projects-error")).toBeInTheDocument());
@@ -1111,7 +1123,7 @@ describe("App（顶层流程）", () => {
 
   it("401 不显示 token 表单，而显示项目加载错误并可重试", async () => {
     mocks.setProjectsFail(new mocks.MockApiError(401, "HTTP 401"));
-    render(<App />);
+    renderApp();
 
     await waitFor(() => expect(screen.getByTestId("projects-error")).toBeInTheDocument());
     expect(screen.getByRole("alert")).toHaveTextContent("HTTP 401");
@@ -1126,7 +1138,7 @@ describe("App（顶层流程）", () => {
 
   it("项目列表为空时仍能向默认 target 发送首条消息", async () => {
     mocks.setProjects([]);
-    render(<App />);
+    renderApp();
     await waitFor(() => expect(mocks.instances.at(-1)!.listSessionsByProject).toHaveBeenCalledWith(DEFAULT_PROJECT_ID));
     expect(screen.queryByTestId("projects-error")).not.toBeInTheDocument();
     fireEvent.change(screen.getByTestId("composer-input"), { target: { value: "first default" } });
@@ -1136,7 +1148,7 @@ describe("App（顶层流程）", () => {
 
   it("空默认项目被过滤时仍可选择首个有会话项目", async () => {
     mocks.setProjects([{ id: "pa", name: "项目A", cwd: "/path/a", isDefault: false }]);
-    render(<App />);
+    renderApp();
 
     await waitFor(() => expect(mocks.instances.at(-1)!.listSessionsByProject).toHaveBeenCalledWith("pa"));
     expect(screen.queryByTestId("projects-error")).not.toBeInTheDocument();
@@ -1208,7 +1220,7 @@ describe("App（顶层流程）", () => {
 describe("会话显示标题兜底", () => {
   async function blankChat() {
     mocks.setSessions([{ ...sessions[0]!, title: "" }, sessions[1]!]);
-    render(<App />);
+    renderApp();
     await waitFor(() => expect(screen.getByTestId("session-s1")).toBeInTheDocument());
     fireEvent.click(screen.getByTestId("session-s1"));
     await waitFor(() => expect(screen.getByTestId("composer-input")).toBeEnabled());
@@ -1238,7 +1250,7 @@ describe("会话显示标题兜底", () => {
     expect(api.renameSession).not.toHaveBeenCalled();
   });
   it("new session gets fallback only after acceptance without sending a create title", async () => {
-    mocks.setSessions([]); render(<App />);
+    mocks.setSessions([]); renderApp();
     await waitFor(() => expect(screen.getByTestId("new-session")).toBeEnabled());
     const api = mocks.instances.at(-1)!;
     let accept: (value: unknown) => void = () => {};
@@ -1291,7 +1303,7 @@ describe("会话显示标题兜底", () => {
       { id: "p1", name: "仓库一", cwd: "/tmp/p1", isDefault: false },
     ]);
     mocks.setSessions([{ ...sessions[0]!, title: "", firstPrompt: null }, sessions[1]!]);
-    render(<App />);
+    renderApp();
     await waitFor(() => expect(screen.getByTestId("session-s1")).toBeInTheDocument());
     const api = mocks.instances.at(-1)!;
     api.exportSession.mockRejectedValueOnce(new Error("history unavailable"));

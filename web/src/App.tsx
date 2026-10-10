@@ -5,6 +5,9 @@ import { SessionList } from "./components/SessionList.js";
 import { ProjectSwitcher } from "./components/ProjectSwitcher.js";
 import { Chat } from "./components/Chat.js";
 import { Inspector } from "./components/Inspector.js";
+import { ThemePreview } from "./components/ThemePreview.js";
+import { useI18n } from "./i18n/I18nProvider.js";
+import { useRouteSelectionSync } from "./routing/useRouteSelectionSync.js";
 
 const SIDEBAR_DEFAULT = 264;
 const SIDEBAR_MIN = 180;
@@ -16,7 +19,9 @@ const DETAILS_MAX = 500;
 
 /** Agent harness 顶层布局；服务端状态与交互由 Web 专属 controller 提供。 */
 export default function App() {
+  const { t } = useI18n();
   const controller = useWebAppController();
+  useRouteSelectionSync(controller);
 
   // 布局状态：折叠 + 宽度。矮视口（<480px）下侧栏默认收起为图标 rail，保证阅读与输入优先。
   const [sidebarCollapsed, setSidebarCollapsed] = useState(
@@ -48,6 +53,7 @@ export default function App() {
   // Keep inherited CSS tokens and the page background in sync with the single App theme source.
   useEffect(() => {
     document.documentElement.setAttribute("data-theme", theme);
+    document.documentElement.classList.toggle("dark", theme === "dark");
   }, [theme]);
   const [sidebarWidth, setSidebarWidth] = useState(SIDEBAR_DEFAULT);
   const [detailsWidth, setDetailsWidth] = useState(DETAILS_DEFAULT);
@@ -171,7 +177,7 @@ export default function App() {
         <div className="sidebar-header workbench-sidebar-header">
           <div className="brand workbench-brand">
             <span className="brand-mark workbench-brand-mark" aria-hidden="true">π</span>
-            <span className="brand-text workbench-brand-title">pi-agent-server</span>
+            <span className="brand-text workbench-brand-title">{t("app.brand")}</span>
           </div>
           <button
             className="btn-ghost btn-icon workbench-sidebar-toggle"
@@ -187,7 +193,7 @@ export default function App() {
           </button>
         </div>
         <button type="button" className="theme-toggle" data-testid="theme-toggle"
-          aria-label={theme === "dark" ? "切换为亮色主题" : "切换为暗色主题"}
+          aria-label={theme === "dark" ? t("theme.toggleToLight") : t("theme.toggleToDark")}
           onClick={() => {
             themeOverridden.current = true;
             setTheme((current) => current === "dark" ? "light" : "dark");
@@ -343,6 +349,7 @@ export default function App() {
           onPointerUp={handlePointerUp}
         />
       )}
+      <ThemePreview />
     </main>
   );
 }
