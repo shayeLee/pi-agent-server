@@ -6,6 +6,7 @@ import { EMPTY_MESSAGE, type SubmissionState, type SubmitOutcome, type UnsentMes
 import type { DraftSource } from "../draft-store.js";
 import { ModelThinkingPicker } from "./ModelThinkingPicker.js";
 import { SelectMenu } from "./SelectMenu.js";
+import { useI18n } from "../i18n/I18nProvider.js";
 
 export type ComposerProps = {
   session: SessionRecord | null;
@@ -48,6 +49,7 @@ export function Composer({
   draft: suppliedDraft, draftSource, draftScope = "", submission, pendingControls, onDraftText, onDraftSettings, onAddFile, onRetryFile, onRemoveFile, onRetrySubmit, onConfirmCreation,
   onSteer, onFollowUp, onAbort, onConfigChange,
 }: ComposerProps) {
+  const { t } = useI18n();
   const subscribeDraft = useCallback((listener: () => void) =>
     draftSource?.subscribe(draftScope, listener) ?? (() => {}), [draftSource, draftScope]);
   const getDraft = useCallback(() => draftSource?.getSnapshot(draftScope) ?? suppliedDraft ?? EMPTY_MESSAGE,
@@ -127,7 +129,7 @@ export function Composer({
       {!session && (
         <div className="composer-start-settings" data-testid="composer-start-settings">
           <SelectMenu className="composer-project-picker" options={projectOptions} value={activeProjectId ?? ""}
-            onChange={onSelectProject} ariaLabel="选择项目" disabled={!projectSelectionAvailable} testId="composer-project-select" />
+            onChange={onSelectProject} ariaLabel={t("nav.selectProject")} disabled={!projectSelectionAvailable} testId="composer-project-select" />
           <ModelThinkingPicker models={models} thinkingLevels={thinkingLevels} defaultModel={defaultModel}
             defaultThinkingLevel={defaultThinkingLevel}
             modelProvider={draft?.settings.modelProvider ?? null} modelId={draft?.settings.modelId ?? null}
@@ -142,18 +144,18 @@ export function Composer({
               <span className="composer-attachment-details">
                 <strong title={item.name}>{item.name}</strong>
                 <small>{(item.size / 1024).toFixed(0)} KiB · {item.mediaType || item.kind} · {
-                  item.status === "ready" ? "就绪" : item.status === "uploading" || item.status === "processing" ? "处理中" :
-                    item.status === "interrupted" ? "上传中断" : "失败"}</small>
+                  item.status === "ready" ? t("composer.attachment.ready") : item.status === "uploading" || item.status === "processing" ? t("composer.attachment.processing") :
+                    item.status === "interrupted" ? t("composer.attachment.interrupted") : t("composer.attachment.failed")}</small>
                 {item.error && <small className="composer-attachment-error">{item.error}</small>}
               </span>
               {item.status === "error" && item.file && onRetryFile && (
-                <button type="button" onClick={() => void onRetryFile(item.localId)} aria-label={`重试上传 ${item.name}`}>重试</button>
+                <button type="button" onClick={() => void onRetryFile(item.localId)} aria-label={`${t("composer.attachment.retry")} ${item.name}`}>{t("composer.attachment.retry")}</button>
               )}
               {item.status === "interrupted" && (
                 <button type="button" onClick={() => { onRemoveFile?.(item.localId); filePickerRef.current?.click(); }}
-                  aria-label={`重新选择 ${item.name}`}>重新选择</button>
+                  aria-label={`${t("composer.attachment.repick")} ${item.name}`}>{t("composer.attachment.repick")}</button>
               )}
-              <button type="button" onClick={() => onRemoveFile?.(item.localId)} aria-label={`移除附件 ${item.name}`}><Icon name="close" /></button>
+              <button type="button" onClick={() => onRemoveFile?.(item.localId)} aria-label={`${t("composer.attachment.remove")} ${item.name}`}><Icon name="close" /></button>
             </div>
           ))}
         </div>
@@ -161,34 +163,34 @@ export function Composer({
       {pendingControls && pendingControls.length > 0 && (
         <div className="composer-pending-controls" data-testid="composer-pending-controls" aria-live="polite">
           {pendingControls.map((item) => <div className="composer-pending-item" key={item.id}>
-            <span>{item.kind === "steer" ? "待插话" : "待追加"} · {item.text}</span>
-            <small>{item.status === "submitting" ? "提交中" : item.status === "submitted" ? (item.kind === "steer" ? "HTTP 已接收，等待消费确认" : "已提交，等待确认") :
-              item.status === "unknown" ? "状态未知" : "提交失败"}</small>
+            <span>{item.kind === "steer" ? t("composer.pending.steer") : t("composer.pending.followUp")} · {item.text}</span>
+            <small>{item.status === "submitting" ? t("composer.pending.submitting") : item.status === "submitted" ? (item.kind === "steer" ? t("composer.pending.steerAck") : t("composer.pending.followUpAck")) :
+              item.status === "unknown" ? t("composer.pending.unknown") : t("composer.pending.failed")}</small>
           </div>)}
         </div>
       )}
       {(submission?.phase === "failed" || submission?.phase === "unknown" || localError) && (
         <div className="composer-submit-notice" role="alert" data-testid="composer-submit-notice">
           {submission?.phase === "unknown"
-            ? submission.stage === "create" ? "会话创建状态未知；保留本次输入，不会自动创建第二个会话。" : "提交结果未知，等待确认；不会自动重发。"
+            ? submission.stage === "create" ? t("composer.unknown.create") : t("composer.unknown.send")
             : submission?.error ?? localError}
           {submission?.phase === "failed" && onRetrySubmit && (
-            <button type="button" onClick={() => void onRetrySubmit()} data-testid="retry-submission">重试本次快照</button>
+            <button type="button" onClick={() => void onRetrySubmit()} data-testid="retry-submission">{t("composer.retrySnapshot")}</button>
           )}
           {submission?.phase === "unknown" && submission.stage === "create" && onConfirmCreation && (
-            <button type="button" onClick={() => void onConfirmCreation()} data-testid="confirm-creation">用原创建标识核对会话</button>
+            <button type="button" onClick={() => void onConfirmCreation()} data-testid="confirm-creation">{t("composer.confirmCreation")}</button>
           )}
         </div>
       )}
       <textarea ref={textareaRef} data-testid="composer-input" rows={1} placeholder={placeholder}
-        aria-label="消息内容" title="Enter 发送，Shift+Enter 换行" value={text}
+        aria-label={t("chat.placeholder")} title={t("chat.composerHint")} value={text}
         onChange={(event) => setText(event.target.value)} onKeyDown={handleKeyDown} onPaste={handlePaste}
         disabled={!canWrite || historyLoading} />
       <div className="composer-toolbar">
         <div className="composer-left">
           <input ref={filePickerRef} type="file" multiple className="composer-file-input"
-            data-testid="composer-file-input" aria-label="选择图片或文件" onChange={chooseFiles} />
-          <button type="button" className="composer-add" aria-label="添加附件" title="添加图片或文件"
+            data-testid="composer-file-input" aria-label={t("composer.pickFiles")} onChange={chooseFiles} />
+          <button type="button" className="composer-add" aria-label={t("composer.addAttachment")} title={t("composer.addAttachment")}
             onClick={() => filePickerRef.current?.click()} disabled={!canWrite || !onAddFile || historyLoading}>
             <Icon name="plus" />
           </button>
@@ -197,14 +199,14 @@ export function Composer({
           {session && (streaming || queued) && (
             <>
               <button type="button" className="composer-control" onClick={() => submitControl("steer")}
-                disabled={!canWrite || !streaming || queued || !text.trim()} aria-label="插话">插话</button>
+                disabled={!canWrite || !streaming || queued || !text.trim()} aria-label={t("composer.steer")}>{t("composer.steer")}</button>
               <button type="button" className="composer-control" onClick={() => submitControl("followUp")}
                 disabled={!canWrite || !streaming || queued || !text.trim()}
-                title={queued ? "排队中追加尚需服务端支持" : "本轮完成后追加"} aria-label="追加">追加</button>
+                title={queued ? t("composer.followUpQueuedHint") : t("composer.followUpTitle")} aria-label={t("composer.followUp")}>{t("composer.followUp")}</button>
             </>
           )}
           {streaming ? (
-            <button type="button" className="composer-stop" data-testid="abort-button" aria-label="中止" title="中止" onClick={onAbort}>
+            <button type="button" className="composer-stop" data-testid="abort-button" aria-label={t("composer.stop")} title={t("composer.stop")} onClick={onAbort}>
               <Icon name="stop" />
             </button>
           ) : (
@@ -213,7 +215,7 @@ export function Composer({
                 defaultThinkingLevel={defaultThinkingLevel} modelProvider={session.modelProvider} modelId={session.modelId}
                 thinkingLevel={session.thinkingLevel} onConfigChange={onConfigChange} />}
               <button type="button" className="send-button" data-testid="send-button" onClick={() => void handleSubmit()}
-                disabled={!canSubmit || queued} aria-label="发送">
+                disabled={!canSubmit || queued} aria-label={t("composer.send")}>
                 <Icon name="send" />
               </button>
             </>

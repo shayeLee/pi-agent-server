@@ -5,9 +5,13 @@ import { SessionList } from "./components/SessionList.js";
 import { ProjectSwitcher } from "./components/ProjectSwitcher.js";
 import { Chat } from "./components/Chat.js";
 import { Inspector } from "./components/Inspector.js";
-import { ThemePreview } from "./components/ThemePreview.js";
+import { CommandPalette } from "./components/CommandPalette.js";
+import { Toaster } from "./components/Toaster.js";
+import { SessionListSkeleton } from "./components/WorkspaceSkeleton.js";
 import { useI18n } from "./i18n/I18nProvider.js";
 import { useRouteSelectionSync } from "./routing/useRouteSelectionSync.js";
+import { toastError } from "./lib/toast.js";
+import { isMacPlatform } from "./components/Kbd.js";
 
 const SIDEBAR_DEFAULT = 264;
 const SIDEBAR_MIN = 180;
@@ -58,6 +62,8 @@ export default function App() {
   const [sidebarWidth, setSidebarWidth] = useState(SIDEBAR_DEFAULT);
   const [detailsWidth, setDetailsWidth] = useState(DETAILS_DEFAULT);
   const [dragging, setDragging] = useState<"sidebar" | "details" | null>(null);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const loadErrorShown = useRef<string | null>(null);
 
   // 拖拽调整列宽
   const dragStart = useRef({ x: 0, width: 0 });
@@ -106,6 +112,61 @@ export default function App() {
     controller.projects !== null &&
     controller.activeProjectId !== null &&
     (controller.projects.length === 0 || controller.projects.some((project) => project.id === controller.activeProjectId));
+
+  useEffect(() => {
+    if (!controller.loadError) {
+      loadErrorShown.current = null;
+      return;
+    }
+    if (loadErrorShown.current === controller.loadError) return;
+    loadErrorShown.current = controller.loadError;
+    toastError(controller.loadError);
+  }, [controller.loadError]);
+
+  const toggleTheme = useCallback(() => {
+    themeOverridden.current = true;
+    setTheme((current) => (current === "dark" ? "light" : "dark"));
+  }, []);
+
+  const toggleSidebar = useCallback(() => {
+    if (window.matchMedia?.("(max-width: 1179px)").matches) {
+      setMobileSidebarOpen((open) => !open);
+      return;
+    }
+    setSidebarCollapsed((value) => !value);
+  }, []);
+
+  const toggleRunPanel = useCallback(() => {
+    setMobileSidebarOpen(false);
+    setDetailsCollapsed((value) => !value);
+  }, []);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      const mod = isMacPlatform() ? event.metaKey : event.ctrlKey;
+      if (mod && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        setPaletteOpen(true);
+        return;
+      }
+      if (mod && event.key.toLowerCase() === "b") {
+        event.preventDefault();
+        toggleSidebar();
+        return;
+      }
+      if (mod && event.key === ".") {
+        event.preventDefault();
+        if (activeSession) toggleRunPanel();
+        return;
+      }
+      if (event.key !== "Escape" || event.defaultPrevented) return;
+      if (paletteOpen) return;
+      if (document.querySelector('[role="dialog"][open], .select-menu[data-open="true"], .model-thinking-picker[data-open="true"]')) return;
+      if (streaming && activeSession && !queued) controller.abort();
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [activeSession, controller, paletteOpen, queued, streaming, toggleRunPanel, toggleSidebar]);
 
   const closeMobileSidebar = () => {
     if (!mobileSidebarOpen) return;
@@ -186,18 +247,15 @@ export default function App() {
               if (window.matchMedia?.("(max-width: 1179px)").matches) closeMobileSidebar();
               else setSidebarCollapsed((value) => !value);
             }}
-            title={sidebarCollapsed ? "展开侧边栏" : "折叠侧边栏"}
-            aria-label={sidebarCollapsed ? "展开侧边栏" : "折叠侧边栏"}
+            title={sidebarCollapsed ? t("nav.expandSidebar") : t("nav.collapseSidebar")}
+            aria-label={sidebarCollapsed ? t("nav.expandSidebar") : t("nav.collapseSidebar")}
           >
             <Icon name="sidebar" />
           </button>
         </div>
         <button type="button" className="theme-toggle" data-testid="theme-toggle"
           aria-label={theme === "dark" ? t("theme.toggleToLight") : t("theme.toggleToDark")}
-          onClick={() => {
-            themeOverridden.current = true;
-            setTheme((current) => current === "dark" ? "light" : "dark");
-          }}><Icon name={theme === "dark" ? "sun" : "moon"} /></button>
+          onClick={toggleTheme}><Icon name={theme === "dark" ? "sun" : "moon"} /></button>
         {controller.projects === null || controller.activeProjectId === null ? (
           controller.projectsError ? (
             <div className="project-error" role="alert" data-testid="projects-error">
@@ -211,9 +269,7 @@ export default function App() {
               </button>
             </div>
           ) : (
-            <div className="empty-hint" data-testid="sessions-loading">
-              加载中…
-            </div>
+            <SessionListSkeleton />
           )
         ) : (
           <>
@@ -227,12 +283,12 @@ export default function App() {
                 onClick={() => { closeMobileSidebar(); controller.createSession(); }}
               >
                 <Icon name="plus" className="new-session-icon" />
-                <span className="new-session-label">新建会话</span>
+                <span className="new-session-label">{t("nav.newSession")}</span>
               </button>
             )}
             {controller.creationNotice && <small id="project-creation-notice" role="status">{controller.creationNotice}</small>}
             <div className="workbench-nav-body">
-              <div className="workbench-section-header">工作区 / 项目</div>
+              <div className="workbench-section-header">{t("nav.projectsSection")}</div>
               {controller.projects && (
                 <ProjectSwitcher
                   projects={controller.projects}
@@ -244,8 +300,8 @@ export default function App() {
               )}
               {controller.sessions === null ? (
                 <>
-                  <div className="workbench-section-header">会话历史</div>
-                  <div className="empty-hint" data-testid="sessions-loading">加载中…</div>
+                  <div className="workbench-section-header">{t("nav.sessionsSection")}</div>
+                  <SessionListSkeleton />
                 </>
               ) : (
                 <SessionList
@@ -266,13 +322,13 @@ export default function App() {
         ref={mobileMenuRef}
         type="button"
         className="workbench-mobile-menu"
-        aria-label="打开工作区导航"
+        aria-label={t("mobile.openNav")}
         aria-expanded={mobileSidebarOpen}
         onClick={() => { setDetailsCollapsed(true); setMobileSidebarOpen(true); }}
       >
         <Icon name="menu" />
       </button>
-      {mobileSidebarOpen && <button type="button" className="workbench-drawer-backdrop" aria-label="关闭工作区导航" onClick={closeMobileSidebar} />}
+      {mobileSidebarOpen && <button type="button" className="workbench-drawer-backdrop" aria-label={t("mobile.closeNav")} onClick={closeMobileSidebar} />}
 
       {/* 聊天区 */}
       <Chat
@@ -321,7 +377,7 @@ export default function App() {
       />
 
       {/* 右侧 Inspector */}
-      {activeSession && !detailsCollapsed && <button type="button" className="workbench-inspector-backdrop" aria-label="关闭审查器" onClick={closeInspector} />}
+      {activeSession && !detailsCollapsed && <button type="button" className="workbench-inspector-backdrop" aria-label={t("inspector.close")} onClick={closeInspector} />}
       {activeSession && !detailsCollapsed && (
         <Inspector
           onClose={closeInspector}
@@ -349,7 +405,24 @@ export default function App() {
           onPointerUp={handlePointerUp}
         />
       )}
-      <ThemePreview />
+      <CommandPalette
+        open={paletteOpen}
+        onOpenChange={setPaletteOpen}
+        sessions={controller.sessions}
+        projects={controller.projects}
+        activeProjectId={controller.activeProjectId}
+        activeSessionId={controller.activeSessionId}
+        canCreateSession={canCreateSession}
+        hasSession={activeSession !== null}
+        theme={theme}
+        onNewSession={() => { closeMobileSidebar(); controller.createSession(); }}
+        onSelectSession={(id) => { closeMobileSidebar(); controller.selectSession(id); }}
+        onSelectProject={(id) => { closeMobileSidebar(); controller.selectProject(id); }}
+        onToggleSidebar={toggleSidebar}
+        onToggleRunPanel={toggleRunPanel}
+        onToggleTheme={toggleTheme}
+      />
+      <Toaster />
     </main>
   );
 }

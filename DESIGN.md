@@ -1,8 +1,8 @@
-# Web 界面基础规范（Phase 1+）
+# Web 界面基础规范（Phase 2）
 
-本文档取代此前「阅读优先 / Crossband」等**旧版视觉与布局规范**。实现与评审以本文为准；`web/src/styles.css` 等遗留样式在迁移完成前仍可能体现旧外观，但**新功能与改版不得再按旧规范扩展**。
+本文档取代此前「阅读优先 / Crossband」等旧版视觉与布局规范。实现与评审以本文为准。
 
-各屏幕的组件级规格、响应式细节与验收矩阵将在后续阶段逐屏补充；Phase 1 仅锁定技术栈、主题令牌、密度与目标信息架构。
+**样式入口**：`web/src/styles/globals.css`（Tailwind 主题层 + `tokens.css` + `workspace.css` 工作区壳层与对话 chrome）。遗留 `web/src/styles.css` 已移除。
 
 ---
 
@@ -10,117 +10,135 @@
 
 | 层级 | 选型 |
 | --- | --- |
-| 样式 | **Tailwind CSS v4**（无 preflight 作用于遗留 DOM，见 `web/src/styles/globals.css`） |
-| 组件 | **shadcn/ui**（Radix 原语），令牌驱动、紧凑密度 |
-| 路由 | **react-router-dom**：`/p/:projectId`、`/p/:projectId/s/:sessionId`（与项目/会话选择同步） |
-| 文案 | **i18n 字符串表**（当前 zh，结构预留 en），`web/src/i18n/` |
-| 字体 | 自托管 **DM Sans**（界面）、**JetBrains Mono**（代码/工具输出），禁止运行时外链 CDN |
+| 样式 | **Tailwind CSS v4**（无 preflight，见 `globals.css`）+ **workspace.css**（三栏布局、对话/工具/Composer 结构类名） |
+| 组件 | **shadcn/ui**（Radix），`web/src/components/ui/` |
+| 路由 | **react-router-dom**：`/p/:projectId`、`/p/:projectId/s/:sessionId` |
+| 文案 | **i18n** `web/src/i18n/messages.ts`（zh 默认，en 结构对齐） |
+| 字体 | 自托管 **DM Sans**、**JetBrains Mono** |
 
-业务状态与 API 编排仍经 `useWebAppController`（及拆分后的 state/actions hooks）；**不修改** `src/client/*`、`src/shared/*` 数据契约。
-
----
-
-## 2. 主题令牌（Pinguo 设计系统）
-
-仅采纳附件设计系统中的 **颜色、阴影、字体** 语义角色（见 `web/src/styles/tokens.css`），与 shadcn 约定对齐：`background`、`foreground`、`primary`、`muted`、`accent`、`border`、`input`、`ring`、`sidebar-*` 等。
-
-- **品牌蓝**：语义 `primary` 锚定在 `#007aff`（非 README 中的 `#0066cc` 叙述色）。
-- **明暗**：`:root` 亮色 + `.dark` 暗色；页面级主题与现网一致——跟随系统直至用户手动切换（`data-theme` + `html.dark`）。
-- **不采纳**：零售版 1.2rem 全局圆角、胶囊按钮、72–96px 展示字号、设计系统里的营销组件样例。
-- **阴影**：使用 token 中的 `shadow-2xs` … `shadow-2xl`；日常界面以边框与留白分层，阴影主要用于浮层。
-
-新 UI 组件只消费上述语义 token，不硬编码旧 `--bg-page` / `--accent` 暖中性栈（遗留 `styles.css` 在完全迁移前可并存）。
+业务状态与 API 编排经 `useWebAppController`（state/actions 拆分）；**不修改** `src/client/*`、`src/shared/*` 数据契约。
 
 ---
 
-## 3. 密度与排版
+## 2. 主题令牌（Pinguo）
 
-面向 **Agent 工作区**（类似 Cursor 侧栏密度），而非电商留白：
+语义角色见 `web/src/styles/tokens.css`，与 shadcn 对齐。
 
-| 用途 | 规则 |
-| --- | --- |
-| 控件/UI 文案 | **13–14px** |
-| 对话正文 | 约 **15px**（可读，略大于壳层 UI） |
-| 控件圆角 | 约 **6px**（`--radius` ≈ 0.375rem） |
-| 卡片/面板圆角 | 约 **8–10px**（`--radius-card`） |
-| 字体 | DM Sans + JetBrains Mono（见上） |
+- **品牌蓝**：`primary` ≈ `#007aff`（亮色）/ `#2e8dff`（暗色 `brand-400`）。
+- **明暗**：`html.dark` + `data-theme` on `main.app-shell`；默认跟随系统直至用户切换。
+- **密度**：控件 ~13px UI，正文 ~15px；`--radius` ≈ 6px，卡片 `--radius-card` ≈ 8–10px。
+- **工具输出**：JetBrains Mono（`.code-block`、`.tool-readable-value`）。
+
+`workspace.css` 内 `--bg-page` 等别名变量映射到 token，供存量结构类复用。
 
 ---
 
-## 4. 目标信息架构（改版方向）
-
-**对话优先、单色底 + 单一强调色**，结构目标如下（后续阶段落地，不要求 Phase 1 一次换肤）：
+## 3. 信息架构：Agent 工作区
 
 ```
 ┌──────────────┬────────────────────────────┬─────────────┐
-│ 左侧边栏      │  居中对话列 (~760px)        │ 右侧 Run 面板 │
-│ · 项目切换器  │  · 会话标题 / 时间线        │ （可选）      │
-│ · 分组会话列表│  · Composer               │ 事件/审查     │
+│ 左侧边栏      │  居中对话列 (~760px)        │ Run 面板     │
+│ 项目 + 会话   │  标题 / 时间线 / Composer   │ （可折叠）   │
 └──────────────┴────────────────────────────┴─────────────┘
 ```
 
-- **左侧**：项目切换 + 按项目/分组展示的会话历史；新建会话进入**起始态**，不预创建服务端记录。
-- **中间**：阅读列最大宽度约 **760px**，与 Composer 同轴；消息区以内容为主，少装饰容器。
-- **右侧**：可选 **Run / Inspector** 面板（事件流、原始数据等），宽屏停靠，窄屏覆盖层。
-
-路由深链与侧栏选择保持一致（`/p/.../s/...`）。
+| 区域 | 组件 | 说明 |
+| --- | --- | --- |
+| 侧栏 | `App` + `ProjectSwitcher` + `SessionList` | 可拖拽宽度；`<1180px` 抽屉；rail 折叠 |
+| 对话列 | `Chat` + `ChatHeader` + `Timeline` + `Composer` + `StatsBar` | `--reading-max: 760px` |
+| Run 面板 | `Inspector` + `EventLog` / 工具摘要 / `SystemPromptPanel` | `<1440px` 覆盖层；轨迹 Tab 与侧栏按钮联动 |
 
 ---
 
-## 5. 行为与数据流（沿用，与视觉无关）
+## 4. 屏幕级规格（Phase 2 已实现）
 
-以下条款自旧规范保留，**实现必须继续遵守**（细节以代码与 `docs/usage-measurement.md` 为准）。
+### 4.1 侧栏
 
-### 5.1 会话与草稿不变量
+- **品牌行**：π 标记 + `app.brand`；折叠/主题切换。
+- **新建会话**：`data-testid="new-session"`；无会话时仅起始态。
+- **项目**：`SelectMenu` 下拉；新建/删除（默认项目不可删）。
+- **会话列表**：搜索（可展开）；**按时间分组**（今天 / 昨天 / 近 7 天 / 更早）；搜索时扁平列表。行内：相对时间、共享标记、重命名/导出/删除。
+- **加载**：`SessionListSkeleton`（`data-testid="sessions-loading"`）。
 
-- 点击「新建」仅进入起始态；**首次显式发送**才创建会话。
-- 未发送正文、附件引用、新会话配置仅存**当前页内存**；不写 localStorage/sessionStorage；刷新/关闭不恢复。
-- 提交失败保留**本次提交快照**供重试；之后编辑内容与快照隔离。
-- 创建/发送结果**未知**时：先按原 `createRequestId` / `requestId` 核对，**不自动重发未知**、不重复创建会话。
-- 请求提交成功 **≠** 助手回复完成。
-- 不虚构历史、连接状态或占位对话；错误与未知载荷不伪装成消息。
+### 4.2 对话列
+
+- **无会话**：`no-session-hint` + 欢迎文案；Composer 可选项目 + 模型/思考。
+- **有会话**：`ChatHeader` 标题 + 对话/轨迹 Tab；`toggle-events` 打开 Run 面板。
+- **时间线**：用户行右对齐轻底；助手 Markdown ~15px；`ThinkingRow` 紧凑折叠（`thinking-header` + chevron）；`ToolCallCard` 步骤式折叠（非大卡片）；`NotificationItem` 子代理通知。
+- **滚动**：`chat-body` 跟随输出；`chat-latest` 回到底部。
+- **历史加载**：`ChatHistorySkeleton`。
+- **排队/错误**：`phase-queued`、内联 `load-error`；会话级错误另经 **Toast**（`Toaster`）提示。
+
+### 4.3 Composer
+
+- 附件条、pending steer/follow-up、提交 unknown/failed 快照 UI（与 §5 一致）。
+- **运行中**：插话 / 追加 + **Stop**（`abort-button`）；空闲：模型选择 + 发送。
+- **快捷键**：Enter 发送 / Shift+Enter 换行；全局 Esc 在无浮层且 streaming 时中止。
+
+### 4.4 Run / Inspector
+
+- Tab：事件流（过滤/清空）、工具列表摘要、系统提示词只读 `pre`。
+- 事件条目：`details` + JetBrains Mono 原始 JSON。
+
+### 4.5 全局命令与反馈
+
+- **命令面板** `CommandPalette`：`Cmd/Ctrl-K`；会话跳转、项目切换、侧栏/Run/主题。
+- **快捷键**：`Cmd/Ctrl-B` 侧栏；`Cmd/Ctrl-.` Run 面板（需已选会话）。
+- **Toast**：`web/src/lib/toast.ts` + `Toaster`；错误 8s 自动消失。
+
+### 4.6 压缩与统计
+
+- `CompactionBanner`：running/succeeded/failed + token 前后（服务端字段）。
+- `StatsBar`：摘要簇 + 详情 Modal；语义不变（见 §5.5）。
+
+---
+
+## 5. 行为与数据流（必须遵守）
+
+（与 Phase 1 相同，略述要点。）
+
+### 5.1 会话与草稿
+
+新建不预创建；草稿仅内存；未知结果不盲重发；提交成功 ≠ 回复完成。
 
 ### 5.2 附件
 
-- 图片：`images/base64` 通道；普通文件：服务端 `fileId` + 可信 Pi 路径，不信任前端回传路径。
-- 上传就绪**不会自动发送**；移除引用不删除服务器原件。
-- 产品初始限制（须实测）：普通文件单文件 20 MiB、每条最多 5 个、合计 50 MiB；图片限制见 `src/agent/image-input.ts`。
+图片 base64 / 文件 fileId；就绪不自动发送。
 
-### 5.3 插话（steer）与追加（follow-up）
+### 5.3 Steer / Follow-up
 
-- 任务**运行中**：可 steer 与 follow-up。
-- 任务**仅排队、尚未启动**：仅 follow-up，**不可 steer**。
-- 每条控制独立等待；仅按服务端确认更新 UI；无法确认消费时显示「等待确认 / 未知」，**不猜测已处理**。
-- steer 消费确认（如 `steering_consumed`）与草稿清除语义以 controller 实现为准。
+运行中可 steer + follow-up；仅排队时不可 steer；独立 pending 状态。
 
-### 5.4 关键提交流（摘要）
+### 5.4 提交流
 
-```mermaid
-flowchart LR
-  A[显式发送] --> B{已有 session?}
-  B -->|否| C[创建 session]
-  C --> D[应用配置]
-  D --> E[sendMessage]
-  B -->|是| E
-  E --> F{结果}
-  F -->|已知拒绝| G[失败快照可重试]
-  F -->|未知| H[核对 requestId; 不盲重发]
-  F -->|已接受| I[清空已提交输入; 等待 SSE]
-```
+create → config → send；failed 快照重试；unknown 核对 createRequestId / requestId。
 
-完整分支（配置失败、附件绑定、已有会话发送等）见旧版 §11 流程图；重构 UI 时不得削弱这些边界。
+### 5.5 统计
 
-### 5.5 统计与用量
+仅展示服务端/export 快照；见 `docs/usage-measurement.md`。
 
-- 底部 StatsBar、轮次/turn/工具计数、上下文估算等：**仅格式化服务端/export 快照**，不自行汇总 token 或捏造速率；按会话隔离快照，切换会话或改模型清空相关上下文展示。口径见 [统计契约](docs/usage-measurement.md)。
+### 5.6 压缩与消息游标
+
+`CompactionBanner` + timeline 游标指示（SSE 驱动）；断开时 running 显示 unknown。
 
 ---
 
-## 6. 阶段说明
+## 6. 响应式断点
 
-| 阶段 | 范围 |
+| 断点 | 行为 |
 | --- | --- |
-| **Phase 1（当前）** | Tailwind/shadcn 基础、token 主题、路由、i18n、controller 拆分；**遗留屏幕仍用现有 DOM/CSS** |
-| **Phase 2+** | 按本架构逐屏替换为 token + shadcn；补充组件规格、断点验收表、无障碍细则 |
+| `max-width: 1179px` | 侧栏抽屉 + `workbench-mobile-menu` |
+| `max-width: 1439px` | Inspector 覆盖层 + 背景点击关闭 |
+| 侧栏 rail | `sidebar-collapsed` 或拖拽过窄 |
 
-实施与评审时：行为条款以 §5 与代码为准；视觉以 §2–§4 与当期 PR 中的屏幕说明为准。
+---
+
+## 7. 阶段说明
+
+| 阶段 | 状态 |
+| --- | --- |
+| **Phase 1** | Tailwind/shadcn、token、路由、i18n、controller 拆分 |
+| **Phase 2（本 PR）** | 工作区屏幕 token 换肤、分组会话、面板/Composer/命令面板/Toast/骨架屏；移除 `styles.css` |
+| **后续** | 进一步 Tailwind 内联化、无障碍验收矩阵、可选 shadcn 替换自绘 `SelectMenu` |
+
+评审：行为以 §5 与代码为准；视觉以 §2–§4 为准。

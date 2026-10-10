@@ -1,6 +1,8 @@
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Icon } from "./Icon.js";
 import { resolveSessionDisplayTitle, type SessionRecord } from "pi-agent-server/client";
+import { useI18n } from "../i18n/I18nProvider.js";
+import { groupSessionsByTime, sessionGroupLabelKey } from "../lib/session-groups.js";
 
 /** 会话更新时间展示：紧凑弱化的中文相对时间或短日期 */
 export function formatSessionTime(updatedAt: number, now: number = Date.now()): string {
@@ -26,7 +28,6 @@ export function formatSessionTime(updatedAt: number, now: number = Date.now()): 
     return `${diffDay}天前`;
   }
 
-  // 跨更长时间或跨年：输出短日期（如 3/1 或 2023/3/1）
   const date = new Date(updatedAt);
   const nowDate = new Date(now);
   const isSameYear = date.getFullYear() === nowDate.getFullYear();
@@ -38,7 +39,6 @@ export function formatSessionTime(updatedAt: number, now: number = Date.now()): 
   return `${date.getFullYear()}/${month}/${day}`;
 }
 
-/** 辅助获取完整绝对时间字符串（用于悬停提示） */
 export function formatFullSessionTime(updatedAt: number): string {
   if (!Number.isFinite(updatedAt) || updatedAt <= 0) {
     return "";
@@ -56,7 +56,89 @@ export type SessionListProps = {
   onExport: (id: string) => void;
 };
 
-/** 会话列表：搜索 + 标题 + 更新时间，支持选中/删除/重命名/导出。 */
+function SessionRow({
+  session,
+  activeId,
+  onSelect,
+  onDelete,
+  onRename,
+  onExport,
+  t,
+}: {
+  session: SessionRecord;
+  activeId: string | null;
+  onSelect: (id: string) => void;
+  onDelete: (id: string) => void;
+  onRename: (id: string, title: string) => void;
+  onExport: (id: string) => void;
+  t: ReturnType<typeof useI18n>["t"];
+}) {
+  const title = resolveSessionDisplayTitle(session);
+  const native = session.origin === "native";
+  return (
+    <li className={`session-item ${session.id === activeId ? "active" : ""}`}>
+      <button
+        type="button"
+        className="session-select"
+        aria-label={title}
+        aria-current={session.id === activeId ? "true" : undefined}
+        aria-describedby={`session-meta-${session.id}`}
+        data-testid={`session-${session.id}`}
+        onClick={() => onSelect(session.id)}
+      >
+        <span className="session-title" title={title}>{title}</span>
+      </button>
+      <div className="session-meta" id={`session-meta-${session.id}`}>
+        <time
+          className="session-time"
+          data-testid={`session-time-${session.id}`}
+          dateTime={Number.isFinite(session.updatedAt) && session.updatedAt > 0 && !Number.isNaN(new Date(session.updatedAt).getTime())
+            ? new Date(session.updatedAt).toISOString()
+            : undefined}
+          title={formatFullSessionTime(session.updatedAt)}
+        >
+          {formatSessionTime(session.updatedAt)}
+        </time>
+        {(session.visibility === "shared" || session.origin === "native") && (
+          <span className="session-shared-badge" title={native ? "原生共享会话" : "共享会话"} aria-label={native ? "原生共享会话" : "共享会话"}>
+            <Icon name="shared" size={14} />
+          </span>
+        )}
+      </div>
+      <div className="session-actions">
+        <button
+          data-testid={`rename-${session.id}`}
+          title={t("nav.renameSession")}
+          aria-label={t("nav.renameSession")}
+          onClick={() => {
+            const next = window.prompt(t("nav.renamePrompt"), session.title);
+            if (next && next.trim()) onRename(session.id, next.trim());
+          }}
+        >
+          <Icon name="edit" />
+        </button>
+        <button
+          data-testid={`export-${session.id}`}
+          title={t("nav.exportSession")}
+          aria-label={t("nav.exportSession")}
+          onClick={() => onExport(session.id)}
+        >
+          <Icon name="download" />
+        </button>
+        <button
+          data-testid={`delete-${session.id}`}
+          title={native ? t("nav.deleteNativeSession") : t("nav.deleteSession")}
+          aria-label={t("nav.deleteSession")}
+          onClick={() => onDelete(session.id)}
+        >
+          <Icon name="trash" />
+        </button>
+      </div>
+    </li>
+  );
+}
+
+/** 会话列表：搜索 + 按时间分组 + 行操作。 */
 export function SessionList({
   sessions,
   activeId,
@@ -65,25 +147,28 @@ export function SessionList({
   onRename,
   onExport,
 }: SessionListProps) {
+  const { t } = useI18n();
   const [query, setQuery] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
 
-  const filtered = sessions.filter((s) =>
+  const filtered = useMemo(() => sessions.filter((s) =>
     resolveSessionDisplayTitle(s).toLowerCase().includes(query.trim().toLowerCase()),
-  );
+  ), [query, sessions]);
+  const grouped = useMemo(() => groupSessionsByTime(filtered), [filtered]);
+  const flatSearch = query.trim().length > 0;
 
   return (
     <section className="session-list" data-testid="session-list">
       <div className="session-list-header">
-        <span>会话历史</span>
+        <span>{t("nav.sessionsSection")}</span>
         <button
-        type="button"
-        className="workbench-search-toggle"
-        aria-label="搜索会话"
-        aria-expanded={searchOpen}
-        onClick={() => setSearchOpen((open) => !open)}
-      >
-        <Icon name="search" />
+          type="button"
+          className="workbench-search-toggle"
+          aria-label={t("nav.searchSessions")}
+          aria-expanded={searchOpen}
+          onClick={() => setSearchOpen((open) => !open)}
+        >
+          <Icon name="search" />
         </button>
       </div>
       <input
@@ -91,79 +176,36 @@ export function SessionList({
         data-testid="session-search"
         type="search"
         hidden={!searchOpen}
-        placeholder="搜索会话…"
+        placeholder={t("nav.searchPlaceholder")}
         value={query}
         onChange={(e) => setQuery(e.target.value)}
-        aria-label="搜索会话"
+        aria-label={t("nav.searchSessions")}
       />
       {filtered.length === 0 && (
         <div className="empty-hint" data-testid="empty-sessions">
-          暂无会话
+          {t("nav.emptySessions")}
         </div>
       )}
-      <ul className="session-items">
-        {filtered.map((s) => (
-          <li key={s.id} className={`session-item ${s.id === activeId ? "active" : ""}`}>
-            <button
-              type="button"
-              className="session-select"
-              aria-label={resolveSessionDisplayTitle(s)}
-              aria-current={s.id === activeId ? "true" : undefined}
-              aria-describedby={`session-meta-${s.id}`}
-              data-testid={`session-${s.id}`}
-              onClick={() => onSelect(s.id)}
-            >
-              <span className="session-title" title={resolveSessionDisplayTitle(s)}>{resolveSessionDisplayTitle(s)}</span>
-            </button>
-            <div className="session-meta" id={`session-meta-${s.id}`}>
-              <time
-                className="session-time"
-                data-testid={`session-time-${s.id}`}
-                dateTime={Number.isFinite(s.updatedAt) && s.updatedAt > 0 && !Number.isNaN(new Date(s.updatedAt).getTime())
-                  ? new Date(s.updatedAt).toISOString()
-                  : undefined}
-                title={formatFullSessionTime(s.updatedAt)}
-              >
-                {formatSessionTime(s.updatedAt)}
-              </time>
-              {(s.visibility === "shared" || s.origin === "native") && (
-                <span className="session-shared-badge" title={s.origin === "native" ? "原生共享会话" : "共享会话"} aria-label={s.origin === "native" ? "原生共享会话" : "共享会话"}>
-                  <Icon name="shared" size={14} />
-                </span>
-              )}
-            </div>
-            <div className="session-actions">
-              <button
-                data-testid={`rename-${s.id}`}
-                title="重命名"
-                aria-label="重命名"
-                onClick={() => {
-                  const title = window.prompt("新标题", s.title);
-                  if (title && title.trim()) onRename(s.id, title.trim());
-                }}
-              >
-                <Icon name="edit" />
-              </button>
-              <button
-                data-testid={`export-${s.id}`}
-                title="导出 JSON"
-                aria-label="导出 JSON"
-                onClick={() => onExport(s.id)}
-              >
-                <Icon name="download" />
-              </button>
-              <button
-                data-testid={`delete-${s.id}`}
-                title={s.origin === "native" ? "从共享列表移除（保留原始文件）" : "删除"}
-                aria-label="删除"
-                onClick={() => onDelete(s.id)}
-              >
-                <Icon name="trash" />
-              </button>
-            </div>
-          </li>
-        ))}
-      </ul>
+      {flatSearch ? (
+        <ul className="session-items">
+          {filtered.map((session) => (
+            <SessionRow key={session.id} session={session} activeId={activeId} onSelect={onSelect}
+              onDelete={onDelete} onRename={onRename} onExport={onExport} t={t} />
+          ))}
+        </ul>
+      ) : (
+        grouped.map((group) => (
+          <div key={group.key} className="session-group" data-testid={`session-group-${group.key}`}>
+            <div className="session-group-label">{t(sessionGroupLabelKey[group.key])}</div>
+            <ul className="session-items">
+              {group.sessions.map((session) => (
+                <SessionRow key={session.id} session={session} activeId={activeId} onSelect={onSelect}
+                  onDelete={onDelete} onRename={onRename} onExport={onExport} t={t} />
+              ))}
+            </ul>
+          </div>
+        ))
+      )}
     </section>
   );
 }

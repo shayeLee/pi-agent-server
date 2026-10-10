@@ -9,6 +9,8 @@ import { StatsBar } from "./StatsBar.js";
 import { ChatHeader } from "./ChatHeader.js";
 import { EmptyState } from "./EmptyState.js";
 import type { SubmissionState, SubmitOutcome, UnsentMessage } from "../attachment-state.js";
+import { useI18n } from "../i18n/I18nProvider.js";
+import { ChatHistorySkeleton } from "./WorkspaceSkeleton.js";
 
 export type ChatProps = {
   session: SessionRecord | null;
@@ -97,6 +99,7 @@ export function Chat({
   traceActive,
   onConfigChange,
 }: ChatProps) {
+  const { t } = useI18n();
   const bodyRef = useRef<HTMLDivElement>(null);
   const [localTraceActive, setLocalTraceActive] = useState(false);
   const activeTraceTab = traceActive ?? localTraceActive;
@@ -157,7 +160,7 @@ export function Chat({
   }, [session?.id]);
 
   const hasMessages = timeline.length > 0;
-  const placeholder = "描述任务…";
+  const placeholder = t("chat.placeholder");
 
   return (
     <section className="chat" data-testid="chat">
@@ -170,7 +173,7 @@ export function Chat({
         />
       )}
       <div className="chat-body" ref={bodyRef} data-testid="chat-body"
-        role="region" aria-label="会话内容" tabIndex={0}
+        role="region" aria-label={t("chat.region")} tabIndex={0}
         onKeyDown={(event) => {
           if (event.target !== event.currentTarget || (event.key !== "Home" && event.key !== "End") || event.currentTarget.isContentEditable || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || event.nativeEvent.isComposing) return;
           event.preventDefault();
@@ -201,7 +204,7 @@ export function Chat({
         {!session ? (
           <div className="workbench-welcome" data-testid="no-session-hint">
             {loadError && <div className="chat-phase-banner error" role="alert">{loadError}</div>}
-            <p className="workbench-welcome-copy">选择项目并发送第一条消息，会话将保存在该项目中。</p>
+            <p className="workbench-welcome-copy">{t("chat.welcome")}</p>
           </div>
         ) : (
           <div className="chat-inner">
@@ -211,15 +214,21 @@ export function Chat({
                 {loadError}
               </div>
             )}
-            {queued && (
-              <div className="chat-phase-banner queued" data-testid="phase-queued">
-                排队中…
-              </div>
-            )}
-            {!hasMessages ? (
-              <EmptyState />
+            {historyLoading && !hasMessages ? (
+              <ChatHistorySkeleton />
             ) : (
-              <Timeline timeline={timeline} />
+              <>
+                {queued && (
+                  <div className="chat-phase-banner queued" data-testid="phase-queued">
+                    {t("chat.queued")}
+                  </div>
+                )}
+                {!hasMessages ? (
+                  <EmptyState />
+                ) : (
+                  <Timeline timeline={timeline} />
+                )}
+              </>
             )}
           </div>
         )}
@@ -227,7 +236,7 @@ export function Chat({
       {session && hasMessages && (
         <div className="chat-latest-row">
           {showLatest && (
-            <button type="button" className="chat-latest" aria-label="回到最新" title="回到最新" onClick={goToLatest}>
+            <button type="button" className="chat-latest" aria-label={t("chat.scrollLatest")} title={t("chat.scrollLatest")} onClick={goToLatest}>
               <span className="chat-latest-face" aria-hidden="true"><Icon name="down" /></span>
             </button>
           )}

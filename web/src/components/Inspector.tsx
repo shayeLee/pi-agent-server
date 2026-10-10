@@ -8,11 +8,13 @@ import { EventLog } from "./EventLog.js";
 import { SystemPromptPanel } from "./SystemPromptPanel.js";
 import type { EventLogEntry } from "../types.js";
 
-const TABS = [
-  { id: "events", label: "事件流" },
-  { id: "tools", label: "工具" },
-  { id: "systemPrompt", label: "系统提示词" },
-] as const;
+import { useI18n } from "../i18n/I18nProvider.js";
+
+const TAB_KEYS = [
+  { id: "events" as const, labelKey: "inspector.tab.events" as const },
+  { id: "tools" as const, labelKey: "inspector.tab.tools" as const },
+  { id: "systemPrompt" as const, labelKey: "inspector.tab.systemPrompt" as const },
+];
 
 export type InspectorProps = {
   session: SessionRecord | null;
@@ -30,22 +32,23 @@ export function Inspector({
   onClearEvents,
   onClose,
 }: InspectorProps) {
-  const [activeTab, setActiveTab] = useState<(typeof TABS)[number]["id"]>("events");
+  const { t } = useI18n();
+  const [activeTab, setActiveTab] = useState<(typeof TAB_KEYS)[number]["id"]>("events");
 
   const toolCalls = timeline.filter((item) => item.kind === "tool").map((item) => item.call);
 
   return (
     <aside className="inspector" data-testid="inspector">
-      {onClose && <button type="button" className="workbench-inspector-close" data-testid="inspector-close" aria-label="关闭审查器" onClick={onClose}><Icon name="close" /></button>}
+      {onClose && <button type="button" className="workbench-inspector-close" data-testid="inspector-close" aria-label={t("inspector.close")} onClick={onClose}><Icon name="close" /></button>}
       <div className="inspector-tabs">
-        {TABS.map((tab) => (
+        {TAB_KEYS.map((tab) => (
           <button
             key={tab.id}
             className={activeTab === tab.id ? "active" : ""}
             onClick={() => setActiveTab(tab.id)}
             data-testid={`inspector-tab-${tab.id}`}
           >
-            {tab.label}
+            {t(tab.labelKey)}
             {tab.id === "tools" && toolCalls.length > 0 && (
               <span className="tab-badge">{toolCalls.length}</span>
             )}
@@ -59,7 +62,7 @@ export function Inspector({
         {activeTab === "tools" && (
           <div className="inspector-tools" data-testid="inspector-tools">
             {toolCalls.length === 0 ? (
-              <div className="empty-hint">暂无工具调用</div>
+              <div className="empty-hint">{t("inspector.emptyTools")}</div>
             ) : (
               <ul className="tool-summary-list">
                 {toolCalls.map((call) => {

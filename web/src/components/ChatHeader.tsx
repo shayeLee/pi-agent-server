@@ -1,5 +1,6 @@
 import { Icon } from "./Icon.js";
 import { resolveSessionDisplayTitle, type SessionRecord } from "pi-agent-server/client";
+import { useI18n } from "../i18n/I18nProvider.js";
 
 export type ChatHeaderProps = {
   session: SessionRecord;
@@ -14,6 +15,7 @@ export function ChatHeader({
   onToggleDetails,
   onSelectTab,
 }: ChatHeaderProps) {
+  const { t } = useI18n();
   return (
     <header className="chat-header workbench-chat-header" data-testid="chat-header">
       <div className="workbench-topbar">
@@ -28,7 +30,7 @@ export function ChatHeader({
               onClick={() => onSelectTab("chat")}
               aria-current={!traceActive ? "page" : undefined}
             >
-              对话
+              {t("chat.tab.chat")}
             </button>
             <button
               className={traceActive ? "active" : ""}
@@ -36,7 +38,7 @@ export function ChatHeader({
               onClick={() => onSelectTab("trace")}
               aria-current={traceActive ? "page" : undefined}
             >
-              轨迹
+              {t("chat.tab.trace")}
             </button>
           </nav>
         </div>
@@ -45,8 +47,8 @@ export function ChatHeader({
             className="btn-ghost btn-icon"
             data-testid="toggle-events"
             onClick={onToggleDetails}
-            title={traceActive ? "隐藏轨迹面板" : "显示轨迹面板"}
-            aria-label={traceActive ? "隐藏轨迹面板" : "显示轨迹面板"}
+            title={traceActive ? t("chat.toggleRunHide") : t("chat.toggleRunShow")}
+            aria-label={traceActive ? t("chat.toggleRunHide") : t("chat.toggleRunShow")}
             aria-expanded={traceActive}
           >
             <Icon name="inspector" />

@@ -1,12 +1,14 @@
 import { useState } from "react";
 import { Icon } from "./Icon.js";
 import type { TimelineItem } from "pi-agent-server/client";
+import { useI18n } from "../i18n/I18nProvider.js";
 
 export type ThinkingRowProps = {
   thinking: Extract<TimelineItem, { kind: "thinking" }>;
 };
 
 export function ThinkingRow({ thinking }: ThinkingRowProps) {
+  const { t } = useI18n();
   // Streaming opens by default, but an explicit user choice can still collapse it.
   const [manualExpanded, setManualExpanded] = useState<boolean | null>(null);
   const visible = manualExpanded ?? thinking.streaming;
@@ -24,9 +26,9 @@ export function ThinkingRow({ thinking }: ThinkingRowProps) {
         className="thinking-header chevron-trigger"
         onClick={() => setManualExpanded(!visible)}
         aria-expanded={visible}
-        aria-label="思考过程"
+        aria-label={t("thinking.label")}
       >
-        <span className="thinking-label">{thinking.streaming ? "Thinking" : "Thought"}</span>
+        <span className="thinking-label">{thinking.streaming ? t("thinking.streaming") : t("thinking.done")}</span>
         <Icon name="chevron" className="disclosure-chevron thinking-chevron" />
       </button>
       {visible && (
