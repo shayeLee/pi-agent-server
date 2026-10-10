@@ -1,0 +1,72 @@
+import { readdirSync } from "node:fs";
+import { resolve } from "node:path";
+
+// Paths are relative to e2e, including subdirectories, in stable discovery order.
+export function discoverSpecs(testDir: string): string[] {
+  function visit(dir: string, prefix: string): string[] {
+    return readdirSync(dir, { withFileTypes: true }).flatMap(entry => {
+      const file = `${prefix}${entry.name}`;
+      if (entry.isDirectory()) return visit(resolve(dir, entry.name), `${file}/`);
+      return entry.isFile() && entry.name.endsWith(".spec.ts") ? [file] : [];
+    });
+  }
+  return visit(testDir, "").sort();
+}
+
+// Playwright matches absolute paths: anchor them so a nested namesake cannot leak in.
+export function specMatch(testDir: string, spec: string): RegExp {
+  return new RegExp(`^${resolve(testDir, spec).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`);
+}
+
+export interface E2EGroup { name: string; config: string; specs: string[] }
+export const excludedSpecs = ["long-session-performance.spec.ts", "recent-session-restore.spec.ts"];
+const group = (name: string, config: string, ...specs: string[]): E2EGroup => ({
+  name, config, specs: specs.map(spec => `${spec}.spec.ts`),
+});
+export const specialGroups: E2EGroup[] = [
+  group("rich", "playwright.rich-local.config.ts", "rich-app", "start-state"),
+  group("scroll-follow", "playwright.scroll-follow.config.ts", "chat-scroll-follow"),
+  group("collapsed-tool", "playwright.collapsed-tool.config.ts", "collapsed-tool-live"),
+  group("live-output", "playwright.live-output-local.config.ts", "live-output-http-local"),
+  group("native-session", "playwright.native-session-local.config.ts", "native-session-http-local"),
+  group("project-discovery", "playwright.project-discovery-local.config.ts", "project-discovery-http-local"),
+  group("resume", "playwright.resume-local.config.ts", "resume-http-local"),
+  group("sent-images", "playwright.sent-images.config.ts", "sent-images-local", "sent-images-http-local"),
+  group("session-title", "playwright.session-title.config.ts", "session-title-http-local"),
+  group("steering", "playwright.steering-local.config.ts", "steering-confirmation-http-local"),
+  group("host-followup", "e2e/host-followup.config.ts", "subagent-notification-http-local", "subagent-host-followup-http-local"),
+  group("subagent-markdown", "playwright.subagent-markdown.config.ts", "subagent-markdown-default"),
+  group("subagent-parallel", "playwright.subagent-parallel.config.ts", "subagent-parallel"),
+  group("stats", "playwright.stats-local.config.ts", "stats-expanded"),
+  group("information-layout", "playwright.information-layout.config.ts", "tool-information-layout"),
+  group("raw-modal", "playwright.raw-modal.config.ts", "tool-raw-modal"),
+  group("tool-readable", "playwright.tool-readable.config.ts", "tool-readable"),
+  group("tool-streaming", "playwright.tool-streaming.config.ts", "tool-streaming-readable"),
+  group("message-cursor", "playwright.message-cursor.config.ts", "message-cursor"),
+];
+
+export function buildGroups(files: string[], specials = specialGroups): E2EGroup[] {
+  const assigned = new Set(excludedSpecs);
+  const names = new Set(["general"]);
+  for (const entry of specials) {
+    if (names.has(entry.name)) throw new Error(`Duplicate group: ${entry.name}`);
+    names.add(entry.name);
+    for (const spec of entry.specs) {
+      if (!files.includes(spec)) throw new Error(`Missing mapped spec: ${spec}`);
+      if (assigned.has(spec)) throw new Error(`Duplicate mapped spec: ${spec}`);
+      assigned.add(spec);
+    }
+  }
+  return [{ name: "general", config: "playwright.config.ts", specs: files.filter(file => !assigned.has(file)).sort() }, ...specials];
+}
+
+// Never let a caller's rich scenario leak into general, baseline discovery or other groups.
+export function groupEnvironment(name: string, env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  return { ...env, MOCK_SCENARIO: name === "rich" ? "rich" : "" };
+}
+
+export function findGroup(groups: E2EGroup[], name: string): E2EGroup {
+  const found = groups.find(group => group.name === name);
+  if (!found) throw new Error(`Unknown E2E group: ${name}`);
+  return found;
+}

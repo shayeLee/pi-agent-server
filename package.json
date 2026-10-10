@@ -91,7 +91,7 @@
     "mock": "tsx scripts/mock-server.ts",
     "web": "pnpm --filter web dev",
     "web:mock": "VITE_API_TARGET=http://127.0.0.1:8081 pnpm --filter web dev",
-    "e2e": "pnpm --filter web exec playwright test",
+    "e2e": "tsx scripts/e2e.mts",
     "release:rc": "npm run verify:release && npm publish --tag rc"
   },
   "dependencies": {

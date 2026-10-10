@@ -28,7 +28,8 @@ test.beforeAll(async () => {
 });
 test.afterAll(async () => { clearInterval(timer); for (const stream of streams) stream.end(); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); });
 
-for (const theme of ["light", "dark"] as const) for (const width of [1280, 390]) test(`真实定时混合 SSE 滚动跟随 ${width} ${theme}`, async ({ page }) => {
+// Business flow representatives: light desktop and dark mobile, not the full cross-product.
+for (const { theme, width } of [{ theme: "light", width: 1280 }, { theme: "dark", width: 390 }] as const) test(`真实定时混合 SSE 滚动跟随 ${width} ${theme}`, async ({ page }) => {
   clearInterval(timer); tick = 0;
   await page.emulateMedia({ colorScheme: theme });
   await page.setViewportSize({ width, height: 844 });

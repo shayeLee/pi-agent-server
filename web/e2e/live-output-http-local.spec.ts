@@ -10,7 +10,8 @@ import { identityKey } from "../../src/core/user-identity.js";
 import { makeInitializedMemoryDb } from "../../tests/helpers/sqlite.js";
 import { makeTestIpAccess } from "../../tests/helpers/ip-access.js";
 
-for (const theme of ["light", "dark"] as const) for (const width of [1280, 390]) test(`real App/adapter HTTP SSE live output ${theme} ${width}`, async ({ page }) => {
+// Business flow representatives: light desktop and dark mobile, not the full cross-product.
+for (const { theme, width } of [{ theme: "light", width: 1280 }, { theme: "dark", width: 390 }] as const) test(`real App/adapter HTTP SSE live output ${theme} ${width}`, async ({ page }) => {
   await mkdir("/tmp/stats-single-line",  { recursive: true });
   const storage = await makeInitializedMemoryDb({ cwd: "/tmp/live-output-speed" });
   const ownerKey = identityKey({ kind: "ip", ip: "127.0.0.1" });

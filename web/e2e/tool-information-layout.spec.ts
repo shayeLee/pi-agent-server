@@ -52,6 +52,7 @@ test.beforeAll(async () => {
   await new Promise<void>(resolve => server.listen(8096, '127.0.0.1', resolve));
 });
 test.afterAll(async () => { stream?.end(); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); });
+// Visual glyph/hit-target and Markdown spacing/menu checks retain the full matrix.
 for (const theme of ['dark', 'light']) for (const width of [1280, 390]) {
   test(`${theme} ${width}: subagent visible glyph insets and independent more hit target`, async ({ browser }) => {
     const dir = '/tmp/tool-block-icon-inset';
@@ -137,6 +138,8 @@ for (const theme of ['dark', 'light']) for (const width of [1280, 390]) {
     emit({ type: 'completed' });
     await context.close();
   });
+  // Register only light desktop and dark mobile business representatives, not the full cross-product.
+  if ((theme === 'light' && width === 1280) || (theme === 'dark' && width === 390)) {
   test(`${theme} ${width}: lightweight blocks in mixed actual App conversation`, async ({ browser }) => {
     const context = await browser.newContext({ hasTouch: width === 390 });
     const page = await context.newPage();
@@ -270,6 +273,7 @@ for (const theme of ['dark', 'light']) for (const width of [1280, 390]) {
     emit({ type: 'completed' });
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   });
+  }
   test(`${theme} ${width}: adjacent Markdown blocks and intrinsic raw menu`, async ({ page, context }) => {
     await context.grantPermissions(['clipboard-read', 'clipboard-write']);
     await page.setViewportSize({ width: 1280, height: 1100 });

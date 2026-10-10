@@ -193,6 +193,8 @@ See [Operations](docs/operations.md), [Backup and restore](docs/backup-restore.m
 
 ## Development
 
+See the [testing command checklist (Chinese)](docs/testing.md) for daily entry points, specialized gates, prerequisites, and coverage boundaries.
+
 ```bash
 pnpm test
 pnpm typecheck
@@ -201,8 +203,10 @@ pnpm verify:release     # requires real PostgreSQL and age prerequisites
 pnpm build
 pnpm --filter web test
 pnpm --filter web build
-pnpm e2e
+pnpm run e2e
 ```
+
+`pnpm run e2e` runs sequential groups with installed local Chrome, preserving existing skip guards and excluding long-session performance and recent-session restore by default. The 12 rich-app/start-state tests run in a separate rich group on isolated mock ports 5189/8089; only this group's test workers and services receive `MOCK_SCENARIO=rich`. All other groups and baseline discovery explicitly clear this variable, even if inherited from the caller. Failures do not stop later groups; native Playwright JSON reports and a summary (passed/failed/skipped/unexecuted) are saved in a fresh temporary directory printed at startup. Use `pnpm run e2e -- --list` to verify grouped Playwright discovery without starting services or executing tests.
 
 Specialized offline and PostgreSQL gate commands are documented in [docs/operations.md](docs/operations.md), [docs/postgres-podman-test.md](docs/postgres-podman-test.md), and `package.json`.
 

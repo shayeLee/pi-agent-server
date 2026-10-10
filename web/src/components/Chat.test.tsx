@@ -70,6 +70,27 @@ function setup(partial: Partial<Parameters<typeof Chat>[0]> = {}) {
 }
 
 describe("Chat（聊天区）", () => {
+  it("isolates success banner timers when switching sessions", () => {
+    vi.useFakeTimers();
+    try {
+      const compaction = { status: "succeeded", reason: "manual" } as const;
+      const props = setup({ compaction });
+      act(() => vi.advanceTimersByTime(4000));
+      props.update({ session: { ...session, id: "s2" } });
+      act(() => vi.advanceTimersByTime(1000));
+      expect(screen.getByTestId("compaction-banner")).toBeVisible();
+      act(() => vi.advanceTimersByTime(3999));
+      expect(screen.getByTestId("compaction-banner")).toBeVisible();
+      act(() => vi.advanceTimersByTime(1));
+      expect(screen.queryByTestId("compaction-banner")).toBeNull();
+      props.update({ session });
+      expect(screen.getByTestId("compaction-banner")).toBeVisible();
+      props.update({ compaction: null });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   function metrics() {
     const el = screen.getByTestId("chat-body");
     let height = 1000;

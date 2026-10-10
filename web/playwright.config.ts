@@ -7,6 +7,8 @@ export default defineConfig({
   // mock 后端是共享内存库，并行会导致状态竞争；串行保证隔离
   workers: 1,
   use: {
+    browserName: "chromium",
+    channel: "chrome",
     baseURL: "http://127.0.0.1:5189",
   },
   webServer: [

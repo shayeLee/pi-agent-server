@@ -55,5 +55,19 @@ test("isolated HTTP history: unselected sidebar, header, reselect, reload and ex
     await page.screenshot({ path: "/tmp/session-title-fallback/explicit-title.png", fullPage: true });
     await page.getByTestId("session-literal-title").click();
     await expect(page.getByTestId("chat-session-title")).toHaveText("未命名会话");
-  } finally { await app.close(); await storage.close(); rmSync(root, { recursive: true, force: true }); }
+  } finally {
+    try {
+      await page.close();
+    } finally {
+      try {
+        await app.close();
+      } finally {
+        try {
+          await storage.close();
+        } finally {
+          rmSync(root, { recursive: true, force: true });
+        }
+      }
+    }
+  }
 });

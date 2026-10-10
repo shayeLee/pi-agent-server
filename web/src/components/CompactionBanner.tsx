@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import type { ChatState } from "pi-agent-server/client";
 
 export type CompactionState = NonNullable<ChatState["compaction"]>;
@@ -14,7 +15,18 @@ const isNumber = (value: number | undefined): value is number => typeof value ==
 const format = (value: number) => value.toLocaleString("zh-CN");
 
 export function CompactionBanner({ compaction, connected }: { compaction?: CompactionState | null; connected: boolean }) {
-  if (!compaction) return null;
+  const [hidden, setHidden] = useState(false);
+  const sourceStatus = compaction?.status;
+  useEffect(() => {
+    setHidden(false);
+    if (compaction?.status !== "succeeded") return;
+    const timer = setTimeout(() => setHidden(true), 5000);
+    return () => clearTimeout(timer);
+    // Each compaction event creates a new state object; unrelated chat updates
+    // preserve its identity. This also catches batched start/end in one request.
+  }, [compaction]);
+
+  if (!compaction || (sourceStatus === "succeeded" && hidden)) return null;
   const disconnectedRunning = compaction.status === "running" && !connected;
   const status = disconnectedRunning ? "unknown" : compaction.status;
   return (

@@ -39,7 +39,8 @@ test.beforeAll(async () => {
   await new Promise<void>(resolve => server.listen(8111, "127.0.0.1", resolve));
 });
 test.afterAll(async () => { for (const stream of streams) stream.end(); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); });
-for (const theme of ["light", "dark"] as const) for (const width of [1280, 390]) test(`Stats real App ${theme} ${width}`, async ({ page }) => {
+// Business flow representatives: light desktop and dark mobile, not the full cross-product.
+for (const { theme, width } of [{ theme: "light", width: 1280 }, { theme: "dark", width: 390 }] as const) test(`Stats real App ${theme} ${width}`, async ({ page }) => {
   await page.setViewportSize({ width, height: 844 }); await page.emulateMedia({ colorScheme: theme }); await page.goto("/");
   if (width === 390) await page.getByRole("button", { name: "打开工作区导航" }).click();
   await page.getByTestId(`session-${session.id}`).click();

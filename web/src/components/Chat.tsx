@@ -235,7 +235,7 @@ export function Chat({
       )}
       {(session || projects !== null) && (
         <div className="chat-footer">
-          <CompactionBanner compaction={compaction} connected={connected} />
+          <CompactionBanner key={session?.id ?? "no-session"} compaction={compaction} connected={connected} />
           <Composer
             session={session}
             projects={projects}

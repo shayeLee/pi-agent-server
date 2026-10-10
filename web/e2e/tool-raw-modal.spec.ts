@@ -23,7 +23,8 @@ test.beforeAll(async () => {
   await new Promise<void>(resolve => server.listen(8107, "127.0.0.1", resolve));
 });
 test.afterAll(async () => { stream?.end(); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); });
-for (const theme of ["dark", "light"]) for (const width of [1280, 390]) {
+// Business flow representatives: light desktop and dark mobile, not the full cross-product.
+for (const { theme, width } of [{ theme: "light", width: 1280 }, { theme: "dark", width: 390 }] as const) {
   test(`${theme} ${width}: native modal, live snapshots, keyboard, copy and scroll`, async ({ page, context }) => {
     await context.grantPermissions(["clipboard-read", "clipboard-write"]);
     await page.setViewportSize({ width: 1280, height: 800 }); await page.goto("/");

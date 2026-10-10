@@ -1,8 +1,70 @@
-import { describe, expect, it } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { act, cleanup, render, screen } from "@testing-library/react";
 import { CompactionBanner, type CompactionState } from "./CompactionBanner.js";
 
 describe("CompactionBanner", () => {
+  beforeEach(() => vi.useFakeTimers());
+  afterEach(() => { cleanup(); vi.useRealTimers(); });
+
+  it("hides success at 5000ms without renewing on unrelated renders or connection changes", () => {
+    const compaction: CompactionState = { status: "succeeded", reason: "manual", requestId: "r1" };
+    const { rerender } = render(<CompactionBanner compaction={compaction} connected />);
+    act(() => vi.advanceTimersByTime(3000));
+    rerender(<CompactionBanner compaction={compaction} connected={false} />);
+    act(() => vi.advanceTimersByTime(1999));
+    expect(screen.getByRole("status")).toHaveTextContent("上下文已压缩");
+    act(() => vi.advanceTimersByTime(1));
+    expect(screen.queryByRole("status")).toBeNull();
+    rerender(<CompactionBanner compaction={compaction} connected />);
+    expect(screen.queryByRole("status")).toBeNull();
+    expect(compaction.status).toBe("succeeded");
+  });
+
+  it("renews for a new success object within the same request, even with batched start/end", () => {
+    const compaction: CompactionState = { status: "succeeded", reason: "manual", requestId: "r1" };
+    const { rerender } = render(<CompactionBanner compaction={compaction} connected />);
+    act(() => vi.advanceTimersByTime(4000));
+    rerender(<CompactionBanner compaction={{ ...compaction }} connected />);
+    act(() => vi.advanceTimersByTime(1000));
+    expect(screen.getByRole("status")).toBeVisible();
+    act(() => vi.advanceTimersByTime(3999));
+    expect(screen.getByRole("status")).toBeVisible();
+    act(() => vi.advanceTimersByTime(1));
+    expect(screen.queryByRole("status")).toBeNull();
+    rerender(<CompactionBanner compaction={{ ...compaction }} connected />);
+    expect(screen.getByRole("status")).toBeVisible();
+    act(() => vi.advanceTimersByTime(5000));
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+
+  it.each(["running", "failed", "aborted", "unknown"] as const)("never auto-hides %s", status => {
+    render(<CompactionBanner compaction={{ status, reason: "manual" }} connected />);
+    act(() => vi.advanceTimersByTime(60000));
+    expect(screen.getByRole("status")).toHaveAttribute("data-status", status);
+  });
+
+  it("isolates successive rounds, including a new success request, and cleans up on unmount", () => {
+    const compaction: CompactionState = { status: "succeeded", reason: "manual", requestId: "r1" };
+    const { rerender, unmount } = render(<CompactionBanner compaction={compaction} connected />);
+    act(() => vi.advanceTimersByTime(4000));
+    rerender(<CompactionBanner compaction={{ ...compaction, status: "running" }} connected />);
+    act(() => vi.advanceTimersByTime(6000));
+    expect(screen.getByRole("status")).toHaveTextContent("正在压缩上下文");
+    rerender(<CompactionBanner compaction={compaction} connected />);
+    act(() => vi.advanceTimersByTime(5000));
+    expect(screen.queryByRole("status")).toBeNull();
+    rerender(<CompactionBanner compaction={{ ...compaction, requestId: "r2" }} connected />);
+    act(() => vi.advanceTimersByTime(4999));
+    expect(screen.getByRole("status")).toHaveTextContent("上下文已压缩");
+    act(() => vi.advanceTimersByTime(1));
+    expect(screen.queryByRole("status")).toBeNull();
+    rerender(<CompactionBanner compaction={{ ...compaction, status: "running" }} connected />);
+    expect(screen.getByRole("status")).toHaveTextContent("正在压缩上下文");
+    rerender(<CompactionBanner compaction={compaction} connected />);
+    expect(vi.getTimerCount()).toBe(1);
+    unmount();
+    expect(vi.getTimerCount()).toBe(0);
+  });
   it.each([undefined, null])("hides missing state %s", compaction => {
     const { container } = render(<CompactionBanner compaction={compaction} connected />);
     expect(container).toBeEmptyDOMElement();

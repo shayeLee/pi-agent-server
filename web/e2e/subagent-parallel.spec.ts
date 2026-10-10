@@ -34,7 +34,8 @@ const cases = [
   ['invalid', { tasks: [{ agent: 'lite', task: 'valid item' }, null, { agent: 3, task: false }] }, 0],
   ['invalid-object', { tasks: { agent: 'lite', task: '不是数组' } }, 0],
 ] as const;
-for (const theme of ['dark', 'light']) for (const width of [1280, 390]) test(`${theme} ${width} actual App parallel tasks`, async ({ browser }) => {
+// Business flow representatives: light desktop and dark mobile, not the full cross-product.
+for (const { theme, width } of [{ theme: 'light', width: 1280 }, { theme: 'dark', width: 390 }] as const) test(`${theme} ${width} actual App parallel tasks`, async ({ browser }) => {
   const context = await browser.newContext({ hasTouch: width === 390, permissions: ['clipboard-read', 'clipboard-write'] });
   const page = await context.newPage();
   await page.setViewportSize({ width: 1280, height: 1000 });

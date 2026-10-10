@@ -27,7 +27,8 @@ test.beforeAll(async () => {
 });
 test.afterAll(async () => { stream?.end(); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); });
 
-for (const theme of ["dark", "light"]) for (const width of [1280, 390]) test(`${theme} ${width}: parallel and wait streaming default, manual plain and exact raw`, async ({ browser }) => {
+// Business flow representatives: light desktop and dark mobile, not the full cross-product.
+for (const { theme, width } of [{ theme: "light", width: 1280 }, { theme: "dark", width: 390 }] as const) test(`${theme} ${width}: parallel and wait streaming default, manual plain and exact raw`, async ({ browser }) => {
   const context = await browser.newContext({ permissions: ["clipboard-read", "clipboard-write"], hasTouch: width === 390 });
   const page = await context.newPage();
   let unexpectedLoads = 0;

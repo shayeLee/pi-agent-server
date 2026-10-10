@@ -614,6 +614,20 @@ export function useWebAppController() {
             setUsageSnapshots(previous => ({ ...previous, [sessionId]: undefined }));
             if (event.type === "usage") setInvalidContexts(previous => { const next = new Set(previous); next.delete(sessionId); return next; });
           }
+          if ((event.type === "aborted" || event.type === "completed" || event.type === "error") && event.requestId) {
+            // Terminal identity cancels only this request's unconsumed controls, not
+            // the current draft. Release the dedup lock before any late HTTP/SSE reply.
+            for (const [id, snapshot] of controlSnapshotsRef.current) {
+              if (snapshot.sessionId === sessionId && snapshot.requestId === event.requestId) {
+                controlSnapshotsRef.current.delete(id);
+              }
+            }
+            setPendingControls(current => {
+              const rows = current[sessionId] ?? [];
+              const remaining = rows.filter(row => row.kind !== "steer" || row.requestId !== event.requestId);
+              return remaining.length === rows.length ? current : { ...current, [sessionId]: remaining };
+            });
+          }
           if (event.type === "steering_consumed" && ownsSseEvent(store.getState(), event)) {
             setPendingControls(current => {
               const rows = current[sessionId] ?? [];

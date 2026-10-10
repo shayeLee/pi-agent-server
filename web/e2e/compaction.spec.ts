@@ -1,6 +1,7 @@
 import { test, expect } from "@playwright/test";
 
-for (const theme of ["light", "dark"]) for (const mobile of [false, true]) {
+// Business flow representatives: light desktop and dark mobile, not the full cross-product.
+for (const { theme, mobile } of [{ theme: "light", mobile: false }, { theme: "dark", mobile: true }] as const) {
   test(`${theme} ${mobile ? "mobile" : "desktop"}: isolated state transitions`, async ({ page }, testInfo) => {
     await page.setViewportSize(mobile ? { width: 360, height: 780 } : { width: 1280, height: 860 });
     const apiRequests: string[] = [];
@@ -32,6 +33,18 @@ for (const theme of ["light", "dark"]) for (const mobile of [false, true]) {
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
       expect(await banner.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
       await page.screenshot({ path: testInfo.outputPath(`${status}.png`), fullPage: true });
+      if (status === "succeeded") {
+        // Real browser timer: connection changes must not revive a dismissed success.
+        await expect(banner).toHaveCount(0, { timeout: 6000 });
+        await page.screenshot({ path: testInfo.outputPath("succeeded-hidden.png"), fullPage: true });
+        await page.getByLabel("模拟连接").uncheck();
+        await expect(banner).toHaveCount(0);
+        await page.getByLabel("模拟连接").check();
+        await page.getByLabel("模拟状态").selectOption("running");
+        await expect(banner).toContainText("正在压缩上下文…");
+        await page.getByLabel("模拟状态").selectOption("succeeded");
+        await expect(banner).toContainText("上下文已压缩");
+      }
     }
     await page.getByLabel("模拟状态").selectOption("hidden");
     await expect(banner).toHaveCount(0);

@@ -189,6 +189,8 @@ export PI_ALLOWED_CLIENT_CIDRS=127.0.0.0/8,10.0.0.0/8
 
 ## 开发
 
+日常入口、专项门禁、先决条件与覆盖边界见[测试命令清单](docs/testing.md)。
+
 ```bash
 pnpm test
 pnpm typecheck
@@ -197,8 +199,10 @@ pnpm verify:release     # 需要真实 PostgreSQL 与 age 前置条件
 pnpm build
 pnpm --filter web test
 pnpm --filter web build
-pnpm e2e
+pnpm run e2e
 ```
+
+`pnpm run e2e` 使用本机已安装的 Chrome 顺序运行分组，保留已有 skip 守卫，默认排除长会话性能与最近会话恢复测试。rich-app/start-state 的 12 个测试在独立 rich 组使用隔离 mock 端口 5189/8089 执行；只有该组的测试进程及服务设置 `MOCK_SCENARIO=rich`。其它组和全量基线 discovery 显式清空该变量，即使调用者环境中已设置。失败不阻止后续组；原生 Playwright JSON 报告及汇总（通过/失败/跳过/未执行）保存在启动时打印的独立临时目录。使用 `pnpm run e2e -- --list` 可核验分组的 Playwright discovery，不启动服务或执行测试。
 
 专项离线命令与 PostgreSQL 门禁见 [docs/operations.md](docs/operations.md)、[docs/postgres-podman-test.md](docs/postgres-podman-test.md)和 `package.json`。
 
