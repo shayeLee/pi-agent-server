@@ -18,8 +18,8 @@ for (const width of [1280, 390]) {
       const toggle = page.getByTestId("theme-toggle");
       const opposite = colorScheme === "dark" ? "light" : "dark";
       const values = {
-        dark: { aria: "切换为亮色主题", icon: "sun", background: "rgb(25, 24, 23)" },
-        light: { aria: "切换为暗色主题", icon: "moon", background: "rgb(250, 249, 247)" },
+        dark: { aria: "切换为亮色主题", icon: "sun", background: "rgb(0, 0, 0)" },
+        light: { aria: "切换为暗色主题", icon: "moon", background: "rgb(255, 255, 255)" },
       } as const;
       const backgrounds = () => page.evaluate(() => [
         document.querySelector('[data-testid="app"]')!,

@@ -1,8 +1,8 @@
-/* Tailwind + shadcn theme layer; agent workspace chrome in workspace.css. Preflight disabled. */
+/* Tailwind + shadcn theme. Workspace chrome is utility classes; content.css is markdown/code/diff. Preflight disabled. */
 @import "tailwindcss/theme.css" layer(theme);
 @import "tailwindcss/utilities.css" layer(utilities);
 @import "./tokens.css";
-@import "./workspace.css";
+@import "./content.css";
 
 @layer base {
   * {
@@ -24,6 +24,35 @@
     line-height: 1.45;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
+  }
+
+  button,
+  input,
+  textarea,
+  select {
+    font-family: inherit;
+    font-size: inherit;
+    color: inherit;
+  }
+
+  button {
+    cursor: pointer;
+    border: 1px solid transparent;
+    background: transparent;
+    border-radius: var(--radius);
+  }
+
+  button:disabled {
+    cursor: default;
+    opacity: 0.45;
+  }
+
+  summary {
+    list-style: none;
+  }
+
+  summary::-webkit-details-marker {
+    display: none;
   }
 
   ::selection {
@@ -98,4 +127,29 @@
     font-family: var(--font-mono);
     font-size: 13px;
   }
+}
+
+/* Measured sidebar contracts: active row and focused controls differ by theme. */
+.session-item.active {
+  background-color: var(--session-active);
+  box-shadow: none;
+}
+
+.sidebar :is(.project-switcher, .session-list) button:focus,
+.sidebar :is(.project-switcher, .session-list) button:focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+
+.sidebar :is(.project-switcher, .session-list) button:focus-visible {
+  background-color: var(--sidebar-focus-fill);
+  color: var(--primary);
+}
+
+.sidebar .session-list .session-select,
+.sidebar .session-list .session-select:focus,
+.sidebar .session-list .session-select:focus-visible {
+  background-color: transparent;
+  outline: none;
+  box-shadow: none;
 }

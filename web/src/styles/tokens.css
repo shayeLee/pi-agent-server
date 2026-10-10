@@ -148,10 +148,53 @@
   --shadow-xl: 0 16px 40px -10px rgba(0, 0, 0, 0.1), 0 8px 16px -8px rgba(0, 0, 0, 0.06);
   --shadow-2xl: 0 24px 64px -12px rgba(0, 0, 0, 0.12);
 
-  --spacing: 0.24rem;
+  /* 4px step so Tailwind h-11 / size-11 stay 44px touch targets. */
+  --spacing: 0.25rem;
+
+  /* Aliases used by scoped content rendering (markdown, code, diffs). */
+  --bg-page: var(--background);
+  --bg-surface: var(--card);
+  --bg-raised: var(--muted);
+  --bg-hover: var(--accent);
+  --text-primary: var(--foreground);
+  --text-secondary: var(--muted-foreground);
+  --text-tertiary: var(--muted-foreground);
+  --line: var(--border);
+  --accent-solid-bg: var(--primary);
+  --accent-solid-fg: var(--primary-foreground);
+  --accent-soft: color-mix(in srgb, var(--primary) 12%, var(--background));
+  --danger: var(--destructive);
+  --warning: #ff9500;
+  --thinking: var(--muted-foreground);
+  --backdrop: rgba(0, 0, 0, 0.45);
+  --font-micro: 12px;
+  --font-small: 13px;
+  --font-body: 15px;
+  --font-ui: 13px;
+  --font-title: 15px;
+  --font-h1: 18px;
+  --font-h2: 16px;
+  --font-h3: 15px;
+  --font-mono-body: 13px;
+  --font-metric: 12px;
+  --space-4: 4px;
+  --space-8: 8px;
+  --space-12: 12px;
+  --space-16: 16px;
+  --space-24: 24px;
+  --radius-control: var(--radius);
+  --radius-panel: var(--radius-card);
+  --motion: 140ms cubic-bezier(0.4, 0, 0.2, 1);
+  --reading-max: 760px;
+  --user-bubble-max: min(520px, 76%);
+
+  /* Active session row. Light and dark must differ; dark is not a light-blue wash. */
+  --session-active: rgb(233, 238, 251);
+  /* Focused sidebar controls keep the calibrated surface the chevron suite measures. */
+  --sidebar-focus-fill: rgb(237, 234, 229);
 }
 
-.dark {
+:is(.dark, :root[data-theme="dark"]) {
   --background: var(--background-900);
   --foreground: var(--text-50);
   --card: var(--background-800);
@@ -201,4 +244,7 @@
   --shadow-lg: 0 8px 24px -8px rgba(0, 0, 0, 0.5), 0 4px 8px -4px rgba(0, 0, 0, 0.4);
   --shadow-xl: 0 16px 40px -10px rgba(0, 0, 0, 0.55), 0 8px 16px -8px rgba(0, 0, 0, 0.44);
   --shadow-2xl: 0 24px 64px -12px rgba(0, 0, 0, 0.6);
+
+  --session-active: rgb(35, 44, 59);
+  --sidebar-focus-fill: rgb(50, 47, 43);
 }
