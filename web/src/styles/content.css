@@ -933,7 +933,7 @@ button.new-session {
   padding: 0 12px;
   border: 1px solid #c8c8cc;
   border-radius: 10px;
-  background: var(--background);
+  background: transparent;
   color: var(--foreground);
   font-size: 13px;
   font-weight: 500;
