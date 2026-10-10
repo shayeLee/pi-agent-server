@@ -50,18 +50,18 @@ export function Parameters({ value, policy = {}, writeLanguage, editLanguage }: 
   </section>;
 }
 
-export function Result({ label, value, onViewRaw, language, log, initialFormat }: ResultProps & { language?: (text: string) => string | undefined; log?: boolean; initialFormat?: ToolTextFormat }) {
+export function Result({ label, value, onViewRaw, language, log, initialFormat, lineNumbers }: ResultProps & { language?: (text: string) => string | undefined; log?: boolean; initialFormat?: ToolTextFormat; lineNumbers?: boolean }) {
   if (value === undefined) return <div className="json-label">未提供{label}</div>;
   const content = value !== null && typeof value === "object" && "content" in value
     && Array.isArray(value.content) ? value.content : null;
   return (
     <section className="json-block" aria-label={label}>
       <div className="tool-result-text" data-testid="tool-result-text">
-        {typeof value === "string" ? <ToolResultText key={0} text={value} language={language?.(value)} log={log} initialFormat={initialFormat} /> : content ? (
+        {typeof value === "string" ? <ToolResultText key={0} text={value} language={language?.(value)} log={log} initialFormat={initialFormat} lineNumbers={lineNumbers} /> : content ? (
           content.map((block: unknown, index: number) => {
             if (block !== null && typeof block === "object" && "type" in block && block.type === "text"
               && "text" in block && typeof block.text === "string") {
-              return <ToolResultText key={index} text={block.text} language={language?.(block.text)} log={log} initialFormat={initialFormat} />;
+              return <ToolResultText key={index} text={block.text} language={language?.(block.text)} log={log} initialFormat={initialFormat} lineNumbers={lineNumbers} />;
             }
             return <div className="json-label" key={index}>非文本或未知内容（通过更多菜单查看原始数据）</div>;
           })

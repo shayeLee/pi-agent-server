@@ -282,7 +282,7 @@ export default function App() {
             {controller.sessions !== null && (
               <button
                 className={cn(
-                  "new-session workbench-new-session mx-4 mb-2 flex h-9 items-center gap-2 rounded-md border border-border bg-background px-3 text-[13px] font-medium hover:bg-accent",
+                  "new-session workbench-new-session mx-4 mb-2 flex h-10 items-center justify-center gap-2 rounded-lg border border-border bg-background px-3 text-[13px] font-medium hover:bg-accent",
                   sidebarCollapsed && "mx-auto size-10 justify-center px-0",
                   sidebarCollapsed && "max-[1179px]:mx-4 max-[1179px]:h-9 max-[1179px]:w-[calc(100%-2rem)] max-[1179px]:justify-start max-[1179px]:px-3",
                 )}

@@ -4,7 +4,14 @@ import { ToolCallCard } from "../components/ToolCallCard.js";
 import type { ToolCall } from "pi-agent-server/client";
 import { rawToolData } from "./raw.js";
 const make = (toolName: string): ToolCall => ({ toolCallId: "file", toolName, args: toolName === "write" ? { path: "a.PY", content: "" } : { path: "a.PY", oldText: "old", newText: "new" }, done: true, isError: false, partialResult: undefined, result: toolName === "write" ? "Successfully wrote to a.PY" : "Successfully replaced 1 block(s) in a.PY." });
-function expand(call: ToolCall) { const view = render(<ToolCallCard call={call} />); if (call.done) fireEvent.click(screen.getByRole("button", { name: /工具调用/ })); return view; }
+function expand(call: ToolCall) {
+  const view = render(<ToolCallCard call={call} />);
+  const header = screen.getByRole("button", { name: /工具调用/ });
+  // Failed cards start open. Toggle twice so the open state is a user choice and later success updates keep it.
+  if (header.getAttribute("aria-expanded") === "true") fireEvent.click(header);
+  if (header.getAttribute("aria-expanded") === "false") fireEvent.click(header);
+  return view;
+}
 describe("clean file presentation", () => {
   it.each(["edit", "write"])("%s receipt hidden, raw modal and clipboard unchanged", async name => {
     const call = make(name); const raw = rawToolData(call);

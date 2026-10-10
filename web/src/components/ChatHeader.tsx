@@ -21,17 +21,17 @@ export function ChatHeader({
   const { t } = useI18n();
   const panelLabel = traceActive ? t("chat.toggleRunHide") : t("chat.toggleRunShow");
   const tabClass = (active: boolean) => cn(
-    "chat-tab -mb-px border-b-2 px-2 pb-2.5 pt-3 text-[13px] leading-none",
-    active ? "active border-primary text-foreground" : "border-transparent text-muted-foreground hover:text-foreground",
+    "chat-tab px-2 text-[13px] leading-none",
+    active ? "active text-foreground" : "text-muted-foreground",
   );
   return (
-    <header className="chat-header workbench-chat-header flex h-12 shrink-0 items-end border-b border-border px-4" data-testid="chat-header">
-      <div className="workbench-topbar flex min-w-0 flex-1 items-end justify-between gap-3">
-        <div className="chat-header-left flex min-w-0 items-end gap-3">
-          <span className="session-title-main mb-2.5 min-w-0 truncate text-[15px] font-medium leading-none" data-testid="chat-session-title" title={resolveSessionDisplayTitle(session)}>
+    <header className="chat-header workbench-chat-header flex h-12 shrink-0 items-center border-b border-border px-4 max-[1179px]:pl-14" data-testid="chat-header">
+      <div className="workbench-topbar flex min-w-0 flex-1 items-center justify-between gap-3">
+        <div className="chat-header-left flex min-w-0 items-center gap-3">
+          <span className="session-title-main min-w-0 truncate text-[16px] font-semibold leading-none" data-testid="chat-session-title" title={resolveSessionDisplayTitle(session)}>
             {resolveSessionDisplayTitle(session)}
           </span>
-          <nav className="chat-tabs flex shrink-0 items-end" aria-label={t("chat.view")}>
+          <nav className="chat-tabs hidden" aria-label={t("chat.view")}>
             <button
               className={tabClass(!traceActive)}
               data-testid="chat-tab"
@@ -59,7 +59,7 @@ export function ChatHeader({
             </button>
           </nav>
         </div>
-        <div className="header-actions mb-1.5">
+        <div className="header-actions">
           <button
             className="btn-ghost btn-icon grid size-8 place-items-center rounded-md text-foreground hover:bg-accent max-[639px]:size-[44px]"
             data-testid="toggle-events"

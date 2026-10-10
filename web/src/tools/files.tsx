@@ -39,6 +39,6 @@ export function EditArguments({ value }: ArgumentsProps) {
 }
 export function ReadResult(props: ResultProps) {
   const args = record(props.args);
-  return <Result {...props} language={text => typeof args.language === "string" ? codeLanguage(args.language)
+  return <Result {...props} lineNumbers language={text => typeof args.language === "string" ? codeLanguage(args.language)
     : argumentLanguage(props.args) ?? (/^\s*(?:<!doctype\s+html\b[^>]*>\s*)?<html(?:\s|>)/i.test(text) ? "html" : undefined)} />;
 }

@@ -74,8 +74,8 @@ describe("ModelThinkingPicker", () => {
     expect(screen.getByRole("radio", { name: "xhigh" })).toBeInTheDocument();
 
     fireEvent.keyDown(screen.getByRole("radio", { name: "low" }), { key: "ArrowRight" });
-    expect(screen.getByRole("radio", { name: "high" })).toHaveFocus();
-    expect(onConfigChange).toHaveBeenCalledWith({ thinkingLevel: "high" });
+    expect(screen.getByRole("radio", { name: "medium" })).toHaveFocus();
+    expect(onConfigChange).toHaveBeenCalledWith({ thinkingLevel: "medium" });
   });
 
   it("可按 provider、model ID 或名称搜索，且无匹配时显示空状态", () => {

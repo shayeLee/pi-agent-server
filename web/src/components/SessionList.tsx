@@ -20,13 +20,13 @@ export function formatSessionTime(updatedAt: number, now: number = Date.now()): 
     return "刚刚";
   }
   if (diffMin < 60) {
-    return `${diffMin}分钟前`;
+    return `${diffMin} 分钟前`;
   }
   if (diffHour < 24) {
-    return `${diffHour}小时前`;
+    return `${diffHour} 小时前`;
   }
   if (diffDay < 30) {
-    return `${diffDay}天前`;
+    return `${diffDay} 天前`;
   }
 
   const date = new Date(updatedAt);
@@ -164,7 +164,7 @@ export function SessionList({
         <span>{t("nav.sessionsSection")}</span>
         <button
           type="button"
-          className="workbench-search-toggle grid h-[44px] w-[44px] shrink-0 place-items-center rounded-md p-0 text-muted-foreground hover:bg-sidebar-accent hover:text-foreground"
+          className="workbench-search-toggle grid size-7 shrink-0 place-items-center rounded-md p-0 text-muted-foreground hover:bg-sidebar-accent hover:text-foreground"
           aria-label={t("nav.searchSessions")}
           aria-expanded={searchOpen}
           onClick={() => setSearchOpen((open) => !open)}
@@ -197,7 +197,7 @@ export function SessionList({
       ) : (
         grouped.map((group) => (
           <div key={group.key} className="session-group" data-testid={`session-group-${group.key}`}>
-            <div className="session-group-label px-4 pb-1 pt-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{t(sessionGroupLabelKey[group.key])}</div>
+            <div className="session-group-label px-4 pb-1 pt-2 text-[12px] font-medium text-muted-foreground">{t(sessionGroupLabelKey[group.key])}</div>
             <ul className="session-items">
               {group.sessions.map((session) => (
                 <SessionRow key={session.id} session={session} activeId={activeId} onSelect={onSelect}

@@ -7,6 +7,7 @@ import { CodeBlock } from "./CodeBlock.js";
 import { formatToolDuration } from "../tools/duration.js";
 import { rawToolData } from "../tools/raw.js";
 import { toolPresentation } from "../tools/presentation.js";
+import { toolActionLabel, toolCallStartsOpen, toolResultBadge, type ToolBadge } from "../tools/chrome.js";
 // Existing callers/tests may keep these imports during migration.
 export { rawToolData, stringify } from "../tools/raw.js";
 
@@ -15,8 +16,21 @@ export { rawToolData, stringify } from "../tools/raw.js";
  * tool_start → 创建（done=false，展示 args）；tool_update → 流式 partialResult；
  * tool_end → 展示 result 并标记完成（done=true）。
  */
+function ResultBadge({ badge }: { badge: ToolBadge }) {
+  if (badge.kind === "passed") {
+    return <span className="tool-result-badge is-passed">{badge.text}</span>;
+  }
+  return (
+    <span className="tool-result-badge is-diff">
+      {badge.add > 0 && <span className="diff-add">+{badge.add}</span>}
+      {badge.del > 0 && <span className="diff-del">−{badge.del}</span>}
+    </span>
+  );
+}
+
 export const ToolCallCard = memo(function ToolCallCard({ call }: { call: ToolCall }) {
-  const [expanded, setExpanded] = useState(!call.done);
+  const startsOpen = toolCallStartsOpen(call);
+  const [expanded, setExpanded] = useState(startsOpen);
   const userToggled = useRef(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const [rawModalOpen, setRawModalOpen] = useState(false);
@@ -51,13 +65,14 @@ export const ToolCallCard = memo(function ToolCallCard({ call }: { call: ToolCal
     }
   }
   useEffect(() => {
-    if (!userToggled.current) setExpanded(!call.done);
-  }, [call.done]);
+    if (!userToggled.current) setExpanded(startsOpen);
+  }, [startsOpen]);
   const duration = call.done ? formatToolDuration(call.durationMs) : null;
   const durationTitle = `工具调用耗时：${call.durationMs} ms${call.toolName === "subagent_wait" ? "（本次 wait 调用，非子 agent 运行时长）" : ""}`;
   const status = call.done ? (call.isError ? "失败" : "已完成") : "进行中";
   const { header, Arguments, Result } = toolPresentation(call);
-  const { summary, badge, priorityLabels, preview, target, outcome } = header;
+  const { summary, badge, priorityLabels, preview, target } = header;
+  const resultBadge = toolResultBadge(call);
 
   return (
     <div
@@ -78,6 +93,7 @@ export const ToolCallCard = memo(function ToolCallCard({ call }: { call: ToolCal
         aria-label={`工具调用 ${call.toolName}，状态：${status}`}
       >
         <ToolStatusIcon done={call.done} isError={call.isError} />
+        <span className="tool-action">{toolActionLabel(call)}</span>
         <span className="tool-name" data-testid="tool-name" title={call.toolName}>
           {call.toolName}
         </span>
@@ -85,7 +101,7 @@ export const ToolCallCard = memo(function ToolCallCard({ call }: { call: ToolCal
         {(target || summary) && <span className={`tool-summary-preview${priorityLabels ? "" : " tool-target"}`} title={summary || target}>{priorityLabels
           ? <><span className="tool-parallel-names">{priorityLabels.join("、")}</span><span className="tool-parallel-preview">{preview}</span></>
           : <span>{target || summary}</span>}</span>}
-        {outcome && <span className={`tool-result-badge${call.isError ? " is-error" : ""}`} title={outcome}>{outcome}</span>}
+        {resultBadge && <ResultBadge badge={resultBadge} />}
         <span className="tool-header-icons">
           {duration !== null && <span className="tool-duration" title={durationTitle} aria-label={durationTitle}>{duration}</span>}
           <Icon name={expanded ? "down" : "chevron"} className="disclosure-chevron tool-toggle" />

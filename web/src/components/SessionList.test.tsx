@@ -46,7 +46,7 @@ describe("SessionList（会话列表）", () => {
     expect(time1).toHaveAttribute("title", formatFullSessionTime(sessions[0]!.updatedAt));
     expect(time1).toHaveAttribute("dateTime", new Date(sessions[0]!.updatedAt).toISOString());
 
-    expect(time2).toHaveTextContent("15分钟前");
+    expect(time2).toHaveTextContent("15 分钟前");
     expect(time2).toHaveAttribute("title", formatFullSessionTime(sessions[1]!.updatedAt));
     expect(time2).toHaveAttribute("dateTime", new Date(sessions[1]!.updatedAt).toISOString());
   });
@@ -99,16 +99,16 @@ describe("SessionList（会话列表）", () => {
     expect(formatSessionTime(base + 5000, base)).toBe("刚刚");
 
     // 分钟前 (1 ~ 59 min)
-    expect(formatSessionTime(base - 60 * 1000, base)).toBe("1分钟前");
-    expect(formatSessionTime(base - 59 * 60 * 1000, base)).toBe("59分钟前");
+    expect(formatSessionTime(base - 60 * 1000, base)).toBe("1 分钟前");
+    expect(formatSessionTime(base - 59 * 60 * 1000, base)).toBe("59 分钟前");
 
     // 小时前 (1 ~ 23 hour)
-    expect(formatSessionTime(base - 60 * 60 * 1000, base)).toBe("1小时前");
-    expect(formatSessionTime(base - 23 * 60 * 60 * 1000, base)).toBe("23小时前");
+    expect(formatSessionTime(base - 60 * 60 * 1000, base)).toBe("1 小时前");
+    expect(formatSessionTime(base - 23 * 60 * 60 * 1000, base)).toBe("23 小时前");
 
     // 天前 (1 ~ 29 day)
-    expect(formatSessionTime(base - 24 * 60 * 60 * 1000, base)).toBe("1天前");
-    expect(formatSessionTime(base - 29 * 24 * 60 * 60 * 1000, base)).toBe("29天前");
+    expect(formatSessionTime(base - 24 * 60 * 60 * 1000, base)).toBe("1 天前");
+    expect(formatSessionTime(base - 29 * 24 * 60 * 60 * 1000, base)).toBe("29 天前");
 
     // 超过30天，同一年：短日期 M月D日
     const sameYearOld = new Date("2025-01-15T08:00:00.000Z").getTime();
@@ -160,7 +160,7 @@ describe("SessionList（会话列表）", () => {
 
   it("标题与搜索按钮位于同一 header，展开后按会话标题过滤并可折叠", () => {
     setup();
-    const header = screen.getByText("会话历史").parentElement!;
+    const header = screen.getByText("会话").parentElement!;
     const toggle = screen.getByRole("button", { name: "搜索会话" });
     expect(header).toHaveClass("session-list-header");
     expect(header).toContainElement(toggle);

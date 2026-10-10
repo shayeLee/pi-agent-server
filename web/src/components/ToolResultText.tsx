@@ -14,10 +14,10 @@ export function DisplayModeToggle({ markdown, onToggle }: { markdown: boolean; o
   return <button type="button" className="tool-display-mode" aria-label="Markdown 展示" title={markdown ? "切换原文视图" : "切换 Markdown 视图"} aria-pressed={markdown}
     onClick={onToggle}><Icon name="markdown" /></button>;
 }
-export function ToolResultText({ text, language, log = false, initialFormat }: { text: string; language?: string; log?: boolean; initialFormat?: ToolTextFormat }) {
+export function ToolResultText({ text, language, log = false, initialFormat, lineNumbers = false }: { text: string; language?: string; log?: boolean; initialFormat?: ToolTextFormat; lineNumbers?: boolean }) {
   const [mode, setMode] = useState<"text" | "markdown" | null>(null);
-  if (log) return <CodeBlock code={text} language="bash" label="输出" />;
-  if (language) return <CodeBlock code={text} language={language} />;
+  if (log) return <CodeBlock code={text} language="bash" label="输出" emphasizeFail={/^\s*FAIL\b/m.test(text)} />;
+  if (language) return <CodeBlock code={text} language={language} lineNumbers={lineNumbers} />;
   const markdown = mode ? mode === "markdown" : initialFormat ? initialFormat === "markdown" : isMarkdownProse(text);
   return <div className="tool-prose">
     <DisplayModeToggle markdown={markdown} onToggle={() => setMode(markdown ? "text" : "markdown")} />

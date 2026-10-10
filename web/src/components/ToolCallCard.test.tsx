@@ -61,15 +61,17 @@ describe("ToolCallCard（工具调用流式卡片）", () => {
     const final = { ...base, done: true, result, isError };
     rerender(<ToolCallCard call={final} />);
     expect(screen.getByRole("img", { name: isError ? "失败" : "已完成" })).toBeInTheDocument();
-    expect(header).toHaveAttribute("aria-expanded", "false");
-    expect(header.querySelector(".tool-result-badge")?.textContent).toContain("still running");
-    expect(screen.queryByTestId("tool-result-text")).toBeNull();
+    expect(header).toHaveAttribute("aria-expanded", String(isError));
+    expect(header.querySelector(".tool-result-badge")).toBeNull();
+    if (isError) expect(screen.getByTestId("tool-result-text").textContent).toBe(result);
+    else expect(screen.queryByTestId("tool-result-text")).toBeNull();
     rerender(<ToolCallCard call={{ ...final }} />);
-    expect(header).toHaveAttribute("aria-expanded", "false");
+    expect(header).toHaveAttribute("aria-expanded", String(isError));
     fireEvent.click(header);
     rerender(<ToolCallCard call={{ ...final }} />);
-    expect(header).toHaveAttribute("aria-expanded", "true");
-    expect(screen.getByTestId("tool-result-text").textContent).toBe(result);
+    expect(header).toHaveAttribute("aria-expanded", String(!isError));
+    if (isError) expect(screen.queryByTestId("tool-result-text")).toBeNull();
+    else expect(screen.getByTestId("tool-result-text").textContent).toBe(result);
   });
   it("展开与收起保留同一参数和最新快照预览", () => {
     const base = card({ toolName: "bash", args: { command: "printf snapshots" }, partialResult: "first\nlatest" });
@@ -78,27 +80,29 @@ describe("ToolCallCard（工具调用流式卡片）", () => {
     const preview = () => header.querySelector(".tool-summary-preview");
     const badge = () => header.querySelector(".tool-result-badge");
     expect(preview()).toHaveTextContent("printf snapshots");
-    expect(badge()).toHaveTextContent("latest");
+    expect(badge()).toBeNull();
     const initial = preview();
     fireEvent.click(header);
     expect(preview()).toBe(initial);
     expect(preview()).toHaveTextContent("printf snapshots");
-    expect(badge()).toHaveTextContent("latest");
+    expect(badge()).toBeNull();
     rerender(<ToolCallCard call={{ ...base, partialResult: "first\nnew snapshot" }} />);
     expect(preview()).toHaveTextContent("printf snapshots");
-    expect(badge()).toHaveTextContent("new snapshot");
+    expect(badge()).toBeNull();
     fireEvent.click(header);
     expect(preview()).toHaveTextContent("printf snapshots");
-    expect(badge()).toHaveTextContent("new snapshot");
+    expect(badge()).toBeNull();
     rerender(<ToolCallCard call={{ ...base, done: true, result: "final" }} />);
     expect(preview()).toHaveTextContent("printf snapshots");
-    expect(badge()).toHaveTextContent("final");
+    expect(badge()).toBeNull();
   });
   it.each([false, true])("恢复历史完成工具初始收起（isError=%s）", (isError) => {
     render(<ToolCallCard call={card({ done: true, isError, result: "历史原文" })} />);
-    expect(screen.getByRole("button", { name: /工具调用/ })).toHaveAttribute("aria-expanded", "false");
-    expect(screen.queryByTestId("tool-result-text")).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: /工具调用/ }));
+    expect(screen.getByRole("button", { name: /工具调用/ })).toHaveAttribute("aria-expanded", String(isError));
+    if (!isError) {
+      expect(screen.queryByTestId("tool-result-text")).toBeNull();
+      fireEvent.click(screen.getByRole("button", { name: /工具调用/ }));
+    }
     expect(screen.getByTestId("tool-result-text").textContent).toBe("历史原文");
   });
   it.each([false, true])("手动选择 %s 不被 partial/done/error 或重渲染覆盖", (expanded) => {
@@ -128,7 +132,7 @@ describe("ToolCallCard（工具调用流式卡片）", () => {
     const icon = screen.getByRole("img", { name: label });
     expect(icon).toHaveClass(`tool-status-${state}`);
     expect(icon.querySelector("title")).toHaveTextContent(label);
-    expect(screen.getByRole("button", { name: `工具调用 subagent_wait，状态：${label}` })).toHaveAttribute("aria-expanded", String(!done));
+    expect(screen.getByRole("button", { name: `工具调用 subagent_wait，状态：${label}` })).toHaveAttribute("aria-expanded", String(!done || isError));
     expect(document.querySelector(".tool-status-pending,.tool-status-waiting")).toBeNull();
   });
   it.each([undefined, null, {}, []])("空参数 %j 隐藏整个区域", (args) => {
@@ -368,7 +372,7 @@ describe("ToolCallCard（工具调用流式卡片）", () => {
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
     const result = { content: [{ type: "text", text: "  第一块\n" }, { type: "image", data: "<img onerror=alert(1)>", mimeType: "image/png" }, { type: "text", text: "第二块\n末行" }], details: { nested: { unknown: 0 } } };
     render(<ToolCallCard call={card({ isError: true, done: true, result })} />);
-    fireEvent.click(screen.getByRole("button", { name: /工具调用/ }));
+    expand();
     const blocks = screen.getByTestId("tool-result-text").querySelectorAll("pre");
     expect(Array.from(blocks, block => block.textContent)).toEqual(["  第一块\n", "第二块\n末行"]);
     expect(screen.getByText(/非文本或未知内容/)).toBeVisible();
@@ -383,7 +387,7 @@ describe("ToolCallCard（工具调用流式卡片）", () => {
   it("复杂参数安全结构化，未知结果完整原值可展开", () => {
     const args = { command: "  <script>alert(1)</script>\n下一行", options: { flags: [false, 0, null] } };
     render(<ToolCallCard call={card({ args, result: { nested: { payload: [0, false, "原文"] } }, done: true, isError: true })} />);
-    fireEvent.click(screen.getByRole("button", { name: /工具调用/ }));
+    expand();
     expect(screen.getByText(args.command, { selector: ".tool-readable-value", normalizer: value => value }).textContent).toBe(args.command);
     expect(screen.getByTestId("tool-call-card").querySelector("script")).toBeNull();
     expect(screen.getByText("flags")).toBeVisible();

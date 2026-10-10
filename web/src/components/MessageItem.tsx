@@ -21,7 +21,7 @@ export const MessageItem = memo(function MessageItem({ item }: MessageItemProps)
     return (
       <div className="message-row row-user flex justify-end" data-testid={`message-${item.id}`}>
         <div className="message-user max-w-[min(520px,76%)]">
-          <div className="user-bubble whitespace-pre-wrap rounded-[10px] bg-muted px-3 py-2 text-[15px] leading-relaxed">
+          <div className="user-bubble whitespace-pre-wrap rounded-xl px-3 py-2 text-[15px] leading-relaxed">
             {item.text && <div>{item.text}</div>}
             {readMessageImages(item.images).length > 0 && <div className="message-images">
               {readMessageImages(item.images).map((image, index) => <button type="button" key={index}

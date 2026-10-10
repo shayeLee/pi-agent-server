@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, useState } from "react";
 
 import { Icon } from "./Icon.js";
 import type { ModelInfo } from "pi-agent-server/client";
+import { sortThinkingLevels } from "../tools/chrome.js";
 
 export type ModelThinkingPickerProps = {
   models: ModelInfo[];
@@ -89,10 +90,10 @@ export function ModelThinkingPicker({
   const filteredModels = availableModels.filter((model) =>
     `${model.provider}/${model.id} ${model.name}`.toLowerCase().includes(query.trim().toLowerCase()),
   );
-  const availableThinkingLevels = [
+  const availableThinkingLevels = sortThinkingLevels([
+    ...thinkingLevels,
     ...(defaultThinkingLevel ? [defaultThinkingLevel] : []),
-    ...thinkingLevels.filter((level) => level !== defaultThinkingLevel),
-  ];
+  ]);
 
   function updatePanelLayout() {
     const trigger = triggerRef.current?.getBoundingClientRect();
@@ -146,7 +147,7 @@ export function ModelThinkingPicker({
       <button
         ref={triggerRef}
         type="button"
-        className="model-thinking-trigger chevron-trigger inline-flex min-h-8 max-w-full items-center gap-2 rounded-md border border-border bg-background px-2.5 py-1 text-left text-[13px] text-foreground hover:border-primary hover:bg-accent group-data-[open=true]:border-primary max-[639px]:min-h-[44px]"
+        className="model-thinking-trigger chevron-trigger inline-flex min-h-8 max-w-full items-center gap-1 rounded-md border-0 bg-transparent px-1 py-1 text-left text-[13px] text-muted-foreground hover:text-foreground max-[639px]:min-h-[44px]"
         data-testid="model-thinking-trigger"
         aria-label={`模型：${modelLabel}，思考深度：${selectedThinking || "未设置"}`}
         aria-haspopup="dialog"
@@ -160,9 +161,14 @@ export function ModelThinkingPicker({
           setOpen((current) => !current);
         }}
       >
-        <span className="model-thinking-model min-w-0 flex-1 font-mono break-all text-left text-foreground">{modelLabel}</span>
-        <span className="model-thinking-level shrink-0 border-l border-border pl-2 font-mono text-[12px] text-muted-foreground">{selectedThinking}</span>
-        <Icon name="down" className="disclosure-chevron" />
+        <span className="model-thinking-model inline-flex min-w-0 items-center gap-0.5 text-foreground">
+          <span className="truncate">{modelLabel}</span>
+          <Icon name="down" className="disclosure-chevron" />
+        </span>
+        <span className="model-thinking-level inline-flex shrink-0 items-center gap-0.5">
+          <span>{selectedThinking}</span>
+          <Icon name="down" className="disclosure-chevron" />
+        </span>
       </button>
       {open && (
         <div id={panelId} className="model-thinking-panel fixed z-[80] flex flex-col gap-3 overflow-hidden rounded-md border border-border bg-popover p-3 shadow-md" style={{ maxHeight: panelLayout.maxHeight, left: panelLayout.left, width: panelLayout.width, top: panelLayout.top, bottom: panelLayout.bottom }} role="dialog" aria-label="模型与思考深度">
