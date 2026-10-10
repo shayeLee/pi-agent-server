@@ -2,7 +2,7 @@ import { useState } from "react";
 import { createRoot } from "react-dom/client";
 import { ThinkingRow } from "../src/components/ThinkingRow.js";
 import { ToolCallCard } from "../src/components/ToolCallCard.js";
-import "../src/styles.css";
+import "../src/styles/globals.css";
 import "./diff-thinking-cleanup.css";
 
 document.documentElement.dataset.theme = new URLSearchParams(location.search).get("theme") === "dark" ? "dark" : "light";

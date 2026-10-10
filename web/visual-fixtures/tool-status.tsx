@@ -1,7 +1,7 @@
 // Isolated presentation fixture: real production component, no API/model calls.
 import { createRoot } from "react-dom/client";
 import { ToolCallCard } from "../src/components/ToolCallCard.js";
-import "../src/styles.css";
+import "../src/styles/globals.css";
 document.documentElement.dataset.theme = new URLSearchParams(location.search).get("theme") ?? "light";
 createRoot(document.getElementById("root")!).render(<main style={{ padding: 24, maxWidth: 720, margin: "auto" }}>
   <button id="start">Keyboard start</button>

@@ -1,7 +1,7 @@
 // Isolated presentation fixture; never contacts an API or runs these sample commands.
 import { createRoot } from "react-dom/client";
 import { ToolCallCard } from "../src/components/ToolCallCard.js";
-import "../src/styles.css";
+import "../src/styles/globals.css";
 const theme = new URLSearchParams(location.search).get("theme") === "dark" ? "dark" : "light";
 document.documentElement.dataset.theme = theme;
 export const waitText = "2/2 background subagent(s) finished.\n\n### [lite] run 2 — completed\n\n已创建 `/Users/mz/pi-default-project/lite-smoke-test.txt`。\n\n使用的命令：文件写入工具（`write`），随后使用 `read` 读回确认。\n读回结果：`lite ok`\n\n---\n\n### [reviewer] run 3 — completed\n\n### 1. [P1] 配置加载可执行任意代码\n- **定位**：`load_config()`，第 20 行：`eval(f.read())`。\n- **风险**：不可信配置可执行代码。\n- **建议**：使用安全的数据解析器。";

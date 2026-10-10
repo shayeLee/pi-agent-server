@@ -7,7 +7,6 @@ import "@fontsource/jetbrains-mono/500.css";
 import { AppRoutes } from "./routing/AppRoutes.js";
 import { I18nProvider } from "./i18n/I18nProvider.js";
 import "./styles/globals.css";
-import "./styles.css";
 
 const root = document.getElementById("root");
 if (!root) throw new Error("未找到 #root 挂载点");

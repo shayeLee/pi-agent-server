@@ -4,7 +4,7 @@ import type { TimelineItem } from "pi-agent-server/client";
 import { MessageItem } from "../src/components/MessageItem.js";
 import { ToolCallCard } from "../src/components/ToolCallCard.js";
 import { EventLog } from "../src/components/EventLog.js";
-import "../src/styles.css";
+import "../src/styles/globals.css";
 import "./rich.css";
 
 const theme = new URLSearchParams(location.search).get("theme");

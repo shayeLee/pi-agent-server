@@ -7,7 +7,7 @@ import { ModelThinkingPicker } from "../src/components/ModelThinkingPicker.js";
 import { SelectMenu } from "../src/components/SelectMenu.js";
 import { EventLog } from "../src/components/EventLog.js";
 import { SessionList } from "../src/components/SessionList.js";
-import "../src/styles.css";
+import "../src/styles/globals.css";
 const noop = () => {};
 document.documentElement.dataset.theme = new URLSearchParams(location.search).get("theme") ?? "light";
 const model = { provider: "fixture", id: "complete-model-id-with-long-name-".repeat(3), name: "Fixture" };

@@ -2,7 +2,7 @@
 import { useState } from "react";
 import { createRoot } from "react-dom/client";
 import { MessageItem } from "../src/components/MessageItem.js";
-import "../src/styles.css";
+import "../src/styles/globals.css";
 
 document.documentElement.dataset.theme = new URLSearchParams(location.search).get("theme") ?? "light";
 function Fixture() {

@@ -3,7 +3,7 @@ import { createRoot } from "react-dom/client";
 import { useState } from "react";
 import type { ToolCall } from "pi-agent-server/client";
 import { ToolCallCard } from "../src/components/ToolCallCard.js";
-import "../src/styles.css";
+import "../src/styles/globals.css";
 document.documentElement.dataset.theme = new URLSearchParams(location.search).get("theme") ?? "light";
 const base: ToolCall = { toolCallId: "", toolName: "bash", args: { command: "printf 'offline duration fixture with a long summary that must yield before the tool name'" }, partialResult: "waiting for fixture update", result: "fixture output", isError: false, done: true };
 const calls: ToolCall[] = [

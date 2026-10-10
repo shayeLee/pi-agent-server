@@ -3,7 +3,7 @@ import { useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { Chat } from "../src/components/Chat.js";
 import type { CompactionState } from "../src/components/CompactionBanner.js";
-import "../src/styles.css";
+import "../src/styles/globals.css";
 
 document.documentElement.dataset.theme = new URLSearchParams(location.search).get("theme") ?? "light";
 function Fixture() {

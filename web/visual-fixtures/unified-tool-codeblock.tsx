@@ -3,7 +3,7 @@ import { useState } from "react";
 import { createRoot } from "react-dom/client";
 import { ToolCallCard } from "../src/components/ToolCallCard.js";
 import { Markdown } from "../src/components/Markdown.js";
-import "../src/styles.css";
+import "../src/styles/globals.css";
 const theme = new URLSearchParams(location.search).get("theme") === "dark" ? "dark" : "light";
 document.documentElement.dataset.theme = theme;
 export const partial = "### stdout, not Markdown\n`literal` and ``` fences\n  aligned   spaces\n";

@@ -1,61 +1,40 @@
-/* =====================================================================
-   遗留工作区样式（迁移前仍生效）。新规范见仓库根目录 DESIGN.md；
-   新 UI 使用 web/src/styles/tokens.css + globals.css（Pinguo/shadcn）。
-   单一阅读列（760px）+ 同轴 Composer；暖中性双层背景 + 单一蓝强调；
-   用户自然宽轻底右对齐，助手正文无卡片左对齐；无来源槽/横带/反相/网格。
-   本文件为唯一生效的视觉规范层，替代此前 Crossband 视觉方案。
-   ===================================================================== */
+/* Phase 2 agent workspace: layout + conversation chrome. Colors/fonts from tokens.css. */
 
-.subagent-notification { align-self: stretch; min-width: 0; padding: 14px 18px; border-left: 2px solid var(--line); background: var(--bg-raised); border-radius: 4px; overflow-wrap: anywhere; }
-.subagent-notification-label { display: flex; align-items: center; gap: 7px; color: var(--text-secondary); font-size: 12px; margin-bottom: 10px; }
+.subagent-notification { align-self: stretch; min-width: 0; padding: 10px 12px; border: 1px solid var(--line); border-left: 2px solid var(--accent); background: var(--bg-raised); border-radius: var(--radius-card); overflow-wrap: anywhere; }
+.subagent-notification-label { display: flex; align-items: center; gap: 7px; color: var(--text-secondary); font-size: 12px; margin-bottom: 8px; }
 .subagent-notification-label > .tool-display-mode { flex: none; margin: 0 0 0 auto; padding: 2px 4px; }
 .subagent-notification .markdown { font-size: 13px; }
 .subagent-notification .markdown h3 { font-size: 14px; }
 
 :root {
-  /* ---------- 色彩（亮色「纸白」） ---------- */
-  --bg-page: #FAF9F7;
-  --bg-surface: #FFFFFF;
-  --bg-raised: #F2F0EC;
-  --bg-hover: #EDEAE5;
-
-  --text-primary: #1E1D1B;
-  --text-secondary: #5B5852;
-  --text-tertiary: #8B867E;
-
-  --line: #E4E1DA;
-
-  --accent: #2A55C8;
-  --accent-hover: #23489F;
-  --accent-solid-bg: #2A55C8;
-  --accent-solid-fg: #FFFFFF;
-  --accent-soft: #E9EEFB;
-
-  --success: #2E7D57;
-  --warning: #8A6212;
-  --danger: #B3392F;
-  --thinking: #4A5A7A;
-
-  --backdrop: rgba(30, 28, 25, 0.45);
-
-  /* ---------- 字体 ---------- */
-  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC",
-    "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
-  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
-
-  /* ---------- 字号 ---------- */
+  --bg-page: var(--background);
+  --bg-surface: var(--card);
+  --bg-raised: var(--muted);
+  --bg-hover: var(--accent);
+  --text-primary: var(--foreground);
+  --text-secondary: var(--muted-foreground);
+  --text-tertiary: var(--muted-foreground);
+  --line: var(--border);
+  --accent: var(--primary);
+  --accent-hover: color-mix(in srgb, var(--primary) 88%, black);
+  --accent-solid-bg: var(--primary);
+  --accent-solid-fg: var(--primary-foreground);
+  --accent-soft: color-mix(in srgb, var(--primary) 12%, var(--background));
+  --success: var(--success);
+  --warning: #ff9500;
+  --danger: var(--destructive);
+  --thinking: var(--muted-foreground);
+  --backdrop: rgba(0, 0, 0, 0.45);
   --font-micro: 12px;
   --font-small: 13px;
-  --font-body: 16px;
-  --font-ui: 14px;
-  --font-title: 18px;
-  --font-h1: 22px;
-  --font-h2: 19px;
-  --font-h3: 17px;
-  --font-mono-body: 14px;
-  --font-metric: 13px;
-
-  /* ---------- 间距 ---------- */
+  --font-body: 15px;
+  --font-ui: 13px;
+  --font-title: 15px;
+  --font-h1: 18px;
+  --font-h2: 16px;
+  --font-h3: 15px;
+  --font-mono-body: 13px;
+  --font-metric: 12px;
   --space-4: 4px;
   --space-8: 8px;
   --space-12: 12px;
@@ -65,58 +44,17 @@
   --space-32: 32px;
   --space-48: 48px;
   --space-64: 64px;
-
-  /* ---------- 圆角与动效 ---------- */
-  --radius-control: 8px;
-  --radius-panel: 6px;
+  --radius-control: var(--radius);
+  --radius-panel: var(--radius-card);
   --motion: 140ms cubic-bezier(0.4, 0, 0.2, 1);
-
-  /* ---------- 宽度与几何 ---------- */
   --sidebar-width: 264px;
   --reading-max: 760px;
   --user-bubble-max: min(520px, 76%);
   --panel-width: 380px;
-
-  /* App 内联样式驱动的实际布局宽度（可拖拽） */
   --layout-sidebar-width: 264px;
   --layout-sidebar-rail: 56px;
   --layout-inspector-width: 0px;
-
-  --header-height: 56px;
-
-  /* 阴影仅用于浮层 */
-  --shadow-md: 0 6px 18px rgba(30, 28, 25, 0.14), 0 0 0 1px rgba(30, 28, 25, 0.05);
-  --shadow-lg: 0 12px 32px rgba(30, 28, 25, 0.18);
-}
-
-[data-theme="dark"] {
-  /* ---------- 色彩（暗色「暖墨」） ---------- */
-  --bg-page: #191817;
-  --bg-surface: #211F1D;
-  --bg-raised: #2A2825;
-  --bg-hover: #322F2B;
-
-  --text-primary: #EFECE6;
-  --text-secondary: #B0ABA2;
-  --text-tertiary: #89847B;
-
-  --line: #37342F;
-
-  --accent: #8FB0FF;
-  --accent-hover: #A9C3FF;
-  --accent-solid-bg: #8FB0FF;
-  --accent-solid-fg: #141311;
-  --accent-soft: #232C3B;
-
-  --success: #7BC9A0;
-  --warning: #E0B25C;
-  --danger: #F09A90;
-  --thinking: #9FA8BC;
-
-  --backdrop: rgba(8, 8, 7, 0.6);
-
-  --shadow-md: 0 8px 22px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(0, 0, 0, 0.3);
-  --shadow-lg: 0 16px 36px rgba(0, 0, 0, 0.55);
+  --header-height: 48px;
 }
 
 /* =====================================================================
@@ -144,9 +82,8 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
-/* 暗色主题挂在 .app-shell 上；同步页面底色，避免超宽留白区与弹性滚动露出亮色。 */
 body:has(.app-shell[data-theme="dark"]) {
-  background: #191817;
+  background: var(--background);
 }
 
 ::selection {
@@ -658,6 +595,15 @@ select:focus {
 
 .app-shell.sidebar-collapsed.mobile-sidebar-open .session-list-header > span {
   display: inline;
+}
+
+.session-group-label {
+  padding: var(--space-8) var(--space-16) var(--space-4);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  text-transform: none;
+  color: var(--text-tertiary);
 }
 
 .workbench-search-toggle {
