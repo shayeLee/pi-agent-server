@@ -49,3 +49,20 @@ volta run pnpm --filter web exec playwright test --config playwright.recent.conf
 - 在仓库根目录运行，依赖已安装，并准备好 Chrome。
 - PostgreSQL 测试需设置 `PI_TEST_PG_URL`，仅使用专用、可销毁的测试库，绝不使用生产库；备份类还需匹配版本的 PG 工具及 age。
 - PostgreSQL 前置条件详见 [postgres-podman-test.md](postgres-podman-test.md)。
+
+## Linux 注意事项
+
+在 Linux（如 Debian/Ubuntu）上让 `volta run pnpm test` 全部通过，还需要：
+
+- 安装 `age`（含 `age-keygen`）和 PostgreSQL 16 客户端工具（`pg_dump`/`pg_restore`），并让 16 版优先出现在 `PATH` 中：单测里的假 `pg_dump` 报告 16.x，版本不匹配会失败。
+- 把 `TMPDIR` 指向家目录下的私有目录：备份暂存会检查上级目录，拒绝 `/tmp` 这类带 sticky 位的共享目录。
+- 机器负载较高时放宽超时：`migrate-cli` 等用例会超过默认的 5 秒。
+
+```bash
+export PATH="/usr/lib/postgresql/16/bin:$PATH"
+export TMPDIR="$HOME/.cache/pi-test-tmp"
+mkdir -p "$TMPDIR" && chmod 700 "$TMPDIR"
+volta run pnpm test --testTimeout=20000
+```
+
+注意不要写成 `pnpm test -- --testTimeout=20000`，多出的 `--` 会让超时参数失效。
