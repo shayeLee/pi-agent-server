@@ -28,12 +28,12 @@ const paths = {
   sun: "M16 12a4 4 0 1 1-8 0 4 4 0 0 1 8 0M12 2v2m0 16v2M2 12h2m16 0h2M5 5l1.5 1.5m11 11L19 19M5 19l1.5-1.5m11-11L19 5",
   moon: "M20 15A9 9 0 0 1 9 4a9 9 0 1 0 11 11Z",
 } as const;
-export type IconName = keyof typeof paths | "stop" | "dot";
+export type IconName = keyof typeof paths | "stop" | "dot" | "caret";
 /** Compatibility facade; mapping is owned by the pure tool metadata registry. */
 export { toolIcon } from "../tools/metadata.js";
 /** Decorative only: the containing control owns its accessible name. */
 export function Icon({ name, size = 16, className = "" }: { name: IconName; size?: number; className?: string }) {
   return <svg data-icon={name} className={`ui-icon ${className}`} width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
-    {name === "stop" ? <rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" stroke="none" /> : name === "dot" ? <circle cx="12" cy="12" r="3" fill="currentColor" stroke="none" /> : <path d={paths[name]} />}
+    {name === "stop" ? <rect x="6" y="6" width="12" height="12" rx="2" fill="currentColor" stroke="none" /> : name === "dot" ? <circle cx="12" cy="12" r="3" fill="currentColor" stroke="none" /> : name === "caret" ? <rect x="11" y="3" width="2" height="18" rx="1" fill="currentColor" stroke="none" /> : <path d={paths[name]} />}
   </svg>;
 }

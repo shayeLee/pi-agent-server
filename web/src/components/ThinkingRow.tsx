@@ -41,7 +41,7 @@ export function ThinkingRow({ thinking }: ThinkingRowProps) {
       {visible && (
         <div className="thinking-body" data-testid={`thinking-body-${thinking.id}`}>
           {thinking.text}
-          {thinking.streaming && <Icon name="dot" className="streaming-cursor" />}
+          {thinking.streaming && <Icon name="caret" className="streaming-cursor" />}
         </div>
       )}
     </div>

@@ -168,7 +168,7 @@ export function SelectMenu({
       <button
         ref={triggerRef}
         type="button"
-        className="select-menu-trigger chevron-trigger inline-flex w-full min-h-8 items-center gap-1.5 rounded-md border border-border bg-background px-2.5 py-1 text-left text-[13px] outline-none"
+        className="select-menu-trigger chevron-trigger inline-flex w-full min-h-8 items-center gap-1.5 rounded-md border border-border bg-background px-2.5 py-1 text-left text-[13px] text-foreground outline-none hover:border-primary hover:bg-accent"
         aria-label={ariaLabel}
         aria-haspopup="listbox"
         aria-expanded={open}
@@ -181,7 +181,7 @@ export function SelectMenu({
         onKeyDown={handleTriggerKeyDown}
       >
         <span className="select-menu-label min-w-0 flex-1 truncate">{selected?.label ?? placeholder}</span>
-        <Icon name="down" size={12} className="disclosure-chevron" />
+        <Icon name="down" size={16} className="disclosure-chevron text-muted-foreground" />
       </button>
       {open && !isDisabled && (
         <div

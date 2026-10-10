@@ -101,7 +101,8 @@
   --secondary: var(--background-200);
   --secondary-foreground: var(--text-800);
   --muted: var(--background-200);
-  --muted-foreground: var(--text-400);
+  /* Secondary copy must clear 4.5:1 on white (dates, args, placeholders, previews). */
+  --muted-foreground: #5c5854;
   --accent: var(--background-100);
   --accent-foreground: var(--text-800);
   --destructive: var(--state-error);
@@ -195,46 +196,47 @@
 }
 
 :is(.dark, :root[data-theme="dark"]) {
-  --background: var(--background-900);
-  --foreground: var(--text-50);
-  --card: var(--background-800);
-  --card-foreground: var(--text-50);
-  --popover: var(--background-700);
-  --popover-foreground: var(--text-50);
+  /* Canvas sits off pure black. Sidebar, bubbles, and the composer share one step up. */
+  --background: #141416;
+  --foreground: #e6e6e8;
+  --card: #1e1e22;
+  --card-foreground: #e6e6e8;
+  --popover: #2a2a2e;
+  --popover-foreground: #e6e6e8;
 
-  --primary: var(--brand-400);
-  --primary-foreground: var(--background-900);
-  --secondary: var(--background-800);
-  --secondary-foreground: var(--text-50);
-  --muted: var(--background-800);
-  --muted-foreground: var(--text-400);
-  --accent: var(--background-700);
-  --accent-foreground: var(--text-50);
+  --primary: #6a96c9;
+  --primary-foreground: #141416;
+  --secondary: #1e1e22;
+  --secondary-foreground: #e6e6e8;
+  --muted: #1e1e22;
+  --muted-foreground: #b7b3ae;
+  --accent: #2a2a2e;
+  --accent-foreground: #e6e6e8;
   --destructive: var(--state-error-dark);
   --destructive-foreground: var(--state-error-foreground);
   --success: var(--state-success-dark);
   --success-foreground: var(--state-success-foreground);
-  --border: var(--background-700);
-  --input: var(--background-700);
-  --ring: var(--brand-400);
+  --border: #34343a;
+  --input: #34343a;
+  --ring: #6a96c9;
 
   --icon: var(--icon-50);
   --icon-muted: var(--icon-500);
 
   --chart-1: var(--state-success-dark);
-  --chart-2: var(--brand-400);
+  --chart-2: #6a96c9;
   --chart-3: #ff9f0a;
   --chart-4: #5e5ce6;
   --chart-5: #bf5af2;
 
-  --sidebar: var(--background-800);
-  --sidebar-foreground: var(--text-50);
-  --sidebar-primary: var(--brand-400);
-  --sidebar-primary-foreground: var(--background-900);
-  --sidebar-accent: var(--background-700);
-  --sidebar-accent-foreground: var(--text-50);
-  --sidebar-border: var(--background-700);
-  --sidebar-ring: var(--brand-400);
+  --sidebar: #1e1e22;
+  --sidebar-foreground: #e6e6e8;
+  --sidebar-primary: #6a96c9;
+  --sidebar-primary-foreground: #141416;
+  --sidebar-accent: #2a2a2e;
+  --sidebar-accent-foreground: #e6e6e8;
+  --sidebar-border: #34343a;
+  --sidebar-ring: #6a96c9;
 
   --shadow-2xs: 0 1px 2px -1px rgba(0, 0, 0, 0.3);
   --shadow-xs: 0 1px 2px 0 rgba(0, 0, 0, 0.3);

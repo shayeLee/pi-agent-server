@@ -132,6 +132,7 @@
 /* Measured sidebar contracts: active row and focused controls differ by theme. */
 .session-item.active {
   background-color: var(--session-active);
+  border-radius: 8px;
   box-shadow: none;
 }
 

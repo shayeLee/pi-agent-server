@@ -146,7 +146,7 @@ export function ModelThinkingPicker({
       <button
         ref={triggerRef}
         type="button"
-        className="model-thinking-trigger chevron-trigger inline-flex min-h-8 max-w-full items-center gap-2 rounded-md border border-transparent bg-muted px-2.5 py-1 text-left text-[13px] text-muted-foreground hover:border-primary hover:text-primary group-data-[open=true]:border-primary group-data-[open=true]:text-primary max-[639px]:min-h-[44px]"
+        className="model-thinking-trigger chevron-trigger inline-flex min-h-8 max-w-full items-center gap-2 rounded-md border border-border bg-background px-2.5 py-1 text-left text-[13px] text-foreground hover:border-primary hover:bg-accent group-data-[open=true]:border-primary max-[639px]:min-h-[44px]"
         data-testid="model-thinking-trigger"
         aria-label={`模型：${modelLabel}，思考深度：${selectedThinking || "未设置"}`}
         aria-haspopup="dialog"
@@ -160,7 +160,7 @@ export function ModelThinkingPicker({
           setOpen((current) => !current);
         }}
       >
-        <span className="model-thinking-model min-w-0 flex-1 font-mono break-all text-left">{modelLabel}</span>
+        <span className="model-thinking-model min-w-0 flex-1 font-mono break-all text-left text-foreground">{modelLabel}</span>
         <span className="model-thinking-level shrink-0 border-l border-border pl-2 font-mono text-[12px] text-muted-foreground">{selectedThinking}</span>
         <Icon name="down" className="disclosure-chevron" />
       </button>

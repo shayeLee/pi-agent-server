@@ -244,7 +244,7 @@ export default function App() {
           ? "max-[1179px]:visible max-[1179px]:translate-x-0 max-[1179px]:items-stretch"
           : "max-[1179px]:invisible max-[1179px]:-translate-x-[102%]",
       )} data-testid="sidebar">
-        <div className={cn("sidebar-header workbench-sidebar-header flex h-12 shrink-0 items-center justify-between gap-2 px-3", sidebarCollapsed && "w-full justify-center px-1")}>
+        <div className={cn("sidebar-header workbench-sidebar-header flex h-12 shrink-0 items-center justify-between gap-2 px-4", sidebarCollapsed && "w-full justify-center px-1")}>
           <div className="brand workbench-brand flex min-w-0 items-center gap-2">
             <span className="brand-mark workbench-brand-mark grid size-6 place-items-center rounded-md bg-primary text-[12px] font-semibold text-primary-foreground" aria-hidden="true">π</span>
             <span className={cn("brand-text workbench-brand-title truncate font-mono text-[12px] font-semibold text-muted-foreground", sidebarCollapsed && "hidden max-[1179px]:inline")}>{t("app.brand")}</span>
@@ -262,12 +262,9 @@ export default function App() {
             <Icon name="sidebar" />
           </button>
         </div>
-        <button type="button" className="theme-toggle mx-3 mb-2 grid size-8 place-items-center self-start rounded-md text-muted-foreground hover:bg-sidebar-accent" data-testid="theme-toggle"
-          aria-label={theme === "dark" ? t("theme.toggleToLight") : t("theme.toggleToDark")}
-          onClick={toggleTheme}><Icon name={theme === "dark" ? "sun" : "moon"} /></button>
         {controller.projects === null || controller.activeProjectId === null ? (
           controller.projectsError ? (
-            <div className="project-error mx-3 rounded-md border border-destructive/30 bg-destructive/10 p-2 text-[12px]" role="alert" data-testid="projects-error">
+            <div className="project-error mx-4 rounded-md border border-destructive/30 bg-destructive/10 p-2 text-[12px]" role="alert" data-testid="projects-error">
               <p className="project-error-text">{controller.projectsError}</p>
               <button
                 className="btn-ghost project-retry"
@@ -285,9 +282,9 @@ export default function App() {
             {controller.sessions !== null && (
               <button
                 className={cn(
-                  "new-session workbench-new-session mx-3 mb-2 flex h-9 items-center gap-2 rounded-md border border-border bg-background px-3 text-[13px] font-medium hover:bg-accent",
+                  "new-session workbench-new-session mx-4 mb-2 flex h-9 items-center gap-2 rounded-md border border-border bg-background px-3 text-[13px] font-medium hover:bg-accent",
                   sidebarCollapsed && "mx-auto size-10 justify-center px-0",
-                  sidebarCollapsed && "max-[1179px]:mx-3 max-[1179px]:h-9 max-[1179px]:w-[calc(100%-1.5rem)] max-[1179px]:justify-start max-[1179px]:px-3",
+                  sidebarCollapsed && "max-[1179px]:mx-4 max-[1179px]:h-9 max-[1179px]:w-[calc(100%-2rem)] max-[1179px]:justify-start max-[1179px]:px-3",
                 )}
                 data-testid="new-session"
                 disabled={!canCreateSession}
@@ -301,7 +298,7 @@ export default function App() {
             )}
             {controller.creationNotice && <small id="project-creation-notice" role="status">{controller.creationNotice}</small>}
             <div className={cn("workbench-nav-body flex min-h-0 flex-1 flex-col overflow-hidden", sidebarCollapsed && "hidden max-[1179px]:flex")}>
-              <div className="workbench-section-header pb-2 pl-4 pr-[2px] pt-1 text-[12px] font-semibold text-muted-foreground">{t("nav.projectsSection")}</div>
+              <div className="workbench-section-header px-4 pb-2 pt-1 text-[12px] font-semibold text-muted-foreground">{t("nav.projectsSection")}</div>
               {controller.projects && (
                 <ProjectSwitcher
                   projects={controller.projects}
@@ -313,7 +310,7 @@ export default function App() {
               )}
               {controller.sessions === null ? (
                 <>
-                  <div className="workbench-section-header pb-2 pl-4 pr-[2px] pt-1 text-[12px] font-semibold text-muted-foreground">{t("nav.sessionsSection")}</div>
+                  <div className="workbench-section-header px-4 pb-2 pt-1 text-[12px] font-semibold text-muted-foreground">{t("nav.sessionsSection")}</div>
                   <SessionListSkeleton />
                 </>
               ) : (
@@ -329,6 +326,15 @@ export default function App() {
             </div>
           </>
         )}
+        <div className={cn("sidebar-footer mt-auto w-full shrink-0 border-t border-sidebar-border px-4 py-2", sidebarCollapsed && "px-1")}>
+          <button type="button" className={cn("theme-toggle flex h-9 w-full items-center gap-2 rounded-md px-2 text-[13px] text-foreground hover:bg-sidebar-accent", sidebarCollapsed && "justify-center px-0")} data-testid="theme-toggle"
+            aria-label={theme === "dark" ? t("theme.toggleToLight") : t("theme.toggleToDark")}
+            title={theme === "dark" ? t("theme.toggleToLight") : t("theme.toggleToDark")}
+            onClick={toggleTheme}>
+            <Icon name={theme === "dark" ? "sun" : "moon"} />
+            <span className={cn(sidebarCollapsed && "hidden max-[1179px]:inline")}>{theme === "dark" ? t("theme.modeLight") : t("theme.modeDark")}</span>
+          </button>
+        </div>
       </aside>
 
       <button

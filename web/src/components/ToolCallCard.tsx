@@ -57,7 +57,7 @@ export const ToolCallCard = memo(function ToolCallCard({ call }: { call: ToolCal
   const durationTitle = `工具调用耗时：${call.durationMs} ms${call.toolName === "subagent_wait" ? "（本次 wait 调用，非子 agent 运行时长）" : ""}`;
   const status = call.done ? (call.isError ? "失败" : "已完成") : "进行中";
   const { header, Arguments, Result } = toolPresentation(call);
-  const { summary, badge, priorityLabels, preview } = header;
+  const { summary, badge, priorityLabels, preview, target, outcome } = header;
 
   return (
     <div
@@ -77,27 +77,39 @@ export const ToolCallCard = memo(function ToolCallCard({ call }: { call: ToolCal
         aria-expanded={expanded}
         aria-label={`工具调用 ${call.toolName}，状态：${status}`}
       >
-        <Icon name={header.icon} className="tool-call-category" />
+        <ToolStatusIcon done={call.done} isError={call.isError} />
         <span className="tool-name" data-testid="tool-name" title={call.toolName}>
           {call.toolName}
         </span>
         {badge && <span className="tool-parallel-count">{badge}</span>}
-        {summary && <span className="tool-summary-preview" title={summary}>{priorityLabels
+        {(target || summary) && <span className={`tool-summary-preview${priorityLabels ? "" : " tool-target"}`} title={summary || target}>{priorityLabels
           ? <><span className="tool-parallel-names">{priorityLabels.join("、")}</span><span className="tool-parallel-preview">{preview}</span></>
-          : summary}</span>}
+          : <span>{target || summary}</span>}</span>}
+        {outcome && <span className={`tool-result-badge${call.isError ? " is-error" : ""}`} title={outcome}>{outcome}</span>}
         <span className="tool-header-icons">
           {duration !== null && <span className="tool-duration" title={durationTitle} aria-label={durationTitle}>{duration}</span>}
-          <ToolStatusIcon done={call.done} isError={call.isError} />
           <Icon name={expanded ? "down" : "chevron"} className="disclosure-chevron tool-toggle" />
         </span>
       </button>
-      <div className="tool-more" ref={menuRoot} onBlur={event => {
+      </div>
+      <div role="status" className="tool-raw-copy-status">{copyStatus}</div>
+      {expanded && (
+        <div className="tool-call-body">
+          <Arguments value={call.args} args={call.args} />
+          {call.done ? (
+            <Result label="结果" value={call.result} args={call.args} onViewRaw={viewRaw} />
+          ) : call.partialResult !== undefined ? (
+            <Result label="部分结果" value={call.partialResult} args={call.args} onViewRaw={viewRaw} />
+          ) : null}
+        </div>
+      )}
+      <div className={`tool-more${expanded || menuOpen ? "" : " sr-only"}`} ref={menuRoot} onBlur={event => {
         if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setMenuOpen(false);
       }}>
         <button type="button" className="tool-more-trigger" ref={moreButton} aria-label="工具更多操作" aria-haspopup="menu" aria-expanded={menuOpen}
           onClick={() => setMenuOpen(v => !v)} onKeyDown={event => {
             if (event.key === "ArrowDown" || event.key === "ArrowUp") { event.preventDefault(); setMenuOpen(true); }
-          }}><Icon name="ellipsis" /></button>
+          }}>原始数据</button>
         {menuOpen && <div className="tool-more-menu" role="menu" aria-label="工具更多操作" ref={menu} onKeyDown={event => {
           const items = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>("button"));
           const index = items.indexOf(document.activeElement as HTMLButtonElement);
@@ -111,18 +123,6 @@ export const ToolCallCard = memo(function ToolCallCard({ call }: { call: ToolCal
           <button type="button" role="menuitem" onClick={() => { void copyRaw(); closeMenu(); }}>复制原始数据</button>
         </div>}
       </div>
-      </div>
-      <div role="status" className="tool-raw-copy-status">{copyStatus}</div>
-      {expanded && (
-        <div className="tool-call-body">
-          <Arguments value={call.args} args={call.args} />
-          {call.done ? (
-            <Result label="结果" value={call.result} args={call.args} onViewRaw={viewRaw} />
-          ) : call.partialResult !== undefined ? (
-            <Result label="部分结果" value={call.partialResult} args={call.args} onViewRaw={viewRaw} />
-          ) : null}
-        </div>
-      )}
       <Modal open={rawModalOpen} onClose={() => setRawModalOpen(false)} title={`原始数据 · ${call.toolName}`}>
         {rawModalOpen && <CodeBlock code={rawToolData(call)} language="json" copyLabel="复制原始数据" />}
       </Modal>

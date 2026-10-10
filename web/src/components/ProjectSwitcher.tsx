@@ -30,7 +30,7 @@ export function ProjectSwitcher({ projects, activeId, onSelect, onCreate, onDele
   }
 
   return (
-    <div className="project-switcher workbench-project-tree pl-4 pr-[2px]" data-testid="project-switcher">
+    <div className="project-switcher workbench-project-tree px-4" data-testid="project-switcher">
       <div className="project-row workbench-project-row flex min-w-0 items-center gap-1">
         <span className="workbench-project-icon grid size-6 shrink-0 place-items-center text-muted-foreground" aria-hidden="true">
           <Icon name="folder" />

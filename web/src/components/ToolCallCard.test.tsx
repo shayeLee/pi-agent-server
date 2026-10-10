@@ -62,7 +62,7 @@ describe("ToolCallCard（工具调用流式卡片）", () => {
     rerender(<ToolCallCard call={final} />);
     expect(screen.getByRole("img", { name: isError ? "失败" : "已完成" })).toBeInTheDocument();
     expect(header).toHaveAttribute("aria-expanded", "false");
-    expect(header.querySelector(".tool-summary-preview")?.textContent).toContain("still running");
+    expect(header.querySelector(".tool-result-badge")?.textContent).toContain("still running");
     expect(screen.queryByTestId("tool-result-text")).toBeNull();
     rerender(<ToolCallCard call={{ ...final }} />);
     expect(header).toHaveAttribute("aria-expanded", "false");
@@ -76,17 +76,23 @@ describe("ToolCallCard（工具调用流式卡片）", () => {
     const { rerender } = render(<ToolCallCard call={base} />);
     const header = screen.getByRole("button", { name: /工具调用/ });
     const preview = () => header.querySelector(".tool-summary-preview");
-    expect(preview()).toHaveTextContent("printf snapshots · latest");
+    const badge = () => header.querySelector(".tool-result-badge");
+    expect(preview()).toHaveTextContent("printf snapshots");
+    expect(badge()).toHaveTextContent("latest");
     const initial = preview();
     fireEvent.click(header);
     expect(preview()).toBe(initial);
-    expect(preview()).toHaveTextContent("printf snapshots · latest");
+    expect(preview()).toHaveTextContent("printf snapshots");
+    expect(badge()).toHaveTextContent("latest");
     rerender(<ToolCallCard call={{ ...base, partialResult: "first\nnew snapshot" }} />);
-    expect(preview()).toHaveTextContent("printf snapshots · new snapshot");
+    expect(preview()).toHaveTextContent("printf snapshots");
+    expect(badge()).toHaveTextContent("new snapshot");
     fireEvent.click(header);
-    expect(preview()).toHaveTextContent("printf snapshots · new snapshot");
+    expect(preview()).toHaveTextContent("printf snapshots");
+    expect(badge()).toHaveTextContent("new snapshot");
     rerender(<ToolCallCard call={{ ...base, done: true, result: "final" }} />);
-    expect(preview()).toHaveTextContent("printf snapshots · final");
+    expect(preview()).toHaveTextContent("printf snapshots");
+    expect(badge()).toHaveTextContent("final");
   });
   it.each([false, true])("恢复历史完成工具初始收起（isError=%s）", (isError) => {
     render(<ToolCallCard call={card({ done: true, isError, result: "历史原文" })} />);
@@ -239,9 +245,9 @@ describe("ToolCallCard（工具调用流式卡片）", () => {
     expect(screen.getByTestId("tool-result-text")).toHaveTextContent("run-1");
     expect(screen.getByRole("img", { name: "已完成" })).toBeInTheDocument(); // This is the tool's status, not an invented child result.
     const header = screen.getByRole("button", { name: /工具调用/ });
+    expect(header.firstElementChild).toHaveClass("tool-status-icon");
     expect(header.lastElementChild).toHaveClass("tool-header-icons");
     expect(header.lastElementChild?.lastElementChild).toHaveClass("tool-toggle", "disclosure-chevron");
-    expect(header.querySelector(".tool-toggle")?.previousElementSibling).toHaveClass("tool-status-icon");
     viewRaw();
     expect(rawValue("args")).toEqual({ agent: "worker", task, cwd: "/fixture" });
   });

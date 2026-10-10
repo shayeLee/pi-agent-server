@@ -16,7 +16,7 @@ export function DisplayModeToggle({ markdown, onToggle }: { markdown: boolean; o
 }
 export function ToolResultText({ text, language, log = false, initialFormat }: { text: string; language?: string; log?: boolean; initialFormat?: ToolTextFormat }) {
   const [mode, setMode] = useState<"text" | "markdown" | null>(null);
-  if (log) return <CodeBlock code={text} language="bash" />;
+  if (log) return <CodeBlock code={text} language="bash" label="输出" />;
   if (language) return <CodeBlock code={text} language={language} />;
   const markdown = mode ? mode === "markdown" : initialFormat ? initialFormat === "markdown" : isMarkdownProse(text);
   return <div className="tool-prose">

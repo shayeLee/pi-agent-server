@@ -45,7 +45,7 @@ export const MessageItem = memo(function MessageItem({ item }: MessageItemProps)
       <div className="message-assistant">
         <div className="assistant-content text-[15px] leading-relaxed">
           {item.text && <Markdown text={item.text} />}
-          {item.streaming && <Icon name="dot" className="streaming-cursor" />}
+          {item.streaming && <Icon name="caret" className="streaming-cursor" />}
         </div>
       </div>
     </div>

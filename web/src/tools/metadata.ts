@@ -42,6 +42,8 @@ export function toolHeader(call: ToolCall): ToolHeader {
   const count = adapter.outputLines ?? 1;
   const latest = count === "last" ? output.slice(-1) : output.slice(0, count);
   const suffix = [...latest.map(line), ...(typeof count === "number" && count > 1 && output.length > count ? ["…"] : [])];
-  return { ...header, icon: adapter.icon, summary: [header.summary, ...suffix].filter(Boolean).join(" · "),
-    ...(header.priorityLabels ? { preview: [header.preview, ...suffix].filter(Boolean).join(" · ") } : {}) };
+  const outcome = suffix.filter(Boolean).join(" · ");
+  return { ...header, icon: adapter.icon, target: header.summary, ...(outcome ? { outcome } : {}),
+    summary: [header.summary, ...suffix].filter(Boolean).join(" · "),
+    ...(header.priorityLabels ? { preview: header.preview } : {}) };
 }

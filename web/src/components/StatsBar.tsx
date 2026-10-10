@@ -60,12 +60,10 @@ export function StatsBar({ stats, timeline, connected, pending = false, modelOut
   const source = "末次 assistant SDK usage，非请求或会话累计；输入不含缓存，输出含 reasoning，总计不自行加总。费用为 USD 估算，0 不表示免费。速度为完成响应首个非空 delta 至结束的 output tok/s，包含流内停顿，不含工具等待；非实时。请求耗时含工具及统计等待；首段延迟为请求至首个正文/思考 delta，无 delta 回填不显示。未知省略，已测零显示 0。";
   const total = response?.totalTokens;
   const speed = last.find(m => m.id === "speed")?.value;
-  const toolCount = timeline.filter(i => i.kind === "tool").length;
   const liveSource = `${liveLabel}。仅最近 2 秒收到非空模型 delta 表示活动；字符数 / 4 估算，含思考及工具参数，不含工具结果；每条 assistant 独立计时，含流内停顿。`;
   const activityMetrics: { id: string; content: ReactNode }[] = [];
   if (validMetric(loops)) activityMetrics.push({ id: "loops", content: <span data-testid="stat-turns" title={executionSource}>{compact(loops)} 轮</span> });
   if (validMetric(turns)) activityMetrics.push({ id: "turns", content: <span data-testid="stat-model-turns" title={executionSource}>{compact(turns)} turn</span> });
-  if (validMetric(toolCount) && toolCount > 0) activityMetrics.push({ id: "tools", content: <span data-testid="stat-steps" title="当前已加载分支时间线的工具调用数">工具 {compact(toolCount)} 次</span> });
   if (pending && active && validMetric(modelOutput?.tokensPerSecondEstimate)) activityMetrics.push({ id: "live-speed", content: <span data-testid="stat-live-speed" title={liveSource}>~{compact(modelOutput.tokensPerSecondEstimate)} tok/s</span> });
   else if (!pending && validMetric(speed)) activityMetrics.push({ id: "speed", content: <span data-testid="stat-summary-speed" title={source}>{compact(speed)} tok/s</span> });
   const contextMetrics: Metric[] = context ? [

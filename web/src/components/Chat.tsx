@@ -190,6 +190,7 @@ export function Chat({
         <ChatHeader
           session={session}
           traceActive={activeTraceTab}
+          toolCount={timeline.filter((item) => item.kind === "tool").length}
           onToggleDetails={onToggleDetails}
           onSelectTab={selectTab}
         />
@@ -226,7 +227,8 @@ export function Chat({
         {!session ? (
           <div className="workbench-welcome" data-testid="no-session-hint">
             {loadError && <div className="chat-phase-banner error mb-3 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-[13px] text-destructive" role="alert">{loadError}</div>}
-            <p className="workbench-welcome-copy text-[15px] leading-relaxed text-muted-foreground">{t("chat.welcome")}</p>
+            <p className="workbench-welcome-title mb-2 text-[20px] font-medium leading-snug text-foreground">{t("chat.welcomeTitle")}</p>
+            <p className="workbench-welcome-copy text-[15px] leading-relaxed text-foreground">{t("chat.welcome")}</p>
           </div>
         ) : (
           <div className="chat-inner">

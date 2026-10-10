@@ -55,14 +55,14 @@ function highlighted(code: string, language?: string): ReactNode {
   } catch { return code; }
 }
 
-export type CodeBlockProps = { code: string; language?: string; copyLabel?: string };
-export function CodeBlock({ code, language, copyLabel = "复制代码" }: CodeBlockProps) {
+export type CodeBlockProps = { code: string; language?: string; copyLabel?: string; label?: string };
+export function CodeBlock({ code, language, copyLabel = "复制代码", label }: CodeBlockProps) {
   const resolved = codeLanguage(language);
   const content = useMemo(() => highlighted(code, resolved), [code, resolved]);
   // Tie feedback to the exact snapshot, not an obsolete streamed value.
   const [copy, setCopy] = useState<{ code: string; message: string } | null>(null);
   return <div className="code-block" data-language={resolved ?? "plain"}>
-    <div className="code-block-toolbar"><span>{resolved ?? (language === "plaintext" ? "plaintext" : "plain")}</span>
+    <div className="code-block-toolbar"><span>{label ?? (resolved ?? (language === "plaintext" ? "plaintext" : "plain"))}</span>
       <button type="button" aria-label={copyLabel} onClick={async () => {
         try { await navigator.clipboard.writeText(code); setCopy({ code, message: "已复制" }); }
         catch { setCopy({ code, message: "复制失败，请选择原文复制" }); }

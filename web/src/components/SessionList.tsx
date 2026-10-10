@@ -77,10 +77,10 @@ function SessionRow({
   const title = resolveSessionDisplayTitle(session);
   const native = session.origin === "native";
   return (
-    <li className={cn("session-item group/session relative grid grid-cols-[minmax(0,1fr)_auto] items-center rounded-md", session.id === activeId && "active")}>
+    <li className={cn("session-item group/session relative mx-2 grid grid-cols-[minmax(0,1fr)_auto] items-center rounded-lg", session.id === activeId && "active")}>
       <button
         type="button"
-        className="session-select col-span-2 flex w-full min-w-0 items-center bg-transparent px-3 pt-2 text-left"
+        className="session-select col-span-2 flex w-full min-w-0 items-center bg-transparent px-2 pt-2 text-left"
         aria-label={title}
         aria-current={session.id === activeId ? "true" : undefined}
         aria-describedby={`session-meta-${session.id}`}
@@ -89,7 +89,7 @@ function SessionRow({
       >
         <span className="session-title block min-w-0 truncate text-[13px]" title={title}>{title}</span>
       </button>
-      <div className="session-meta flex items-center gap-1.5 px-3 pb-1 text-[12px] text-muted-foreground" id={`session-meta-${session.id}`}>
+      <div className="session-meta flex items-center gap-1.5 px-2 pb-1 text-[12px] text-muted-foreground" id={`session-meta-${session.id}`}>
         <time
           className="session-time"
           data-testid={`session-time-${session.id}`}
@@ -102,7 +102,7 @@ function SessionRow({
         </time>
         {(session.visibility === "shared" || session.origin === "native") && (
           <span className="session-shared-badge" title={native ? "原生共享会话" : "共享会话"} aria-label={native ? "原生共享会话" : "共享会话"}>
-            <Icon name="shared" size={14} />
+            <Icon name="shared" size={16} />
           </span>
         )}
       </div>
@@ -160,7 +160,7 @@ export function SessionList({
 
   return (
     <section className="session-list flex min-h-0 flex-1 flex-col" data-testid="session-list">
-      <div className="session-list-header flex items-center justify-between pb-1 pl-4 pr-[2px] pt-4 text-[12px] font-semibold text-muted-foreground">
+      <div className="session-list-header flex items-center justify-between px-4 pb-1 pt-4 text-[12px] font-semibold text-muted-foreground">
         <span>{t("nav.sessionsSection")}</span>
         <button
           type="button"
@@ -169,11 +169,11 @@ export function SessionList({
           aria-expanded={searchOpen}
           onClick={() => setSearchOpen((open) => !open)}
         >
-          <Icon name="search" size={15} />
+          <Icon name="search" size={16} />
         </button>
       </div>
       <input
-        className="session-search mx-3 mb-2 h-8 rounded-md border border-border bg-background px-2 text-[13px]"
+        className="session-search mx-4 mb-2 h-8 rounded-md border border-border bg-background px-2 text-[13px]"
         data-testid="session-search"
         type="search"
         hidden={!searchOpen}
@@ -183,7 +183,7 @@ export function SessionList({
         aria-label={t("nav.searchSessions")}
       />
       {filtered.length === 0 && (
-        <div className="empty-hint" data-testid="empty-sessions">
+        <div className="empty-hint mx-4 my-2 rounded-md px-0 py-2 text-[13px] leading-5 text-muted-foreground" data-testid="empty-sessions">
           {t("nav.emptySessions")}
         </div>
       )}

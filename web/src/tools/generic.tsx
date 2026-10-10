@@ -7,8 +7,8 @@ import { DiffBlock } from "../components/DiffBlock.js";
 import { ToolResultText, type ToolTextFormat } from "../components/ToolResultText.js";
 
 export type ParameterPolicy = { command?: boolean; taskList?: boolean; renderObject?: (value: object) => ReactNode };
-function ReadableText({ text, language }: { text: string; language?: string }) {
-  return language ? <CodeBlock code={text} language={language} /> : <pre className="tool-readable-value">{text}</pre>;
+function ReadableText({ text, language, label }: { text: string; language?: string; label?: string }) {
+  return language ? <CodeBlock code={text} language={language} label={label} /> : <pre className="tool-readable-value">{text}</pre>;
 }
 
 function isSimpleArray(value: unknown): value is unknown[] {
@@ -26,7 +26,7 @@ export function ParameterFields({ value, policy = {}, writeLanguage, editLanguag
     {Object.entries(value).map(([name, field]) => hasDiff && (name === "oldText" || name === "newText") ? (
       name === firstDiffKey ? <div key={name} className="tool-field-wide"><dt>修改前 / 修改后</dt><dd><DiffBlock oldText={fields.oldText as string} newText={fields.newText as string} language={editLanguage} /></dd></div> : null
     ) : (
-      <div key={name} className={field !== null && typeof field === "object" && !isSimpleArray(field) || typeof field === "string" && (field.length > 90 || field.includes("\n") || policy.command && name === "command" || writeLanguage !== undefined && name === "content" || editLanguage !== undefined && (name === "oldText" || name === "newText")) ? "tool-field-wide" : "tool-field-inline"}><dt>{name}</dt><dd>
+      <div key={name} className={field !== null && typeof field === "object" && !isSimpleArray(field) || typeof field === "string" && (field.length > 90 || field.includes("\n") || policy.command && name === "command" || writeLanguage !== undefined && name === "content" || editLanguage !== undefined && (name === "oldText" || name === "newText")) ? "tool-field-wide" : "tool-field-inline"}><dt className={policy.command && name === "command" ? "sr-only" : undefined}>{name}</dt><dd>
         {isSimpleArray(field) ? <ReadableText text={JSON.stringify(field)} /> : Array.isArray(field) && field.length > 0 ? (
           <ol className={`tool-parameter-items${policy.taskList && name === "tasks" ? " tool-subagent-task-list" : ""}`} aria-label={`${name} 条目`}>
             {field.map((item: unknown, index: number) => <li key={index}>
@@ -35,7 +35,7 @@ export function ParameterFields({ value, policy = {}, writeLanguage, editLanguag
                 : <ReadableText text={stringify(item)} />}
             </li>)}
           </ol>
-        ) : field !== null && typeof field === "object" && !Array.isArray(field) ? <ParameterFields value={field} policy={policy} /> : writeLanguage !== undefined && name === "content" && typeof field === "string" ? <CodeBlock code={field} language={writeLanguage} /> : editLanguage !== undefined && (name === "oldText" || name === "newText") && typeof field === "string" ? <CodeBlock code={field} language={editLanguage} copyLabel={name === "oldText" ? "复制修改前 oldText" : "复制修改后 newText"} /> : <ReadableText text={stringify(field)} language={policy.command && name === "command" ? "bash" : undefined} />}
+        ) : field !== null && typeof field === "object" && !Array.isArray(field) ? <ParameterFields value={field} policy={policy} /> : writeLanguage !== undefined && name === "content" && typeof field === "string" ? <CodeBlock code={field} language={writeLanguage} /> : editLanguage !== undefined && (name === "oldText" || name === "newText") && typeof field === "string" ? <CodeBlock code={field} language={editLanguage} copyLabel={name === "oldText" ? "复制修改前 oldText" : "复制修改后 newText"} /> : <ReadableText text={stringify(field)} language={policy.command && name === "command" ? "bash" : undefined} label={policy.command && name === "command" ? "命令" : undefined} />}
       </dd></div>
     ))}
   </dl>;

@@ -54,7 +54,8 @@
 
 ### 4.1 侧栏
 
-- **品牌行**：π 标记 + `app.brand`；折叠/主题切换。
+- **品牌行**：π 标记 + `app.brand`；折叠。内容左缘统一 16px。选中会话高亮左右各留 8px，四角圆角。
+- **主题**：侧栏底部文字按钮（`theme-toggle`），文案为浅色/深色模式。
 - **新建会话**：`data-testid="new-session"`；无会话时仅起始态。
 - **项目**：`SelectMenu` 下拉；新建/删除（默认项目不可删）。
 - **会话列表**：搜索（可展开）；**按时间分组**（今天 / 昨天 / 近 7 天 / 更早）；搜索时扁平列表。行内：相对时间、共享标记、重命名/导出/删除。
@@ -62,9 +63,9 @@
 
 ### 4.2 对话列
 
-- **无会话**：`no-session-hint` 贴在 Composer 上方（间距 ≤24px）；Composer 可选项目 + 模型/思考，菜单向上浮出且不被输入区裁切。
-- **有会话**：`ChatHeader` 标题 + 对话/轨迹 Tab；`toggle-events` 打开 Run 面板。
-- **时间线**：用户行右对齐轻底；助手 Markdown ~15px；阅读列在主栏内居中，最宽 760px。`ThinkingRow` 紧凑折叠（`thinking-header` + chevron）；收起时在标题与 chevron 之间显示一行预览，展开后只留标题。`ToolCallCard` 步骤式折叠（非大卡片，左右 12px 内边距）；`NotificationItem` 子代理通知。
+- **无会话**：阅读列垂直居中。`no-session-hint` 是标题加说明；Composer 与正文同一 760px 列，项目选择是带边框和下拉箭头的控件。菜单向上浮出且不被输入区裁切。
+- **有会话**：`ChatHeader` 标题与对话/轨迹 Tab 基线对齐，选中 Tab 用下划线。轨迹 Tab 显示当前分支工具次数（`stat-steps`）。`toggle-events` 有 `title` 与 `aria-label`。
+- **时间线**：用户行右对齐轻底；助手 Markdown ~15px；阅读列在主栏内居中，最宽 760px，正文与 Composer 文本同一内边距。`ThinkingRow` 只有状态词用等宽字体，收起预览用界面字体并截断。`ToolCallCard` 与正文左右对齐：状态图标、名称、目标、结果徽章、耗时、展开箭头，行高约 36px，相邻工具行用细分隔线。展开后命令与输出在同一容器里，输出块标题为「输出」，长日志在块内滚动。生成中用闪烁光标，不再用孤立圆点。`NotificationItem` 子代理通知。
 - **滚动**：`chat-body` 跟随输出；`chat-latest` 回到底部。
 - **历史加载**：`ChatHistorySkeleton`。
 - **排队/错误**：`phase-queued`、内联 `load-error`；会话级错误另经 **Toast**（`Toaster`）提示。
@@ -72,7 +73,7 @@
 ### 4.3 Composer
 
 - 附件条、pending steer/follow-up、提交 unknown/failed 快照 UI（与 §5 一致）。
-- **运行中**：插话 / 追加 + **Stop**（`abort-button`，圆形 `primary` 填充、白色方块图标，浅色和深色都与 Composer `card` 区分；桌面 34px、窄屏 44px，停止方块 10×10）。空闲：模型选择 + 发送。窄屏触控目标至少 44px。
+- **运行中**：插话 / 追加是带说明 `title` 的实心操作（无输入时保持禁用，但不被全局 disabled 透明度洗成灰块）+ **Stop**（`abort-button`，圆形 `primary` 填充、白色方块图标，浅色和深色都与 Composer `card` 区分；桌面 34px、窄屏 44px，停止方块 10×10）。空闲：模型名 + 更弱的思考档 + 下拉箭头，悬停有底。窄屏触控目标至少 44px。
 - **快捷键**：Enter 发送 / Shift+Enter 换行；全局 Esc 在无浮层且 streaming 时中止。
 
 ### 4.4 Run / Inspector
@@ -89,7 +90,7 @@
 ### 4.6 压缩与统计
 
 - `CompactionBanner`：running/succeeded/failed + token 前后（服务端字段）。
-- `StatsBar`：摘要簇 + 详情 Modal；语义不变（见 §5.5）。
+- `StatsBar`：摘要簇 + 详情 Modal；语义不变（见 §5.5）。工具次数不放在摘要条上，改由轨迹 Tab 的徽章表示；详情里仍有「N 次工具调用」。
 
 ---
 

@@ -6,6 +6,10 @@ import type { IconName } from "../components/Icon.js";
 export type ToolHeader = {
   icon: IconName;
   summary: string;
+  /** Path, command, or other target, without the result suffix. */
+  target?: string;
+  /** Short result hint, shown apart from the target. */
+  outcome?: string;
   badge?: string;
   priorityLabels?: string[];
   /** Preview following priority labels, kept separate from the full summary. */

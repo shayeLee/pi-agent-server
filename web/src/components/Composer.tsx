@@ -129,7 +129,8 @@ export function Composer({
     <div className="composer mx-auto flex w-full max-w-[760px] flex-col gap-2 rounded-[10px] border border-border bg-card p-2 shadow-sm" data-testid="composer">
       {!session && (
         <div className="composer-start-settings flex flex-wrap items-center gap-2 border-b border-border px-1 pb-2" data-testid="composer-start-settings">
-          <SelectMenu className="composer-project-picker max-w-[200px]" placement="above" options={projectOptions} value={activeProjectId ?? ""}
+          <span className="text-[12px] font-medium text-foreground">{t("nav.selectProject")}</span>
+          <SelectMenu className="composer-project-picker min-w-[160px] max-w-[240px]" placement="above" options={projectOptions} value={activeProjectId ?? ""}
             onChange={onSelectProject} ariaLabel={t("nav.selectProject")} disabled={!projectSelectionAvailable} testId="composer-project-select" />
           <ModelThinkingPicker models={models} thinkingLevels={thinkingLevels} defaultModel={defaultModel}
             defaultThinkingLevel={defaultThinkingLevel}
@@ -201,9 +202,9 @@ export function Composer({
         <div className="composer-right ml-auto flex flex-wrap items-center justify-end gap-1.5">
           {session && (streaming || queued) && (
             <>
-              <button type="button" className="composer-control rounded-md border border-border bg-background px-2.5 py-1 text-[13px] text-muted-foreground hover:border-primary hover:text-primary" onClick={() => submitControl("steer")}
-                disabled={!canWrite || !streaming || queued || !text.trim()} aria-label={t("composer.steer")}>{t("composer.steer")}</button>
-              <button type="button" className="composer-control rounded-md border border-border bg-background px-2.5 py-1 text-[13px] text-muted-foreground hover:border-primary hover:text-primary" onClick={() => submitControl("followUp")}
+              <button type="button" className="composer-control rounded-md border border-border bg-background px-2.5 py-1 text-[13px] font-medium text-foreground hover:border-primary hover:text-primary" onClick={() => submitControl("steer")}
+                disabled={!canWrite || !streaming || queued || !text.trim()} title={t("composer.steerTitle")} aria-label={t("composer.steer")}>{t("composer.steer")}</button>
+              <button type="button" className="composer-control rounded-md border border-border bg-background px-2.5 py-1 text-[13px] font-medium text-foreground hover:border-primary hover:text-primary" onClick={() => submitControl("followUp")}
                 disabled={!canWrite || !streaming || queued || !text.trim()}
                 title={queued ? t("composer.followUpQueuedHint") : t("composer.followUpTitle")} aria-label={t("composer.followUp")}>{t("composer.followUp")}</button>
             </>

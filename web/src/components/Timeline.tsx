@@ -6,7 +6,7 @@ import { ToolCallCard } from "./ToolCallCard.js";
 
 /** Reducer preserves unchanged item identities, so only live/changed rows render. */
 export const Timeline = memo(function Timeline({ timeline }: { timeline: ChatState["timeline"] }) {
-  return <div className="timeline flex flex-col gap-4" data-testid="message-list">
+  return <div className="timeline flex flex-col" data-testid="message-list">
     {timeline.map(item => item.kind === "notification"
       ? <NotificationItem key={item.id} item={item} />
       : item.kind === "tool"

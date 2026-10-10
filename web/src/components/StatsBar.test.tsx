@@ -17,7 +17,8 @@ describe("StatsBar", () => {
     expect(screen.queryByTestId("stat-turns")).toBeNull();
     expect(screen.queryByTestId("stat-model-turns")).toBeNull();
     expect(screen.getByText("用户消息 1 条")).toBeVisible();
-    expect(screen.getByTestId("stat-steps")).toHaveTextContent("工具 1 次");
+    expect(screen.getByText("1 次工具调用")).toBeVisible();
+    expect(screen.getByTestId("stats-bar")).not.toHaveTextContent("工具");
     expect(screen.getByTestId("stat-input")).toHaveTextContent("输入 12.3万");
     expect(screen.getByTestId("stat-input").title).toContain("123,456 tokens");
     expect(screen.getByTestId("stat-output")).toHaveTextContent("输出 2345");
@@ -32,7 +33,7 @@ describe("StatsBar", () => {
     show({ ...full, execution: { scope: "allEntries", coverage, totalLoops: coverage === "complete" ? 1 : null, totalTurns: coverage === "complete" ? 3 : null, recordedLoops: 1, recordedTurns: 3 } });
     expect(screen.getByTestId("stat-turns")).toHaveTextContent("1 轮");
     expect(screen.getByTestId("stat-model-turns")).toHaveTextContent("3 turn");
-    expect(screen.getByTestId("stat-steps")).toHaveTextContent("工具 1 次");
+    expect(screen.getByText("1 次工具调用")).toBeVisible();
     expect(screen.getByTestId("stat-turns").title).toContain("非用户消息数");
     expect(screen.getByTestId("stats-bar")).not.toHaveTextContent("已记录");
     if (coverage === "recorded") expect(screen.getByText(/已记录范围/)).toBeVisible();
@@ -42,6 +43,7 @@ describe("StatsBar", () => {
     expect(screen.queryByTestId("stat-turns")).toBeNull();
     expect(screen.queryByTestId("stat-model-turns")).toBeNull();
     expect(screen.queryByTestId("stat-steps")).toBeNull();
+    expect(screen.queryByText("工具")).toBeNull();
     expect(view.container.querySelector(".stats-cluster")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "查看统计详情" }));
     expect(screen.getByText(/未知 轮 · 未知 turn/)).toBeVisible();
@@ -55,7 +57,8 @@ describe("StatsBar", () => {
   });
   it("shows only explicit positive tool counts without guessing", () => {
     show(full);
-    expect(screen.getByTestId("stat-steps")).toHaveTextContent("工具 1 次");
+    expect(screen.getByText("1 次工具调用")).toBeVisible();
+    expect(screen.getByTestId("stats-bar")).not.toHaveTextContent("工具");
   });
   it("shows speed alone without leading or repeated separators", () => {
     render(<StatsBar stats={{ ...full, lastResponse: { input: null, output: 1, cacheRead: null, cacheWrite: null, totalTokens: null, costUsdEstimate: null, ordinal: 1, cacheHitPercent: null, speed: { outputTokens: 1, generationDurationMs: 10, tokensPerSecond: 42 } } }} timeline={[]} connected />);
@@ -80,7 +83,7 @@ describe("StatsBar", () => {
   it.each([null, {}, { promptTokens: null, completionTokens: undefined, totalTokens: NaN, durationMs: Infinity, ttftMs: -1 }])("omits unavailable/invalid values: %j", (stats) => {
     show(stats as Partial<UsageStats> | null);
     expect(screen.queryByTestId("stat-scope")).toBeNull();
-    expect(screen.getByTestId("stat-steps")).toBeVisible();
+    expect(screen.getByText("1 次工具调用")).toBeVisible();
   });
   it("shows partial data independently", () => {
     show({ completionTokens: 42, durationMs: 900 });

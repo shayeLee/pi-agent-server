@@ -12,7 +12,7 @@ describe("tool presentation contract", () => {
     const input = call("subagent", { tasks });
     const before = rawToolData(input);
     const header = toolHeader(input);
-    expect(header).toEqual({ icon: "agents", badge: "并行 2", priorityLabels: ["lite", "worker"], preview: "first · second", summary: "lite、worker · first · second" });
+    expect(header).toEqual({ icon: "agents", badge: "并行 2", priorityLabels: ["lite", "worker"], preview: "first · second", summary: "lite、worker · first · second", target: "lite、worker · first · second" });
     const { Arguments } = toolPresentation(input);
     const { container } = render(<Arguments value={input.args} args={input.args} />);
     expect(container.querySelectorAll(".tool-parallel-tasks > li")).toHaveLength(2);
