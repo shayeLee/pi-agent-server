@@ -19,9 +19,9 @@ export const MessageItem = memo(function MessageItem({ item }: MessageItemProps)
 
   if (item.role === "user") {
     return (
-      <div className="message-row row-user" data-testid={`message-${item.id}`}>
-        <div className="message-user">
-          <div className="user-bubble">
+      <div className="message-row row-user flex justify-end" data-testid={`message-${item.id}`}>
+        <div className="message-user max-w-[min(520px,76%)]">
+          <div className="user-bubble whitespace-pre-wrap rounded-[10px] bg-muted px-3 py-2 text-[15px] leading-relaxed">
             {item.text && <div>{item.text}</div>}
             {readMessageImages(item.images).length > 0 && <div className="message-images">
               {readMessageImages(item.images).map((image, index) => <button type="button" key={index}
@@ -43,7 +43,7 @@ export const MessageItem = memo(function MessageItem({ item }: MessageItemProps)
   return (
     <div className="message-row row-assistant" data-testid={`message-${item.id}`}>
       <div className="message-assistant">
-        <div className="assistant-content">
+        <div className="assistant-content text-[15px] leading-relaxed">
           {item.text && <Markdown text={item.text} />}
           {item.streaming && <Icon name="dot" className="streaming-cursor" />}
         </div>

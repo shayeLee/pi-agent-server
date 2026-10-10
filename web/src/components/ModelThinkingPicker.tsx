@@ -124,11 +124,11 @@ export function ModelThinkingPicker({
   }, [open]);
 
   return (
-    <div className="model-thinking-picker" data-open={open} data-panel-placement={panelLayout.placement} ref={rootRef}>
+    <div className="model-thinking-picker group relative min-w-0 max-w-full" data-open={open} data-panel-placement={panelLayout.placement} ref={rootRef}>
       <button
         ref={triggerRef}
         type="button"
-        className="model-thinking-trigger chevron-trigger"
+        className="model-thinking-trigger chevron-trigger inline-flex min-h-8 max-w-full items-center gap-2 rounded-md border border-transparent bg-muted px-2.5 py-1 text-left text-[13px] text-muted-foreground hover:border-primary hover:text-primary group-data-[open=true]:border-primary group-data-[open=true]:text-primary max-[639px]:min-h-[44px]"
         data-testid="model-thinking-trigger"
         aria-label={`模型：${modelLabel}，思考深度：${selectedThinking || "未设置"}`}
         aria-haspopup="dialog"
@@ -142,16 +142,16 @@ export function ModelThinkingPicker({
           setOpen((current) => !current);
         }}
       >
-        <span className="model-thinking-model">{modelLabel}</span>
-        <span className="model-thinking-level">{selectedThinking}</span>
+        <span className="model-thinking-model min-w-0 flex-1 font-mono break-all text-left">{modelLabel}</span>
+        <span className="model-thinking-level shrink-0 border-l border-border pl-2 font-mono text-[12px] text-muted-foreground">{selectedThinking}</span>
         <Icon name="down" className="disclosure-chevron" />
       </button>
       {open && (
-        <div id={panelId} className="model-thinking-panel" style={{ maxHeight: panelLayout.maxHeight }} role="dialog" aria-label="模型与思考深度">
-          <section className="model-thinking-section model-thinking-model-section" aria-labelledby={`${id}-models-label`}>
-            <h2 id={`${id}-models-label`}>模型</h2>
+        <div id={panelId} className={`model-thinking-panel absolute z-[60] right-0 flex w-[min(420px,calc(100vw-32px))] flex-col gap-3 overflow-hidden rounded-md border border-border bg-popover p-3 shadow-md ${panelLayout.placement === "below" ? "top-[calc(100%+8px)]" : "bottom-[calc(100%+8px)]"}`} style={{ maxHeight: panelLayout.maxHeight }} role="dialog" aria-label="模型与思考深度">
+          <section className="model-thinking-section model-thinking-model-section flex min-h-0 flex-1 flex-col" aria-labelledby={`${id}-models-label`}>
+            <h2 id={`${id}-models-label`} className="mb-1.5 text-[12px] font-semibold text-muted-foreground">模型</h2>
             <input
-              className="model-thinking-search"
+              className="model-thinking-search mb-2 w-full rounded-md border border-border bg-background px-2 py-1 font-mono text-[13px] outline-none focus:border-primary"
               type="search"
               aria-label="搜索模型"
               placeholder="搜索 provider / model"
@@ -159,7 +159,7 @@ export function ModelThinkingPicker({
               onChange={(event) => setQuery(event.target.value)}
             />
             {filteredModels.length ? (
-              <div className="model-thinking-options model-thinking-model-options" role="radiogroup" aria-labelledby={`${id}-models-label`}>
+              <div className="model-thinking-options model-thinking-model-options flex max-h-60 min-h-0 flex-1 flex-col gap-0.5 overflow-y-auto" role="radiogroup" aria-labelledby={`${id}-models-label`}>
                 {filteredModels.map((model) => {
                   const key = modelKey(model);
                   return (
@@ -169,32 +169,32 @@ export function ModelThinkingPicker({
                       role="radio"
                       aria-checked={selectedModel === key}
                       aria-label={`${model.provider}/${model.id} (${model.name})`}
-                      className="model-thinking-option"
+                      className="model-thinking-option block min-h-8 w-full rounded-md px-2 py-1.5 text-left text-[13px] hover:bg-accent aria-checked:bg-primary/10 aria-checked:text-primary"
                       data-testid="model-thinking-model-option"
                       tabIndex={selectedModel === key || (!filteredModels.some((item) => modelKey(item) === selectedModel) && filteredModels[0] === model) ? 0 : -1}
                       onKeyDown={handleRadioKeyDown}
                       onClick={() => onConfigChange({ modelProvider: model.provider, modelId: model.id })}
                     >
-                      <span title={`${model.provider}/${model.id}`}>{model.provider}/{model.id}</span>
-                      <small title={model.name}>{model.name}</small>
+                      <span className="block break-all font-mono" title={`${model.provider}/${model.id}`}>{model.provider}/{model.id}</span>
+                      <small className="block text-[12px] text-muted-foreground" title={model.name}>{model.name}</small>
                     </button>
                   );
                 })}
               </div>
             ) : (
-              <p className="model-thinking-empty">{query ? "没有匹配的模型" : "暂无可用模型"}</p>
+              <p className="model-thinking-empty my-2 text-[13px] text-muted-foreground">{query ? "没有匹配的模型" : "暂无可用模型"}</p>
             )}
           </section>
-          <section className="model-thinking-section model-thinking-level-section" aria-labelledby={`${id}-thinking-label`}>
-            <h2 id={`${id}-thinking-label`}>思考深度</h2>
-            <div className="model-thinking-options model-thinking-level-options" role="radiogroup" aria-labelledby={`${id}-thinking-label`}>
+          <section className="model-thinking-section model-thinking-level-section shrink-0" aria-labelledby={`${id}-thinking-label`}>
+            <h2 id={`${id}-thinking-label`} className="mb-1.5 text-[12px] font-semibold text-muted-foreground">思考深度</h2>
+            <div className="model-thinking-options model-thinking-level-options flex flex-wrap gap-1" role="radiogroup" aria-labelledby={`${id}-thinking-label`}>
               {availableThinkingLevels.map((level) => (
                 <button
                   key={level}
                   type="button"
                   role="radio"
                   aria-checked={selectedThinking === level}
-                  className="model-thinking-option"
+                  className="model-thinking-option inline-flex min-h-8 items-center justify-center rounded-md px-2 py-1.5 text-center text-[13px] hover:bg-accent aria-checked:bg-primary/10 aria-checked:text-primary"
                   data-testid="model-thinking-level-option"
                   tabIndex={selectedThinking === level ? 0 : -1}
                   onKeyDown={handleRadioKeyDown}

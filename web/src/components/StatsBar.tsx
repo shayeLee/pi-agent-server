@@ -73,8 +73,8 @@ export function StatsBar({ stats, timeline, connected, pending = false, modelOut
     { id: "context-tokens", label: "tokens", value: context.tokens },
     { id: "context-window", label: "窗口", value: context.window },
   ] : [];
-  return <><div className="stats-bar" data-testid="stats-bar">
-    <button type="button" className="stats-summary" aria-label="查看统计详情" aria-haspopup="dialog" onClick={() => setDetails(true)}>
+  return <><div className="stats-bar mt-1" data-testid="stats-bar">
+    <button type="button" className="stats-summary flex w-full flex-wrap items-center gap-x-3 gap-y-1 px-1 py-1 text-left text-[12px] text-muted-foreground hover:text-foreground" aria-label="查看统计详情" aria-haspopup="dialog" onClick={() => setDetails(true)}>
       {activityMetrics.length > 0 && <span className="stats-cluster">
         <Icon name="activity" />
         {activityMetrics.map((metric, index) => <span key={metric.id}>{index > 0 && " · "}{metric.content}</span>)}

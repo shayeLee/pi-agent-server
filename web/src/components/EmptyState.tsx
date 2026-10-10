@@ -4,7 +4,7 @@ import { useI18n } from "../i18n/I18nProvider.js";
 export function EmptyState() {
   const { t } = useI18n();
   return (
-    <p className="chat-empty-history" data-testid="chat-empty">
+    <p className="chat-empty-history py-6 text-center text-[13px] text-muted-foreground" data-testid="chat-empty">
       {t("chat.emptyHistory")}
     </p>
   );

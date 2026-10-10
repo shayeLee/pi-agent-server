@@ -17,8 +17,8 @@ export function SessionConfigBar({ session, models, thinkingLevels, onChange }: 
   const currentModel = `${session.modelProvider ?? ""}/${session.modelId ?? ""}`;
 
   return (
-    <div className="session-config" data-testid="session-config">
-      <div className="field">
+    <div className="session-config flex flex-wrap gap-3" data-testid="session-config">
+      <div className="field flex items-center gap-2 text-[13px]">
         <label htmlFor="model-select">模型</label>
         <IconSelect
           id="model-select"
@@ -38,7 +38,7 @@ export function SessionConfigBar({ session, models, thinkingLevels, onChange }: 
           ))}
         </IconSelect>
       </div>
-      <div className="field">
+      <div className="field flex items-center gap-2 text-[13px]">
         <label htmlFor="thinking-level-select">思考级别</label>
         <IconSelect
           id="thinking-level-select"

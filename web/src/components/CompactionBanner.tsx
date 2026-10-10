@@ -30,15 +30,15 @@ export function CompactionBanner({ compaction, connected }: { compaction?: Compa
   const disconnectedRunning = compaction.status === "running" && !connected;
   const status = disconnectedRunning ? "unknown" : compaction.status;
   return (
-    <div className="compaction-banner" data-testid="compaction-banner" data-status={status} role="status" aria-live="polite" aria-atomic="true">
-      <span className={`compaction-indicator${status === "running" ? " is-running" : ""}`} aria-hidden="true" />
-      <div className="compaction-content">
-        <div className="compaction-heading">
+    <div className="compaction-banner mb-2 flex items-start gap-2 rounded-md border border-border bg-muted/60 px-3 py-2 text-[13px]" data-testid="compaction-banner" data-status={status} role="status" aria-live="polite" aria-atomic="true">
+      <span className={`compaction-indicator mt-1 size-2 shrink-0 rounded-full bg-primary${status === "running" ? " is-running animate-pulse" : ""}`} aria-hidden="true" />
+      <div className="compaction-content min-w-0">
+        <div className="compaction-heading flex flex-wrap items-center gap-2">
           <span>{labels[status]}{disconnectedRunning ? " / 连接中断" : ""}</span>
-          <span className="compaction-reason" title={reasons[compaction.reason]}>{reasons[compaction.reason]}</span>
+          <span className="compaction-reason text-[12px] text-muted-foreground" title={reasons[compaction.reason]}>{reasons[compaction.reason]}</span>
         </div>
         {(isNumber(compaction.tokensBefore) || isNumber(compaction.tokensAfter)) && (
-          <div className="compaction-tokens">
+          <div className="compaction-tokens mt-1 flex flex-wrap gap-3 font-mono text-[12px] text-muted-foreground">
             {isNumber(compaction.tokensBefore) && <span>压缩前 {format(compaction.tokensBefore)} tokens</span>}
             {isNumber(compaction.tokensAfter) && <span>压缩后（估算）{format(compaction.tokensAfter)} tokens</span>}
           </div>

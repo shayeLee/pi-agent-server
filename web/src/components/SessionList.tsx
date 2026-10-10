@@ -3,6 +3,7 @@ import { Icon } from "./Icon.js";
 import { resolveSessionDisplayTitle, type SessionRecord } from "pi-agent-server/client";
 import { useI18n } from "../i18n/I18nProvider.js";
 import { groupSessionsByTime, sessionGroupLabelKey } from "../lib/session-groups.js";
+import { cn } from "../lib/utils.js";
 
 /** 会话更新时间展示：紧凑弱化的中文相对时间或短日期 */
 export function formatSessionTime(updatedAt: number, now: number = Date.now()): string {
@@ -76,19 +77,19 @@ function SessionRow({
   const title = resolveSessionDisplayTitle(session);
   const native = session.origin === "native";
   return (
-    <li className={`session-item ${session.id === activeId ? "active" : ""}`}>
+    <li className={cn("session-item group/session relative grid grid-cols-[minmax(0,1fr)_auto] items-center rounded-md", session.id === activeId && "active")}>
       <button
         type="button"
-        className="session-select"
+        className="session-select col-span-2 flex w-full min-w-0 items-center bg-transparent px-3 pt-2 text-left"
         aria-label={title}
         aria-current={session.id === activeId ? "true" : undefined}
         aria-describedby={`session-meta-${session.id}`}
         data-testid={`session-${session.id}`}
         onClick={() => onSelect(session.id)}
       >
-        <span className="session-title" title={title}>{title}</span>
+        <span className="session-title block min-w-0 truncate text-[13px]" title={title}>{title}</span>
       </button>
-      <div className="session-meta" id={`session-meta-${session.id}`}>
+      <div className="session-meta flex items-center gap-1.5 px-3 pb-1 text-[12px] text-muted-foreground" id={`session-meta-${session.id}`}>
         <time
           className="session-time"
           data-testid={`session-time-${session.id}`}
@@ -105,7 +106,7 @@ function SessionRow({
           </span>
         )}
       </div>
-      <div className="session-actions">
+      <div className="session-actions mr-1 flex gap-0.5 opacity-0 group-hover/session:opacity-100 focus-within:opacity-100 [@media(hover:none)]:opacity-100">
         <button
           data-testid={`rename-${session.id}`}
           title={t("nav.renameSession")}
@@ -158,21 +159,21 @@ export function SessionList({
   const flatSearch = query.trim().length > 0;
 
   return (
-    <section className="session-list" data-testid="session-list">
-      <div className="session-list-header">
+    <section className="session-list flex min-h-0 flex-1 flex-col" data-testid="session-list">
+      <div className="session-list-header flex items-center justify-between pb-1 pl-4 pr-[2px] pt-4 text-[12px] font-semibold text-muted-foreground">
         <span>{t("nav.sessionsSection")}</span>
         <button
           type="button"
-          className="workbench-search-toggle"
+          className="workbench-search-toggle grid h-[44px] w-[44px] shrink-0 place-items-center rounded-md p-0 text-muted-foreground hover:bg-sidebar-accent hover:text-foreground"
           aria-label={t("nav.searchSessions")}
           aria-expanded={searchOpen}
           onClick={() => setSearchOpen((open) => !open)}
         >
-          <Icon name="search" />
+          <Icon name="search" size={15} />
         </button>
       </div>
       <input
-        className="session-search"
+        className="session-search mx-3 mb-2 h-8 rounded-md border border-border bg-background px-2 text-[13px]"
         data-testid="session-search"
         type="search"
         hidden={!searchOpen}
@@ -196,7 +197,7 @@ export function SessionList({
       ) : (
         grouped.map((group) => (
           <div key={group.key} className="session-group" data-testid={`session-group-${group.key}`}>
-            <div className="session-group-label">{t(sessionGroupLabelKey[group.key])}</div>
+            <div className="session-group-label px-4 pb-1 pt-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{t(sessionGroupLabelKey[group.key])}</div>
             <ul className="session-items">
               {group.sessions.map((session) => (
                 <SessionRow key={session.id} session={session} activeId={activeId} onSelect={onSelect}

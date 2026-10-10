@@ -1,6 +1,7 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { Icon } from "./Icon.js";
 import type { KeyboardEvent } from "react";
+import { cn } from "../lib/utils.js";
 
 export type SelectMenuOption = { value: string; label: string; title?: string };
 
@@ -13,6 +14,8 @@ export type SelectMenuProps = {
   testId?: string;
   className?: string;
   placeholder?: string;
+  /** Composer sits on the bottom edge, so its menu opens upward. */
+  placement?: "above" | "below";
 };
 
 /** 通用受控自绘选择器。 */
@@ -25,6 +28,7 @@ export function SelectMenu({
   testId,
   className,
   placeholder = "请选择",
+  placement = "below",
 }: SelectMenuProps) {
   const [open, setOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState(0);
@@ -36,7 +40,7 @@ export function SelectMenu({
   const selectedIndex = options.findIndex((option) => option.value === value);
   const selected = selectedIndex >= 0 ? options[selectedIndex] : undefined;
   const isDisabled = disabled || options.length === 0;
-  const classes = ["select-menu", className].filter(Boolean).join(" ");
+  const classes = cn("select-menu relative inline-block min-w-0", className);
 
   useEffect(() => {
     if (!open) return;
@@ -139,7 +143,7 @@ export function SelectMenu({
       <button
         ref={triggerRef}
         type="button"
-        className="select-menu-trigger chevron-trigger"
+        className="select-menu-trigger chevron-trigger inline-flex w-full min-h-8 items-center gap-1.5 rounded-md border border-border bg-background px-2.5 py-1 text-left text-[13px] outline-none"
         aria-label={ariaLabel}
         aria-haspopup="listbox"
         aria-expanded={open}
@@ -151,14 +155,17 @@ export function SelectMenu({
         onClick={() => (open ? closeMenu() : openMenu())}
         onKeyDown={handleTriggerKeyDown}
       >
-        <span className="select-menu-label">{selected?.label ?? placeholder}</span>
-        <Icon name="down" className="disclosure-chevron" />
+        <span className="select-menu-label min-w-0 flex-1 truncate">{selected?.label ?? placeholder}</span>
+        <Icon name="down" size={12} className="disclosure-chevron" />
       </button>
       {open && !isDisabled && (
         <div
           ref={listboxRef}
           id={listboxId}
-          className="select-menu-listbox"
+          className={cn(
+            "select-menu-listbox absolute z-50 max-h-[min(280px,calc(100dvh-48px))] min-w-full overflow-y-auto rounded-md border border-border bg-popover p-1 shadow-md",
+            placement === "above" ? "bottom-[calc(100%+4px)]" : "top-[calc(100%+4px)] left-0",
+          )}
           role="listbox"
           aria-label={ariaLabel}
           aria-activedescendant={`${id}-option-${activeIndex}`}
@@ -169,7 +176,7 @@ export function SelectMenu({
             <div
               key={option.value}
               id={`${id}-option-${index}`}
-              className="select-menu-option"
+              className="select-menu-option flex min-h-8 cursor-pointer items-center justify-between gap-2 rounded-md px-2 py-1 text-[13px] data-[active=true]:bg-accent aria-selected:text-primary"
               role="option"
               title={option.title}
               aria-selected={option.value === value}

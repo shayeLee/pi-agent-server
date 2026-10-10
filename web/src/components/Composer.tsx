@@ -7,6 +7,7 @@ import type { DraftSource } from "../draft-store.js";
 import { ModelThinkingPicker } from "./ModelThinkingPicker.js";
 import { SelectMenu } from "./SelectMenu.js";
 import { useI18n } from "../i18n/I18nProvider.js";
+import { cn } from "../lib/utils.js";
 
 export type ComposerProps = {
   session: SessionRecord | null;
@@ -91,7 +92,7 @@ export function Composer({
       const accepted = result instanceof Promise ? await result : result;
       if (!draft && accepted !== false) setLocalText("");
     } catch (error) {
-      setLocalError(error instanceof Error ? error.message : "发送失败");
+      setLocalError(error instanceof Error ? error.message : t("composer.sendFailed"));
     } finally {
       submittingRef.current = false;
     }
@@ -125,10 +126,10 @@ export function Composer({
   }
 
   return (
-    <div className="composer" data-testid="composer">
+    <div className="composer mx-auto flex w-full max-w-[760px] flex-col gap-2 rounded-[10px] border border-border bg-card p-2 shadow-sm [@media(max-height:480px)]:max-h-[40dvh] [@media(max-height:480px)]:overflow-hidden" data-testid="composer">
       {!session && (
-        <div className="composer-start-settings" data-testid="composer-start-settings">
-          <SelectMenu className="composer-project-picker" options={projectOptions} value={activeProjectId ?? ""}
+        <div className="composer-start-settings flex flex-wrap items-center gap-2 border-b border-border px-1 pb-2" data-testid="composer-start-settings">
+          <SelectMenu className="composer-project-picker max-w-[200px]" placement="above" options={projectOptions} value={activeProjectId ?? ""}
             onChange={onSelectProject} ariaLabel={t("nav.selectProject")} disabled={!projectSelectionAvailable} testId="composer-project-select" />
           <ModelThinkingPicker models={models} thinkingLevels={thinkingLevels} defaultModel={defaultModel}
             defaultThinkingLevel={defaultThinkingLevel}
@@ -137,10 +138,10 @@ export function Composer({
         </div>
       )}
       {attachments.length > 0 && (
-        <div className="composer-attachments" data-testid="composer-attachments" aria-live="polite">
+        <div className="composer-attachments flex max-h-[132px] flex-wrap gap-2 overflow-y-auto border-b border-border pb-2 [@media(max-height:480px)]:max-h-14" data-testid="composer-attachments" aria-live="polite">
           {attachments.map((item) => (
-            <div className="composer-attachment" data-testid="composer-attachment" data-state={item.status} key={item.localId}>
-              {item.image && <img src={item.image.preview} alt="" className="composer-attachment-preview" />}
+            <div className={cn("composer-attachment flex max-w-[280px] items-center gap-2 rounded-md bg-muted px-2 py-1", (item.status === "error" || item.status === "interrupted") && "outline outline-1 outline-destructive")} data-testid="composer-attachment" data-state={item.status} key={item.localId}>
+              {item.image && <img src={item.image.preview} alt="" className="composer-attachment-preview size-[34px] rounded-md object-cover" />}
               <span className="composer-attachment-details">
                 <strong title={item.name}>{item.name}</strong>
                 <small>{(item.size / 1024).toFixed(0)} KiB · {item.mediaType || item.kind} · {
@@ -161,7 +162,7 @@ export function Composer({
         </div>
       )}
       {pendingControls && pendingControls.length > 0 && (
-        <div className="composer-pending-controls" data-testid="composer-pending-controls" aria-live="polite">
+        <div className="composer-pending-controls flex max-h-[132px] flex-wrap gap-2 overflow-y-auto text-[12px]" data-testid="composer-pending-controls" aria-live="polite">
           {pendingControls.map((item) => <div className="composer-pending-item" key={item.id}>
             <span>{item.kind === "steer" ? t("composer.pending.steer") : t("composer.pending.followUp")} · {item.text}</span>
             <small>{item.status === "submitting" ? t("composer.pending.submitting") : item.status === "submitted" ? (item.kind === "steer" ? t("composer.pending.steerAck") : t("composer.pending.followUpAck")) :
@@ -170,7 +171,7 @@ export function Composer({
         </div>
       )}
       {(submission?.phase === "failed" || submission?.phase === "unknown" || localError) && (
-        <div className="composer-submit-notice" role="alert" data-testid="composer-submit-notice">
+        <div className="composer-submit-notice flex flex-wrap items-center gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-2 py-1.5 text-[13px] text-destructive" role="alert" data-testid="composer-submit-notice">
           {submission?.phase === "unknown"
             ? submission.stage === "create" ? t("composer.unknown.create") : t("composer.unknown.send")
             : submission?.error ?? localError}
@@ -182,39 +183,39 @@ export function Composer({
           )}
         </div>
       )}
-      <textarea ref={textareaRef} data-testid="composer-input" rows={1} placeholder={placeholder}
+      <textarea ref={textareaRef} className="max-h-[220px] min-h-11 w-full resize-none border-0 bg-transparent px-2 py-1 text-[15px] leading-normal text-foreground outline-none placeholder:text-muted-foreground [@media(max-height:480px)]:max-h-[84px]" data-testid="composer-input" rows={1} placeholder={placeholder}
         aria-label={t("chat.placeholder")} title={t("chat.composerHint")} value={text}
         onChange={(event) => setText(event.target.value)} onKeyDown={handleKeyDown} onPaste={handlePaste}
         disabled={!canWrite || historyLoading} />
-      <div className="composer-toolbar">
-        <div className="composer-left">
-          <input ref={filePickerRef} type="file" multiple className="composer-file-input"
+      <div className="composer-toolbar flex items-center gap-2">
+        <div className="composer-left flex items-center">
+          <input ref={filePickerRef} type="file" multiple className="composer-file-input sr-only"
             data-testid="composer-file-input" aria-label={t("composer.pickFiles")} onChange={chooseFiles} />
-          <button type="button" className="composer-add" aria-label={t("composer.addAttachment")} title={t("composer.addAttachment")}
+          <button type="button" className="composer-add grid size-8 place-items-center rounded-full bg-muted text-muted-foreground hover:text-primary max-[640px]:size-11" aria-label={t("composer.addAttachment")} title={t("composer.addAttachment")}
             onClick={() => filePickerRef.current?.click()} disabled={!canWrite || !onAddFile || historyLoading}>
             <Icon name="plus" />
           </button>
         </div>
-        <div className="composer-right">
+        <div className="composer-right ml-auto flex flex-wrap items-center justify-end gap-1.5">
           {session && (streaming || queued) && (
             <>
-              <button type="button" className="composer-control" onClick={() => submitControl("steer")}
+              <button type="button" className="composer-control rounded-md border border-border bg-background px-2.5 py-1 text-[13px] text-muted-foreground hover:border-primary hover:text-primary" onClick={() => submitControl("steer")}
                 disabled={!canWrite || !streaming || queued || !text.trim()} aria-label={t("composer.steer")}>{t("composer.steer")}</button>
-              <button type="button" className="composer-control" onClick={() => submitControl("followUp")}
+              <button type="button" className="composer-control rounded-md border border-border bg-background px-2.5 py-1 text-[13px] text-muted-foreground hover:border-primary hover:text-primary" onClick={() => submitControl("followUp")}
                 disabled={!canWrite || !streaming || queued || !text.trim()}
                 title={queued ? t("composer.followUpQueuedHint") : t("composer.followUpTitle")} aria-label={t("composer.followUp")}>{t("composer.followUp")}</button>
             </>
           )}
           {streaming ? (
-            <button type="button" className="composer-stop" data-testid="abort-button" aria-label={t("composer.stop")} title={t("composer.stop")} onClick={onAbort}>
-              <Icon name="stop" />
+            <button type="button" className="composer-stop inline-flex h-[34px] w-[34px] shrink-0 items-center justify-center rounded-full border-0 bg-primary text-primary-foreground shadow-sm hover:bg-primary/90 max-[639px]:h-[44px] max-[639px]:w-[44px]" data-testid="abort-button" aria-label={t("composer.stop")} title={t("composer.stop")} onClick={onAbort}>
+              <Icon name="stop" size={20} />
             </button>
           ) : (
             <>
               {session && <ModelThinkingPicker models={models} thinkingLevels={thinkingLevels} defaultModel={defaultModel}
                 defaultThinkingLevel={defaultThinkingLevel} modelProvider={session.modelProvider} modelId={session.modelId}
                 thinkingLevel={session.thinkingLevel} onConfigChange={onConfigChange} />}
-              <button type="button" className="send-button" data-testid="send-button" onClick={() => void handleSubmit()}
+              <button type="button" className="send-button inline-flex h-[34px] w-[34px] shrink-0 items-center justify-center rounded-full border-0 bg-primary text-primary-foreground hover:bg-primary/90 disabled:bg-muted disabled:text-muted-foreground max-[639px]:h-[44px] max-[639px]:w-[44px]" data-testid="send-button" onClick={() => void handleSubmit()}
                 disabled={!canSubmit || queued} aria-label={t("composer.send")}>
                 <Icon name="send" />
               </button>

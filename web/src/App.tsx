@@ -12,6 +12,7 @@ import { useI18n } from "./i18n/I18nProvider.js";
 import { useRouteSelectionSync } from "./routing/useRouteSelectionSync.js";
 import { toastError } from "./lib/toast.js";
 import { isMacPlatform } from "./components/Kbd.js";
+import { cn } from "./lib/utils.js";
 
 const SIDEBAR_DEFAULT = 264;
 const SIDEBAR_MIN = 180;
@@ -213,15 +214,16 @@ export default function App() {
     return () => document.removeEventListener("keydown", onKeyDown);
   }, [mobileSidebarOpen, detailsCollapsed]);
 
-  const shellClass = [
-    "app-shell",
-    mobileSidebarOpen ? "mobile-sidebar-open" : "",
-    sidebarCollapsed ? "sidebar-collapsed" : "",
-    detailsCollapsed ? "details-collapsed" : "",
-    dragging ? "dragging" : "",
-  ]
-    .filter(Boolean)
-    .join(" ");
+  const shellClass = cn(
+    "app-shell relative grid h-dvh w-full overflow-hidden bg-background text-[13px] leading-snug text-foreground",
+    "grid-cols-[var(--layout-sidebar-width)_minmax(0,1fr)_var(--layout-inspector-width)]",
+    "max-[1439px]:grid-cols-[var(--layout-sidebar-width)_minmax(0,1fr)_0px]",
+    "max-[1179px]:block",
+    mobileSidebarOpen && "mobile-sidebar-open",
+    sidebarCollapsed && "sidebar-collapsed",
+    detailsCollapsed && "details-collapsed",
+    dragging && "dragging select-none",
+  );
 
   return (
     <main
@@ -234,14 +236,21 @@ export default function App() {
       }}
     >
       {/* 左侧边栏 */}
-      <aside className="sidebar workbench-sidebar" data-testid="sidebar">
-        <div className="sidebar-header workbench-sidebar-header">
-          <div className="brand workbench-brand">
-            <span className="brand-mark workbench-brand-mark" aria-hidden="true">π</span>
-            <span className="brand-text workbench-brand-title">{t("app.brand")}</span>
+      <aside className={cn(
+        "sidebar workbench-sidebar flex h-full min-w-0 flex-col overflow-hidden border-r border-sidebar-border bg-sidebar text-sidebar-foreground",
+        sidebarCollapsed && "items-center",
+        "max-[1179px]:fixed max-[1179px]:inset-y-0 max-[1179px]:left-0 max-[1179px]:z-[92] max-[1179px]:h-dvh max-[1179px]:w-[min(320px,85vw)] max-[1179px]:shadow-lg",
+        mobileSidebarOpen
+          ? "max-[1179px]:visible max-[1179px]:translate-x-0 max-[1179px]:items-stretch"
+          : "max-[1179px]:invisible max-[1179px]:-translate-x-[102%]",
+      )} data-testid="sidebar">
+        <div className={cn("sidebar-header workbench-sidebar-header flex h-12 shrink-0 items-center justify-between gap-2 px-3", sidebarCollapsed && "w-full justify-center px-1")}>
+          <div className="brand workbench-brand flex min-w-0 items-center gap-2">
+            <span className="brand-mark workbench-brand-mark grid size-6 place-items-center rounded-md bg-primary text-[12px] font-semibold text-primary-foreground" aria-hidden="true">π</span>
+            <span className={cn("brand-text workbench-brand-title truncate font-mono text-[12px] font-semibold text-muted-foreground", sidebarCollapsed && "hidden max-[1179px]:inline")}>{t("app.brand")}</span>
           </div>
           <button
-            className="btn-ghost btn-icon workbench-sidebar-toggle"
+            className="btn-ghost btn-icon workbench-sidebar-toggle grid size-8 place-items-center rounded-md text-muted-foreground hover:bg-sidebar-accent"
             data-testid="toggle-sidebar"
             onClick={() => {
               if (window.matchMedia?.("(max-width: 1179px)").matches) closeMobileSidebar();
@@ -253,12 +262,12 @@ export default function App() {
             <Icon name="sidebar" />
           </button>
         </div>
-        <button type="button" className="theme-toggle" data-testid="theme-toggle"
+        <button type="button" className="theme-toggle mx-3 mb-2 grid size-8 place-items-center self-start rounded-md text-muted-foreground hover:bg-sidebar-accent" data-testid="theme-toggle"
           aria-label={theme === "dark" ? t("theme.toggleToLight") : t("theme.toggleToDark")}
           onClick={toggleTheme}><Icon name={theme === "dark" ? "sun" : "moon"} /></button>
         {controller.projects === null || controller.activeProjectId === null ? (
           controller.projectsError ? (
-            <div className="project-error" role="alert" data-testid="projects-error">
+            <div className="project-error mx-3 rounded-md border border-destructive/30 bg-destructive/10 p-2 text-[12px]" role="alert" data-testid="projects-error">
               <p className="project-error-text">{controller.projectsError}</p>
               <button
                 className="btn-ghost project-retry"
@@ -275,20 +284,24 @@ export default function App() {
           <>
             {controller.sessions !== null && (
               <button
-                className="new-session workbench-new-session"
+                className={cn(
+                  "new-session workbench-new-session mx-3 mb-2 flex h-9 items-center gap-2 rounded-md border border-border bg-background px-3 text-[13px] font-medium hover:bg-accent",
+                  sidebarCollapsed && "mx-auto size-10 justify-center px-0",
+                  sidebarCollapsed && "max-[1179px]:mx-3 max-[1179px]:h-9 max-[1179px]:w-[calc(100%-1.5rem)] max-[1179px]:justify-start max-[1179px]:px-3",
+                )}
                 data-testid="new-session"
                 disabled={!canCreateSession}
                 title={controller.creationNotice ?? undefined}
                 aria-describedby={controller.creationNotice ? "project-creation-notice" : undefined}
                 onClick={() => { closeMobileSidebar(); controller.createSession(); }}
               >
-                <Icon name="plus" className="new-session-icon" />
-                <span className="new-session-label">{t("nav.newSession")}</span>
+                <Icon name="plus" className="new-session-icon text-primary" />
+                <span className={cn("new-session-label", sidebarCollapsed && "hidden max-[1179px]:inline")}>{t("nav.newSession")}</span>
               </button>
             )}
             {controller.creationNotice && <small id="project-creation-notice" role="status">{controller.creationNotice}</small>}
-            <div className="workbench-nav-body">
-              <div className="workbench-section-header">{t("nav.projectsSection")}</div>
+            <div className={cn("workbench-nav-body flex min-h-0 flex-1 flex-col overflow-hidden", sidebarCollapsed && "hidden max-[1179px]:flex")}>
+              <div className="workbench-section-header pb-2 pl-4 pr-[2px] pt-1 text-[12px] font-semibold text-muted-foreground">{t("nav.projectsSection")}</div>
               {controller.projects && (
                 <ProjectSwitcher
                   projects={controller.projects}
@@ -300,7 +313,7 @@ export default function App() {
               )}
               {controller.sessions === null ? (
                 <>
-                  <div className="workbench-section-header">{t("nav.sessionsSection")}</div>
+                  <div className="workbench-section-header pb-2 pl-4 pr-[2px] pt-1 text-[12px] font-semibold text-muted-foreground">{t("nav.sessionsSection")}</div>
                   <SessionListSkeleton />
                 </>
               ) : (
@@ -321,14 +334,14 @@ export default function App() {
       <button
         ref={mobileMenuRef}
         type="button"
-        className="workbench-mobile-menu"
+        className={cn("workbench-mobile-menu fixed left-2 top-2 z-30 size-8 place-items-center rounded-md border border-border bg-background max-[640px]:size-[44px]", mobileSidebarOpen ? "hidden" : "hidden max-[1179px]:inline-flex")}
         aria-label={t("mobile.openNav")}
         aria-expanded={mobileSidebarOpen}
         onClick={() => { setDetailsCollapsed(true); setMobileSidebarOpen(true); }}
       >
         <Icon name="menu" />
       </button>
-      {mobileSidebarOpen && <button type="button" className="workbench-drawer-backdrop" aria-label={t("mobile.closeNav")} onClick={closeMobileSidebar} />}
+      {mobileSidebarOpen && <button type="button" className="workbench-drawer-backdrop fixed inset-0 z-[80] hidden bg-black/45 max-[1179px]:block" aria-label={t("mobile.closeNav")} onClick={closeMobileSidebar} />}
 
       {/* 聊天区 */}
       <Chat
@@ -377,7 +390,7 @@ export default function App() {
       />
 
       {/* 右侧 Inspector */}
-      {activeSession && !detailsCollapsed && <button type="button" className="workbench-inspector-backdrop" aria-label={t("inspector.close")} onClick={closeInspector} />}
+      {activeSession && !detailsCollapsed && <button type="button" className="workbench-inspector-backdrop fixed inset-0 z-[84] hidden bg-black/45 max-[1439px]:block" aria-label={t("inspector.close")} onClick={closeInspector} />}
       {activeSession && !detailsCollapsed && (
         <Inspector
           onClose={closeInspector}
@@ -391,7 +404,8 @@ export default function App() {
       {/* 拖拽手柄 */}
       {!sidebarCollapsed && (
         <div
-          className={`resize-handle sidebar ${dragging === "sidebar" ? "dragging" : ""}`}
+          className={cn("resize-handle sidebar absolute inset-y-0 z-20 w-[5px] -ml-0.5 cursor-col-resize touch-none max-[1179px]:hidden", dragging === "sidebar" && "dragging")}
+          style={{ left: "var(--layout-sidebar-width)" }}
           onPointerDown={(event) => handlePointerDown("sidebar", event)}
           onPointerMove={handlePointerMove}
           onPointerUp={handlePointerUp}
@@ -399,7 +413,8 @@ export default function App() {
       )}
       {!detailsCollapsed && (
         <div
-          className={`resize-handle details ${dragging === "details" ? "dragging" : ""}`}
+          className={cn("resize-handle details absolute inset-y-0 z-20 w-[5px] cursor-col-resize touch-none max-[1439px]:hidden", dragging === "details" && "dragging")}
+          style={{ right: "var(--layout-inspector-width)" }}
           onPointerDown={(event) => handlePointerDown("details", event)}
           onPointerMove={handlePointerMove}
           onPointerUp={handlePointerUp}

@@ -163,7 +163,7 @@ export function Chat({
   const placeholder = t("chat.placeholder");
 
   return (
-    <section className="chat" data-testid="chat">
+    <section className="chat col-start-2 row-start-1 flex h-full min-w-0 flex-col overflow-hidden bg-background max-[1179px]:col-auto max-[1179px]:h-dvh max-[1179px]:w-full" data-testid="chat">
       {session && (
         <ChatHeader
           session={session}
@@ -172,7 +172,7 @@ export function Chat({
           onSelectTab={selectTab}
         />
       )}
-      <div className="chat-body" ref={bodyRef} data-testid="chat-body"
+      <div className="chat-body min-h-0 flex-1 overflow-y-auto bg-background outline-none focus:outline-none focus-visible:outline-none" ref={bodyRef} data-testid="chat-body"
         role="region" aria-label={t("chat.region")} tabIndex={0}
         onKeyDown={(event) => {
           if (event.target !== event.currentTarget || (event.key !== "Home" && event.key !== "End") || event.currentTarget.isContentEditable || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || event.nativeEvent.isComposing) return;
@@ -202,15 +202,15 @@ export function Chat({
           if ((event.target as Element).closest("button[aria-expanded], summary")) followRef.current = false;
         }}>
         {!session ? (
-          <div className="workbench-welcome" data-testid="no-session-hint">
-            {loadError && <div className="chat-phase-banner error" role="alert">{loadError}</div>}
-            <p className="workbench-welcome-copy">{t("chat.welcome")}</p>
+          <div className="workbench-welcome mx-auto flex w-full max-w-[760px] flex-1 flex-col justify-center px-6 py-16" data-testid="no-session-hint">
+            {loadError && <div className="chat-phase-banner error mb-3 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-[13px] text-destructive" role="alert">{loadError}</div>}
+            <p className="workbench-welcome-copy text-[15px] leading-relaxed text-muted-foreground">{t("chat.welcome")}</p>
           </div>
         ) : (
-          <div className="chat-inner">
+          <div className="chat-inner mx-auto flex w-full max-w-[760px] flex-col gap-3 px-6 py-6">
             {historyNotice && <div className="chat-history-notice" role="status">{historyNotice}</div>}
             {loadError && (
-              <div className="chat-phase-banner error" data-testid="load-error">
+              <div className="chat-phase-banner error rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-[13px] text-destructive" data-testid="load-error">
                 {loadError}
               </div>
             )}
@@ -219,7 +219,7 @@ export function Chat({
             ) : (
               <>
                 {queued && (
-                  <div className="chat-phase-banner queued" data-testid="phase-queued">
+                  <div className="chat-phase-banner queued rounded-md border border-primary/30 bg-primary/10 px-3 py-2 text-[13px] text-muted-foreground" data-testid="phase-queued">
                     {t("chat.queued")}
                   </div>
                 )}
@@ -234,16 +234,16 @@ export function Chat({
         )}
       </div>
       {session && hasMessages && (
-        <div className="chat-latest-row">
+        <div className="chat-latest-row flex h-[44px] shrink-0 items-center justify-center bg-background">
           {showLatest && (
-            <button type="button" className="chat-latest" aria-label={t("chat.scrollLatest")} title={t("chat.scrollLatest")} onClick={goToLatest}>
-              <span className="chat-latest-face" aria-hidden="true"><Icon name="down" /></span>
+            <button type="button" className="chat-latest grid h-[44px] w-[44px] place-items-center bg-transparent text-muted-foreground outline-none" aria-label={t("chat.scrollLatest")} title={t("chat.scrollLatest")} onClick={goToLatest}>
+              <span className="chat-latest-face grid size-[34px] place-items-center rounded-full border border-border bg-card shadow-sm" aria-hidden="true"><Icon name="down" /></span>
             </button>
           )}
         </div>
       )}
       {(session || projects !== null) && (
-        <div className="chat-footer">
+        <div className="chat-footer static w-full shrink-0 bg-background px-6 pb-4 pt-2 max-[1179px]:px-4">
           <CompactionBanner key={session?.id ?? "no-session"} compaction={compaction} connected={connected} />
           <Composer
             session={session}
