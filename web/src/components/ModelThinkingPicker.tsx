@@ -99,7 +99,7 @@ export function ModelThinkingPicker({
     if (!trigger) return;
     const spaceAbove = Math.max(0, trigger.top - 16);
     const spaceBelow = Math.max(0, window.innerHeight - trigger.bottom - 16);
-    const placement = spaceAbove >= spaceBelow ? "above" : "below";
+    const placement: "above" | "below" = spaceAbove >= spaceBelow ? "above" : "below";
     const maxHeight = Math.max(120, Math.min(380, placement === "above" ? spaceAbove : spaceBelow));
     const width = Math.min(420, window.innerWidth - 32);
     const left = Math.max(8, Math.min(trigger.right - width, window.innerWidth - width - 8));
