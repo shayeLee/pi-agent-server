@@ -47,7 +47,14 @@ export function ModelThinkingPicker({
 }: ModelThinkingPickerProps) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
-  const [panelLayout, setPanelLayout] = useState({ placement: "above" as "above" | "below", maxHeight: 380 });
+  const [panelLayout, setPanelLayout] = useState({
+    placement: "above" as "above" | "below",
+    maxHeight: 380,
+    left: 16,
+    width: 360,
+    top: undefined as number | undefined,
+    bottom: 80 as number | undefined,
+  });
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const id = useId();
@@ -93,10 +100,21 @@ export function ModelThinkingPicker({
     const spaceAbove = Math.max(0, trigger.top - 16);
     const spaceBelow = Math.max(0, window.innerHeight - trigger.bottom - 16);
     const placement = spaceAbove >= spaceBelow ? "above" : "below";
-    const maxHeight = Math.min(380, placement === "above" ? spaceAbove : spaceBelow);
-    setPanelLayout((current) => current.placement === placement && current.maxHeight === maxHeight
+    const maxHeight = Math.max(120, Math.min(380, placement === "above" ? spaceAbove : spaceBelow));
+    const width = Math.min(420, window.innerWidth - 32);
+    const left = Math.max(8, Math.min(trigger.right - width, window.innerWidth - width - 8));
+    const next = {
+      placement,
+      maxHeight,
+      left,
+      width,
+      top: placement === "below" ? trigger.bottom + 8 : undefined,
+      bottom: placement === "above" ? window.innerHeight - trigger.top + 8 : undefined,
+    };
+    setPanelLayout((current) => current.placement === next.placement && current.maxHeight === next.maxHeight
+      && current.left === next.left && current.width === next.width && current.top === next.top && current.bottom === next.bottom
       ? current
-      : { placement, maxHeight });
+      : next);
   }
 
   useEffect(() => {
@@ -147,7 +165,7 @@ export function ModelThinkingPicker({
         <Icon name="down" className="disclosure-chevron" />
       </button>
       {open && (
-        <div id={panelId} className={`model-thinking-panel absolute z-[60] right-0 flex w-[min(420px,calc(100vw-32px))] flex-col gap-3 overflow-hidden rounded-md border border-border bg-popover p-3 shadow-md ${panelLayout.placement === "below" ? "top-[calc(100%+8px)]" : "bottom-[calc(100%+8px)]"}`} style={{ maxHeight: panelLayout.maxHeight }} role="dialog" aria-label="模型与思考深度">
+        <div id={panelId} className="model-thinking-panel fixed z-[80] flex flex-col gap-3 overflow-hidden rounded-md border border-border bg-popover p-3 shadow-md" style={{ maxHeight: panelLayout.maxHeight, left: panelLayout.left, width: panelLayout.width, top: panelLayout.top, bottom: panelLayout.bottom }} role="dialog" aria-label="模型与思考深度">
           <section className="model-thinking-section model-thinking-model-section flex min-h-0 flex-1 flex-col" aria-labelledby={`${id}-models-label`}>
             <h2 id={`${id}-models-label`} className="mb-1.5 text-[12px] font-semibold text-muted-foreground">模型</h2>
             <input

@@ -136,11 +136,14 @@
   min-width: 0;
 }
 
-.thinking-header {
+button.thinking-header {
   display: flex;
   align-items: center;
+  justify-content: flex-start;
   gap: var(--space-8);
-  width: auto;
+  /* Stretch the hit target; pack the label, preview, and chevron at the start
+     so a short preview does not pin the chevron to the row's right edge. */
+  width: 100%;
   max-width: 100%;
   min-height: 28px;
   padding: 2px 0;
@@ -186,9 +189,12 @@
 }
 .thinking-chevron {
   color: var(--thinking);
-  /* Path-bbox center sits ~1px above JetBrains Mono ink at 12/18.
-     Shift only the glyph; the label keeps its own 0.5px leading correction. */
-  translate: 0 1.5px;
+}
+
+/* Move only the path. The SVG border box stays on the flex center line
+   (rich-app box centers); the path CTM follows the label ink (optical). */
+.thinking-chevron path {
+  translate: 0 1px;
 }
 
 .thinking-row[data-expanded="true"] .thinking-chevron {
@@ -196,13 +202,22 @@
 }
 
 .thinking-label {
-  /* Mono CJK fallback ink is ~1px above the sans preview; split the correction. */
-  translate: 0 0.5px;
   flex: 0 0 auto;
   font-family: var(--font-mono);
   font-size: var(--font-micro);
   color: var(--thinking);
   white-space: nowrap;
+}
+
+.thinking-summary {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--font-small);
+  line-height: 1.5;
+  color: var(--text-secondary);
 }
 
 /* 展开原文：与预览字号一致，无缩进、装饰边线或卡片 */
@@ -219,7 +234,7 @@
 /* --- extracted 1274-1518 --- */
 /* ---------- 工具过程（共享类别 SVG + 浅底轻量块；原始数据完整） ---------- */
 
-.tool-call { min-width: 0; }
+.tool-call { min-width: 0; padding-inline: 12px; }
 .tool-call-category { color: var(--text-secondary); }
 .tool-call-body .code-block {
   background: color-mix(in srgb, var(--bg-page) 65%, transparent);
@@ -496,3 +511,154 @@ details[open] > summary > .details-chevron { transform: rotate(90deg); }
 .diff-no-newline { color: var(--text-secondary); }
 .diff-originals summary { cursor: pointer; overflow-wrap: anywhere; }
 .diff-status { color: var(--text-secondary); }
+
+/* --- layout contracts the reading column, start state, and chrome still measure --- */
+
+.chat-body,
+.chat-body * {
+  overflow-anchor: none;
+}
+
+.chat-body:focus,
+.chat-body:focus-visible {
+  outline-style: none;
+  outline-width: 0;
+  box-shadow: none;
+}
+
+.chat-body:has(> .workbench-welcome) {
+  display: flex;
+  flex-direction: column;
+}
+
+.workbench-welcome {
+  flex: 0 0 auto;
+  width: 100%;
+  max-width: 760px;
+  margin: auto auto 0;
+  padding: 16px 24px;
+}
+
+.chat-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+  max-width: 760px;
+  margin-inline: auto;
+  padding: 24px;
+}
+
+.chat-footer {
+  position: static;
+  width: 100%;
+  flex-shrink: 0;
+  background: var(--background);
+  padding: 12px 24px 16px;
+}
+
+.composer,
+.compaction-banner,
+.stats-bar {
+  width: 100%;
+  max-width: 760px;
+  margin-inline: auto;
+}
+
+.compaction-banner { margin-bottom: 8px; }
+
+@media (max-width: 640px) {
+  .chat-inner { padding: 16px 16px 24px; }
+  .chat-footer { padding: 8px 16px 12px; }
+  .workbench-welcome { padding-inline: 16px; }
+}
+
+@media (max-height: 480px) {
+  .chat-inner { padding-top: 16px; padding-bottom: 16px; }
+  /* Menus use fixed positioning so this cap does not clip them. */
+  .composer {
+    max-height: 40dvh;
+    overflow: hidden;
+    padding: 4px;
+    gap: 4px;
+  }
+  .composer-start-settings {
+    padding-bottom: 4px;
+  }
+  .composer-main {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    flex: 1 1 auto;
+    overflow: hidden;
+    gap: 4px;
+  }
+  .composer-attachments {
+    max-height: 28px;
+    min-height: 0;
+    flex: 0 0 auto;
+    overflow-y: auto;
+  }
+  .composer-toolbar { flex: none; }
+  .composer [data-testid="composer-input"] {
+    min-height: 0;
+    max-height: 32px;
+    flex: 0 0 auto;
+    overflow-y: auto;
+  }
+  .stats-bar { display: none; }
+}
+
+.composer-stop {
+  background-color: var(--primary);
+  color: #fff;
+}
+
+.composer-stop svg { color: #fff; }
+
+@keyframes compaction-pulse {
+  50% { opacity: 0.35; }
+}
+
+.compaction-indicator.is-running {
+  animation: compaction-pulse 1.6s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .compaction-indicator.is-running { animation: none; }
+}
+
+.stats-summary {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: nowrap;
+  gap: 24px;
+  width: 100%;
+  white-space: nowrap;
+  font-size: 13px;
+  line-height: 20px;
+  padding: 4px 0;
+}
+
+@media (max-width: 639px) {
+  .stats-summary { gap: 7px; font-size: 11px; }
+  .stats-cache,
+  .stats-cluster:first-child .ui-icon { display: none; }
+  .stats-summary .ui-icon { width: 14px; height: 14px; }
+  .workbench-mobile-menu,
+  [data-testid="toggle-events"],
+  [data-testid="toggle-sidebar"],
+  [data-testid="inspector-close"],
+  .session-actions button {
+    width: 44px;
+    height: 44px;
+    min-width: 44px;
+    min-height: 44px;
+  }
+  .model-thinking-trigger,
+  .tool-call-header {
+    min-width: 44px;
+    min-height: 44px;
+  }
+}

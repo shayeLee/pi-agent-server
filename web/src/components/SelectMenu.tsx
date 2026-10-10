@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { Icon } from "./Icon.js";
 import type { KeyboardEvent } from "react";
 import { cn } from "../lib/utils.js";
@@ -35,6 +35,7 @@ export function SelectMenu({
   const rootRef = useRef<HTMLSpanElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const listboxRef = useRef<HTMLDivElement>(null);
+  const [fixedBox, setFixedBox] = useState<{ left: number; bottom: number; minWidth: number; maxHeight: number } | null>(null);
   const id = useId();
   const listboxId = `${id}-listbox`;
   const selectedIndex = options.findIndex((option) => option.value === value);
@@ -61,6 +62,30 @@ export function SelectMenu({
     const option = listboxRef.current?.children.item(activeIndex) as HTMLElement | null;
     option?.scrollIntoView?.({ block: "nearest" });
   }, [open, activeIndex, isDisabled]);
+
+  useLayoutEffect(() => {
+    if (!open || placement !== "above") {
+      setFixedBox(null);
+      return;
+    }
+    const place = () => {
+      const trigger = triggerRef.current?.getBoundingClientRect();
+      if (!trigger) return;
+      setFixedBox({
+        left: Math.max(8, trigger.left),
+        bottom: window.innerHeight - trigger.top + 4,
+        minWidth: trigger.width,
+        maxHeight: Math.max(96, Math.min(280, trigger.top - 8)),
+      });
+    };
+    place();
+    window.addEventListener("resize", place);
+    window.addEventListener("scroll", place, true);
+    return () => {
+      window.removeEventListener("resize", place);
+      window.removeEventListener("scroll", place, true);
+    };
+  }, [open, placement]);
 
   function openMenu(index = selectedIndex >= 0 ? selectedIndex : 0): void {
     if (isDisabled) return;
@@ -163,9 +188,10 @@ export function SelectMenu({
           ref={listboxRef}
           id={listboxId}
           className={cn(
-            "select-menu-listbox absolute z-50 max-h-[min(280px,calc(100dvh-48px))] min-w-full overflow-y-auto rounded-md border border-border bg-popover p-1 shadow-md",
-            placement === "above" ? "bottom-[calc(100%+4px)]" : "top-[calc(100%+4px)] left-0",
+            "select-menu-listbox z-50 max-h-[min(280px,calc(100dvh-48px))] min-w-full overflow-y-auto rounded-md border border-border bg-popover p-1 shadow-md",
+            fixedBox ? "fixed" : placement === "above" ? "absolute bottom-[calc(100%+4px)] left-0" : "absolute top-[calc(100%+4px)] left-0",
           )}
+          style={fixedBox ? { left: fixedBox.left, bottom: fixedBox.bottom, minWidth: fixedBox.minWidth, maxHeight: fixedBox.maxHeight } : undefined}
           role="listbox"
           aria-label={ariaLabel}
           aria-activedescendant={`${id}-option-${activeIndex}`}

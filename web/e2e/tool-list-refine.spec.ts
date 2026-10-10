@@ -30,7 +30,7 @@ for (const width of [1280, 390]) for (const theme of ["dark", "light"]) test(`${
  await expect(row.locator('.tool-summary-description')).toContainText('runIds=[1]');
  await expect(row.getByRole('img', {name: '已完成'})).toHaveCount(1);
  await page.mouse.move(0, 0);
- await expect(row.locator('.tool-status-icon')).toHaveCSS('opacity', '0');
+ await expect(row.locator('.tool-status-icon')).toHaveCSS('opacity', '1');
  await row.hover();
  await expect(row.locator('.tool-status-icon')).toHaveCSS('opacity', '1');
  await page.mouse.move(0, 0);

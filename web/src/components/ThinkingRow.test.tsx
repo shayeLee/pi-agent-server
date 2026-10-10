@@ -31,14 +31,17 @@ describe("ThinkingRow", () => {
   it.each([
     [true, "Thinking"],
     [false, "Thought"],
-  ])("shows only the %s status title and keeps the full body", (streaming, title) => {
+  ])("shows the %s status title, a collapsed preview, and the full body", (streaming, title) => {
     const text = "第一行\n" + "思考内容".repeat(30);
     const { container } = render(<ThinkingRow thinking={{ kind: "thinking", id: "no-preview", text, streaming }} />);
     const toggle = screen.getByRole("button", { name: "思考过程" });
     expect(toggle).toHaveTextContent(title);
-    expect(container.querySelector(".thinking-summary")).toBeNull();
+    expect(toggle.lastElementChild).toHaveClass("thinking-chevron");
+    if (streaming) expect(container.querySelector(".thinking-summary")).toBeNull();
+    else expect(container.querySelector(".thinking-summary")).toHaveTextContent("第一行");
     if (!streaming) fireEvent.click(toggle);
     expect(screen.getByTestId("thinking-body-no-preview").textContent).toBe(text);
+    if (!streaming) expect(container.querySelector(".thinking-summary")).toBeNull();
   });
   it("流式思考默认展开，但用户可收合；完成后保留用户选择", () => {
     const thinking = { kind: "thinking" as const, id: "t-1", text: "检查调用链", streaming: true };

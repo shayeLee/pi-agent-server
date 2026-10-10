@@ -126,7 +126,7 @@ export function Composer({
   }
 
   return (
-    <div className="composer mx-auto flex w-full max-w-[760px] flex-col gap-2 rounded-[10px] border border-border bg-card p-2 shadow-sm [@media(max-height:480px)]:max-h-[40dvh] [@media(max-height:480px)]:overflow-hidden" data-testid="composer">
+    <div className="composer mx-auto flex w-full max-w-[760px] flex-col gap-2 rounded-[10px] border border-border bg-card p-2 shadow-sm" data-testid="composer">
       {!session && (
         <div className="composer-start-settings flex flex-wrap items-center gap-2 border-b border-border px-1 pb-2" data-testid="composer-start-settings">
           <SelectMenu className="composer-project-picker max-w-[200px]" placement="above" options={projectOptions} value={activeProjectId ?? ""}
@@ -137,6 +137,7 @@ export function Composer({
             thinkingLevel={draft?.settings.thinkingLevel ?? null} onConfigChange={(config) => onDraftSettings?.(config)} />
         </div>
       )}
+      <div className="composer-main flex min-h-0 flex-col gap-2">
       {attachments.length > 0 && (
         <div className="composer-attachments flex max-h-[132px] flex-wrap gap-2 overflow-y-auto border-b border-border pb-2 [@media(max-height:480px)]:max-h-14" data-testid="composer-attachments" aria-live="polite">
           {attachments.map((item) => (
@@ -187,6 +188,7 @@ export function Composer({
         aria-label={t("chat.placeholder")} title={t("chat.composerHint")} value={text}
         onChange={(event) => setText(event.target.value)} onKeyDown={handleKeyDown} onPaste={handlePaste}
         disabled={!canWrite || historyLoading} />
+      </div>
       <div className="composer-toolbar flex items-center gap-2">
         <div className="composer-left flex items-center">
           <input ref={filePickerRef} type="file" multiple className="composer-file-input sr-only"

@@ -153,3 +153,8 @@
   outline: none;
   box-shadow: none;
 }
+
+.sidebar .session-list .session-select:focus-visible .session-title {
+  text-decoration-line: underline;
+  text-underline-offset: 2px;
+}

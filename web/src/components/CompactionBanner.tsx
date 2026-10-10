@@ -31,7 +31,7 @@ export function CompactionBanner({ compaction, connected }: { compaction?: Compa
   const status = disconnectedRunning ? "unknown" : compaction.status;
   return (
     <div className="compaction-banner mb-2 flex items-start gap-2 rounded-md border border-border bg-muted/60 px-3 py-2 text-[13px]" data-testid="compaction-banner" data-status={status} role="status" aria-live="polite" aria-atomic="true">
-      <span className={`compaction-indicator mt-1 size-2 shrink-0 rounded-full bg-primary${status === "running" ? " is-running animate-pulse" : ""}`} aria-hidden="true" />
+      <span className={`compaction-indicator mt-1 size-2 shrink-0 rounded-full bg-primary${status === "running" ? " is-running" : ""}`} aria-hidden="true" />
       <div className="compaction-content min-w-0">
         <div className="compaction-heading flex flex-wrap items-center gap-2">
           <span>{labels[status]}{disconnectedRunning ? " / 连接中断" : ""}</span>

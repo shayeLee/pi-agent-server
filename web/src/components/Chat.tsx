@@ -123,7 +123,13 @@ export function Chat({
   const goToLatest = () => {
     followRef.current = true;
     const el = bodyRef.current;
-    if (el) { el.scrollTop = el.scrollHeight; remember(el); }
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+    requestAnimationFrame(() => {
+      const node = bodyRef.current;
+      if (followRef.current && node) node.scrollTop = node.scrollHeight;
+    });
+    remember(el);
   };
 
   useLayoutEffect(() => {
@@ -142,21 +148,37 @@ export function Chat({
       return;
     }
     initialHistoryRef.current = false;
-    if (followRef.current) el.scrollTop = el.scrollHeight;
+    let frame = 0;
+    if (followRef.current) {
+      el.scrollTop = el.scrollHeight;
+      // Scroll anchoring can undo the pin after paint. One frame later, pin again.
+      frame = requestAnimationFrame(() => {
+        const node = bodyRef.current;
+        if (followRef.current && node) node.scrollTop = node.scrollHeight;
+      });
+    }
     remember(el);
+    return () => cancelAnimationFrame(frame);
   }, [session?.id, historyLoading, timeline]);
 
   useLayoutEffect(() => {
     const el = bodyRef.current;
     if (!el || typeof ResizeObserver === "undefined") return;
+    let frame = 0;
     const observer = new ResizeObserver(() => {
       // Includes images, asynchronous highlighting, and viewport/Composer resize.
-      if (followRef.current && !initialHistoryRef.current) el.scrollTop = el.scrollHeight;
+      if (followRef.current && !initialHistoryRef.current) {
+        el.scrollTop = el.scrollHeight;
+        cancelAnimationFrame(frame);
+        frame = requestAnimationFrame(() => {
+          if (followRef.current && !initialHistoryRef.current) el.scrollTop = el.scrollHeight;
+        });
+      }
       remember(el);
     });
     observer.observe(el);
     if (el.firstElementChild) observer.observe(el.firstElementChild);
-    return () => observer.disconnect();
+    return () => { cancelAnimationFrame(frame); observer.disconnect(); };
   }, [session?.id]);
 
   const hasMessages = timeline.length > 0;
@@ -202,12 +224,12 @@ export function Chat({
           if ((event.target as Element).closest("button[aria-expanded], summary")) followRef.current = false;
         }}>
         {!session ? (
-          <div className="workbench-welcome mx-auto flex w-full max-w-[760px] flex-1 flex-col justify-center px-6 py-16" data-testid="no-session-hint">
+          <div className="workbench-welcome" data-testid="no-session-hint">
             {loadError && <div className="chat-phase-banner error mb-3 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-[13px] text-destructive" role="alert">{loadError}</div>}
             <p className="workbench-welcome-copy text-[15px] leading-relaxed text-muted-foreground">{t("chat.welcome")}</p>
           </div>
         ) : (
-          <div className="chat-inner mx-auto flex w-full max-w-[760px] flex-col gap-3 px-6 py-6">
+          <div className="chat-inner">
             {historyNotice && <div className="chat-history-notice" role="status">{historyNotice}</div>}
             {loadError && (
               <div className="chat-phase-banner error rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-[13px] text-destructive" data-testid="load-error">
@@ -243,7 +265,7 @@ export function Chat({
         </div>
       )}
       {(session || projects !== null) && (
-        <div className="chat-footer static w-full shrink-0 bg-background px-6 pb-4 pt-2 max-[1179px]:px-4">
+        <div className="chat-footer">
           <CompactionBanner key={session?.id ?? "no-session"} compaction={compaction} connected={connected} />
           <Composer
             session={session}

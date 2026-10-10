@@ -43,8 +43,8 @@ for (const dpr of [1, 2]) for (const touch of [false, true]) for (const theme of
         const bounds = path.getBBox();
         const matrix = path.getScreenCTM()!;
         const point = new DOMPoint(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2).matrixTransform(matrix);
-        const label = el.querySelector(".thinking-label")!.getBoundingClientRect();
-        return { glyphs, arrow: { width: rect.width, height: rect.height, center: point.y, path: path.getAttribute("d"), gap: rect.left - label.right }, display: getComputedStyle(svg).display };
+        const before = (svg.previousElementSibling ?? el.querySelector(".thinking-label"))!.getBoundingClientRect();
+        return { glyphs, arrow: { width: rect.width, height: rect.height, center: point.y, path: path.getAttribute("d"), gap: rect.left - before.right }, display: getComputedStyle(svg).display };
       });
       await writeFile(`${prefix}-metrics.json`, JSON.stringify(metrics, null, 2));
       expect(metrics.arrow.width).toBe(12);
@@ -53,7 +53,8 @@ for (const dpr of [1, 2]) for (const touch of [false, true]) for (const theme of
       expect(metrics.display).toBe("block");
       // Compare actual glyph ink, not just the flex-item rectangles.
       for (const glyph of metrics.glyphs) expect(Math.abs(metrics.arrow.center - glyph.inkCenter)).toBeLessThanOrEqual(0.75);
-      await expect(header.locator(".thinking-summary")).toHaveCount(0);
+      await expect(header.locator(".thinking-summary")).toBeVisible();
+      expect((await header.locator(".thinking-summary").textContent())?.trim().length).toBeGreaterThan(0);
       expect(metrics.glyphs.map(glyph => glyph.lineHeight)).toEqual(["18px"]);
       await header.click();
       await expect(header).toHaveAttribute("aria-expanded", "true");

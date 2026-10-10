@@ -140,10 +140,11 @@ for (const width of [1280, 390]) {
         "窄屏代码正文必须可读：要么完整容纳，要么在代码块内部横向滚动，不得裁切丢失").toBe(true);
       await expect(thinking.getByRole("button")).toHaveAttribute("aria-expanded", "false");
       await expect(thinking.locator(".thinking-label")).toHaveCSS("white-space", "nowrap");
-      await expectThinkingContentVerticallyCentered(thinking, false);
+      await expectThinkingContentVerticallyCentered(thinking, true);
       await thinking.scrollIntoViewIfNeeded();
       await thinking.screenshot({ path: `${evidenceDir}/collapsed-${theme}-${width}.png`, animations: "disabled" });
-      await expect(thinking.locator(".thinking-summary")).toHaveCount(0);
+      await expect(thinking.locator(".thinking-summary")).toBeVisible();
+      expect((await thinking.locator(".thinking-summary").textContent())?.trim().length).toBeGreaterThan(0);
       for (const card of [successfulTool, failedTool]) {
         await expect(card.locator(".tool-call-header")).toHaveAttribute("aria-expanded", "false");
         await card.locator(".tool-call-header").click();
@@ -183,7 +184,7 @@ for (const width of [1280, 390]) {
       // Expanded-state proof is separate from the default answer view: thinking and
       // successful tool raw input/output are available without any summary substitution.
       await thinking.getByRole("button").click();
-      await expectThinkingContentVerticallyCentered(thinking, false); // Expanded header retains the label, without the retired preview.
+      await expectThinkingContentVerticallyCentered(thinking, false); // Expanded header keeps the label and hides the collapsed preview.
       await thinking.scrollIntoViewIfNeeded();
       await thinking.screenshot({ path: `${evidenceDir}/expanded-${theme}-${width}.png`, animations: "disabled" });
       const thinkingBody = thinking.getByTestId(/thinking-body-/);

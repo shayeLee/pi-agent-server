@@ -7,6 +7,11 @@ export type ThinkingRowProps = {
   thinking: Extract<TimelineItem, { kind: "thinking" }>;
 };
 
+function thinkingPreview(text: string): string {
+  const line = text.split(/\r?\n/).map((part) => part.replace(/\s+/g, " ").trim()).find(Boolean);
+  return line ?? "";
+}
+
 export function ThinkingRow({ thinking }: ThinkingRowProps) {
   const { t } = useI18n();
   // Streaming opens by default, but an explicit user choice can still collapse it.
@@ -14,6 +19,7 @@ export function ThinkingRow({ thinking }: ThinkingRowProps) {
   const visible = manualExpanded ?? thinking.streaming;
   // Keep hooks and manual state mounted for this id, even before useful text arrives.
   if (!thinking.text.trim()) return null;
+  const preview = thinkingPreview(thinking.text);
 
   return (
     <div
@@ -29,6 +35,7 @@ export function ThinkingRow({ thinking }: ThinkingRowProps) {
         aria-label={t("thinking.label")}
       >
         <span className="thinking-label">{thinking.streaming ? t("thinking.streaming") : t("thinking.done")}</span>
+        {!visible && preview && <span className="thinking-summary">{preview}</span>}
         <Icon name="chevron" className="disclosure-chevron thinking-chevron" />
       </button>
       {visible && (

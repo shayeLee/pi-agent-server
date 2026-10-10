@@ -73,7 +73,12 @@ test("actual SSE: collapsed bash/wait snapshots, child semantics, previews, pref
       await header.click();
       await thinkingHeader.click();
       await expect(header.locator(".tool-summary-preview")).toHaveText(preview!);
-      await expect(thinkingHeader.locator(".thinking-summary")).toHaveCount(0);
+      if (await thinkingHeader.getAttribute("aria-expanded") === "false") {
+        await expect(thinkingHeader.locator(".thinking-summary")).toBeVisible();
+        expect((await thinkingHeader.locator(".thinking-summary").textContent())?.trim().length).toBeGreaterThan(0);
+      } else {
+        await expect(thinkingHeader.locator(".thinking-summary")).toHaveCount(0);
+      }
       await expect(thinkingHeader.locator(".thinking-label")).toHaveText("Thought"); // A subsequent tool_start settles thinking.
       const after = await header.boundingBox();
       const thinkingAfter = await thinkingHeader.boundingBox();

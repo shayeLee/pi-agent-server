@@ -62,9 +62,9 @@
 
 ### 4.2 对话列
 
-- **无会话**：`no-session-hint` + 欢迎文案；Composer 可选项目 + 模型/思考。
+- **无会话**：`no-session-hint` 贴在 Composer 上方（间距 ≤24px）；Composer 可选项目 + 模型/思考，菜单向上浮出且不被输入区裁切。
 - **有会话**：`ChatHeader` 标题 + 对话/轨迹 Tab；`toggle-events` 打开 Run 面板。
-- **时间线**：用户行右对齐轻底；助手 Markdown ~15px；`ThinkingRow` 紧凑折叠（`thinking-header` + chevron）；`ToolCallCard` 步骤式折叠（非大卡片）；`NotificationItem` 子代理通知。
+- **时间线**：用户行右对齐轻底；助手 Markdown ~15px；阅读列在主栏内居中，最宽 760px。`ThinkingRow` 紧凑折叠（`thinking-header` + chevron）；收起时在标题与 chevron 之间显示一行预览，展开后只留标题。`ToolCallCard` 步骤式折叠（非大卡片，左右 12px 内边距）；`NotificationItem` 子代理通知。
 - **滚动**：`chat-body` 跟随输出；`chat-latest` 回到底部。
 - **历史加载**：`ChatHistorySkeleton`。
 - **排队/错误**：`phase-queued`、内联 `load-error`；会话级错误另经 **Toast**（`Toaster`）提示。
@@ -72,7 +72,7 @@
 ### 4.3 Composer
 
 - 附件条、pending steer/follow-up、提交 unknown/failed 快照 UI（与 §5 一致）。
-- **运行中**：插话 / 追加 + **Stop**（`abort-button`，圆形 `primary` 填充，与 Composer `card` 底色区分；桌面 34px、窄屏 44px，停止方块 10×10）。空闲：模型选择 + 发送。
+- **运行中**：插话 / 追加 + **Stop**（`abort-button`，圆形 `primary` 填充、白色方块图标，浅色和深色都与 Composer `card` 区分；桌面 34px、窄屏 44px，停止方块 10×10）。空闲：模型选择 + 发送。窄屏触控目标至少 44px。
 - **快捷键**：Enter 发送 / Shift+Enter 换行；全局 Esc 在无浮层且 streaming 时中止。
 
 ### 4.4 Run / Inspector
