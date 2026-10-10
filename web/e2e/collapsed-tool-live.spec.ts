@@ -37,11 +37,12 @@ test("actual SSE: collapsed bash/wait snapshots, child semantics, previews, pref
   emit({ type: "thinking_delta", text: "检查 header 预览来源\n" + "长思考内容".repeat(30) });
   const thinkingHeader = page.locator(".thinking-header");
   await expect(thinkingHeader).toHaveAttribute("aria-expanded", "true");
-  const thinkingPreview = await thinkingHeader.locator(".thinking-summary").textContent();
+  const thinkingText = await page.locator(".thinking-body").textContent();
+  await expect(thinkingHeader.locator(".thinking-summary")).toHaveCount(0);
   await thinkingHeader.click();
-  await expect(thinkingHeader.locator(".thinking-summary")).toHaveText(thinkingPreview!);
+  await expect(page.locator(".thinking-body")).toHaveCount(0);
   await thinkingHeader.click();
-  await expect(thinkingHeader.locator(".thinking-summary")).toHaveText(thinkingPreview!);
+  await expect(page.locator(".thinking-body")).toHaveText(thinkingText!);
   const card = (id: string) => page.locator(`[data-tool-call-id="${id}"]`);
   const start = (id: string, name: string, args: unknown) => emit({ type: "tool_start", toolCallId: id, toolName: name, args });
   const update = (id: string, name: string, text: string) => emit({ type: "tool_update", toolCallId: id, toolName: name, partialResult: result(text) });
@@ -72,14 +73,15 @@ test("actual SSE: collapsed bash/wait snapshots, child semantics, previews, pref
       await header.click();
       await thinkingHeader.click();
       await expect(header.locator(".tool-summary-preview")).toHaveText(preview!);
-      await expect(thinkingHeader.locator(".thinking-summary")).toHaveText(thinkingPreview!);
+      await expect(thinkingHeader.locator(".thinking-summary")).toHaveCount(0);
+      await expect(thinkingHeader.locator(".thinking-label")).toHaveText("Thought"); // A subsequent tool_start settles thinking.
       const after = await header.boundingBox();
       const thinkingAfter = await thinkingHeader.boundingBox();
       expect(after!.width).toBe(before!.width);
       expect(after!.height).toBe(before!.height);
       expect(thinkingAfter!.width).toBe(thinkingBefore!.width);
       expect(thinkingAfter!.height).toBe(thinkingBefore!.height);
-      for (const summary of [header.locator(".tool-summary-preview"), thinkingHeader.locator(".thinking-summary")]) {
+      for (const summary of [header.locator(".tool-summary-preview")]) {
         expect(await summary.evaluate(el => ({ whiteSpace: getComputedStyle(el).whiteSpace, ellipsis: getComputedStyle(el).textOverflow }))).toEqual({ whiteSpace: "nowrap", ellipsis: "ellipsis" });
       }
     }

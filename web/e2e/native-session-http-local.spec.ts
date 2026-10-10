@@ -8,6 +8,7 @@ import { runSqliteMigrations } from "../../src/storage/migration-engine.js";
 import { nativeProjectDirectory } from "../../src/agent/native-session-source.js";
 import { makeTestIpAccess } from "../../tests/helpers/ip-access.js";
 import { providerFixture } from "./native-session-provider.fixture.js";
+import { isolateProjectDiscovery } from "./project-discovery-isolation.fixture.js";
 
 const artifacts = "/tmp/native-session-final-ui";
 // Actual App + startServer + SQLite + SDK + HTTP/SSE. Only provider inference is offline/fake.
@@ -41,6 +42,12 @@ test("unified native directory: real App, actors, append, private, tombstones, e
     dataDir: path.join(root, "managed"), agentDir: path.join(root, "agent"), authPath: path.join(root, "auth.json"),
     nativeSessionSourceDir: nativeRoot, ipAccess: makeTestIpAccess({ cidrs: ["127.0.0.1/32", "::1/128"] }),
     extensionPaths: [extension], defaultModel: { provider: "native-fixture", id: "offline" }, tools: [], systemPrompt: "Offline acceptance only." };
+  mkdirSync(config.agentDir!, { recursive: true, mode: 0o700 });
+  mkdirSync(path.join(root, "agent-b"), { recursive: true, mode: 0o700 });
+  writeFileSync(config.authPath!, "{}", { mode: 0o600 });
+  for (const dir of [config.agentDir!, path.join(root, "agent-b")]) writeFileSync(path.join(dir, "models.json"), "{}", { mode: 0o600 });
+  const isolation = isolateProjectDiscovery(root);
+  await page.route("**/*", route => ["127.0.0.1", "localhost", "[::1]"].includes(new URL(route.request().url()).hostname) ? route.continue() : route.abort());
   let app: Awaited<ReturnType<typeof startServer>> | undefined;
   let actorB: typeof app;
   const api = async (url: string, init?: RequestInit, base = "http://127.0.0.1:5258") => fetch(base + "/v1" + url, init);
@@ -165,5 +172,5 @@ test("unified native directory: real App, actors, append, private, tombstones, e
       await page.screenshot({ path: `${artifacts}/failure.png`, fullPage: true, timeout: 2000 });
     }
     throw error;
-  } finally { await actorB?.close(); await app?.close(); rmSync(root, { recursive: true, force: true }); }
+  } finally { await actorB?.close(); await app?.close(); isolation.restore(); rmSync(root, { recursive: true, force: true }); }
 });

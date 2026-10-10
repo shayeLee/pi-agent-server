@@ -49,7 +49,7 @@ for (const theme of ["light", "dark"] as const) for (const width of [1280, 390])
     await expect.poll(() => started).toBe(1);
     await expect(page.getByTestId("stat-live-speed")).toHaveCount(0);
     delta("thinking_delta", "想".repeat(100)); clock = 500; delta("thinking_delta", "想".repeat(100));
-    await expect(page.getByTestId("stat-live-speed")).toHaveText("· ~100 tok/s");
+    await expect(page.getByTestId("stat-live-speed")).toHaveText("~100 tok/s");
     await expect.poll(() => page.getByTestId("stats-bar").evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
     await page.screenshot({ path: `/tmp/stats-single-line/${theme}-${width}-active.png` });
     await expect(page.getByTestId("stat-live-speed")).toHaveCount(0, { timeout: 4000 });
@@ -78,7 +78,7 @@ for (const theme of ["light", "dark"] as const) for (const width of [1280, 390])
     emit({ type: "tool_execution_end", toolCallId: "t", toolName: "bash", result: "done", isError: false });
     clock = 11000; end(); finish();
     await expect(page.getByTestId("stat-live")).toHaveCount(0);
-    await expect(page.getByTestId("stat-summary-speed")).toHaveText("· 42 tok/s");
+    await expect(page.getByTestId("stat-summary-speed")).toHaveText("42 tok/s");
     await page.screenshot({ path: `/tmp/stats-single-line/${theme}-${width}-final.png` });
     await page.getByTestId("composer-input").fill("abort fixture"); await page.getByTestId("composer-input").press("Enter");
     await expect.poll(() => started).toBe(2); delta("text_delta", "before abort"); clock += 500; delta("text_delta", "after delay");

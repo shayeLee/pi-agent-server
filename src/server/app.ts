@@ -268,6 +268,8 @@ export function safeResSerializer(reply: unknown): { statusCode?: number } {
   return { statusCode: typeof r.statusCode === "number" ? r.statusCode : undefined };
 }
 
+import { abortTrace, installAbortTrace, withAbortTrace } from "../core/abort-trace.js";
+
 export function buildApp(deps: ServerDeps): FastifyInstance {
   // WP5D-2：ipAccess 运行时严格校验（failfast）——缺失/伪造/字段非法在任何路由注册之前拒绝，
   // JS/typed bypass 与 startServer 同语义。
@@ -694,13 +696,15 @@ export function buildApp(deps: ServerDeps): FastifyInstance {
           }
           expectedRequestId = requestIdCheck.value;
         }
-        const result = await sessions.controlSession(
+        abortTrace("http.abort", { sessionId: request.params.id, requestId: expectedRequestId });
+        const result = await withAbortTrace(request.params.id, () => sessions.controlSession(
           ownerKeyOf(request),
           request.params.id,
           "abort",
           undefined,
           expectedRequestId,
-        );
+        ));
+        abortTrace("http.abort.return", { sessionId: request.params.id, result: result === "not-found" ? result : result.kind });
         return result === "not-found"
           ? NOT_FOUND(reply)
           : result.kind === "ok"
@@ -891,7 +895,9 @@ export function buildApp(deps: ServerDeps): FastifyInstance {
     closing = true;
     registry.closeAllEvents();
   });
+  const releaseAbortTrace = installAbortTrace();
   app.addHook("onClose", async () => {
+    abortTrace("server.close", {}, true);
     const deadline = Date.now() + SHUTDOWN_GRACE_MS;
     while (concurrency.activeCount() > 0 && Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, 100));
@@ -900,7 +906,7 @@ export function buildApp(deps: ServerDeps): FastifyInstance {
       await registry.abortAll();
     } finally {
       registry.dispose();
-      await deps.onRuntimeClosed?.();
+      try { await deps.onRuntimeClosed?.(); } finally { releaseAbortTrace(); }
     }
   });
   return app;

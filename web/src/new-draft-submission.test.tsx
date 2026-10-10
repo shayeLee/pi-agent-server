@@ -1,7 +1,7 @@
 import { StrictMode, type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, renderHook, waitFor } from "@testing-library/react";
-import { ApiClient, ApiError, createSseConnection, type SseEvent, type SessionRecord } from "pi-agent-server/client";
+import { DEFAULT_PROJECT_ID, ApiClient, ApiError, createSseConnection, type Project, type SseEvent, type SessionRecord } from "pi-agent-server/client";
 import { useWebAppController } from "./hooks/useWebAppController.js";
 import { readRecentSelection } from "./recent-selection.js";
 
@@ -49,6 +49,88 @@ async function setup(kind: "image" | "file") {
   await act(async () => hook.result.current.addUnsentFile(attachment("X", kind)));
   return hook;
 }
+describe("first-create project metadata invalidation", () => {
+  const defaultProject: Project = { id: DEFAULT_PROJECT_ID, name: "Default", cwd: "/fixture/default", isDefault: true };
+
+  it.each([false, true])("refreshes an initially empty owner list after creation (send rejected: %s)", async rejected => {
+    vi.mocked(ApiClient.prototype.listProjects).mockResolvedValueOnce([]).mockResolvedValue([defaultProject]);
+    vi.mocked(ApiClient.prototype.createSession).mockResolvedValue({ ...created, projectId: DEFAULT_PROJECT_ID });
+    if (rejected) vi.mocked(ApiClient.prototype.sendMessage).mockRejectedValueOnce(new ApiError(400, "rejected"));
+    const { result } = renderHook(useWebAppController, { wrapper });
+    await waitFor(() => expect(result.current.sessions).toEqual([]));
+    expect(result.current.projects).toEqual([]);
+    act(() => result.current.setUnsentText("first"));
+    await act(async () => expect(await result.current.sendMessage("first")).toBe(!rejected));
+    await waitFor(() => expect(result.current.projects).toEqual([defaultProject]));
+    expect(result.current.activeProjectId).toBe(DEFAULT_PROJECT_ID);
+    expect(result.current.activeSessionId).toBe(created.id);
+    expect(result.current.submitState?.phase).toBe(rejected ? "failed" : "accepted");
+    expect(draft(result.current).text).toBe(rejected ? "first" : "");
+    expect(ApiClient.prototype.createSession).toHaveBeenCalledTimes(1);
+    expect(ApiClient.prototype.sendMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("waits out a pre-create list and preserves explicit empty projects and newer navigation", async () => {
+    const project: Project = { id: "new-project", name: "New", cwd: "/fixture/new", isDefault: false };
+    vi.spyOn(ApiClient.prototype, "createProject").mockResolvedValue(project);
+    const { result } = renderHook(useWebAppController, { wrapper });
+    await waitFor(() => expect(result.current.sessions).toEqual([]));
+    const oldList = deferred<Project[]>();
+    const freshList = deferred<Project[]>();
+    vi.mocked(ApiClient.prototype.listProjects).mockReturnValueOnce(oldList.promise).mockReturnValueOnce(freshList.promise);
+    let adding!: Promise<void>;
+    act(() => { adding = result.current.createProject(project.name, project.cwd); });
+    await waitFor(() => expect(result.current.activeProjectId).toBe(project.id));
+    vi.mocked(ApiClient.prototype.createSession).mockResolvedValue({ ...created, projectId: project.id });
+    act(() => result.current.setUnsentText("first"));
+    await act(async () => expect(await result.current.sendMessage("first")).toBe(true));
+    expect(ApiClient.prototype.listProjects).toHaveBeenCalledTimes(2);
+    act(() => result.current.selectProject("p2"));
+    act(() => result.current.setUnsentText("other draft"));
+    const other = draft(result.current);
+    const recent = readRecentSelection();
+    await act(async () => { oldList.resolve([]); await adding; });
+    await waitFor(() => expect(ApiClient.prototype.listProjects).toHaveBeenCalledTimes(3));
+    expect(result.current.projects).toContainEqual(project);
+    await act(async () => freshList.resolve([project, defaultProject]));
+    expect(result.current.projects).toContainEqual(project);
+    expect(result.current.activeProjectId).toBe("p2");
+    expect(result.current.activeSessionId).toBeNull();
+    expect(draft(result.current)).toBe(other);
+    expect(readRecentSelection()).toEqual(recent);
+    expect(ApiClient.prototype.createSession).toHaveBeenCalledTimes(1);
+    expect(ApiClient.prototype.sendMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([false, true])("metadata refresh failure leaves send outcome and edited attachment draft intact (rejected: %s)", async rejected => {
+    const { result } = await setup("image");
+    const send = deferred<void>();
+    vi.mocked(ApiClient.prototype.sendMessage).mockReturnValueOnce(send.promise);
+    vi.mocked(ApiClient.prototype.listProjects).mockRejectedValueOnce(new ApiError(403, "metadata forbidden"));
+    let sending!: Promise<boolean>;
+    act(() => { sending = result.current.sendMessage("A"); });
+    await waitFor(() => expect(result.current.activeSessionId).toBe(created.id));
+    act(() => result.current.setUnsentText("B"));
+    await act(async () => result.current.addUnsentFile(attachment("Y", "image")));
+    const recent = readRecentSelection();
+    await act(async () => {
+      if (rejected) send.reject(new ApiError(400, "rejected"));
+      else send.resolve();
+      expect(await sending).toBe(!rejected);
+    });
+    await waitFor(() => expect(ApiClient.prototype.listProjects).toHaveBeenCalledTimes(2));
+    expect(result.current.activeSessionId).toBe(created.id);
+    expect(result.current.activeProjectId).toBe("p1");
+    expect(result.current.submitState?.phase).toBe(rejected ? "failed" : "accepted");
+    expect(result.current.submitState?.snapshot.text).toBe("A");
+    expect(draft(result.current).text).toBe("B");
+    expect(draft(result.current).attachments.map(item => item.name)).toEqual(rejected ? ["X.png", "Y.png"] : ["Y.png"]);
+    expect(readRecentSelection()).toEqual(recent);
+    expect(ApiClient.prototype.createSession).toHaveBeenCalledTimes(1);
+    expect(ApiClient.prototype.sendMessage).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("pending first-create snapshot ownership", () => {
   it.each(["image", "file"] as const)("migrates edited B + new %s Y, consumes only X and does not resend X", async kind => {
     const { result } = await setup(kind);

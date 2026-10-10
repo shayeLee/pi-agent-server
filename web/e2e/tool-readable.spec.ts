@@ -93,12 +93,15 @@ test("通用参数优先、真实快照替换、手动键盘折叠保留、明�
   await page.keyboard.press("Escape");
   await expect(more).toBeFocused();
   await header.click();
-  await expect(wait.getByTestId("tool-result-text")).toHaveText(waitText);
+  await expect(wait.getByRole("heading", { name: "[scout] run r2 — completed" })).toBeVisible();
+  await wait.getByRole("button", { name: "Markdown 展示" }).click();
+  await expect(wait.getByRole("region", { name: "结果", exact: true }).locator(".tool-readable-value")).toHaveText(waitText);
+  await wait.getByRole("button", { name: "Markdown 展示" }).click();
   await expect(wait.getByTestId("tool-result-text")).not.toContainText("settled");
   const singleTaskSource = page.locator('[data-tool-call-id="single"] .tool-subagent-task > pre');
   await expect(singleTaskSource).toBeVisible();
   expect(await singleTaskSource.textContent()).toBe(singleTask);
-  await expect(page.locator('[data-tool-call-id="parallel"] .tool-parameter-items').first().locator(":scope > li")).toHaveCount(2);
+  await expect(page.locator('[data-tool-call-id="parallel"]').getByRole("list", { name: "代理任务" }).locator(":scope > li")).toHaveCount(2);
   await expect(cards.first().getByTestId("tool-result-text").locator('.code-block[data-language="bash"] pre')).toHaveText("普通工具最终正文");
   expect(await cards.evaluateAll(elements => elements.map(el => el.getAttribute("data-tool-call-id")))).toEqual(["ordinary", "single", "parallel", "wait"]);
   for (const card of await cards.all()) {
@@ -122,7 +125,7 @@ test("通用参数优先、真实快照替换、手动键盘折叠保留、明�
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
       if (width === 390) expect(await header.evaluate(el => el.getBoundingClientRect().height)).toBeGreaterThanOrEqual(44);
       await page.screenshot({ path: `/tmp/subagent-tool-readable/${theme}-${width}-calls.png` });
-      await page.locator('[data-tool-call-id="parallel"] .tool-parameter-items').first().scrollIntoViewIfNeeded();
+      await page.locator('[data-tool-call-id="parallel"]').getByRole("list", { name: "代理任务" }).scrollIntoViewIfNeeded();
       await page.screenshot({ path: `/tmp/subagent-tool-readable/${theme}-${width}-parallel.png` });
       await wait.scrollIntoViewIfNeeded();
       await page.screenshot({ path: `/tmp/subagent-tool-readable/${theme}-${width}-result.png` });

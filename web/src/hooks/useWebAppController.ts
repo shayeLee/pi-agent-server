@@ -356,22 +356,35 @@ export function useWebAppController() {
     }
   }
 
-  function refreshProjects(): Promise<void> {
+  function refreshProjects(metadataOnly = false): Promise<void> {
     if (projectsPromiseRef.current) return projectsPromiseRef.current;
-    const promise = loadProjects().finally(() => {
+    const promise = loadProjects(metadataOnly).finally(() => {
       if (projectsPromiseRef.current === promise) projectsPromiseRef.current = null;
     });
     projectsPromiseRef.current = promise;
     return promise;
   }
 
-  async function loadProjects(): Promise<void> {
+  async function refreshCreatedProjects(): Promise<void> {
+    // An already-running list may have read before the session was persisted.
+    // Wait for it, then fetch real metadata; the session DTO is not a project DTO.
+    await projectsPromiseRef.current;
+    await refreshProjects(true);
+  }
+
+  async function loadProjects(metadataOnly = false): Promise<void> {
     if (!api) return;
     const revision = selectionRevisionRef.current;
     try {
       const list = await api.listProjects();
       for (const project of list) draftProjectsRef.current.delete(project.id);
       list.push(...draftProjectsRef.current.values());
+      if (metadataOnly) {
+        // Creation invalidates owner-visible metadata, not the user's navigation.
+        setProjects(list);
+        setProjectsError(null);
+        return;
+      }
       const defaultId = list.find((project) => project.isDefault)?.id ?? list[0]?.id ?? DEFAULT_PROJECT_ID;
       let restoredProjectId: string | null = null;
       if (!restoreAttemptedRef.current && revision === selectionRevisionRef.current) {
@@ -402,6 +415,9 @@ export function useWebAppController() {
         restoredProjectId ?? (prev === null || !list.some((project) => project.id === prev) ? defaultId : prev),
       );
     } catch (err) {
+      // A post-create metadata failure must not invalidate an accepted send,
+      // its draft/snapshot, recent selection, or another project's session state.
+      if (metadataOnly) return;
       if (revision === selectionRevisionRef.current && err instanceof ApiError && (err.status === 403 || err.status === 404)) clearRecentSelection();
       if (revision !== selectionRevisionRef.current) return;
       ++sessionsRequestSeqRef.current;
@@ -764,6 +780,7 @@ export function useWebAppController() {
     let scope = initialScope;
     let snapshot = original;
     let stage: "create" | "config" | "send" = snapshot.sessionId ? (resumeAt === "create" ? "send" : resumeAt) : "create";
+    let createdSession = false;
     let messageId: string | null = null;
     let receipt: { sessionId: string; accepted: boolean } | undefined;
     const update = (phase: SubmissionState["phase"], error?: string) =>
@@ -775,7 +792,8 @@ export function useWebAppController() {
         const created = await api.createSession(undefined, snapshot.projectId, snapshot.createRequestId);
         snapshot = { ...snapshot, sessionId: created.id };
         const sessionScope = `session:${created.id}`;
-        draftProjectsRef.current.delete(created.projectId);
+        // Keep known empty-project metadata until an owner-visible list confirms it.
+        createdSession = true;
         newlyCreatedIdsRef.current.add(created.id);
         emptyHistoryIdsRef.current.add(created.id);
         getChatStore(created.id);
@@ -855,6 +873,9 @@ export function useWebAppController() {
       }
       submittingScopesRef.current.delete(initialScope);
       submittingScopesRef.current.delete(scope);
+      // Visibility depends on the SessionRecord, not message count. Even a
+      // rejected first send leaves a persisted session and invalidates this list.
+      if (createdSession) void refreshCreatedProjects();
     }
   }
 

@@ -3,6 +3,7 @@ import base from "./vite.config.js";
 
 // Isolated, instrumented App build; never changes the shipped entry or bundle.
 export default mergeConfig(base, defineConfig({
+  envDir: false,
   resolve: { alias: { "react-dom/client": "react-dom/profiling" } },
   build: { outDir: "/tmp/web-long-session-performance/build", emptyOutDir: true },
   server: { proxy: { "/v1": { target: "http://127.0.0.1:8119" } } },

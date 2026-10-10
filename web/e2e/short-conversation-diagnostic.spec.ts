@@ -269,14 +269,18 @@ for (const viewport of viewports) {
         expect(headerTargets.horizontalOverflow).toBe(false);
       }
 
-      // Refinement regression: title keeps useful space, actions never cover selection.
+      // Refinement regression: full-width title row, with action hit targets on the row below.
       const sessionSelect = page.getByTestId(`session-${sessionId}`);
       if (viewport.width >= 1180 && viewport.height > 480) {
         await sessionSelect.hover();
         const selectBox = await sessionSelect.boundingBox();
         const renameBox = await page.getByTestId(`rename-${sessionId}`).boundingBox();
         expect(selectBox!.width).toBeGreaterThan(140);
-        expect(renameBox!.x).toBeGreaterThanOrEqual(selectBox!.x + selectBox!.width);
+        expect(renameBox!.y).toBeGreaterThanOrEqual(selectBox!.y + selectBox!.height - 1);
+        expect(await sessionSelect.evaluate(element => {
+          const box = element.getBoundingClientRect();
+          return document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2)?.closest("button") === element;
+        })).toBe(true);
         await page.mouse.move(viewport.width - 1, 0);
       }
       await mkdir("/tmp/astra-ui-refine", { recursive: true });

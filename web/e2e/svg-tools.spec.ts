@@ -43,7 +43,7 @@ for (const theme of ["light", "dark"]) for (const width of [1280, 390]) {
     await expect(cards.last().locator(".markdown li")).toHaveCount(3);
     await expect(cards.nth(0).getByRole("button", { name: "Markdown 展示" })).toHaveCount(0);
     await expect(cards.nth(0).locator(".tool-result-text pre")).toHaveText(/review-sample.py  modified=/);
-    const taskItems = cards.nth(1).getByRole("list", { name: "tasks 条目" }).locator("li");
+    const taskItems = cards.nth(1).getByRole("list", { name: "代理任务" }).locator("li");
     await expect(taskItems.nth(0).locator(".tool-subagent-agent")).toHaveText("lite");
     await expect(taskItems.nth(1).locator(".tool-subagent-agent")).toHaveText("reviewer");
     expect(await taskItems.first().evaluate(element => getComputedStyle(element.parentElement!).listStyleType)).toBe("none");

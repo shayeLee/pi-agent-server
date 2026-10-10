@@ -117,7 +117,9 @@ for (const touch of [false, true]) for (const theme of ["light", "dark"]) {
       await expect(button).toBeFocused();
       await expect(button).toHaveCSS("outline-style", "none");
       await expect(button).toHaveCSS("box-shadow", "none");
-      await expect(button).toHaveCSS("background-color", theme === "dark" ? "rgb(50, 47, 43)" : "rgb(237, 234, 229)");
+      // Session selection keeps a transparent button over the row's active background.
+      const sessionSelection = await button.evaluate(el => el.classList.contains("session-select"));
+      await expect(button).toHaveCSS("background-color", sessionSelection ? "rgba(0, 0, 0, 0)" : theme === "dark" ? "rgb(50, 47, 43)" : "rgb(237, 234, 229)");
       await expect(activeSession).toHaveCSS("background-color", activeBackground);
     }
     await page.getByTestId("session-s").click();

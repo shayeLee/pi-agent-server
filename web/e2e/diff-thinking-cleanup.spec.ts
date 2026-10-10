@@ -13,7 +13,8 @@ for (const width of [1280, 390]) for (const theme of ["light", "dark"]) {
     await expect(page.locator(".thinking-row")).toHaveCount(0);
     await page.getByRole("button", { name: "真实思考到达" }).click();
     const thinking = page.getByTestId("thinking-late");
-    await expect(thinking.locator(".thinking-summary")).toHaveText("检查调用链 保留完整原文 下一步验证");
+    await expect(thinking.locator(".thinking-summary")).toHaveCount(0);
+    await expect(thinking.getByRole("button")).toHaveAttribute("aria-expanded", "true");
     expect(await thinking.locator(".thinking-body").textContent()).toBe(original.fullThinking);
     const style = await thinking.locator(".thinking-body").evaluate(el => ({ font: getComputedStyle(el).fontSize, line: getComputedStyle(el).lineHeight }));
     expect(style).toEqual({ font: "13px", line: "13px" });

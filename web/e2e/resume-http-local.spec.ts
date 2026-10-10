@@ -48,13 +48,21 @@ for (const live of [false, true]) {
     let adapterCreations = 0;
     const app = buildApp({ sessions: storage.sessions, projects: storage.projects,
       defaultProjectCwd: root, ipAccess: makeTestIpAccess(), conversationStorage: registry,
-      createAdapter: async () => {
+      createAdapter: async (sessionId) => {
         adapterCreations++;
-        const resumed = openPiRuntimeSessionFile(file);
         const adapter = new MockAgentAdapter([{ type: "agent_start" }, { type: "agent_end", messages: [], willRetry: false }]);
+        if (sessionId !== id) return adapter; // The other session has no persisted history.
+        const resumed = openPiRuntimeSessionFile(file);
         // Actual resumed SDK branch exported by production adapter; only model execution is mocked.
-        adapter.exportData = await new PiAgentAdapter({ messages: resumed.buildSessionContext().messages,
-          sessionManager: resumed } as unknown as AgentSessionLike).exportSession();
+        const snapshotSession: AgentSessionLike = {
+          messages: resumed.buildSessionContext().messages, sessionManager: resumed,
+          subscribe: () => () => {}, dispose: () => {},
+          prompt: async () => {}, abort: async () => {}, steer: async () => {}, followUp: async () => {},
+          navigateTree: async () => {}, setModel: async () => {}, setThinkingLevel: () => {},
+        };
+        const snapshotAdapter = new PiAgentAdapter(snapshotSession);
+        try { adapter.exportData = await snapshotAdapter.exportSession(); }
+        finally { snapshotAdapter.dispose(); }
         return adapter;
       },
     });

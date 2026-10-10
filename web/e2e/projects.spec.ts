@@ -4,6 +4,13 @@ test("多项目：创建额外项目 → 建会话归属项目 → 切换项目�
   await page.goto("/");
   await expect(page.getByTestId("new-session")).toBeVisible();
 
+  // Project discovery lists projects with visible sessions. Establish the default
+  // project through the real create/send path instead of assuming an empty seed is listed.
+  await page.getByTestId("composer-input").fill("默认项目隔离前置会话");
+  await page.getByTestId("send-button").click();
+  await expect(page.locator(".message-assistant")).toContainText("pi-agent-server 测试助手");
+  await expect(page.getByTestId("abort-button")).toHaveCount(0);
+
   // 与 mock 后端 seed 一致：默认项目 id = 服务端 DEFAULT_PROJECT_ID（Web 由 isDefault 字段推导）
   const DEFAULT_PROJECT_ID = "6f1a2b3c-4d5e-4f6a-8b9c-0d1e2f3a4b5c";
   const projectName = `我的仓库-${Date.now()}`;
@@ -28,6 +35,7 @@ test("多项目：创建额外项目 → 建会话归属项目 → 切换项目�
   await page.getByTestId("composer-input").fill("用于测试项目隔离");
   await page.getByTestId("send-button").click();
   await expect(page.locator('[data-testid^="rename-"]').first()).toBeAttached();
+  await expect(page.getByTestId("abort-button")).toHaveCount(0);
 
   const uniqueTitle = `项目会话-${Date.now()}`;
   page.once("dialog", (d) => d.accept(uniqueTitle));

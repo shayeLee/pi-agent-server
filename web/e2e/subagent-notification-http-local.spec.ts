@@ -46,7 +46,7 @@ test("isolated real App: idle SSE, duplicate delivery/history dedup, same-text u
     const subscription = await subscribing;
     const snapshot = await (await exported).json();
     expect(subscription.headers()["last-event-id"]).toBe(String(snapshot.lastEventId));
-    await expect(page.getByTestId("stat-turns")).toHaveText("—轮");
+    await expect(page.getByTestId("stat-turns")).toHaveCount(0); // Unknown execution counts are omitted, not inferred from users.
     await expect(page.locator(".message-user")).toHaveCount(1);
     // Idle SSE headers can remain buffered by Vite until the first body chunk.
     // Wait for the request, inject the real entry-derived event, then await HTTP 200.
@@ -62,7 +62,7 @@ test("isolated real App: idle SSE, duplicate delivery/history dedup, same-text u
     await expect(page.getByTestId("subagent-notification").locator("pre")).toContainText("### [worker]");
     await page.getByTestId("subagent-notification").getByRole("button", { name: "Markdown 展示" }).click();
     await expect(page.getByTestId("subagent-notification").getByRole("heading", { name: /worker/ })).toBeVisible();
-    await expect(page.getByTestId("stat-turns")).toHaveText("—轮");
+    await expect(page.getByTestId("stat-turns")).toHaveCount(0);
     await expect(page.locator(".message-user")).toHaveCount(1);
     await expect(page.getByTestId("chat-session-title")).toHaveAttribute("title", "真正用户任务");
     expect(await page.getByTestId("subagent-notification").locator("img").count()).toBe(0); expect(images).toBe(0);
@@ -73,7 +73,10 @@ test("isolated real App: idle SSE, duplicate delivery/history dedup, same-text u
     await expect(page.getByTestId("subagent-notification")).toHaveCount(1);
     expect(await page.locator(".message-user").count()).toBe(2);
     await expect(page.locator(".message-user").last()).toContainText("1 background subagent result(s)");
-    await expect(page.getByTestId("stat-turns")).toHaveText("—轮");
+    await expect(page.getByTestId("stat-turns")).toHaveCount(0);
+    await page.getByRole("button", { name: "查看统计详情" }).click();
+    await expect(page.getByRole("dialog")).toContainText("执行计数未知");
+    await page.getByRole("button", { name: "关闭对话框" }).click();
     await expect(page.getByTestId("chat-session-title")).toHaveAttribute("title", "真正用户任务");
     mkdirSync("/tmp/notification-display-mode/read", { recursive: true });
     for (const theme of ["light", "dark"]) {

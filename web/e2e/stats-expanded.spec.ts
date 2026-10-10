@@ -42,13 +42,13 @@ test.afterAll(async () => { for (const stream of streams) stream.end(); server.c
 for (const theme of ["light", "dark"] as const) for (const width of [1280, 390]) test(`Stats real App ${theme} ${width}`, async ({ page }) => {
   await page.setViewportSize({ width, height: 844 }); await page.emulateMedia({ colorScheme: theme }); await page.goto("/");
   if (width === 390) await page.getByRole("button", { name: "打开工作区导航" }).click();
-  await page.getByText(session.title, { exact: true }).click();
-  await expect(page.getByTestId("stat-steps")).toHaveText("· 工具11次");
+  await page.getByTestId(`session-${session.id}`).click();
+  await expect(page.getByTestId("stat-steps")).toHaveText("工具 11 次");
   await expect.poll(() => streams.size).toBeGreaterThan(0);
   if (width === 390) await expect.poll(async () => { const box = await page.getByTestId("sidebar").boundingBox(); return box ? box.x + box.width : 0; }).toBeLessThanOrEqual(0);
   const bar = page.getByTestId("stats-bar");
   const trigger = page.getByRole("button", { name: "查看统计详情" });
-  await expect(page.getByTestId("stat-summary-speed")).toHaveText("· 469 tok/s");
+  await expect(page.getByTestId("stat-summary-speed")).toHaveText("469 tok/s");
   await expect(page.getByTestId("stat-summary-tokens")).toHaveText("208K tok");
   await expect(page.getByTestId("stat-input")).toHaveCount(0);
   const geometry = await bar.evaluate(el => ({ height: el.getBoundingClientRect().height, width: el.clientWidth, scrollWidth: el.scrollWidth,
@@ -81,7 +81,7 @@ for (const theme of ["light", "dark"] as const) for (const width of [1280, 390])
   await expect(page.getByTestId('stat-summary-speed')).toHaveCount(0);
   emit({ type: 'usage', ...usageSnapshot, promptTokens: tokens.input, completionTokens: tokens.output, totalTokens: tokens.totalTokens, durationMs: 12500, ttftMs: 345 });
   emit({ type: 'model_output_progress', ordinal: 3, phase: 'delta', tokensPerSecondEstimate: 100, includesThinking: true });
-  await expect(page.getByTestId('stat-live-speed')).toHaveText('· ~100 tok/s');
+  await expect(page.getByTestId('stat-live-speed')).toHaveText('~100 tok/s');
   await expect(page.getByTestId('stat-summary-tokens')).toHaveText('208K tok');
   expect(await bar.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
   await page.screenshot({ path: `/tmp/stats-single-line/${theme}-${width}-rich-active.png` });
@@ -90,5 +90,5 @@ for (const theme of ["light", "dark"] as const) for (const width of [1280, 390])
   emit({ type: 'usage', promptTokens: null, completionTokens: null, totalTokens: null, durationMs: 100, ttftMs: 100 });
   await expect(page.getByTestId('stat-output')).toHaveCount(0); await page.keyboard.press('Escape');
   await page.reload(); if (width === 390) await page.getByRole('button', { name: '打开工作区导航' }).click();
-  await page.getByText(session.title, { exact: true }).click(); await expect(page.getByTestId('stat-summary-tokens')).toHaveText('208K tok');
+  await page.getByTestId(`session-${session.id}`).click(); await expect(page.getByTestId('stat-summary-tokens')).toHaveText('208K tok');
 });

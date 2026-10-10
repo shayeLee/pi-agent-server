@@ -27,7 +27,7 @@ for (const width of [1280, 390]) for (const theme of ["dark", "light"]) test(`${
  await page.getByRole('button', {name: '打开 Inspector'}).click();
  await page.getByTestId('inspector-tab-tools').click();
  const row = page.locator('.tool-summary').first();
- await expect(row.locator('.tool-summary-description')).toContainText('runIds: 1');
+ await expect(row.locator('.tool-summary-description')).toContainText('runIds=[1]');
  await expect(row.getByRole('img', {name: '已完成'})).toHaveCount(1);
  await page.mouse.move(0, 0);
  await expect(row.locator('.tool-status-icon')).toHaveCSS('opacity', '0');
@@ -47,7 +47,7 @@ for (const width of [1280, 390]) for (const theme of ["dark", "light"]) test(`${
 test('touch keeps statuses visible', async ({browser}) => {
  const context = await browser.newContext({viewport: {width: 390, height: 844}, hasTouch: true, isMobile: true});
  const page = await context.newPage();
- await page.goto('http://127.0.0.1:5197/visual-fixtures/tool-list-refine.html');
+ await page.goto('/visual-fixtures/tool-list-refine.html');
  await page.getByRole('button', {name: '打开 Inspector'}).click();
  await page.getByTestId('inspector-tab-tools').click();
  await expect(page.locator('.tool-summary.done .tool-status-icon').first()).toHaveCSS('opacity', '1');

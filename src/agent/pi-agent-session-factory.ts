@@ -2,6 +2,7 @@
 // 本模块不读取或写入 session Repository；引用 reservation 与删除竞态由应用层协调。
 
 import path from "node:path";
+import { abortTrace, traceSessionLifecycle } from "../core/abort-trace.js";
 import { validateResolvedToolSelection } from "./tool-selection.js";
 import { constants, openSync, closeSync, writeSync, fstatSync, mkdirSync, lstatSync, realpathSync } from "node:fs";
 import { canonicalCwdIdentity } from "../core/native-session-policy.js";
@@ -286,12 +287,13 @@ export class PiAgentSessionFactory implements AgentSessionFactory {
       ...(this.customTools !== undefined ? { customTools: [...this.customTools] } : {}),
     };
     const { session } = await createAgentSession(options);
+    traceSessionLifecycle(session, context.sessionId);
     // SDK creation intentionally does not bind extension handlers. Install the adapter's session-local
     // failback + agent-team notready bridges first, then bind exactly once; probes stay unbound.
     // SessionRuntime later attaches only its own notification admission capability.
     const sdkSession = session as unknown as AgentSessionLike;
     if (nativeFd) {
-      const stop = () => { void sdkSession.abort?.().catch(() => {}); sdkSession.dispose(); (this.native ?? this.unified)?.source.revoke(nativeFd.binding); };
+      const stop = () => { abortTrace("native.poison", { sessionId: context.sessionId }, true); void sdkSession.abort?.().catch(() => {}); sdkSession.dispose(); (this.native ?? this.unified)?.source.revoke(nativeFd.binding); };
       nativeFd.onPoison = stop;
       // Guard SDK emission before adapter observers see even a delta. A poisoned
       // in-memory tree must never be emitted after SDK appended before _persist failed.
