@@ -37,8 +37,24 @@ export function EditArguments({ value }: ArgumentsProps) {
     {extraFields(extra)}
   </section>;
 }
+const READ_META = new Set(["path", "offset", "limit", "startLine", "endLine", "start_line", "end_line", "line"]);
+
+/** File location is already in the card summary. The expanded read is the numbered text. */
+export function ReadArguments({ value }: ArgumentsProps) {
+  const extra = Object.fromEntries(Object.entries(record(value)).filter(([key]) => !READ_META.has(key)));
+  if (Object.keys(extra).length === 0) return null;
+  return <Parameters value={extra} />;
+}
+
+function readLineStart(args: unknown): number | undefined {
+  const value = record(args).offset ?? record(args).startLine ?? record(args).start_line ?? record(args).line;
+  const parsed = typeof value === "number" ? value : typeof value === "string" && /^\d+$/.test(value) ? Number(value) : NaN;
+  if (!Number.isFinite(parsed) || parsed < 0) return undefined;
+  return parsed === 0 ? 1 : parsed;
+}
+
 export function ReadResult(props: ResultProps) {
   const args = record(props.args);
-  return <Result {...props} lineNumbers language={text => typeof args.language === "string" ? codeLanguage(args.language)
+  return <Result {...props} lineNumbers lineStart={readLineStart(props.args)} language={text => typeof args.language === "string" ? codeLanguage(args.language)
     : argumentLanguage(props.args) ?? (/^\s*(?:<!doctype\s+html\b[^>]*>\s*)?<html(?:\s|>)/i.test(text) ? "html" : undefined)} />;
 }

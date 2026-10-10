@@ -121,7 +121,9 @@ export function sortThinkingLevels(levels: readonly string[]): string[] {
 export function readPreviewIsShort(call: ToolCall): boolean {
   const text = resultText(call.result);
   if (!text.trim()) return false;
-  return text.length <= 1500 && text.split("\n").length <= 12;
+  const limit = record(call.args).limit;
+  const windowed = typeof limit === "number" && limit > 0 && limit <= 40;
+  return windowed || (text.length <= 4000 && text.split("\n").length <= 40);
 }
 
 /** Running, failed, and short file reads start open. Long successes stay collapsed. */

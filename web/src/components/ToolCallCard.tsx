@@ -22,8 +22,8 @@ function ResultBadge({ badge }: { badge: ToolBadge }) {
   }
   return (
     <span className="tool-result-badge is-diff">
-      {badge.add > 0 && <span className="diff-add">+{badge.add}</span>}
-      {badge.del > 0 && <span className="diff-del">−{badge.del}</span>}
+      {badge.add > 0 && <span className="stat-add">+{badge.add}</span>}
+      {badge.del > 0 && <span className="stat-del">−{badge.del}</span>}
     </span>
   );
 }

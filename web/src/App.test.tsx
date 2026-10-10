@@ -1153,7 +1153,7 @@ describe("App（顶层流程）", () => {
 
     await waitFor(() => expect(mocks.instances.at(-1)!.listSessionsByProject).toHaveBeenCalledWith("pa"));
     expect(screen.queryByTestId("projects-error")).not.toBeInTheDocument();
-    expect(screen.getByTestId("new-session")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByTestId("new-session")).toBeInTheDocument());
   });
 
   it("窄屏侧栏与审查器均可通过真实控件和 Escape 关闭", async () => {

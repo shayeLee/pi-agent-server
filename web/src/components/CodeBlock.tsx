@@ -55,14 +55,18 @@ function highlighted(code: string, language?: string): ReactNode {
   } catch { return code; }
 }
 
-/** Read tools prefix lines with the file's own numbers. Keep those out of the text; the gutter is the only numbering. */
-export function stripReadLineNumbers(code: string): string {
+/** Read tools prefix lines as `208|code`. Drop that prefix; the gutter is the only numbering. */
+export function stripReadLineNumbers(code: string): { code: string; start: number | null } {
   const lines = code.split("\n");
-  const matches = lines.map((line) => /^(\s*)(\d+)\|(.*)$/.exec(line));
+  const matches = lines.map((line) => /^\s*(\d+)\s*\|(.*)$/.exec(line));
   const nonempty = lines.filter((line) => line.length > 0).length;
   const hits = matches.filter(Boolean).length;
-  if (hits === 0 || hits < Math.ceil(nonempty * 0.6)) return code;
-  return lines.map((line, index) => matches[index] ? matches[index]![3] : line).join("\n");
+  if (hits === 0 || hits < Math.ceil(Math.max(nonempty, 1) * 0.6)) return { code, start: null };
+  const first = matches.find((match) => match)?.[1];
+  return {
+    code: lines.map((line, index) => matches[index] ? matches[index]![2] : line).join("\n"),
+    start: first ? Number(first) : null,
+  };
 }
 
 function failLines(code: string): ReactNode {
@@ -80,15 +84,19 @@ export type CodeBlockProps = {
   copyLabel?: string;
   label?: string;
   lineNumbers?: boolean;
+  /** First gutter number. Read passes its offset; prefixed snapshots supply their own start. */
+  lineStart?: number;
   emphasizeFail?: boolean;
 };
-export function CodeBlock({ code, language, copyLabel = "复制代码", label, lineNumbers = false, emphasizeFail = false }: CodeBlockProps) {
+export function CodeBlock({ code, language, copyLabel = "复制代码", label, lineNumbers = false, lineStart, emphasizeFail = false }: CodeBlockProps) {
   const resolved = codeLanguage(language);
-  const displayed = lineNumbers ? stripReadLineNumbers(code) : code;
+  const stripped = lineNumbers ? stripReadLineNumbers(code) : null;
+  const displayed = stripped?.code ?? code;
   const content = useMemo(
     () => emphasizeFail ? failLines(displayed) : highlighted(displayed, resolved),
     [displayed, resolved, emphasizeFail],
   );
+  const origin = lineStart ?? stripped?.start ?? 1;
   const lineCount = displayed.split("\n");
   // Tie feedback to the exact snapshot, not an obsolete streamed value.
   const [copy, setCopy] = useState<{ code: string; message: string } | null>(null);
@@ -100,7 +108,7 @@ export function CodeBlock({ code, language, copyLabel = "复制代码", label, l
       }}><Icon name="copy" /></button><span role="status">{copy?.code === displayed ? copy.message : ""}</span>
     </div>
     <div className="code-block-scroll">
-      {lineNumbers && <div className="code-line-nums" aria-hidden="true">{lineCount.map((_, index) => <span key={index}>{index + 1}</span>)}</div>}
+      {lineNumbers && <div className="code-line-nums" aria-hidden="true">{lineCount.map((_, index) => <span key={index}>{origin + index}</span>)}</div>}
       <pre tabIndex={0} aria-label="代码原文"><code>{content}</code></pre>
     </div>
   </div>;

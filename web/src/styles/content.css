@@ -316,14 +316,18 @@ button.thinking-header {
   background: transparent;
   font-weight: 500;
 }
-.tool-result-badge .diff-add,
-.tool-result-badge .diff-del {
+.tool-result-badge .stat-add,
+.tool-result-badge .stat-del {
+  background: none;
+  border-radius: 0;
+  padding: 0;
   font-family: var(--font-mono);
   font-size: 12px;
+  font-weight: 500;
   font-variant-numeric: tabular-nums;
 }
-.tool-result-badge .diff-add { color: var(--success); }
-.tool-result-badge .diff-del { color: var(--destructive); }
+.tool-result-badge .stat-add { color: var(--success); }
+.tool-result-badge .stat-del { color: var(--destructive); }
 .tool-duration {
   flex: none;
   white-space: nowrap;
@@ -425,18 +429,20 @@ button.thinking-header {
   padding: 10px 12px;
   border-radius: 8px;
   background: var(--accent);
-  overflow: auto;
-  max-height: 280px;
-  scrollbar-width: thin;
-  scrollbar-color: color-mix(in srgb, var(--muted-foreground) 65%, transparent) transparent;
+  overflow: hidden;
 }
 .tool-call { max-width: 100%; }
 .tool-command-display {
+  max-width: 100%;
+  min-width: 0;
+  overflow-x: auto;
   font-family: var(--font-mono);
   font-size: 13px;
-  line-height: 1.55;
+  line-height: 20px;
   white-space: pre;
   color: var(--foreground);
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--muted-foreground) 70%, transparent) transparent;
 }
 .tool-command-source {
   position: absolute;
@@ -593,18 +599,26 @@ details[open] > summary > .details-chevron { transform: rotate(90deg); }
   position: sticky;
   left: 0;
   flex: none;
-  padding: 0 10px 10px 12px;
+  margin: 0;
+  padding: 0 12px 0 0;
   background: inherit;
   color: var(--muted-foreground);
   font-family: var(--font-mono);
-  font-size: var(--font-mono-body);
-  line-height: 1.55;
+  font-size: 13px;
+  line-height: 20px;
   text-align: right;
   user-select: none;
 }
-.code-line-nums span { display: block; }
+.code-line-nums span { display: block; height: 20px; line-height: 20px; }
 .code-block.has-line-nums .code-line-nums,
-.code-block.has-line-nums pre { padding-top: 8px; }
+.code-block.has-line-nums pre,
+.code-block.has-line-nums pre code {
+  padding-top: 0;
+  padding-bottom: 0;
+  font-family: var(--font-mono);
+  font-size: 13px;
+  line-height: 20px;
+}
 .log-fail { color: var(--destructive); }
 .code-block pre, .markdown .code-block pre { min-width: max-content; max-width: none; margin: 0; padding: 0px 10px 10px; overflow: visible; white-space: pre; border: 0; background: transparent; flex: none; width: max-content; }
 .code-block pre code { font-family: var(--font-mono); font-size: var(--font-mono-body); line-height: 1.55; padding: 0; color: inherit; background: transparent; white-space: pre; overflow-wrap: normal; word-break: normal; }
@@ -825,16 +839,27 @@ details[open] > summary > .details-chevron { transform: rotate(90deg); }
 .tool-parameters .code-block [class*="hljs-"] { color: inherit; }
 
 .tool-call-body .code-block,
-.tool-call-body .code-block-scroll,
 .tool-call-body .json-block,
-.tool-call-body .tool-result-text {
-  min-width: 100%;
-  width: max-content;
-  max-width: none;
+.tool-call-body .tool-result-text,
+.tool-call-body .diff-block {
+  min-width: 0;
+  width: 100%;
+  max-width: 100%;
   border: 0;
   background: transparent;
   margin: 0;
-  overflow: visible;
+  overflow: hidden;
+}
+.tool-call-body .diff-lines {
+  max-width: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  overflow-x: auto;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--muted-foreground) 70%, transparent) transparent;
 }
 .tool-call-body .code-block-toolbar {
   position: absolute;
@@ -870,13 +895,123 @@ details[open] > summary > .details-chevron { transform: rotate(90deg); }
   opacity: 1;
 }
 .tool-call-body .code-block-scroll {
-  max-height: none;
-  overflow: visible;
+  max-height: 280px;
+  max-width: 100%;
+  min-width: 0;
+  width: 100%;
+  overflow: auto;
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in srgb, var(--muted-foreground) 70%, transparent) transparent;
+}
+.tool-call-body .code-block-scroll::-webkit-scrollbar,
+.tool-call-body .diff-lines::-webkit-scrollbar,
+.tool-command-display::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.tool-call-body .code-block-scroll::-webkit-scrollbar-thumb,
+.tool-call-body .diff-lines::-webkit-scrollbar-thumb,
+.tool-command-display::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--muted-foreground) 70%, transparent);
+  border-radius: 999px;
 }
 .tool-call-body .code-block pre {
   max-height: none;
   overflow: visible;
   padding: 0;
+}
+button.new-session {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  align-self: stretch;
+  gap: 8px;
+  width: calc(100% - 32px);
+  height: 40px;
+  margin: 0 16px 12px;
+  padding: 0 12px;
+  border: 1px solid #c8c8cc;
+  border-radius: 10px;
+  background: var(--background);
+  color: var(--foreground);
+  font-size: 13px;
+  font-weight: 500;
+}
+button.new-session:hover { background: var(--accent); }
+:is(.dark, [data-theme="dark"]) button.new-session {
+  border-color: #48484a;
+  background: transparent;
+}
+.sidebar-collapsed button.new-session {
+  width: 40px;
+  height: 40px;
+  margin-right: auto;
+  margin-left: auto;
+  padding: 0;
+}
+@media (max-width: 1179px) {
+  .sidebar-collapsed button.new-session {
+    width: calc(100% - 32px);
+    height: 40px;
+    margin-right: 16px;
+    margin-left: 16px;
+  }
+}
+button.send-button,
+button.composer-stop,
+button.composer-add {
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  min-width: 34px;
+  min-height: 34px;
+  max-width: 34px;
+  max-height: 34px;
+  flex: 0 0 34px;
+  padding: 0;
+  border-radius: 50%;
+}
+button.send-button,
+button.composer-stop {
+  border: 0;
+  background: var(--primary);
+  color: #fff;
+}
+button.send-button:disabled {
+  opacity: 1;
+  background: #c8c8cc;
+  color: #fff;
+}
+button.composer-add {
+  border: 1px solid #c8c8cc;
+  background: transparent;
+  color: var(--muted-foreground);
+}
+@media (max-width: 639px) {
+  button.send-button,
+  button.composer-stop,
+  button.composer-add {
+    width: 44px;
+    height: 44px;
+    min-width: 44px;
+    min-height: 44px;
+    max-width: 44px;
+    max-height: 44px;
+    flex-basis: 44px;
+    border-radius: 50%;
+  }
+}
+:is(.dark, [data-theme="dark"]) button.send-button:disabled {
+  background: #3a3a3c;
+  color: #ebebf0;
+}
+:is(.dark, [data-theme="dark"]) button.composer-add,
+:is(.dark, [data-theme="dark"]) button.new-session {
+  border-color: #48484a;
 }
 .project-switcher .select-menu-trigger {
   border-color: transparent;
@@ -889,33 +1024,11 @@ details[open] > summary > .details-chevron { transform: rotate(90deg); }
   border-color: transparent;
   background: transparent;
 }
-.send-button,
-.composer-stop {
-  opacity: 1;
-}
-.send-button {
-  background: var(--primary);
+button.send-button svg,
+button.composer-stop svg,
+button.send-button:disabled svg {
   color: #fff;
 }
-.send-button svg,
-.composer-stop svg {
-  color: #fff;
-}
-.send-button:disabled {
-  opacity: 1;
-  background: var(--background-400);
-  color: var(--text-50);
-}
-.send-button:disabled svg {
-  color: var(--text-50);
-}
-:is(.dark, [data-theme="dark"]) .send-button:disabled {
-  background: var(--background-700);
-  color: var(--text-400);
-}
-:is(.dark, [data-theme="dark"]) .send-button:disabled svg {
-  color: var(--text-400);
-}
-.composer-add {
-  border: 1px solid var(--border);
+:is(.dark, [data-theme="dark"]) button.send-button:disabled svg {
+  color: #ebebf0;
 }
