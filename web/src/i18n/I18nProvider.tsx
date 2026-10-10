@@ -3,7 +3,7 @@ import { catalogs, detectLocale, t, type Locale, type MessageKey } from "./messa
 
 type I18nContextValue = {
   locale: Locale;
-  t: (key: MessageKey) => string;
+  t: (key: MessageKey, vars?: Record<string, string>) => string;
 };
 
 const I18nContext = createContext<I18nContextValue | null>(null);
@@ -13,7 +13,7 @@ export function I18nProvider({ children, locale }: { children: ReactNode; locale
     const resolved = locale ?? detectLocale();
     return {
       locale: resolved,
-      t: (key: MessageKey) => t(resolved, key),
+      t: (key: MessageKey, vars?: Record<string, string>) => t(resolved, key, vars),
     };
   }, [locale]);
 
@@ -24,7 +24,7 @@ export function useI18n(): I18nContextValue {
   const ctx = useContext(I18nContext);
   if (!ctx) {
     const locale = detectLocale();
-    return { locale, t: (key) => t(locale, key) };
+    return { locale, t: (key, vars) => t(locale, key, vars) };
   }
   return ctx;
 }
