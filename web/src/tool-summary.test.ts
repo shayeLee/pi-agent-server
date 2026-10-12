@@ -4,12 +4,13 @@ import { toolSummary, subagentTasks } from "./tool-summary.js";
 const call = (toolName: string, args: unknown, extra: Partial<ToolCall> = {}): ToolCall => ({ toolCallId: "s", toolName, args, result: undefined, partialResult: undefined, done: false, isError: false, ...extra });
 const result = (text: string) => ({ content: [{ type: "text", text }] });
 describe("toolSummary actual snapshots only", () => {
-  it("shows every parallel agent/task; truncates preview only; startup is not child completion", () => {
+  it("preserves every parallel agent/task for CSS-only truncation; startup is not child completion", () => {
     const tasks = [{ agent: "scout", task: "inspect" }, { agent: "worker", task: "x".repeat(300), cwd: "/tmp" }];
     const summary = toolSummary(call("subagent", { tasks }, { done: true, result: { ...result("Background subagents started (runIds: r1, r2)."), details: { liveRunIds: ["r1", "r2"], results: [] } } }));
     expect(summary).toContain("scout、worker · inspect · ");
     expect(summary).not.toContain("\n");
-    expect(summary).toContain("…");
+    expect(summary).toContain("x".repeat(300));
+    expect(summary).not.toContain("…");
     expect(summary).not.toMatch(/completed|finished/);
     expect(tasks[1].task).toHaveLength(300);
     expect(toolSummary(call("subagent", { agent: "worker", task: "single" }))).toBe("worker: single");

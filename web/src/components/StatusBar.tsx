@@ -2,6 +2,7 @@ import type { ChatPhase } from "pi-agent-server/client";
 
 const PHASE_LABEL: Record<ChatPhase, string> = {
   idle: "空闲",
+  submitting: "等待运行确认",
   queued: "排队中",
   streaming: "流式输出",
   completed: "已完成",

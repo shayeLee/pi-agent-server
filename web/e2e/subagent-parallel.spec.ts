@@ -36,7 +36,7 @@ const cases = [
 ] as const;
 // Business flow representatives: light desktop and dark mobile, not the full cross-product.
 for (const { theme, width } of [{ theme: 'light', width: 1280 }, { theme: 'dark', width: 390 }] as const) test(`${theme} ${width} actual App parallel tasks`, async ({ browser }) => {
-  const context = await browser.newContext({ hasTouch: width === 390, permissions: ['clipboard-read', 'clipboard-write'] });
+  const context = await browser.newContext({ hasTouch: width === 390 });
   const page = await context.newPage();
   await page.setViewportSize({ width: 1280, height: 1000 });
   await page.goto('/');
@@ -92,14 +92,7 @@ for (const { theme, width } of [{ theme: 'light', width: 1280 }, { theme: 'dark'
     await card.scrollIntoViewIfNeeded();
     await page.screenshot({ path: `${dir}/${theme}-${width}-${id}-expanded.png` });
     await card.screenshot({ path: `${dir}/${theme}-${width}-${id}-card.png` });
-    await card.getByRole('button', { name: '工具更多操作' }).click();
-    await card.getByRole('menuitem', { name: '查看原始数据' }).click();
-    const raw = JSON.parse((await page.getByRole('dialog').locator('pre').textContent())!);
-    expect(raw.args).toEqual(args); expect(raw.result).toEqual(result);
-    if (id === 'two') await page.screenshot({ path: `${dir}/${theme}-${width}-raw.png` });
-    await page.getByRole('dialog').getByRole('button', { name: '复制原始数据' }).click();
-    expect(JSON.parse(await page.evaluate(() => navigator.clipboard.readText()))).toEqual(raw);
-    await page.keyboard.press('Escape');
+    await expect(card.getByRole('region', { name: '结果', exact: true })).toBeVisible();
     await expect(header).toHaveAttribute('aria-expanded', 'true');
     // A later snapshot must not override the manual expansion.
     emit({ type: 'tool_end', toolCallId: id, toolName: 'subagent', result, isError: false });

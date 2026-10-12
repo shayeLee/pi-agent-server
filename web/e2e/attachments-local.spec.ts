@@ -40,7 +40,9 @@ test("Reading-first local fixture: file upload, explicit first send, theme and p
   await page.setViewportSize({ width: 1235, height: 390 });
   await page.goto("/");
   await expect(page.getByTestId("new-session")).toBeVisible();
-  await expect(page.getByTestId("composer-start-settings")).toBeVisible();
+  await expect(page.getByTestId("composer-project-select")).toHaveCount(0);
+  await expect(page.getByTestId("model-thinking-trigger")).toBeVisible();
+  await expect(page.getByTestId("thinking-trigger")).toBeVisible();
   await page.getByTestId("new-session").click();
   expect(created).toBe(0);
   await page.getByTestId("composer-input").fill(Array.from({ length: 14 }, (_, index) => `草稿第 ${index + 1} 行`).join("\n"));
@@ -88,6 +90,7 @@ test("Reading-first local fixture: file upload, explicit first send, theme and p
   expect(messages).toEqual([expect.objectContaining({ prompt: "阅读这个文件", fileIds: [fileId] })]);
   expect(JSON.stringify(messages)).not.toContain("/private/fixture/file");
   await page.getByTestId("theme-toggle").click();
+  await page.getByRole("menuitemradio", { name: "浅色" }).click();
   await expect(page.getByTestId("app")).toHaveAttribute("data-theme", "light");
   await page.screenshot({ path: "/tmp/reading-first-actual/attachment-sent-light.png", fullPage: true });
 
@@ -101,8 +104,10 @@ test("Reading-first local fixture: file upload, explicit first send, theme and p
   await page.getByRole("button", { name: "打开工作区导航" }).click();
   await expect(page.getByTestId("sidebar")).toBeVisible();
   await page.screenshot({ path: "/tmp/reading-first-actual/attachment-phone-drawer.png" });
-  // The drawer occupies the left 320px; tap the exposed backdrop strip on the right.
-  await page.getByRole("button", { name: "关闭工作区导航" }).click({ position: { x: 370, y: 400 } });
+  // Tap the exposed backdrop strip on the right without hardcoded coordinates
+  const backdrop = page.getByRole("button", { name: "关闭工作区导航" });
+  const backdropBox = (await backdrop.boundingBox())!;
+  await backdrop.click({ position: { x: backdropBox.width - 20, y: backdropBox.height / 2 } });
   await expect(page.getByTestId("sidebar")).not.toBeVisible();
   await page.screenshot({ path: "/tmp/reading-first-actual/attachment-phone-closed.png" });
 

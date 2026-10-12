@@ -2,6 +2,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App.js";
 import "./styles.css";
+import "./styles/ui.css";
 
 const root = document.getElementById("root");
 if (!root) throw new Error("未找到 #root 挂载点");

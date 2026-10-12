@@ -25,7 +25,7 @@ function Fixture() {
     <Chat session={null} projects={[]} activeProjectId={null} onSelectProject={() => {}} canCreateSession={false} canWrite={false}
       timeline={[]} streaming={false} queued={false} loadError={null} models={[]} thinkingLevels={[]} defaultModel={null} defaultThinkingLevel="off"
       connected={connected} stats={null} compaction={compaction}
-      onSend={() => {}} onSteer={() => {}} onFollowUp={() => {}} onAbort={() => {}} onToggleDetails={() => {}} onConfigChange={() => {}} />
+      onSend={() => {}} onFollowUp={() => {}} onConfigChange={() => {}} />
   </main>;
 }
 createRoot(document.getElementById("root")!).render(<Fixture />);

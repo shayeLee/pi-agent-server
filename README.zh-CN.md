@@ -24,7 +24,7 @@ Pi SDK 与 pi-ai 固定为 **1.1.0**；本次 SDK 升级无需数据库迁移（
 - 以多用户支持为首要能力。
 - 项目与会话管理作为组织工作与对话的配套能力。
 - HTTP/JSON API 与 Server-Sent Events。
-- 任务运行期间支持 `steer`、`follow-up` 和 `abort`。
+- 空闲或新会话时，发送/Enter 启动 primary 任务；运行中默认提交 `follow-up` 进入追加队列，没有发送模式选择栏。通过追加条目的「引导」按钮提升为 `steer`。Composer 不提供停止按钮；后台 abort 与程序 API/hooks 能力保留。Web UI 展示服务端权威驻留队列项，支持单条删除，提交通知与队列行分开显示。追加支持文字与图片（不支持文件附件）；准入仅清除提交的快照，保留新草稿/附件。结果未知时绝不自动重发。
 - 默认 SQLite；显式选择 PostgreSQL。
 - 会话以 Pi JSONL 文件保存，项目、会话与任务状态等信息存入数据库；同一请求重复提交会返回已记录的结果，不重复执行。
 - 基于角色的路由访问控制，默认拒绝：`viewer`、`user`、`operator`、`admin`；允许网段内未单独登记的 IP 默认视为 `user`。
@@ -98,6 +98,18 @@ PI_EXTENSION_PATHS=/absolute/path/to/pi-extension
 ### Web UI
 可选独立 Web UI 通过 `pnpm web` 启动。
 
+重设计分阶段进行：基础和两栏侧边栏／会话区已实现，包括侧栏唯一项目选择、日期分组会话、工具轻卡、统一输入框及单一主题菜单（浅色／深色／跟随系统三项单选），展开、收起及手机侧栏均可操作。所选浅色／深色／跟随系统模式缓存到 localStorage，刷新时恢复。未设置或非法值默认跟随系统，仅此模式响应操作系统变化；存储不可用时仍可在本页切换主题。阶段三 A 已加入引导／追加控件及权威驻留控制队列 UI。Inspector 默认关闭，按需以 380px 右侧栏挤出会话列，无遮罩或焦点陷阱。宽度 ≤600px 时占据可用布局宽度，隐藏但不卸载会话；关闭或 Esc 返回聊天并回焦轨迹入口，草稿不丢失。左侧移动导航仍为独立 overlay 抽屉。Inspector 已按「步骤」（默认）、「系统提示词」、「事件流」排列。步骤按权威快照顺序展示用户消息、思考、助手文本、工具调用及独立工具结果，可展开查看完整内容；系统提示词明确区分当前有效值与创建时快照。来源、刷新行为和历史顺序限制见[会话步骤与 Inspector](docs/session-steps.md)。新增的[控制队列参考图](docs/design/reference-control-queues.png)只引导追加交互，不得覆盖既有 280px 侧栏、26px Logo 或原工具名。参见 [DESIGN.md](DESIGN.md) 和原有[工作区视觉参考](docs/design/reference-gpt-workspace.png)。
+
+已批准的[项目切换参考](docs/design/project-switcher-reference.png)将常驻项目行精简为左侧项目名称紧邻 chevron 的一体触发器（x16）与右侧搜索按钮，移除装饰性 folder 图标与常驻「+」按钮。项目下拉提供带左侧对勾的项目选择列表、分隔线以及底部「+ 新建项目」展开创建表单。Web UI 明确不做项目删除（后端 API、路由、RBAC 及客户端 SDK 完整保留 `deleteProject` 能力）。搜索在项目行下方展开，安全高亮纯文本标题匹配，无结果可清空；清空保留输入展开，关闭或切项目均清空并退出搜索。会话重命名／导出／删除仍可用。侧栏默认 280px，可拖宽 180–400px，保留 rail／drawer 恢复及手机 44px 触控。隔离 workspace 测试覆盖这些交互、几何及 1440/1280/390px 明暗 App 截图；参考证据写入 `/tmp/pi-sidebar-v5-final`。这不代表生产部署或真机键盘已验收。
+
+工具卡保留正常参数／结果展开及流式更新，不再提供原始数据查看／复制操作、专用检查弹窗或 footer 占位。协议数据、事件日志、代码复制及共用统计／超大 diff 弹窗不变。可运行 `volta run pnpm --dir web exec playwright test --config playwright.workspace.config.ts` 验证；展开工具卡截图位于 `web/test-results/workspace/tool-expanded-no-footer.png`。
+
+UI 基础采用不含 Preflight 的 Tailwind v4、`ui:` 前缀工具类及本地维护的 Radix 基础组件。全局主题 token 位于 `web/src/styles/tokens.css`，按 `[data-ui]` 启用的别名与 Portal 共用这些 token。业务组件保留既有数据契约，使用系统字体。工具类目前仅扫描 `web/src/components/ui`，其他区域接入时需显式扩展扫描范围。中文文案正在逐步提取至 `web/src/i18n/zh-CN.ts`，尚未实现英文切换。
+
+导航使用 `/p/:projectId` 表示项目起始态，`/p/:projectId/s/:sessionId` 表示会话。显式 URL 优先于最近选择，会话归属通过服务端授权元数据校验。返回／前进和刷新恢复导航，不恢复未发送草稿或附件。空项目可能在刷新后从过滤的项目列表中消失。独立 Web 托管服务只应为前端导航路径提供 SPA 入口，不能兜底 `/v1`、SSE 或缺失资源；Fastify 不托管 Web UI。生产深链接兜底仍需部署验收。
+
+验证命令：`pnpm --filter web test`、`pnpm --filter web build`、`pnpm --dir web exec playwright test --config playwright.ui-foundation.config.ts`（隔离 mock／fixture，无需真实 Agent）。基础浏览器测试覆盖键盘／焦点交互，并对桌面／手机、两种主题下的空态与历史会话比较基础样式开关前后的截图；这验证样式隔离，不代表与参考稿逐像素一致。运行 `pnpm --dir web exec playwright test --config playwright.workspace.config.ts` 可复验新版工作区 fixture 并生成截图。运行 `volta run pnpm --dir web exec playwright test --config playwright.steps.config.ts` 可验证 Inspector 组件及完整 App 的 mock API 接线。真机软键盘、200% 缩放及完整异常状态矩阵仍待进一步验收。
+
 ## 部署
 内网部署请按[运维文档](docs/operations.md)完成安装、配置和启动检查。
 
@@ -119,10 +131,19 @@ PI_EXTENSION_PATHS=/absolute/path/to/pi-extension
 | `POST` | `/v1/sessions/:id/messages` | 提交提示词（必须提供 `requestId`） |
 | `GET` | `/v1/sessions/:id/events` | SSE；viewer 对无 live runtime 的会话收到 `204`。所有与 turn 相关的事件都携带产生它们的 `requestId`（`text_delta`、`thinking_delta`、`tool_start`、`tool_update`、`tool_end`、`status`、`usage`、`queued`、`error`、`completed`、`aborted`） |
 | `POST` | `/v1/sessions/:id/steer` | 引导运行中的任务；带关联身份的请求返回空 `202`，消费由 SSE 确认，HTTP 准入不代表消费。见[消费确认](docs/steering-confirmation.md) |
-| `POST` | `/v1/sessions/:id/follow-ups` | 排队追加 follow-up |
+| `POST` | `/v1/sessions/:id/follow-ups` | 排队追加 follow-up；带关联身份时准入返回空 `202`，旧版纯文本请求返回空 `204` |
+| `GET` | `/v1/sessions/:id/control-queue` | 读取驻留引导/追加项的权威快照 |
+| `DELETE` | `/v1/sessions/:id/control-queue/:controlId` | 按控制身份删除排队项 |
+| `POST` | `/v1/sessions/:id/control-queue/:controlId/promote` | 将排队的追加项提升为引导 |
 | `POST` | `/v1/sessions/:id/abort` | 中止该会话当前正在执行的任务。请求体可以不填；如果填写，必须是 `{ "requestId": "..." }`，只有任务的请求 ID 与它一致时才会中止。ID 不匹配则返回 `409`，任务继续运行。 |
 | `GET` | `/v1/sessions/:id/export` | 只读消息快照；绝不创建 runtime |
+| `GET` | `/v1/sessions/:id/steps` | Inspector 完整步骤快照，数组顺序权威；只读且不创建 runtime |
+| `GET` / `HEAD` | `/v1/sessions/:id/system-prompt` | 读取系统提示词并明确标注 `live_effective`、`creation_snapshot` 或 `unavailable` 来源；只读且不创建 runtime |
 | `GET` | `/v1/sessions/:id/file-preview?path=<relative>&line=<optional>` | 预览该会话项目目录中的文本文件；`path` 填相对文件路径，`line` 可选，用于定位行号。不能读取项目目录外的文件 |
+
+队列出队不代表任务完成或控制内容已消费。公开事件边界的队列同步可能延迟；GET 与队列变更会即时对照 SDK 当前驻留对象。变更使用原始 control ID 及 request/acknowledgement 身份。保证与限制见[控制队列](docs/control-queues.md)。
+
+Inspector 读取沿用会话 export 的授权层级，且不创建 runtime。步骤快照包含投影出的完整语义块，包括思考以及分开的工具调用／工具结果；数组顺序权威。已保存历史只能保留记录中的分支／块顺序：重启后无法恢复未持久化的并行工具真实完成时序，因此这不是永久完整的 SDK 事件档案。实时系统提示词来自已有公开 getter，但不证明模型实际收到的内容；创建时快照也不是运行时提示词的重建。现有事件流视图／流保持不变。契约与限制见[会话步骤与 Inspector](docs/session-steps.md)。
 
 ### 公共 API 契约 v1
 
@@ -218,6 +239,8 @@ pnpm run e2e
 - [架构](docs/architecture.md)与[数据库设计](docs/database-design.md)
 - [IP 接入控制](docs/ip-rbac-design.md)
 - [插件接入](docs/plugin-integration.md)
+- [控制队列](docs/control-queues.md)
+- [会话步骤与 Inspector](docs/session-steps.md)
 - [ADR 索引与维护约定](docs/decisions/README.md)
 
 [归档资料](docs/archive/)收录历史安装步骤、已完成计划、验收记录及可选监控/IAM 规划，不作为当前生产操作手册。独立文档索引已移除，以本节为统一入口。

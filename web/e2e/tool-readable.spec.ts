@@ -24,6 +24,7 @@ test.beforeAll(async () => {
     if (path === "/v1/projects") return json([{ id: projectId, name: "隔离工具测试", cwd: "/fixture", isDefault: true }]);
     if (path === "/v1/models") return json({ models: [], thinkingLevels: ["off"], defaultModel: null, defaultThinkingLevel: "off" });
     if (path === "/v1/sessions") return req.method === "POST" ? json(session, 201) : json([]);
+    if (path === `/v1/sessions/${session.id}/control-queue`) return json({ requestId: null, revision: 0, items: [] });
     if (path.endsWith("/export")) return json({ lastEventId: 0, messages: [], timeline: [] });
     if (path.endsWith("/events")) {
       res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
@@ -52,7 +53,6 @@ test.afterAll(async () => { stream?.end(); server.closeAllConnections(); await n
 
 test("通用参数优先、真实快照替换、手动键盘折叠保留、明暗桌面手机", async ({ page }) => {
   await mkdir("/tmp/subagent-tool-readable", { recursive: true });
-  await mkdir("/tmp/tool-raw-menu", { recursive: true });
   await page.goto("/");
   await page.getByTestId("composer-input").fill("隔离工具展示");
   await page.getByTestId("send-button").click();
@@ -73,26 +73,14 @@ test("通用参数优先、真实快照替换、手动键盘折叠保留、明�
   await expect(header).toHaveAttribute("aria-expanded", "false");
   await page.keyboard.press("Space");
   await expect(wait.getByTestId("tool-result-text")).toHaveText("1/2 settled");
-  await header.click();
-  const more = wait.getByRole("button", { name: "工具更多操作" });
-  await more.focus(); await page.keyboard.press("Enter");
-  await expect(header).toHaveAttribute("aria-expanded", "false");
-  await page.keyboard.press("ArrowDown"); await page.keyboard.press("Escape");
-  await expect(more).toBeFocused();
-  await page.keyboard.press("Enter"); await page.keyboard.press("Enter");
-  await expect(header).toHaveAttribute("aria-expanded", "false");
-  const modal = page.getByRole("dialog", { name: "原始数据 · subagent_wait" });
-  await expect(modal).toBeVisible();
-  const rawSource = modal.locator("pre");
-  expect(JSON.parse((await rawSource.textContent())!).resultKind).toBe("partial");
-  expect(JSON.parse((await rawSource.textContent())!).partialResult.content[0].text).toBe("1/2 settled");
   end("wait", "subagent_wait", waitText); emit({ type: "completed" });
-  await expect(rawSource).toContainText('"resultKind": "final"');
-  await expect(modal).toBeVisible();
-  await expect(header).toHaveAttribute("aria-expanded", "false");
-  await page.keyboard.press("Escape");
-  await expect(more).toBeFocused();
+  await expect(wait).toHaveAttribute("data-done", "true");
   await header.click();
+  await expect(wait).toHaveAttribute("data-done", "true");
+  await expect(header).toHaveAttribute("aria-expanded", "false");
+  await header.click();
+  await expect(header).toHaveAttribute("aria-expanded", "true");
+  await expect(wait.locator('.tool-call-body > :not(section)')).toHaveCount(0);
   await expect(wait.getByRole("heading", { name: "[scout] run r2 — completed" })).toBeVisible();
   await wait.getByRole("button", { name: "Markdown 展示" }).click();
   await expect(wait.getByRole("region", { name: "结果", exact: true }).locator(".tool-readable-value")).toHaveText(waitText);
@@ -118,7 +106,12 @@ test("通用参数优先、真实快照替换、手动键盘折叠保留、明�
   for (const theme of ["dark", "light"]) {
     for (const width of [1400, 390]) {
       await page.setViewportSize({ width: 1400, height: 1000 });
-      if (await page.getByTestId("app").getAttribute("data-theme") !== theme) await page.getByTestId("theme-toggle").click();
+      if (await page.getByTestId("app").getAttribute("data-theme") !== theme) {
+        await page.getByTestId("theme-toggle").click();
+        await page.getByRole("menuitemradio", { name: theme === "dark" ? "深色" : "浅色", exact: true }).click();
+      }
+      await expect(page.getByTestId("app")).toHaveAttribute("data-theme", theme);
+      await expect(page.getByRole("menu")).toHaveCount(0);
       await page.setViewportSize({ width, height: width === 390 ? 844 : 1000 });
       await page.waitForTimeout(250); // Let the responsive sidebar transition settle before captures.
       await cards.first().scrollIntoViewIfNeeded();
@@ -129,44 +122,10 @@ test("通用参数优先、真实快照替换、手动键盘折叠保留、明�
       await page.screenshot({ path: `/tmp/subagent-tool-readable/${theme}-${width}-parallel.png` });
       await wait.scrollIntoViewIfNeeded();
       await page.screenshot({ path: `/tmp/subagent-tool-readable/${theme}-${width}-result.png` });
-      await more.click();
-      await expect(wait.getByRole("menuitem", { name: "查看原始数据" })).toBeVisible();
-      await page.screenshot({ path: `/tmp/tool-raw-menu/${theme}-${width}-menu.png` });
-      await wait.getByRole("menuitem", { name: "查看原始数据" }).click();
-      await expect(modal).toBeVisible();
-      await page.screenshot({ path: `/tmp/tool-raw-menu/${theme}-${width}-raw.png` });
-      await page.keyboard.press("Escape");
-      if (width === 390) {
-        const geometry = await more.evaluate(el => { const r = el.getBoundingClientRect(); const h = el.closest(".tool-call-heading")!.querySelector(".tool-call-header")!.getBoundingClientRect(); return { width: r.width, height: r.height, overlap: h.right > r.left }; });
-        expect(geometry.width).toBeGreaterThanOrEqual(44); expect(geometry.height).toBeGreaterThanOrEqual(44); expect(geometry.overlap).toBe(false);
-      }
       expect(await wait.locator("button button").count()).toBe(0);
     }
   }
-  await wait.getByRole("button", { name: "工具更多操作" }).click();
-  await wait.getByRole("menuitem", { name: "查看原始数据" }).click();
-  await expect(modal).toBeVisible();
-  await expect(rawSource).toContainText('"unknown"');
-  expect(JSON.parse((await rawSource.textContent())!).result.content[0].text).toBe(waitText);
-  expect(JSON.parse((await rawSource.textContent())!).resultKind).toBe("final");
-  expect(JSON.parse((await rawSource.textContent())!)).not.toHaveProperty("partialResult");
-  const fullRaw = await rawSource.textContent();
-  await page.keyboard.press("Escape");
-  await page.context().grantPermissions(["clipboard-read", "clipboard-write"]);
-  await wait.getByRole("button", { name: "工具更多操作" }).click();
-  await wait.getByRole("menuitem", { name: "复制原始数据" }).click();
-  await expect(wait.locator(".tool-raw-copy-status")).toHaveText("已复制原始数据");
-  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(fullRaw);
-  await page.evaluate(() => Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: async () => { throw new Error("denied"); } } }));
-  await more.click(); await wait.getByRole("menuitem", { name: "复制原始数据" }).click();
-  await expect(wait.locator(".tool-raw-copy-status")).toContainText("复制失败");
-  await more.click(); await wait.getByRole("menuitem", { name: "查看原始数据" }).click();
-  await expect(modal.getByRole("button", { name: "复制原始数据" })).toBeVisible();
-  await page.keyboard.press("Escape");
-  await page.locator('[data-tool-call-id="parallel"]').getByRole("button", { name: "工具更多操作" }).click();
-  await page.locator('[data-tool-call-id="parallel"]').getByRole("menuitem", { name: "查看原始数据" }).click();
-  await expect(page.getByRole("dialog", { name: "原始数据 · subagent" }).locator('pre')).toContainText(tasks[1].task.replaceAll("\n", "\\n"));
-  await page.keyboard.press("Escape");
+  expect(await page.locator('[data-tool-call-id="parallel"] .tool-subagent-task > pre').last().textContent()).toBe(tasks[1].task);
   await header.focus(); await page.keyboard.press("Enter");
   emit({ type: "tool_end", toolCallId: "wait", toolName: "subagent_wait", result: "Wait aborted", isError: true });
   await expect(wait).toHaveClass(/tool-error/);

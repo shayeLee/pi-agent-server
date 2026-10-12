@@ -1,0 +1,272 @@
+[
+  {
+    "zh": "π 标志",
+    "category": "品牌",
+    "description": "渐变蓝色方形 π Logo，π 已转换为路径",
+    "in_final": true,
+    "name": "brand-pi",
+    "filename": "brand-pi.svg",
+    "size": 64
+  },
+  {
+    "zh": "收起侧栏",
+    "category": "导航",
+    "description": "左侧面板开关",
+    "in_final": true,
+    "name": "panel-left",
+    "filename": "panel-left.svg",
+    "size": 24
+  },
+  {
+    "zh": "添加",
+    "category": "导航",
+    "description": "新建会话、添加附件、创建项目",
+    "in_final": true,
+    "name": "plus",
+    "filename": "plus.svg",
+    "size": 24
+  },
+  {
+    "zh": "添加（中性）",
+    "category": "导航",
+    "description": "输入框左侧添加操作",
+    "in_final": true,
+    "name": "plus-neutral",
+    "filename": "plus-neutral.svg",
+    "size": 24
+  },
+  {
+    "zh": "项目文件夹",
+    "category": "导航",
+    "description": "",
+    "in_final": true,
+    "name": "folder",
+    "filename": "folder.svg",
+    "size": 24
+  },
+  {
+    "zh": "右箭头",
+    "category": "导航",
+    "description": "",
+    "in_final": true,
+    "name": "chevron-right",
+    "filename": "chevron-right.svg",
+    "size": 24
+  },
+  {
+    "zh": "向下展开",
+    "category": "导航",
+    "description": "",
+    "in_final": true,
+    "name": "chevron-down",
+    "filename": "chevron-down.svg",
+    "size": 24
+  },
+  {
+    "zh": "向上收起",
+    "category": "导航",
+    "description": "",
+    "in_final": true,
+    "name": "chevron-up",
+    "filename": "chevron-up.svg",
+    "size": 24
+  },
+  {
+    "zh": "搜索",
+    "category": "导航",
+    "description": "",
+    "in_final": true,
+    "name": "search",
+    "filename": "search.svg",
+    "size": 24
+  },
+  {
+    "zh": "深色模式",
+    "category": "导航",
+    "description": "",
+    "in_final": true,
+    "name": "moon",
+    "filename": "moon.svg",
+    "size": 24
+  },
+  {
+    "zh": "浅色模式",
+    "category": "导航",
+    "description": "",
+    "in_final": false,
+    "name": "sun",
+    "filename": "sun.svg",
+    "size": 24
+  },
+  {
+    "zh": "更多操作",
+    "category": "导航",
+    "description": "",
+    "in_final": true,
+    "name": "more-horizontal",
+    "filename": "more-horizontal.svg",
+    "size": 24
+  },
+  {
+    "zh": "关闭",
+    "category": "导航",
+    "description": "",
+    "in_final": true,
+    "name": "close",
+    "filename": "close.svg",
+    "size": 24
+  },
+  {
+    "zh": "助手思考",
+    "category": "会话",
+    "description": "星光 / 思考图标",
+    "in_final": true,
+    "name": "sparkles",
+    "filename": "sparkles.svg",
+    "size": 24
+  },
+  {
+    "zh": "用户消息",
+    "category": "步骤",
+    "description": "",
+    "in_final": true,
+    "name": "user",
+    "filename": "user.svg",
+    "size": 24
+  },
+  {
+    "zh": "工具调用 / bash",
+    "category": "步骤",
+    "description": "",
+    "in_final": true,
+    "name": "terminal",
+    "filename": "terminal.svg",
+    "size": 24
+  },
+  {
+    "zh": "工具结果",
+    "category": "步骤",
+    "description": "",
+    "in_final": true,
+    "name": "file-text",
+    "filename": "file-text.svg",
+    "size": 24
+  },
+  {
+    "zh": "等待子代理",
+    "category": "步骤",
+    "description": "",
+    "in_final": true,
+    "name": "hourglass",
+    "filename": "hourglass.svg",
+    "size": 24
+  },
+  {
+    "zh": "完成成功",
+    "category": "状态",
+    "description": "",
+    "in_final": true,
+    "name": "check-circle",
+    "filename": "check-circle.svg",
+    "size": 24
+  },
+  {
+    "zh": "校验通过",
+    "category": "状态",
+    "description": "",
+    "in_final": true,
+    "name": "check-mini",
+    "filename": "check-mini.svg",
+    "size": 24
+  },
+  {
+    "zh": "运行失败",
+    "category": "状态",
+    "description": "",
+    "in_final": false,
+    "name": "error-circle",
+    "filename": "error-circle.svg",
+    "size": 24
+  },
+  {
+    "zh": "步骤序号 1",
+    "category": "步骤",
+    "description": "步骤序号样式示例；其余数字建议用 CSS 渲染",
+    "in_final": true,
+    "name": "step-number",
+    "filename": "step-number.svg",
+    "size": 24
+  },
+  {
+    "zh": "引导队列",
+    "category": "队列",
+    "description": "",
+    "in_final": true,
+    "name": "steer",
+    "filename": "steer.svg",
+    "size": 24
+  },
+  {
+    "zh": "追加队列",
+    "category": "队列",
+    "description": "",
+    "in_final": true,
+    "name": "clock",
+    "filename": "clock.svg",
+    "size": 24
+  },
+  {
+    "zh": "删除队列消息",
+    "category": "队列",
+    "description": "",
+    "in_final": true,
+    "name": "trash",
+    "filename": "trash.svg",
+    "size": 24
+  },
+  {
+    "zh": "发送消息",
+    "category": "输入",
+    "description": "",
+    "in_final": true,
+    "name": "send",
+    "filename": "send.svg",
+    "size": 24
+  },
+  {
+    "zh": "停止执行",
+    "category": "输入",
+    "description": "",
+    "in_final": false,
+    "name": "stop",
+    "filename": "stop.svg",
+    "size": 24
+  },
+  {
+    "zh": "附件",
+    "category": "输入",
+    "description": "",
+    "in_final": false,
+    "name": "paperclip",
+    "filename": "paperclip.svg",
+    "size": 24
+  },
+  {
+    "zh": "复制",
+    "category": "扩展",
+    "description": "",
+    "in_final": false,
+    "name": "copy",
+    "filename": "copy.svg",
+    "size": 24
+  },
+  {
+    "zh": "编辑",
+    "category": "扩展",
+    "description": "",
+    "in_final": false,
+    "name": "edit",
+    "filename": "edit.svg",
+    "size": 24
+  }
+]

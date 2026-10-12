@@ -1,3 +1,5 @@
+export type { ControlIdentity, ControlQueueItem, ControlQueueSnapshot } from "../shared/control-queue.js";
+export type { SteeringInput } from "../shared/steering.js";
 export { DEFAULT_PROJECT_ID } from "../shared/project-identity.js";
 export * from "./api.js";
 export * from "./session-title.js";
@@ -7,4 +9,6 @@ export * from "./sse.js";
 export * from "./sse-client.js";
 export type * from "./transport.js";
 export type * from "./types.js";
+export type { SessionStepKind, SessionStep, SessionStepsSnapshot } from "../shared/session-steps.js";
+export type { SessionSystemPrompt } from "../shared/system-prompt.js";
 export type { Export, ExportMessage, ExportTimelineItem } from "../public-api/contract.js";

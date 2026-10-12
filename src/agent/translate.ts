@@ -5,7 +5,7 @@
 import type { AgentSdkEvent, SseEvent } from "./events.js";
 import { toolDurationMs } from "../shared/tool-duration.js";
 
-export function translateSdkEvent(event: AgentSdkEvent): Exclude<SseEvent, { type: "notification" | "steering_consumed" }> | null {
+export function translateSdkEvent(event: AgentSdkEvent): Exclude<SseEvent, { type: "notification" | "steering_consumed" | "control_queue" }> | null {
   switch (event.type) {
     case "message_update":
       // thinking_delta 映射为 SSE thinking_delta

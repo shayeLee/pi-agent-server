@@ -4,6 +4,7 @@
 // - 返回决策为判别联合类型（run / queued / rejected / conflict / done；控制接口 ok / conflict）。
 
 import { createHash, randomUUID } from "node:crypto";
+import { nextControlQueueRevision } from "./control-queue-revision.js";
 import { notificationMessage, validNotification, type AdmissionAck, type ExtensionCustomMessage } from "../agent/subagent-host-transport.js";
 import type { SubagentNotification } from "../agent/subagent-notification.js";
 import { transition, type TaskState, type TaskEvent } from "../core/task-state-machine.js";
@@ -133,7 +134,35 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
   private readonly unsubscribeSteering: () => void;
   private readonly unsubscribeRequestError: () => void;
   private readonly steeringAdmissions = new Map<string, { actorKey: string; fingerprint: string;
-    identity: import("../shared/steering.js").SteeringIdentity; consumed: boolean; promise: Promise<ControlDecision> }>();
+    identity: import("../shared/steering.js").SteeringIdentity; consumed: boolean; kind: "steer" | "followUp";
+    mutation?: "delete" | "promote"; promise: Promise<ControlDecision> }>();
+  private readonly unsubscribeControlQueue: () => void;
+  private queueSnapshot: import("../shared/control-queue.js").ControlQueueSnapshot;
+  getControlQueue(): import("../shared/control-queue.js").ControlQueueSnapshot {
+    const requestId = this.taskState === "streaming" && !this.aborting ? this.currentRequestId : null;
+    const items = requestId ? (this.adapter.getControlQueueItems?.() ?? []).filter(item =>
+      this.steeringAdmissions.get(item.id)?.identity.requestId === requestId) : [];
+    if (requestId !== this.queueSnapshot.requestId || JSON.stringify(items) !== JSON.stringify(this.queueSnapshot.items)) {
+      this.queueSnapshot = { requestId, revision: nextControlQueueRevision(this.sessionId), items };
+      if (!this.disposed && this.adapter.getControlQueueItems) this.emitEvent({ type: "control_queue", ...this.queueSnapshot });
+    }
+    return { ...this.queueSnapshot, items: this.queueSnapshot.items.map(item => ({ ...item })) };
+  }
+  mutateControlQueue(identity: import("../shared/control-queue.js").ControlIdentity, operation: "delete" | "promote", actorKey = this.ownerKey): import("../shared/control-queue.js").ControlQueueMutation {
+    const snapshot = this.getControlQueue();
+    const admission = this.steeringAdmissions.get(identity.controlId);
+    if (this.disposed || this.aborting || snapshot.requestId !== identity.requestId || !admission ||
+        admission.actorKey !== actorKey || admission.identity.requestId !== identity.requestId ||
+        admission.identity.acknowledgementId !== identity.acknowledgementId) return { kind: "conflict" };
+    if (admission.mutation === "delete") return operation === "delete" ? { kind: "ok", snapshot } : { kind: "conflict" };
+    if (admission.mutation === "promote" && operation === "promote") {
+      return snapshot.items.some(item => item.id === identity.controlId) ? { kind: "ok", snapshot } : { kind: "conflict" };
+    }
+    if (operation === "promote" && admission.kind !== "followUp") return { kind: "conflict" };
+    if (!this.adapter.mutateControlQueue?.(identity, operation)) return { kind: "conflict" };
+    admission.mutation = operation;
+    return { kind: "ok", snapshot: this.getControlQueue() };
+  }
   private readonly unsubscribeNotifications: () => void;
   private readonly unsubscribeOutputProgress: () => void;
   private readonly unsubscribeFailbackLifecycle: () => void;
@@ -191,6 +220,7 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
 
   constructor(options: SessionRuntimeOptions) {
     this.sessionId = options.sessionId;
+    this.queueSnapshot = { requestId: null, revision: nextControlQueueRevision(this.sessionId), items: [] };
     this.ownerKey = options.ownerKey;
     this.concurrency = options.concurrency;
     this.adapter = options.adapter;
@@ -200,6 +230,7 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
     this.observability = options.observability;
     this.unbindSubagentTransport = this.adapter.bindSubagentHostTransport?.({ post: payload => this.postNotification(payload) }) ?? (() => {});
     this.unsubscribe = this.adapter.subscribe((event) => this.handleSdkEvent(event));
+    this.unsubscribeControlQueue = this.adapter.subscribeControlQueue?.(() => { this.getControlQueue(); }) ?? (() => {});
     this.unsubscribeRequestError = this.adapter.subscribeRequestError?.((error, requestId) => {
       if (this.disposed || this.currentRequestId !== requestId || this.taskState !== "streaming") return;
       // A native persistence failure leaves uncertain disk/in-memory state. Fail closed,
@@ -239,6 +270,7 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
     this.unbindSubagentTransport();
     this.unsubscribe();
     this.unsubscribeSteering();
+    this.unsubscribeControlQueue();
     this.unsubscribeRequestError();
     this.unsubscribeNotifications();
     this.unsubscribeOutputProgress();
@@ -690,10 +722,17 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
 
   /** POST /v1/sessions/:id/steer：仅 streaming 合法，转发给 adapter。 */
   steer(text: string, input?: import("../shared/steering.js").SteeringInput, actorKey = this.ownerKey): Promise<ControlDecision> {
-    if (!input) return this.enqueueSteering(text);
+    return this.admitControl("steer", text, input, actorKey);
+  }
+
+  private admitControl(kind: "steer" | "followUp", text: string, input: import("../shared/steering.js").SteeringInput | undefined, actorKey: string): Promise<ControlDecision> {
+    if (!input) return kind === "steer" ? this.enqueueSteering(text) : this.enqueueFollowUp(text);
+    if (this.disposed || input.requestId !== this.currentRequestId || this.taskState !== "streaming" || this.aborting) {
+      return Promise.resolve({ kind: "conflict" });
+    }
     const fingerprint = payloadFingerprint({ prompt: text, images: input.images });
     const old = this.steeringAdmissions.get(input.controlId);
-    if (old) return old.actorKey === actorKey && old.fingerprint === fingerprint &&
+    if (old) return old.kind === kind && old.actorKey === actorKey && old.fingerprint === fingerprint &&
       old.identity.requestId === input.requestId && old.identity.acknowledgementId === input.acknowledgementId
       ? old.promise : Promise.resolve({ kind: "conflict" });
     if (this.disposed || input.requestId !== this.currentRequestId || this.taskState !== "streaming" || this.aborting) {
@@ -703,8 +742,8 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
     let resolve!: (decision: ControlDecision) => void;
     let reject!: (error: unknown) => void;
     const promise = new Promise<ControlDecision>((yes, no) => { resolve = yes; reject = no; });
-    this.steeringAdmissions.set(input.controlId, { actorKey, fingerprint, identity: input, consumed: false, promise });
-    void this.enqueueSteering(text, input).then(resolve, reject);
+    this.steeringAdmissions.set(input.controlId, { actorKey, fingerprint, identity: input, consumed: false, kind, promise });
+    void (kind === "steer" ? this.enqueueSteering(text, input) : this.enqueueFollowUp(text, input)).then(resolve, reject);
     return promise;
   }
 
@@ -717,6 +756,16 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
     if (this.disposed) throw new SessionDeletedError(this.sessionId);
     if (this.currentKey !== key || this.taskState !== "streaming") return { kind: "conflict" };
     return { kind: "ok" };
+  }
+
+  getSessionSteps(): import("../shared/session-steps.js").SessionStepsSnapshot | null {
+    if (this.disposed) throw new SessionDeletedError(this.sessionId);
+    return this.adapter.getSessionSteps?.(this.sessionId) ?? null;
+  }
+
+  getEffectiveSystemPrompt(): string | null {
+    if (this.disposed) throw new SessionDeletedError(this.sessionId);
+    return this.adapter.getEffectiveSystemPrompt?.() ?? null;
   }
 
   /** GET /v1/sessions/:id/export：透传给 adapter 导出会话数据（快照读取，不改变任务状态）。 */
@@ -743,11 +792,15 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
   }
 
   /** POST /v1/sessions/:id/follow-ups：仅 streaming 合法，转发给 adapter。 */
-  async followUp(text: string): Promise<ControlDecision> {
+  followUp(text: string, input?: import("../shared/steering.js").SteeringInput, actorKey = this.ownerKey): Promise<ControlDecision> {
+    return this.admitControl("followUp", text, input, actorKey);
+  }
+
+  private async enqueueFollowUp(text: string, input?: import("../shared/steering.js").SteeringInput): Promise<ControlDecision> {
     if (this.disposed) throw new SessionDeletedError(this.sessionId);
     const key = this.currentKey;
     if (transition(this.taskState, "followUp") === null) return { kind: "conflict" };
-    await this.adapter.followUp(text);
+    await this.adapter.followUp(text, input);
     // await 期间可能被删除/中止：失权返回 conflict（不误报 ok）
     if (this.disposed) throw new SessionDeletedError(this.sessionId);
     if (this.currentKey !== key || this.taskState !== "streaming") return { kind: "conflict" };
@@ -808,6 +861,7 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
     if (this.taskState === "streaming") {
       this.taskState = transition("streaming", "abort")!; // → terminal
       this.aborting = true;
+      this.getControlQueue();
       // 快照 abort 原因：避免 abort 等待期间新到达的事件改变共享标志，导致用户 abort 被误判为预算超限。
       // 优先级固定为 工具调用次数 > 墙钟 > 工具错误（与 settle 中的 code 优先级一致）。
       const dueToToolCallBudget = this.toolCallLimitReached;
@@ -1087,6 +1141,7 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
     this.currentInputKind = task.input.kind;
     this.currentKey = task.key;
     this.currentRequestId = task.requestId;
+    this.getControlQueue();
     this.compactionMetadata = undefined;
     this.currentFingerprint = task.fingerprint;
     this.currentReservationToken = task.reservationToken ?? null;
@@ -1207,6 +1262,7 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
     this.currentRequestId = null;
     this.currentFingerprint = null;
     this.currentReservationToken = null;
+    this.getControlQueue();
     // 无论 extension 是否漏发 end，终态都释放锁，避免异常路径永久 409。
     this.failbackAttemptId = null;
     // 终态结果先用参数确定，保证即使后续 usage/事件异常也会在 finally 中结算等待者。

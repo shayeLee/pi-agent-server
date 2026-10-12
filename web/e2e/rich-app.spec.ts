@@ -125,7 +125,7 @@ for (const width of [1280, 390]) {
       const successfulTool = page.getByTestId("tool-call-card").first();
       const failedTool = page.getByTestId("tool-call-card").nth(1);
       // The legacy rich mock returns { stderr }, not standard content.text.
-      // Structured envelopes are readable verbatim and also available as raw data.
+      // Structured envelopes remain readable in the expanded body.
       const failedResult = failedTool.getByRole("dialog").locator("pre");
       await expect(userMessage).toContainText("请分析错误路径并运行测试");
       // Reading-first：固定来源槽及其标签已废除，消息行不携带槽位文本。
@@ -170,16 +170,14 @@ for (const width of [1280, 390]) {
       expect(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1)).toBe(false);
 
       // Failure details are auto-open and independently captured at a readable scroll position.
-      await failedTool.getByRole("button", { name: "工具更多操作" }).click();
-      await failedTool.getByRole("menuitem", { name: "查看原始数据" }).click();
+      if (await failedTool.locator('.tool-call-header').getAttribute('aria-expanded') === 'false') await failedTool.locator('.tool-call-header').click();
       // Center explicitly: nearest-edge scrolling rounds fractional CSS pixels and can
       // leave 0.4px outside the transcript after typography/layout changes.
       await failedResult.evaluate(el => el.scrollIntoView({ block: "center" }));
-      await expect(failedTool.getByRole("dialog")).toBeVisible();
+      await expect(failedTool.locator('.tool-call-body')).toBeVisible();
       await expect(failedResult).toBeInViewport();
       await page.screenshot({ path: testInfo.outputPath(`app-rich-failure-${theme}-${width}.png`), animations: "disabled" });
 
-      await page.keyboard.press("Escape");
       // Expanded-state proof is separate from the default answer view: thinking and
       // successful tool raw input/output are available without any summary substitution.
       await thinking.getByRole("button").click();
@@ -195,12 +193,7 @@ for (const width of [1280, 390]) {
         getComputedStyle(element).whiteSpace === "nowrap")).toBe(true);
       await expect(successfulTool).toContainText("/workspace/src/application/very-long-directory/agent-runtime.ts");
       await expect(successfulTool).toContainText("缺少错误分支的断言");
-      await successfulTool.getByRole("button", { name: "工具更多操作" }).click();
-      await successfulTool.getByRole("menuitem", { name: "查看原始数据" }).click();
-      await expect(successfulTool.getByRole("dialog")).toBeVisible();
-      await expect(successfulTool.getByRole("dialog").locator("pre")).toContainText('"args"');
-      await expect(successfulTool.getByRole("dialog").locator("pre")).toContainText('"result"');
-      await page.keyboard.press("Escape");
+      await expect(successfulTool.locator('.tool-call-body > :not(section)')).toHaveCount(0);
       const successfulArgs = successfulTool.locator(".tool-parameters");
       await successfulArgs.scrollIntoViewIfNeeded();
       await expectFullyReadableInTranscript(page, successfulArgs);
@@ -269,7 +262,7 @@ for (const width of [1280, 390]) {
       await page.getByTestId("model-thinking-trigger").click();
       await expect(page.getByTestId("model-thinking-model-option").first()).toContainText("crossband/very-long-model-id-for-visual-qa");
       await page.getByTestId("model-thinking-trigger").click();
-      await page.getByTestId("toggle-events").click();
+      await page.getByTestId("trace-tab").click();
       await expect(page.getByTestId("inspector")).toBeVisible();
       await expect(page.getByTestId("event-log")).toContainText("tool_end");
       await page.screenshot({ path: testInfo.outputPath(`app-rich-inspector-${theme}-${width}.png`), animations: "disabled" });

@@ -1908,6 +1908,384 @@
         ]
       }
     },
+    "/v1/sessions/{id}/steps": {
+      "get": {
+        "operationId": "getSessionSteps",
+        "security": [
+          {
+            "IpAdmission": []
+          },
+          {
+            "IpAdmission": [],
+            "BearerAuth": []
+          }
+        ],
+        "x-pi-rbac": {
+          "permission": "sessions:export",
+          "roles": [
+            "admin",
+            "user",
+            "viewer"
+          ]
+        },
+        "responses": {
+          "200": {
+            "description": "Complete authoritative steps snapshot, including active unsaved blocks. Recorded history follows selected branch order; observed tool results follow actual completion order. No runtime is created.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionStepsSnapshot"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer token required for this admitted IP profile.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "IP admission or RBAC denied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Session not found or source access revoked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      },
+      "head": {
+        "operationId": "getSessionStepsHead",
+        "security": [
+          {
+            "IpAdmission": []
+          },
+          {
+            "IpAdmission": [],
+            "BearerAuth": []
+          }
+        ],
+        "x-pi-rbac": {
+          "permission": "sessions:export",
+          "roles": [
+            "admin",
+            "user",
+            "viewer"
+          ]
+        },
+        "responses": {
+          "200": {
+            "description": "Steps snapshot; body suppressed.",
+            "headers": {
+              "Content-Type": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "const": "application/json; charset=utf-8"
+                }
+              },
+              "Content-Length": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "pattern": "^[0-9]+$"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer token required for this admitted IP profile.",
+            "headers": {
+              "Content-Type": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "const": "application/json; charset=utf-8"
+                }
+              },
+              "Content-Length": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "pattern": "^[0-9]+$"
+                }
+              },
+              "WWW-Authenticate": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "const": "Bearer"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "IP admission or RBAC denied.",
+            "headers": {
+              "Content-Type": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "const": "application/json; charset=utf-8"
+                }
+              },
+              "Content-Length": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "pattern": "^[0-9]+$"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Session not found.",
+            "headers": {
+              "Content-Type": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "const": "application/json; charset=utf-8"
+                }
+              },
+              "Content-Length": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "pattern": "^[0-9]+$"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/v1/sessions/{id}/system-prompt": {
+      "get": {
+        "operationId": "getSystemPrompt",
+        "security": [
+          {
+            "IpAdmission": []
+          },
+          {
+            "IpAdmission": [],
+            "BearerAuth": []
+          }
+        ],
+        "x-pi-rbac": {
+          "permission": "sessions:export",
+          "roles": [
+            "admin",
+            "user",
+            "viewer"
+          ]
+        },
+        "responses": {
+          "200": {
+            "description": "Full prompt with explicit provenance. live_effective may not yet have been sent to a model. No runtime is created; unproven history falls back to creation_snapshot or unavailable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionSystemPrompt"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer token required for this admitted IP profile.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "IP admission or RBAC denied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Session not found or source access revoked.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      },
+      "head": {
+        "operationId": "getSystemPromptHead",
+        "security": [
+          {
+            "IpAdmission": []
+          },
+          {
+            "IpAdmission": [],
+            "BearerAuth": []
+          }
+        ],
+        "x-pi-rbac": {
+          "permission": "sessions:export",
+          "roles": [
+            "admin",
+            "user",
+            "viewer"
+          ]
+        },
+        "responses": {
+          "200": {
+            "description": "Prompt snapshot; body suppressed.",
+            "headers": {
+              "Content-Type": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "const": "application/json; charset=utf-8"
+                }
+              },
+              "Content-Length": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "pattern": "^[0-9]+$"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer token required for this admitted IP profile.",
+            "headers": {
+              "Content-Type": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "const": "application/json; charset=utf-8"
+                }
+              },
+              "Content-Length": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "pattern": "^[0-9]+$"
+                }
+              },
+              "WWW-Authenticate": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "const": "Bearer"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "IP admission or RBAC denied.",
+            "headers": {
+              "Content-Type": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "const": "application/json; charset=utf-8"
+                }
+              },
+              "Content-Length": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "pattern": "^[0-9]+$"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Session not found.",
+            "headers": {
+              "Content-Type": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "const": "application/json; charset=utf-8"
+                }
+              },
+              "Content-Length": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "pattern": "^[0-9]+$"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
     "/v1/sessions/{id}/file-preview": {
       "get": {
         "operationId": "previewSessionFile",
@@ -2010,6 +2388,431 @@
             "description": "Optional 1-based line for a client-side scroll target."
           }
         ]
+      }
+    },
+    "/v1/sessions/{id}/control-queue": {
+      "get": {
+        "operationId": "getControlQueue",
+        "security": [
+          {
+            "IpAdmission": []
+          },
+          {
+            "IpAdmission": [],
+            "BearerAuth": []
+          }
+        ],
+        "x-pi-rbac": {
+          "permission": "sessions:export",
+          "roles": [
+            "admin",
+            "user",
+            "viewer"
+          ]
+        },
+        "responses": {
+          "200": {
+            "description": "Authoritative resident SDK queue. Public event reconciliation has propagation delay, not atomic realtime drain notification. No pending input-extension work or custom SDK messages.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ControlQueueSnapshot"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer token required for this admitted IP profile.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "IP admission or RBAC denied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Session not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      },
+      "head": {
+        "operationId": "getControlQueueHead",
+        "security": [
+          {
+            "IpAdmission": []
+          },
+          {
+            "IpAdmission": [],
+            "BearerAuth": []
+          }
+        ],
+        "x-pi-rbac": {
+          "permission": "sessions:export",
+          "roles": [
+            "admin",
+            "user",
+            "viewer"
+          ]
+        },
+        "responses": {
+          "200": {
+            "description": "Authoritative queue; body suppressed.",
+            "headers": {
+              "Content-Type": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "const": "application/json; charset=utf-8"
+                }
+              },
+              "Content-Length": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "pattern": "^[0-9]+$"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer token required for this admitted IP profile.",
+            "headers": {
+              "Content-Type": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "const": "application/json; charset=utf-8"
+                }
+              },
+              "Content-Length": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "pattern": "^[0-9]+$"
+                }
+              },
+              "WWW-Authenticate": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "const": "Bearer"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "IP admission or RBAC denied.",
+            "headers": {
+              "Content-Type": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "const": "application/json; charset=utf-8"
+                }
+              },
+              "Content-Length": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "pattern": "^[0-9]+$"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Session not found.",
+            "headers": {
+              "Content-Type": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "const": "application/json; charset=utf-8"
+                }
+              },
+              "Content-Length": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "pattern": "^[0-9]+$"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/v1/sessions/{id}/control-queue/{controlId}": {
+      "delete": {
+        "operationId": "deleteControl",
+        "security": [
+          {
+            "IpAdmission": []
+          },
+          {
+            "IpAdmission": [],
+            "BearerAuth": []
+          }
+        ],
+        "x-pi-rbac": {
+          "permission": "sessions:control",
+          "roles": [
+            "admin",
+            "user"
+          ]
+        },
+        "responses": {
+          "200": {
+            "description": "Resident object withdrawn (or idempotent deletion). Late input enqueue is fenced.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ControlQueueSnapshot"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed identity.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer token required for this admitted IP profile.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "IP admission or RBAC denied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Session not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Unknown identity, actor/run mismatch or already dequeued.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "controlId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ControlMutationInput"
+              }
+            }
+          }
+        },
+        "x-pi-request-validation": {
+          "coerceTypes": true,
+          "removeAdditional": "silent-strip"
+        },
+        "description": "Request bodies use Fastify's AJV baseline: declared types are coerced (`coerceTypes: 'array'`,\nso numbers, booleans, and single-element arrays are accepted where a string is declared) and\nundeclared fields are silently stripped (`removeAdditional: true` combined with\n`additionalProperties: false`) instead of returning 400. A 400 therefore reports a missing\nrequired field or a value that cannot be coerced/constrained, never a wrong scalar type or an\nunknown field."
+      }
+    },
+    "/v1/sessions/{id}/control-queue/{controlId}/promote": {
+      "post": {
+        "operationId": "promoteControl",
+        "security": [
+          {
+            "IpAdmission": []
+          },
+          {
+            "IpAdmission": [],
+            "BearerAuth": []
+          }
+        ],
+        "x-pi-rbac": {
+          "permission": "sessions:control",
+          "roles": [
+            "admin",
+            "user"
+          ]
+        },
+        "responses": {
+          "200": {
+            "description": "Original follow-up object moved to steer without replaying input processing; resident repeats are idempotent.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ControlQueueSnapshot"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed identity.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer token required for this admitted IP profile.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "IP admission or RBAC denied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Session not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Unknown identity, actor/run mismatch, not follow-up or already dequeued.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "controlId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ControlMutationInput"
+              }
+            }
+          }
+        },
+        "x-pi-request-validation": {
+          "coerceTypes": true,
+          "removeAdditional": "silent-strip"
+        },
+        "description": "Request bodies use Fastify's AJV baseline: declared types are coerced (`coerceTypes: 'array'`,\nso numbers, booleans, and single-element arrays are accepted where a string is declared) and\nundeclared fields are silently stripped (`removeAdditional: true` combined with\n`additionalProperties: false`) instead of returning 400. A 400 therefore reports a missing\nrequired field or a value that cannot be coerced/constrained, never a wrong scalar type or an\nunknown field."
       }
     },
     "/v1/sessions/{id}/steer": {
@@ -2136,8 +2939,21 @@
           ]
         },
         "responses": {
+          "202": {
+            "description": "Correlated follow-up admitted; empty body. Queue removal and exact consumption acknowledgement are independent."
+          },
           "204": {
             "description": "Completed without a response body."
+          },
+          "400": {
+            "description": "Invalid or incomplete identity or images.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
           },
           "401": {
             "description": "Bearer token required for this admitted IP profile.",
@@ -2170,7 +2986,7 @@
             }
           },
           "409": {
-            "description": "No active task.",
+            "description": "No active task or identity/payload/actor conflict.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2195,7 +3011,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/TextInput"
+                "$ref": "#/components/schemas/SteeringInput"
               }
             }
           }
@@ -2669,6 +3485,170 @@
           }
         },
         "additionalProperties": false
+      },
+      "SessionStep": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "kind",
+          "content",
+          "status",
+          "source"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "user",
+              "thinking",
+              "assistant_text",
+              "tool_call",
+              "tool_result",
+              "notification",
+              "system_event",
+              "error",
+              "compaction",
+              "custom"
+            ]
+          },
+          "content": {},
+          "status": {
+            "type": "string",
+            "enum": [
+              "streaming",
+              "completed",
+              "error",
+              "aborted",
+              "unknown"
+            ]
+          },
+          "source": {
+            "type": "string",
+            "enum": [
+              "recorded",
+              "observed"
+            ]
+          },
+          "timestamp": {
+            "type": "string"
+          },
+          "sourceEntryId": {
+            "type": "string"
+          },
+          "requestId": {
+            "type": "string"
+          },
+          "toolName": {
+            "type": "string"
+          },
+          "toolCallId": {
+            "type": "string"
+          },
+          "parentToolCallId": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "omission": {
+            "type": "string"
+          },
+          "images": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "mediaType",
+                "base64"
+              ],
+              "properties": {
+                "mediaType": {
+                  "type": "string"
+                },
+                "base64": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      },
+      "SessionStepsSnapshot": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "sessionId",
+          "projectionId",
+          "revision",
+          "steps"
+        ],
+        "properties": {
+          "sessionId": {
+            "type": "string"
+          },
+          "projectionId": {
+            "type": "string"
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "steps": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SessionStep"
+            }
+          }
+        }
+      },
+      "SessionSystemPrompt": {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "source",
+              "prompt"
+            ],
+            "properties": {
+              "source": {
+                "type": "string",
+                "enum": [
+                  "live_effective",
+                  "creation_snapshot"
+                ]
+              },
+              "prompt": {
+                "type": "string"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "source",
+              "prompt"
+            ],
+            "properties": {
+              "source": {
+                "type": "string",
+                "enum": [
+                  "unavailable"
+                ]
+              },
+              "prompt": {
+                "type": "null"
+              }
+            }
+          }
+        ],
+        "description": "Only current effective or creation snapshot provenance is reported. Historical structured records do not prove the forced prompt sent to a model. Empty strings are valid prompts."
       },
       "Session": {
         "type": "object",
@@ -3864,6 +4844,119 @@
         "additionalProperties": false,
         "description": "Exact queued SDK user-message object was consumed once. Optional message projects its persisted user entry, before subsequent assistant deltas; sourceId deduplicates live/replay/export history. Missing message never implies a visible user bubble. Nonterminal; never acknowledge by matching text."
       },
+      "ControlMutationInput": {
+        "type": "object",
+        "required": [
+          "requestId",
+          "acknowledgementId"
+        ],
+        "properties": {
+          "requestId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "acknowledgementId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          }
+        },
+        "additionalProperties": false
+      },
+      "ControlQueueItem": {
+        "type": "object",
+        "required": [
+          "id",
+          "kind",
+          "text",
+          "hasImages",
+          "status",
+          "acknowledgementId"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "steer",
+              "followUp"
+            ]
+          },
+          "text": {
+            "type": "string"
+          },
+          "hasImages": {
+            "type": "boolean"
+          },
+          "status": {
+            "const": "queued"
+          },
+          "acknowledgementId": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ControlQueueSnapshot": {
+        "type": "object",
+        "required": [
+          "requestId",
+          "revision",
+          "items"
+        ],
+        "properties": {
+          "requestId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ControlQueueItem"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "ControlQueueEvent": {
+        "type": "object",
+        "required": [
+          "type",
+          "requestId",
+          "revision",
+          "items"
+        ],
+        "properties": {
+          "type": {
+            "const": "control_queue"
+          },
+          "requestId": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ControlQueueItem"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
       "TextInput": {
         "type": "object",
         "required": [
@@ -3965,6 +5058,9 @@
           },
           {
             "$ref": "#/components/schemas/SteeringConsumed"
+          },
+          {
+            "$ref": "#/components/schemas/ControlQueueEvent"
           },
           {
             "type": "object",

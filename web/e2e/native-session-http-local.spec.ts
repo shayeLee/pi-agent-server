@@ -84,12 +84,11 @@ test("unified native directory: real App, actors, append, private, tombstones, e
     const historicalTool = page.locator('[data-tool-call-id="tool"]');
     await expect(historicalTool.locator(".tool-duration")).toHaveText("2.3 s");
     await expect(page.locator('[data-tool-call-id="old-tool"] .tool-duration')).toHaveCount(0);
-    await historicalTool.getByRole("button", { name: "工具更多操作" }).click();
-    await page.getByRole("menuitem", { name: "查看原始数据" }).click();
-    await expect(page.getByRole("dialog")).toContainText("2345.6789");
+    if (await historicalTool.locator('.tool-call-header').getAttribute('aria-expanded') === 'false') await historicalTool.locator('.tool-call-header').click();
+    await expect(historicalTool.locator('.tool-duration')).toHaveAttribute('title', '工具调用耗时：2345.6789 ms');
+    await expect(historicalTool.locator('.tool-call-body')).toBeVisible();
     mkdirSync(artifacts, { recursive: true });
-    await page.screenshot({ path: `${artifacts}/duration-history-raw.png`, fullPage: true });
-    await page.keyboard.press("Escape");
+    await page.screenshot({ path: `${artifacts}/duration-history-expanded.png`, fullPage: true });
     const send = page.waitForResponse(response => response.url().endsWith(`/sessions/${id}/messages`) && response.request().method() === "POST");
     await page.getByTestId("composer-input").fill("原生继续发送"); await page.getByTestId("send-button").click(); expect((await send).status()).toBe(202);
     await expect(page.locator(".message-assistant").last()).toContainText("离线模型继续完成");

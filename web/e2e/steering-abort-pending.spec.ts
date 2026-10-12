@@ -4,7 +4,7 @@ const sessionId = "steering-abort-fixture";
 const requestId = "active-request-fixture";
 const original = "未消费的插话：请先检查边界条件";
 const newer = "用户后来输入的新草稿，不能覆盖";
-const waiting = "HTTP 已接收，等待消费确认";
+const waiting = original; // The visible row is authoritative queue residence, not a local HTTP receipt.
 type Control = { text: string; controlId: string; acknowledgementId: string; requestId: string };
 
 // All API traffic is intercepted, independent of the configured origin/port.
@@ -12,6 +12,9 @@ type Control = { text: string; controlId: string; acknowledgementId: string; req
 async function fixture(page: Page, options: { delayed202?: boolean; abortFails?: boolean } = {}) {
   let eventId = 0;
   let frames: object[] = [{ type: "status", phase: "agent_start", requestId }];
+  let revision = 0;
+  let items: Array<{ id: string; acknowledgementId: string; kind: string; text: string; hasImages: boolean; status: string }> = [];
+  const queue = () => ({ requestId, revision, items });
   let stream: Route | undefined;
   let admission: Route | undefined;
   let captured: Control | undefined;
@@ -36,13 +39,24 @@ async function fixture(page: Page, options: { delayed202?: boolean; abortFails?:
       if (path === "/v1/sessions") return json([{ id: sessionId, projectId: "fixture-project", title: "插话中止回归", createdAt: 1, updatedAt: 1,
         modelProvider: null, modelId: null, thinkingLevel: null, systemPrompt: null }]);
       if (path === `/v1/sessions/${sessionId}/export`) return json({ messages: [], timeline: [], lastEventId: 0 });
+      if (path === `/v1/sessions/${sessionId}/control-queue`) return json(queue());
       if (path === `/v1/sessions/${sessionId}/events`) { stream = route; await flush(); return; }
     }
-    if (req.method() === "POST" && path === `/v1/sessions/${sessionId}/steer`) {
+    if (req.method() === "POST" && path === `/v1/sessions/${sessionId}/follow-ups`) {
       captured = req.postDataJSON();
       controls.push(captured!);
       if (options.delayed202) { admission = route; return; }
+      items = [...items, { id: captured!.controlId, acknowledgementId: captured!.acknowledgementId, kind: "followUp", text: captured!.text, hasImages: false, status: "queued" }];
+      revision++;
+      frames.push({ type: "control_queue", ...queue() });
+      await flush();
       return route.fulfill({ status: 202, body: "" });
+    }
+    if (req.method() === "POST" && path.endsWith('/promote')) {
+      expect(req.postDataJSON()).toEqual({ requestId, acknowledgementId: captured!.acknowledgementId });
+      items = items.map(item => item.id === captured!.controlId ? { ...item, kind: 'steer' } : item);
+      revision++;
+      return json(queue());
     }
     if (req.method() === "POST" && path === `/v1/sessions/${sessionId}/abort`) {
       aborts++;
@@ -56,24 +70,41 @@ async function fixture(page: Page, options: { delayed202?: boolean; abortFails?:
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.goto("/");
   await page.getByTestId(`session-${sessionId}`).click();
-  await expect(page.getByTestId("abort-button")).toBeVisible();
+  await expect(page.getByTestId("abort-button")).toHaveCount(0);
+  await expect(page.locator('.composer-runtime-controls')).toHaveCount(0);
   const input = page.getByTestId("composer-input");
-  const pending = page.getByTestId("composer-pending-controls");
+  const pending = page.getByRole("region", { name: "引导队列", exact: true }).getByTestId("control-queue-item");
   await input.fill(original);
   await input.press("Enter");
   await expect.poll(() => captured).toBeDefined();
   expect(captured).toMatchObject({ text: original, requestId, controlId: expect.any(String), acknowledgementId: expect.any(String) });
   expect(captured!.controlId.length).toBeGreaterThan(0);
   expect(captured!.acknowledgementId.length).toBeGreaterThan(0);
-  if (!options.delayed202) await expect(pending).toContainText(waiting);
+  if (!options.delayed202) {
+    await expect(page.getByRole('region', { name: '追加队列', exact: true })).toContainText(waiting);
+    await expect(input).toHaveValue('');
+    await page.getByRole('button', { name: `引导：${original}`, exact: true }).click();
+    await expect(pending).toHaveCount(1);
+    await expect(pending).toContainText(waiting);
+    // A new draft matching the admitted text is independent of queue promotion/abort.
+    await input.fill(original);
+    await expect(page.getByTestId("composer-pending-controls")).toHaveCount(0);
+  }
   return {
     input, pending, unexpected, controls,
-    emit: async (event: object) => { frames.push(event); await flush(); },
+    emit: async (event: { type?: string; requestId?: string }) => {
+      frames.push(event);
+      if (["aborted", "completed", "error"].includes(event.type ?? "") && event.requestId === requestId) {
+        items = []; revision++;
+        frames.push({ type: "control_queue", ...queue() });
+      }
+      await flush();
+    },
     // A reconnect can only happen after the real SSE reader processed the batch.
     drained: async () => { await expect.poll(() => frames.length === 0 && stream !== undefined).toBe(true); },
     abort: async () => {
       const response = page.waitForResponse(r => new URL(r.url()).pathname.endsWith("/abort") && r.request().method() === "POST");
-      await page.getByTestId("abort-button").click();
+      await page.evaluate(async id => { await fetch(`/v1/sessions/${id}/abort`, {method:'POST'}); }, sessionId);
       expect((await response).status()).toBe(options.abortFails ? 500 : 204);
       expect(aborts).toBe(1);
     },
@@ -82,7 +113,7 @@ async function fixture(page: Page, options: { delayed202?: boolean; abortFails?:
   };
 }
 
-for (const editDraft of [false, true]) test(`confirmed abort clears pending and preserves ${editDraft ? "newer" : "unconsumed"} draft`, async ({ page }, info) => {
+for (const editDraft of [false, true]) test(`no stop UI; confirmed API abort clears pending and preserves ${editDraft ? "newer" : "unconsumed"} draft`, async ({ page }, info) => {
   const f = await fixture(page);
   if (editDraft) await f.input.fill(newer);
   await page.screenshot({ path: info.outputPath("before-abort.png"), fullPage: true });
@@ -90,7 +121,7 @@ for (const editDraft of [false, true]) test(`confirmed abort clears pending and 
   // HTTP success is admission, not proof of terminal cancellation.
   await expect(f.pending).toContainText(waiting);
   await f.emit({ type: "aborted", requestId: "foreign-request" });
-  await expect(page.getByTestId("abort-button")).toBeVisible();
+  await expect(page.getByTestId("abort-button")).toHaveCount(0);
   await expect(f.pending).toContainText(waiting);
   await f.emit({ type: "aborted", requestId });
   await expect(page.getByTestId("abort-button")).toHaveCount(0);
@@ -114,7 +145,7 @@ test("late HTTP 202 cannot resurrect an aborted pending control", async ({ page 
   await f.emit({ type: "aborted", requestId });
   await expect(page.getByTestId("abort-button")).toHaveCount(0);
   await expect(f.pending).toHaveCount(0);
-  const response = page.waitForResponse(r => new URL(r.url()).pathname.endsWith("/steer"));
+  const response = page.waitForResponse(r => new URL(r.url()).pathname.endsWith("/follow-ups"));
   await f.release202();
   const accepted = await response;
   expect(accepted.status()).toBe(202);
@@ -142,22 +173,24 @@ for (const terminal of ["aborted", "completed", "error"] as const) test(`${termi
   // Only the user removes the attachment. Identical text is eligible for a new control.
   await page.getByRole("button", { name: "移除附件 retained.png", exact: true }).click();
   await f.emit({ type: "status", phase: "agent_start", requestId: "next-request" });
-  await expect(page.getByTestId("abort-button")).toBeVisible();
+  await expect(page.getByTestId("abort-button")).toHaveCount(0);
+  await expect(page.getByTestId('send-button')).toHaveAttribute('title', '追加到队列');
   await f.input.fill(original);
+  await expect(page.getByTestId('send-button')).toBeEnabled();
   await f.input.press("Enter");
   await expect.poll(() => f.controls.length).toBe(2);
   expect(f.controls[1]).toMatchObject({ text: original, requestId: "next-request" });
   expect(f.controls[1].controlId).not.toBe(f.controls[0].controlId);
   expect(f.controls[1].acknowledgementId).not.toBe(f.controls[0].acknowledgementId);
-  await expect(f.pending).toContainText(waiting);
+  await expect(page.getByRole('region', { name: '追加队列', exact: true })).toContainText(waiting);
   expect(f.unexpected).toEqual([]);
 });
 
-test("failed abort HTTP keeps pending consumption and draft", async ({ page }, info) => {
+test("no stop UI; failed API abort HTTP keeps pending consumption and draft", async ({ page }, info) => {
   const f = await fixture(page, { abortFails: true });
   await page.screenshot({ path: info.outputPath("before-abort.png"), fullPage: true });
   await f.abort();
-  await expect(page.getByTestId("abort-button")).toBeVisible();
+  await expect(page.getByTestId("abort-button")).toHaveCount(0);
   await expect(f.pending).toContainText(waiting);
   await expect(f.input).toHaveValue(original);
   await page.screenshot({ path: info.outputPath("after-failed-abort.png"), fullPage: true });

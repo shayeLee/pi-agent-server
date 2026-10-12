@@ -8,8 +8,8 @@ for (const width of [1280, 390]) for (const theme of ["dark", "light"]) {
     await page.setViewportSize({ width, height: width === 390 ? 844 : 1000 });
     await page.goto(`/visual-fixtures/unified-tool-codeblock.html?theme=${theme}`);
     const originals = await page.evaluate(async () => {
-      const { partial, final, args } = await import("/visual-fixtures/unified-tool-codeblock.tsx");
-      return { partial, final, args: JSON.stringify(args, null, 2) };
+      const { partial, final } = await import("/visual-fixtures/unified-tool-codeblock.tsx");
+      return { partial, final };
     });
     const header = page.locator(".tool-call-header");
     await expect(header).toHaveAttribute("aria-expanded", "true");
@@ -22,24 +22,16 @@ for (const width of [1280, 390]) for (const theme of ["dark", "light"]) {
     expect(await output.locator('[data-language="bash"] pre').textContent()).toBe(originals.final);
     await expect(page.getByTestId("tool-call-card")).toHaveAttribute("data-done", "true");
     await expect(page.getByText("部分结果原始数据", { exact: true })).toHaveCount(0);
-    await page.getByRole("button", { name: "工具更多操作" }).click();
-    await page.getByRole("menuitem", { name: "查看原始数据" }).click();
-    const details = page.getByRole("dialog", { name: "原始数据 · bash" });
-    await expect(details).toBeVisible();
-    await expect(details.locator(".code-block")).toHaveAttribute("data-language", "json");
-    const source = details.getByLabel("代码原文");
-    await expect(source).toBeVisible();
-    const raw = (await source.textContent())!;
-    expect(JSON.parse(raw).args).toEqual(JSON.parse(originals.args));
-    expect(JSON.parse(raw).result).toBe(originals.final);
-    await details.getByRole("button", { name: "复制原始数据" }).click();
-    await expect(details.getByRole("status")).toHaveText("已复制");
-    expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(raw);
+    const resultBlock = output.locator('.code-block');
+    const source = resultBlock.getByLabel('代码原文');
+    await resultBlock.getByRole('button', { name: '复制代码' }).click();
+    await expect(resultBlock.getByRole('status')).toHaveText('已复制');
+    expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(originals.final);
     await page.screenshot({ path: `/tmp/unified-tool-codeblock/${theme}-${width}.png`, fullPage: true });
     await page.evaluate(() => Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: async () => { throw new Error("denied"); } } }));
-    await details.getByRole("button", { name: "复制原始数据" }).click();
+    await resultBlock.getByRole('button', { name: '复制代码' }).click();
     await expect(page.getByText("复制失败，请选择原文复制", { exact: true })).toHaveCount(1);
-    expect(await source.textContent()).toBe(raw);
+    expect(await source.textContent()).toBe(originals.final);
     for (const block of await page.locator(".code-block").all()) {
       const geometry = await block.evaluate(element => {
         const bounds = element.getBoundingClientRect();

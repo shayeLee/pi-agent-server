@@ -4,6 +4,7 @@ import type { ChatState, ModelInfo, Project, SessionRecord, UsageStats } from "p
 import { Timeline } from "./Timeline.js";
 import type { DraftSource } from "../draft-store.js";
 import { Composer } from "./Composer.js";
+import { ControlQueue, type ControlQueueProps } from "./ControlQueue.js";
 import { CompactionBanner, type CompactionState } from "./CompactionBanner.js";
 import { StatsBar } from "./StatsBar.js";
 import { ChatHeader } from "./ChatHeader.js";
@@ -22,6 +23,7 @@ export type ChatProps = {
   historyNotice?: string | null;
   streaming: boolean;
   queued: boolean;
+  primaryAwaitingStart?: boolean;
   loadError: string | null;
   models: ModelInfo[];
   thinkingLevels: string[];
@@ -37,7 +39,14 @@ export type ChatProps = {
   draftSource?: DraftSource;
   draftScope?: string;
   submission?: SubmissionState | null;
-  pendingControls?: Array<{ id: string; kind: "steer" | "followUp"; text: string; status: "submitting" | "submitted" | "unknown" | "failed" }>;
+  controlQueue?: { requestId: string | null; revision: number; items: ControlQueueProps["items"] } | null;
+  controlQueueLoading?: boolean;
+  controlQueueError?: string | null;
+  controlQueueOperations?: ControlQueueProps["operations"];
+  refreshControlQueue?: () => void;
+  deleteControl?: (id: string) => void;
+  promoteControl?: (id: string) => void;
+  pendingControls?: Array<{ id: string; kind: "steer" | "followUp"; text: string; status: "submitting" | "submitted" | "unknown" | "failed"; blocking?: boolean }>;
   onDraftText?: (text: string) => void;
   onDraftSettings?: (config: UnsentMessage["settings"]) => void;
   onAddFile?: (file: File) => Promise<void>;
@@ -45,12 +54,9 @@ export type ChatProps = {
   onRemoveFile?: (localId: string) => void;
   onRetrySubmit?: () => Promise<SubmitOutcome>;
   onConfirmCreation?: () => Promise<SubmitOutcome>;
-  onSteer: (text: string) => void;
-  onFollowUp: (text: string) => void;
-  onAbort: () => void;
-  onToggleDetails: () => void;
-  onSelectTab?: (tab: "chat" | "trace") => void;
-  traceActive?: boolean;
+  onFollowUp: (text: string) => void | Promise<boolean>;
+  onToggleTrace?: () => void;
+  traceOpen?: boolean;
   onConfigChange: (config: { modelProvider?: string; modelId?: string; thinkingLevel?: string }) => void;
 };
 
@@ -66,6 +72,7 @@ export function Chat({
   historyNotice,
   streaming,
   queued,
+  primaryAwaitingStart = false,
   loadError,
   models,
   thinkingLevels,
@@ -81,6 +88,13 @@ export function Chat({
   draftSource,
   draftScope,
   submission,
+  controlQueue,
+  controlQueueLoading,
+  controlQueueError,
+  controlQueueOperations,
+  refreshControlQueue,
+  deleteControl,
+  promoteControl,
   pendingControls,
   onDraftText,
   onDraftSettings,
@@ -89,21 +103,12 @@ export function Chat({
   onRemoveFile,
   onRetrySubmit,
   onConfirmCreation,
-  onSteer,
   onFollowUp,
-  onAbort,
-  onToggleDetails,
-  onSelectTab,
-  traceActive,
+  onToggleTrace,
+  traceOpen,
   onConfigChange,
 }: ChatProps) {
   const bodyRef = useRef<HTMLDivElement>(null);
-  const [localTraceActive, setLocalTraceActive] = useState(false);
-  const activeTraceTab = traceActive ?? localTraceActive;
-  const selectTab = (tab: "chat" | "trace") => {
-    if (onSelectTab) onSelectTab(tab);
-    else setLocalTraceActive(tab === "trace");
-  };
 
   // 48px accommodates fractional scroll metrics and small touch movements.
   // Intent lives outside React updates: content growth must not look like scrolling away.
@@ -156,6 +161,9 @@ export function Chat({
     return () => observer.disconnect();
   }, [session?.id]);
 
+  const controlsBlocked = Object.values(controlQueueOperations ?? {}).some(operation => operation.status === "pending" || operation.status === "unknown");
+  // Real resident items remain visible; an empty control read is not the primary request queue.
+  const showControlQueue = !!controlQueue?.items.length || !!controlQueueError;
   const hasMessages = timeline.length > 0;
   const placeholder = "描述任务…";
 
@@ -164,9 +172,8 @@ export function Chat({
       {session && (
         <ChatHeader
           session={session}
-          traceActive={activeTraceTab}
-          onToggleDetails={onToggleDetails}
-          onSelectTab={selectTab}
+          traceOpen={traceOpen ?? false}
+          onToggleTrace={() => onToggleTrace?.()}
         />
       )}
       <div className="chat-body" ref={bodyRef} data-testid="chat-body"
@@ -213,7 +220,7 @@ export function Chat({
             )}
             {queued && (
               <div className="chat-phase-banner queued" data-testid="phase-queued">
-                排队中…
+                消息正在排队，等待运行…
               </div>
             )}
             {!hasMessages ? (
@@ -236,6 +243,12 @@ export function Chat({
       {(session || projects !== null) && (
         <div className="chat-footer">
           <CompactionBanner key={session?.id ?? "no-session"} compaction={compaction} connected={connected} />
+          {session && showControlQueue && deleteControl && promoteControl && <ControlQueue items={controlQueue?.items ?? []}
+            loading={controlQueueLoading} error={controlQueueError} operations={controlQueueOperations}
+            onRefresh={refreshControlQueue} onDelete={deleteControl} onPromote={promoteControl}
+            disabled={!canWrite || historyLoading || primaryAwaitingStart || queued || controlsBlocked ||
+              pendingControls?.some(item => item.blocking !== false && (item.status === "submitting" || item.status === "unknown")) ||
+              submission?.phase === "creating" || submission?.phase === "configuring" || submission?.phase === "submitting" || submission?.phase === "unknown"} />}
           <Composer
             session={session}
             projects={projects}
@@ -249,7 +262,9 @@ export function Chat({
             defaultThinkingLevel={defaultThinkingLevel}
             streaming={streaming}
             queued={queued}
+            primaryAwaitingStart={primaryAwaitingStart}
             historyLoading={historyLoading}
+            controlsBlocked={controlsBlocked}
             placeholder={placeholder}
             onSend={(text) => { goToLatest(); return onSend(text); }}
             draft={draft}
@@ -264,9 +279,7 @@ export function Chat({
             onRemoveFile={onRemoveFile}
             onRetrySubmit={onRetrySubmit}
             onConfirmCreation={onConfirmCreation}
-            onSteer={onSteer}
             onFollowUp={onFollowUp}
-            onAbort={onAbort}
             onConfigChange={onConfigChange}
           />
           {session && hasMessages && <StatsBar stats={stats} connected={connected} timeline={timeline} pending={streaming || queued} modelOutput={modelOutput} activeTools={activeTools} />}

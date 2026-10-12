@@ -42,7 +42,10 @@ export interface AgentAdapter {
   subscribeRequestError?(listener: (error: Error, requestId: string) => void): () => void;
 
   /** 流式生成中追加指令（POST /v1/sessions/:id/follow-ups）。 */
-  followUp(text: string): Promise<void>;
+  followUp(text: string, input?: import("../shared/steering.js").SteeringInput): Promise<void>;
+  getControlQueueItems?(): import("../shared/control-queue.js").ControlQueueItem[];
+  subscribeControlQueue?(listener: () => void): () => void;
+  mutateControlQueue?(identity: import("../shared/control-queue.js").ControlIdentity, operation: "delete" | "promote"): boolean;
 
   /** 中止当前生成或工具调用（POST /v1/sessions/:id/abort）。 */
   abort(): Promise<void>;
@@ -70,6 +73,10 @@ export interface AgentAdapter {
 
   /** 导出会话消息列表或可序列化数据（GET /v1/sessions/:id/export）。 */
   exportSession(): Promise<unknown>;
+
+  /** Read the existing SDK's public effective prompt; never creates a session. */
+  getEffectiveSystemPrompt?(): string | null;
+  getSessionSteps?(sessionId: string): import("../shared/session-steps.js").SessionStepsSnapshot;
 
   /** 读取最近一条 assistant 消息的 usage（用于 turn 结束后推送 stats）。 */
   getLastUsage(): Promise<UsageInfo | null>;

@@ -5,7 +5,6 @@ import type { ModelInfo, Project, SessionRecord } from "pi-agent-server/client";
 import { EMPTY_MESSAGE, type SubmissionState, type SubmitOutcome, type UnsentMessage } from "../attachment-state.js";
 import type { DraftSource } from "../draft-store.js";
 import { ModelThinkingPicker } from "./ModelThinkingPicker.js";
-import { SelectMenu } from "./SelectMenu.js";
 
 export type ComposerProps = {
   session: SessionRecord | null;
@@ -20,14 +19,16 @@ export type ComposerProps = {
   defaultThinkingLevel: string;
   streaming: boolean;
   queued: boolean;
+  primaryAwaitingStart?: boolean;
   historyLoading?: boolean;
+  controlsBlocked?: boolean;
   placeholder: string;
   onSend: (text: string) => void | Promise<boolean>;
   draft?: UnsentMessage;
   draftSource?: DraftSource;
   draftScope?: string;
   submission?: SubmissionState | null;
-  pendingControls?: Array<{ id: string; kind: "steer" | "followUp"; text: string; status: "submitting" | "submitted" | "unknown" | "failed" }>;
+  pendingControls?: Array<{ id: string; kind: "steer" | "followUp"; text: string; status: "submitting" | "submitted" | "unknown" | "failed"; blocking?: boolean }>;
   onDraftText?: (text: string) => void;
   onDraftSettings?: (config: UnsentMessage["settings"]) => void;
   onAddFile?: (file: File) => Promise<void>;
@@ -35,18 +36,16 @@ export type ComposerProps = {
   onRemoveFile?: (localId: string) => void;
   onRetrySubmit?: () => Promise<SubmitOutcome>;
   onConfirmCreation?: () => Promise<SubmitOutcome>;
-  onSteer: (text: string) => void;
-  onFollowUp: (text: string) => void;
-  onAbort: () => void;
+  onFollowUp: (text: string) => void | Promise<boolean>;
   onConfigChange: (config: { modelProvider?: string; modelId?: string; thinkingLevel?: string }) => void;
 };
 
 export function Composer({
-  session, projects, activeProjectId, onSelectProject, canCreateSession, canWrite = true,
+  session, canCreateSession, canWrite = true,
   models, thinkingLevels, defaultModel, defaultThinkingLevel,
-  streaming, queued, historyLoading = false, placeholder, onSend,
+  streaming, queued, primaryAwaitingStart = false, historyLoading = false, controlsBlocked = false, placeholder, onSend,
   draft: suppliedDraft, draftSource, draftScope = "", submission, pendingControls, onDraftText, onDraftSettings, onAddFile, onRetryFile, onRemoveFile, onRetrySubmit, onConfirmCreation,
-  onSteer, onFollowUp, onAbort, onConfigChange,
+  onFollowUp, onConfigChange,
 }: ComposerProps) {
   const subscribeDraft = useCallback((listener: () => void) =>
     draftSource?.subscribe(draftScope, listener) ?? (() => {}), [draftSource, draftScope]);
@@ -54,6 +53,8 @@ export function Composer({
     [draftSource, draftScope, suppliedDraft]);
   const snapshot = useSyncExternalStore(subscribeDraft, getDraft, getDraft);
   const draft = draftSource || suppliedDraft ? snapshot : undefined;
+  const [dispatching, setDispatching] = useState(false);
+  useEffect(() => { setLocalError(null); }, [session?.id, draftScope]);
   const [localText, setLocalText] = useState("");
   const [localError, setLocalError] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -62,26 +63,42 @@ export function Composer({
   const text = draft?.text ?? localText;
   const attachments = draft?.attachments ?? [];
   const submitting = submission?.phase === "creating" || submission?.phase === "configuring" || submission?.phase === "submitting";
+  const primaryPending = primaryAwaitingStart || submitting || submission?.phase === "unknown";
+  const runtimeControls = streaming && !queued && !primaryPending;
   const blockedByAttachment = attachments.some((item) => item.status !== "ready");
   const hasContent = Boolean(text.trim()) || attachments.some((item) => item.status === "ready");
-  const canSubmit = canWrite && !historyLoading && !submitting && submission?.phase !== "unknown" && !blockedByAttachment && hasContent &&
+  const controlPending = pendingControls?.some(item => item.blocking !== false && (item.status === "submitting" || item.status === "unknown")) ?? false;
+  const attachmentNotice = runtimeControls && attachments.length > 0
+    ? attachments.some(item => item.kind !== "image") ? "追加仅支持文字和图片，不支持文件附件；输入已保留。" : null
+    : null;
+  const canSubmit = canWrite && !historyLoading && !primaryPending && !dispatching && !controlPending && !controlsBlocked && !queued && !attachmentNotice && submission?.phase !== "unknown" && !blockedByAttachment && hasContent &&
     (session !== null || canCreateSession);
-  const projectOptions = (projects ?? []).map((project) => ({ value: project.id, label: project.name }));
-  const projectSelectionAvailable = projects !== null && activeProjectId !== null && projects.some((project) => project.id === activeProjectId);
   const setText = (value: string) => { if (onDraftText) onDraftText(value); else setLocalText(value); };
 
   useEffect(() => {
     const el = textareaRef.current;
     if (!el) return;
+    // Measure content, not the idle space allocated by the flex editor. Otherwise
+    // that space becomes a fixed textarea height after content changes.
+    el.style.flexGrow = "0";
     el.style.height = "auto";
-    el.style.height = `${Math.min(el.scrollHeight, 220)}px`;
+    const contentHeight = Math.min(el.scrollHeight, 220);
+    el.style.height = `${contentHeight}px`;
+    el.style.flexGrow = "";
   }, [text]);
 
   async function handleSubmit() {
-    if (!canSubmit || submittingRef.current || streaming || queued) return;
+    if (!canSubmit || submittingRef.current) return;
     submittingRef.current = true;
+    setDispatching(true);
     setLocalError(null);
     try {
+      if (runtimeControls) {
+        if (!session) return;
+        await onFollowUp(text.trim());
+        // Control owners clear exact snapshots only after the appropriate acknowledgement.
+        return;
+      }
       const result = onSend(text.trim());
       // Standalone Composer consumers may have a synchronous callback; the controlled
       // editor is cleared only by its owner after an acknowledged submission.
@@ -92,22 +109,14 @@ export function Composer({
       setLocalError(error instanceof Error ? error.message : "发送失败");
     } finally {
       submittingRef.current = false;
+      setDispatching(false);
     }
-  }
-
-  function submitControl(kind: "steer" | "followUp") {
-    const value = text.trim();
-    if (!canWrite || !session || !streaming || queued || !hasContent || submitting || blockedByAttachment) return;
-    if (kind === "steer") onSteer(value);
-    else onFollowUp(value);
-    if (kind === "followUp") setText("");
   }
 
   function handleKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
     if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing || event.keyCode === 229) return;
     event.preventDefault();
-    if (streaming && !queued) submitControl("steer");
-    else void handleSubmit();
+    void handleSubmit();
   }
 
   function handlePaste(event: React.ClipboardEvent<HTMLTextAreaElement>) {
@@ -123,27 +132,29 @@ export function Composer({
   }
 
   return (
+    <div className="composer-stack">
     <div className="composer" data-testid="composer">
-      {!session && (
-        <div className="composer-start-settings" data-testid="composer-start-settings">
-          <SelectMenu className="composer-project-picker" options={projectOptions} value={activeProjectId ?? ""}
-            onChange={onSelectProject} ariaLabel="选择项目" disabled={!projectSelectionAvailable} testId="composer-project-select" />
-          <ModelThinkingPicker models={models} thinkingLevels={thinkingLevels} defaultModel={defaultModel}
-            defaultThinkingLevel={defaultThinkingLevel}
-            modelProvider={draft?.settings.modelProvider ?? null} modelId={draft?.settings.modelId ?? null}
-            thinkingLevel={draft?.settings.thinkingLevel ?? null} onConfigChange={(config) => onDraftSettings?.(config)} />
-        </div>
-      )}
+      {attachmentNotice && <div className="composer-submit-notice" role="status">{attachmentNotice}</div>}
       {attachments.length > 0 && (
         <div className="composer-attachments" data-testid="composer-attachments" aria-live="polite">
           {attachments.map((item) => (
             <div className="composer-attachment" data-testid="composer-attachment" data-state={item.status} key={item.localId}>
-              {item.image && <img src={item.image.preview} alt="" className="composer-attachment-preview" />}
+              {item.image ? (
+                <img src={item.image.preview} alt="" className="composer-attachment-preview" />
+              ) : (
+                <Icon name="file" size={13} className="composer-attachment-icon" />
+              )}
               <span className="composer-attachment-details">
                 <strong title={item.name}>{item.name}</strong>
-                <small>{(item.size / 1024).toFixed(0)} KiB · {item.mediaType || item.kind} · {
-                  item.status === "ready" ? "就绪" : item.status === "uploading" || item.status === "processing" ? "处理中" :
-                    item.status === "interrupted" ? "上传中断" : "失败"}</small>
+                <small>{(item.size / 1024).toFixed(0)} KiB</small>
+                {item.status === "ready" ? (
+                  <span className="sr-only">就绪</span>
+                ) : (
+                  <small className="composer-attachment-status">
+                    · {item.status === "uploading" || item.status === "processing" ? "处理中" :
+                      item.status === "interrupted" ? "上传中断" : "失败"}
+                  </small>
+                )}
                 {item.error && <small className="composer-attachment-error">{item.error}</small>}
               </span>
               {item.status === "error" && item.file && onRetryFile && (
@@ -153,7 +164,7 @@ export function Composer({
                 <button type="button" onClick={() => { onRemoveFile?.(item.localId); filePickerRef.current?.click(); }}
                   aria-label={`重新选择 ${item.name}`}>重新选择</button>
               )}
-              <button type="button" onClick={() => onRemoveFile?.(item.localId)} aria-label={`移除附件 ${item.name}`}><Icon name="close" /></button>
+              <button type="button" className="composer-attachment-remove" onClick={() => onRemoveFile?.(item.localId)} aria-label={`移除附件 ${item.name}`} title="移除附件"><Icon name="close" size={11} /></button>
             </div>
           ))}
         </div>
@@ -161,7 +172,7 @@ export function Composer({
       {pendingControls && pendingControls.length > 0 && (
         <div className="composer-pending-controls" data-testid="composer-pending-controls" aria-live="polite">
           {pendingControls.map((item) => <div className="composer-pending-item" key={item.id}>
-            <span>{item.kind === "steer" ? "待插话" : "待追加"} · {item.text}</span>
+            <span>{item.kind === "steer" ? "引导提交" : "追加提交"} · {item.text}</span>
             <small>{item.status === "submitting" ? "提交中" : item.status === "submitted" ? (item.kind === "steer" ? "HTTP 已接收，等待消费确认" : "已提交，等待确认") :
               item.status === "unknown" ? "状态未知" : "提交失败"}</small>
           </div>)}
@@ -194,32 +205,21 @@ export function Composer({
           </button>
         </div>
         <div className="composer-right">
-          {session && (streaming || queued) && (
-            <>
-              <button type="button" className="composer-control" onClick={() => submitControl("steer")}
-                disabled={!canWrite || !streaming || queued || !text.trim()} aria-label="插话">插话</button>
-              <button type="button" className="composer-control" onClick={() => submitControl("followUp")}
-                disabled={!canWrite || !streaming || queued || !text.trim()}
-                title={queued ? "排队中追加尚需服务端支持" : "本轮完成后追加"} aria-label="追加">追加</button>
-            </>
-          )}
-          {streaming ? (
-            <button type="button" className="composer-stop" data-testid="abort-button" aria-label="中止" title="中止" onClick={onAbort}>
-              <Icon name="stop" />
-            </button>
-          ) : (
-            <>
-              {session && <ModelThinkingPicker models={models} thinkingLevels={thinkingLevels} defaultModel={defaultModel}
-                defaultThinkingLevel={defaultThinkingLevel} modelProvider={session.modelProvider} modelId={session.modelId}
-                thinkingLevel={session.thinkingLevel} onConfigChange={onConfigChange} />}
-              <button type="button" className="send-button" data-testid="send-button" onClick={() => void handleSubmit()}
-                disabled={!canSubmit || queued} aria-label="发送">
-                <Icon name="send" />
-              </button>
-            </>
-          )}
+          <ModelThinkingPicker models={models} thinkingLevels={thinkingLevels} defaultModel={defaultModel}
+            defaultThinkingLevel={defaultThinkingLevel}
+            modelProvider={session ? session.modelProvider : draft?.settings.modelProvider ?? null}
+            modelId={session ? session.modelId : draft?.settings.modelId ?? null}
+            thinkingLevel={session ? session.thinkingLevel : draft?.settings.thinkingLevel ?? null}
+            onConfigChange={session ? onConfigChange : (config) => onDraftSettings?.(config)} />
+          <button type="button" className="send-button" data-testid="send-button" onClick={() => void handleSubmit()}
+            disabled={!canSubmit} aria-label="发送" title={runtimeControls ? "追加到队列" : "发送"}>
+            <span className="send-button-visual">
+              <Icon name="send" />
+            </span>
+          </button>
         </div>
       </div>
+    </div>
     </div>
   );
 }

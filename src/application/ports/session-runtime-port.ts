@@ -71,7 +71,9 @@ export interface SessionRuntimePort {
   /** 流式中插入指令。 */
   steer(text: string, input?: import("../../shared/steering.js").SteeringInput, actorKey?: string): Promise<ControlDecision>;
   /** 流式中追加指令。 */
-  followUp(text: string): Promise<ControlDecision>;
+  followUp(text: string, input?: import("../../shared/steering.js").SteeringInput, actorKey?: string): Promise<ControlDecision>;
+  getControlQueue(): import("../../shared/control-queue.js").ControlQueueSnapshot;
+  mutateControlQueue(identity: import("../../shared/control-queue.js").ControlIdentity, operation: "delete" | "promote", actorKey?: string): import("../../shared/control-queue.js").ControlQueueMutation;
   /** 中止当前任务；提供 expectedRequestId 时仅中止匹配的当前任务。 */
   abort(expectedRequestId?: string): Promise<ControlDecision>;
   /**
@@ -84,6 +86,9 @@ export interface SessionRuntimePort {
   runTurn(input: RunTurnInput): Promise<SessionTurnResult>;
   /** 导出会话数据（快照读取）。 */
   exportSession(): Promise<unknown>;
+  /** Synchronous read of an already-created SDK, not a model probe. */
+  getEffectiveSystemPrompt?(): string | null;
+  getSessionSteps?(): import("../../shared/session-steps.js").SessionStepsSnapshot | null;
   /** 切换模型。 */
   setModel(provider: string, modelId: string): Promise<void>;
   /** 切换思考级别。 */

@@ -3,6 +3,7 @@ import type { ConversationDescriptor, ConversationReadContext, ConversationStora
 import type { NativeSessionIndexPort } from "../application/native-session-service.js";
 import { NativeSessionSource } from "./native-session-source.js";
 import { NativeSessionFd, nativeEntries } from "./native-session-fd.js";
+import { projectColdSessionSteps } from "./session-steps-projector.js";
 import { projectExportSnapshot } from "./session-export.js";
 import { projectExecutionSnapshot } from "./execution-metrics.js";
 import { firstUserPrompt } from "../client/session-title.js";
@@ -78,6 +79,17 @@ export class NativePiConversationStorage implements ConversationStorage {
         usageSnapshot: { execution: projectExecutionSnapshot(manager.getEntries()) } };
       fd.check();
       return result;
+    } finally { fd.close(); }
+  }
+
+  async readSteps(conversation: ConversationDescriptor, context: ConversationReadContext) {
+    const binding = await this.binding(conversation, context);
+    const fd = new NativeSessionFd(this.source, binding, false);
+    try {
+      const manager = SessionManager.inMemory(binding.cwd, undefined, nativeEntries(fd));
+      const branch = manager.getBranch();
+      fd.check();
+      return projectColdSessionSteps(context.sessionId, branch);
     } finally { fd.close(); }
   }
 

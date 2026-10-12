@@ -14,17 +14,19 @@ export function isFileAcknowledgement(call: ToolCall): boolean {
     if (!Array.isArray(content) || content.length !== 1) return false;
     const block = record(content[0]);
     if (block.type !== "text" || Object.keys(block).some(key => key !== "type" && key !== "text")) return false;
-    // SDK edit diff metadata duplicates the argument diff; all other metadata is meaningful/unknown.
+    // SDK edit diff/patch metadata stays in the result; the argument diff stays visible.
+    // Only the known SDK shape is receipt noise; unknown metadata must keep the result visible.
     if (result.details !== undefined) {
       const details = record(result.details);
       if (call.toolName !== "edit" || Object.keys(details).length === 0
-        || Object.keys(details).some(key => key !== "diff" && key !== "firstChangedLine")
+        || Object.keys(details).some(key => key !== "diff" && key !== "patch" && key !== "firstChangedLine")
         || typeof details.diff !== "string"
+        || (details.patch !== undefined && typeof details.patch !== "string")
         || (details.firstChangedLine !== undefined && typeof details.firstChangedLine !== "number")) return false;
     }
     text = block.text;
   }
-  if (typeof text !== "string") return false;
+  if (typeof text !== "string" || /[\r\n]/.test(text)) return false;
   if (call.toolName === "write") return text === `Successfully wrote to ${args.path}`
     || new RegExp("^Successfully wrote [0-9]+ bytes to " + escapeRegex(args.path) + "$", "u").test(text);
   return text === `Successfully replaced text in ${args.path}.`

@@ -170,11 +170,11 @@ const STEERING_BODY_SCHEMA = {
   anyOf: [{ required: ["controlId", "acknowledgementId", "requestId"] },
     { not: { anyOf: [{ required: ["controlId"] }, { required: ["acknowledgementId"] }, { required: ["requestId"] }, { required: ["images"] }] } }],
 } as const;
-const TEXT_BODY_SCHEMA = {
+const CONTROL_MUTATION_BODY_SCHEMA = {
   type: "object",
-  properties: { text: { type: "string" } },
-  required: ["text"],
-  additionalProperties: false,
+  properties: { requestId: { type: "string", minLength: 1, maxLength: 128 },
+    acknowledgementId: STEERING_BODY_SCHEMA.properties.acknowledgementId },
+  required: ["requestId", "acknowledgementId"], additionalProperties: false,
 } as const;
 /**
  * Abort body is optional. JSON Schema cannot express an absent (`undefined`) body alongside a
@@ -644,6 +644,14 @@ export function buildApp(deps: ServerDeps): FastifyInstance {
       const exported = await sessions.exportSession(ownerKeyOf(request), request.params.id);
       return exported ? reply.code(200).send(exported) : NOT_FOUND(reply);
     });
+    api.get<{ Params: { id: string } }>("/sessions/:id/steps", { ...requirePermission("sessions:export") }, async (request, reply) => {
+      const snapshot = await sessions.getSessionSteps(ownerKeyOf(request), request.params.id);
+      return snapshot ? reply.code(200).send(snapshot) : NOT_FOUND(reply);
+    });
+    api.get<{ Params: { id: string } }>("/sessions/:id/system-prompt", { ...requirePermission("sessions:export") }, async (request, reply) => {
+      const snapshot = await sessions.getSystemPromptSnapshot(ownerKeyOf(request), request.params.id);
+      return snapshot ? reply.code(200).send(snapshot) : NOT_FOUND(reply);
+    });
     // A session-owned, read-only project preview. Its root is resolved only from the owned
     // session's project record; there is deliberately no root/cwd parameter in this public API.
     api.get<{ Params: { id: string }; Querystring: { path?: unknown; line?: unknown } }>(
@@ -662,13 +670,32 @@ export function buildApp(deps: ServerDeps): FastifyInstance {
         }
       },
     );
+    api.get<{ Params: { id: string } }>("/sessions/:id/control-queue",
+      { ...requirePermission("sessions:export") }, async (request, reply) => {
+        const snapshot = await sessions.getControlQueue(ownerKeyOf(request), request.params.id);
+        return snapshot ? reply.code(200).send(snapshot) : NOT_FOUND(reply);
+      });
+    for (const operation of ["delete", "promote"] as const) {
+      api.route<{ Params: { id: string; controlId: string }; Body: { requestId: string; acknowledgementId: string } }>({
+        method: operation === "delete" ? "DELETE" : "POST",
+        url: `/sessions/:id/control-queue/:controlId${operation === "promote" ? "/promote" : ""}`,
+        schema: { body: CONTROL_MUTATION_BODY_SCHEMA, params: { type: "object", required: ["id", "controlId"],
+          properties: { id: { type: "string" }, controlId: { type: "string", minLength: 1, maxLength: 128 } } } },
+        ...requirePermission("sessions:control"),
+        handler: async (request, reply) => {
+          const result = await sessions.mutateControlQueue(ownerKeyOf(request), request.params.id,
+            { controlId: request.params.controlId, ...request.body }, operation);
+          return result === "not-found" ? NOT_FOUND(reply) : result.kind === "ok" ? reply.code(200).send(result.snapshot) : CONFLICT(reply);
+        },
+      });
+    }
     for (const [path, operation] of [
       ["/sessions/:id/steer", "steer"],
       ["/sessions/:id/follow-ups", "follow-up"],
     ] as const) {
       api.post<{ Params: { id: string }; Body: { text: string } & Partial<import("../shared/steering.js").SteeringInput> }>(
         path,
-        { schema: { body: operation === "steer" ? STEERING_BODY_SCHEMA : TEXT_BODY_SCHEMA }, ...requirePermission("sessions:control") },
+        { schema: { body: STEERING_BODY_SCHEMA }, ...requirePermission("sessions:control") },
         async (request, reply) => {
           const normalized = normalizeImageInputs(request.body.images);
           if (!normalized.ok) return reply.code(400).send({ statusCode: 400, error: "Bad Request", message: IMAGE_INPUT_REJECTION_MESSAGES[normalized.reason] });

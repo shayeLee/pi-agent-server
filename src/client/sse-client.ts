@@ -87,7 +87,10 @@ export async function consumeSse(options: ConsumeSseOptions): Promise<ConsumeSse
     if (isAborted()) return;
 
     const epoch = res.headers.get("x-server-epoch");
-    if (epoch) options.onEpoch?.(epoch);
+    if (epoch) {
+      if (options.clientEpoch !== undefined && options.clientEpoch !== epoch) lastEventId = 0;
+      options.onEpoch?.(epoch);
+    }
     if (isAborted()) return;
 
     for (;;) {
@@ -117,6 +120,8 @@ export type SseConnectionOptions = {
   /** Server startup epoch, called when response headers include it. */
   onEpoch?: (epoch: string) => void;
   lastEventId?: number;
+  /** Epoch associated with lastEventId, including a previous connection's cursor. */
+  initialEpoch?: string;
   /** Called as soon as a stream ends or fails, before reconnect waiting. */
   onDisconnect?: () => void;
   /** Reconnect delay in milliseconds; defaults to 1000. */
@@ -130,7 +135,7 @@ export function createSseConnection(options: SseConnectionOptions): { close: () 
   const controller = new AbortController();
   let closed = false;
   let lastEventId = options.lastEventId ?? 0;
-  let lastEpoch: string | null = null;
+  let lastEpoch: string | null = options.initialEpoch ?? null;
 
   const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 

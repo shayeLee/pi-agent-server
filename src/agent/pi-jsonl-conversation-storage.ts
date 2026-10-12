@@ -14,6 +14,7 @@ import {
   type SessionHeader,
 } from "@earendil-works/pi-coding-agent";
 import { projectExecutionSnapshot } from "./execution-metrics.js";
+import { projectColdSessionSteps } from "./session-steps-projector.js";
 import { projectExportSnapshot } from "./session-export.js";
 import { readSessionCwdIdentity, type SessionCwdIdentity } from "./session-cwd-identity.js";
 import type {
@@ -206,6 +207,19 @@ export async function readPiJsonlExport(conversationRef: string | null): Promise
   return messages;
 }
 
+export async function readPiJsonlSteps(file: string | null, sessionId: string): Promise<import("../shared/session-steps.js").SessionStepsSnapshot> {
+  if (file === null) return projectColdSessionSteps(sessionId, []);
+  const before = fileFingerprint(file);
+  const content = readFileSync(file, "utf8");
+  assertCurrentPiJsonl(content);
+  const parsed = content.trim() ? parseSessionEntries(content) as SessionEntry[] : [];
+  const header = parsed[0] as SessionHeader | undefined;
+  const manager = SessionManager.inMemory(header?.cwd ?? process.cwd(), undefined, parsed);
+  const branch = manager.getBranch();
+  if (!sameFingerprint(before, fileFingerprint(file))) throw new Error("session history changed during read");
+  return projectColdSessionSteps(sessionId, branch);
+}
+
 export const FIRST_PROMPT_MAX_BYTES = 256 * 1024;
 export const FIRST_PROMPT_MAX_LINE_BYTES = 64 * 1024;
 export const FIRST_PROMPT_MAX_LINES = 1024;
@@ -363,6 +377,12 @@ export class PiJsonlConversationStorage implements ConversationStorage {
     if (this.isUnified(conversation.conversationRef)) return this.unifiedStorage!.readExport(await this.unifiedConversation(conversation, context), context);
     this.assertReadReference(conversation, context);
     return readPiJsonlExport(conversation.conversationRef);
+  }
+
+  async readSteps(conversation: ConversationDescriptor, context: ConversationReadContext) {
+    if (this.isUnified(conversation.conversationRef)) return this.unifiedStorage!.readSteps(await this.unifiedConversation(conversation, context), context);
+    this.assertReadReference(conversation, context);
+    return readPiJsonlSteps(conversation.conversationRef, context.sessionId);
   }
 
   private assertReadReference(conversation: ConversationDescriptor, context: ConversationReadContext): void {

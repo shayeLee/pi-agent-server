@@ -185,12 +185,32 @@ export class ApiClient {
     return this.request("POST", `/v1/sessions/${sessionId}/steer`, { text, ...input }, "void");
   }
 
-  followUp(sessionId: string, text: string): Promise<void> {
-    return this.request("POST", `/v1/sessions/${sessionId}/follow-ups`, { text });
+  followUp(sessionId: string, text: string, input?: import("../shared/steering.js").SteeringInput): Promise<void> {
+    return this.request("POST", `/v1/sessions/${sessionId}/follow-ups`, { text, ...input }, "void");
+  }
+
+  getControlQueue(sessionId: string): Promise<import("../shared/control-queue.js").ControlQueueSnapshot> {
+    return this.request("GET", `/v1/sessions/${sessionId}/control-queue`);
+  }
+
+  deleteControl(sessionId: string, controlId: string, identity: { requestId: string; acknowledgementId: string }): Promise<import("../shared/control-queue.js").ControlQueueSnapshot> {
+    return this.request("DELETE", `/v1/sessions/${sessionId}/control-queue/${encodeURIComponent(controlId)}`, identity);
+  }
+
+  promoteControl(sessionId: string, controlId: string, identity: { requestId: string; acknowledgementId: string }): Promise<import("../shared/control-queue.js").ControlQueueSnapshot> {
+    return this.request("POST", `/v1/sessions/${sessionId}/control-queue/${encodeURIComponent(controlId)}/promote`, identity);
   }
 
   abort(sessionId: string): Promise<void> {
     return this.request("POST", `/v1/sessions/${sessionId}/abort`);
+  }
+
+  getSystemPrompt(id: string): Promise<import("../shared/system-prompt.js").SessionSystemPrompt> {
+    return this.request("GET", `/v1/sessions/${encodeURIComponent(id)}/system-prompt`);
+  }
+
+  getSessionSteps(id: string): Promise<import("../shared/session-steps.js").SessionStepsSnapshot> {
+    return this.request("GET", `/v1/sessions/${encodeURIComponent(id)}/steps`);
   }
 
   exportSession(id: string): Promise<Export> {

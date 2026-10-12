@@ -17,6 +17,30 @@ describe("E2E mapping", () => {
     expect(findGroup(groups, "general").specs).not.toContain("rich-app.spec.ts");
     expect(findGroup(groups, "general").specs).not.toContain("start-state.spec.ts");
   });
+  it("routes isolated UI fixtures to their dedicated frontend-only configurations", async () => {
+    const groups = buildGroups(discoverSpecs(resolve(dirname(fileURLToPath(import.meta.url)), "../web/e2e")));
+    for (const name of ["workspace", "ui-foundation", "control-queue", "steps"]) {
+      const specs = name === "workspace" ? ["workspace.spec.ts", "session-search-align.spec.ts", "theme-menu.spec.ts", "composer-geometry.spec.ts", "focus-appearance.spec.ts", "typography.spec.ts"] : name === "steps" ? ["steps.spec.ts", "inspector-app.spec.ts"] : [`${name}.spec.ts`];
+      expect(findGroup(groups, name)).toEqual({ name, config: `playwright.${name}.config.ts`, specs });
+      for (const spec of specs) expect(findGroup(groups, "general").specs).not.toContain(spec);
+      try {
+        vi.stubEnv("PI_E2E_GROUP", name);
+        vi.stubEnv("PI_E2E_GROUP_OUTPUT", "/tmp/e2e-config-unit");
+        vi.stubEnv("PI_E2E_DISCOVERY_ALL", "");
+        vi.resetModules();
+        const { default: config } = await import("../web/playwright.e2e-group.config.js");
+        const servers = Array.isArray(config.webServer) ? config.webServer : [config.webServer];
+        expect(servers).toHaveLength(1);
+        expect(servers[0]?.command).toContain("VITE_API_TARGET=http://127.0.0.1:1 ");
+        expect(servers[0]?.reuseExistingServer).toBe(false);
+        const port = name === "control-queue" ? 60174 : name === "steps" ? 60186 : 5190;
+        expect(config.use?.baseURL).toBe(`http://127.0.0.1:${port}`);
+        expect(servers[0]?.url).toBe(config.use?.baseURL);
+        expect(servers[0]?.command).toContain(`--port ${port}`);
+        expect(config.testMatch).toEqual(specs.map(spec => specMatch(resolve(dirname(fileURLToPath(import.meta.url)), "../web/e2e"), spec)));
+      } finally { vi.unstubAllEnvs(); vi.resetModules(); }
+    }
+  });
   it("automatically includes new ordinary specs in general", () => {
     const groups = buildGroups(["ordinary.spec.ts", "special.spec.ts", "new.spec.ts"], [
       { name: "special", config: "special.config.ts", specs: ["special.spec.ts"] },

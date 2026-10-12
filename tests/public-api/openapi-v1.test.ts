@@ -245,8 +245,8 @@ describe("public host API v1 contract", () => {
     }
     expect(Object.keys(document.paths)).not.toContain("/v1/capabilities");
     expect(JSON.stringify(document)).not.toContain("/v1/capabilities");
-    expect(SSE_EVENT_TYPES).toHaveLength(17);
-    expect(document.components.schemas.SseEvent!.oneOf).toHaveLength(17);
+    expect(SSE_EVENT_TYPES).toHaveLength(18);
+    expect(document.components.schemas.SseEvent!.oneOf).toHaveLength(18);
     const discriminants = (document.components.schemas.SseEvent!.oneOf as Record<string, any>[]).map(schema => {
       const resolved = schema.$ref ? document.components.schemas[schema.$ref.split("/").at(-1)!]! : schema;
       return (resolved.properties as Record<string, any>).type.const;
@@ -271,7 +271,7 @@ describe("public host API v1 contract", () => {
     try {
       await app.ready();
       for (const [path, method, permission] of PUBLIC_API_OPERATIONS) {
-        const fastifyPath = path.replaceAll("{id}", ":id");
+        const fastifyPath = path.replaceAll("{id}", ":id").replaceAll("{controlId}", ":controlId");
         expect(app.hasRoute({ method: method.toUpperCase(), url: fastifyPath })).toBe(true);
         const documented = document.paths[path]![method]!;
         expect(documented["x-pi-rbac"]).toEqual({ permission, roles: ROUTE_PERMISSIONS[permission] });
@@ -368,10 +368,12 @@ describe("public host API v1 contract", () => {
     const ajvBodyOperations = bodyOperations.filter(([label]) =>
       label !== "POST /v1/sessions/{id}/abort" && label !== "POST /v1/files");
     expect(ajvBodyOperations.map(([label]) => label).sort()).toEqual([
+      "DELETE /v1/sessions/{id}/control-queue/{controlId}",
       "PATCH /v1/sessions/{id}",
       "PATCH /v1/sessions/{id}/config",
       "POST /v1/projects",
       "POST /v1/sessions",
+      "POST /v1/sessions/{id}/control-queue/{controlId}/promote",
       "POST /v1/sessions/{id}/follow-ups",
       "POST /v1/sessions/{id}/messages",
       "POST /v1/sessions/{id}/steer",

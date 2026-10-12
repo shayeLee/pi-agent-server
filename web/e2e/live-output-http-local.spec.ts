@@ -83,7 +83,9 @@ for (const { theme, width } of [{ theme: "light", width: 1280 }, { theme: "dark"
     await page.screenshot({ path: `/tmp/stats-single-line/${theme}-${width}-final.png` });
     await page.getByTestId("composer-input").fill("abort fixture"); await page.getByTestId("composer-input").press("Enter");
     await expect.poll(() => started).toBe(2); delta("text_delta", "before abort"); clock += 500; delta("text_delta", "after delay");
-    await expect(page.getByTestId("stat-live-speed")).toBeVisible(); await page.getByTestId("abort-button").click();
+    await expect(page.getByTestId("stat-live-speed")).toBeVisible();
+    await expect(page.getByTestId('abort-button')).toHaveCount(0);
+    await page.evaluate(async () => { await fetch('/v1/sessions/live-model/abort', {method:'POST'}); });
     await expect(page.getByTestId("stat-live-speed")).toHaveCount(0);
     await select("other-model"); await expect(page.getByTestId("stat-live")).toHaveCount(0);
     await select("live-model"); await expect(page.getByTestId("stat-live-speed")).toHaveCount(0);

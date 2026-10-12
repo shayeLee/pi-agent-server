@@ -1,5 +1,6 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
+import tailwindcss from "@tailwindcss/vite";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import { dirname } from "node:path";
@@ -9,7 +10,7 @@ import { dirname } from "node:path";
 const lowlightRequire = createRequire(createRequire(import.meta.url).resolve("lowlight"));
 
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), tailwindcss()],
   resolve: {
     // Use client source during dev/tests; production typecheck consumes the root package declarations.
     alias: {

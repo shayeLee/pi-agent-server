@@ -4,14 +4,14 @@ import type { SseEvent, TimelineItem, ToolCall, UsageStats } from "./types.js";
 import { toolDurationMs } from "../shared/tool-duration.js";
 
 /** Chat flow phase. */
-export type ChatPhase = "idle" | "queued" | "streaming" | "completed" | "aborted";
+export type ChatPhase = "idle" | "submitting" | "queued" | "streaming" | "completed" | "aborted";
 
 /** Serializable chat state, independent of presentation frameworks. */
 export type ChatState = {
   /** Timeline of messages, thinking segments, and tool calls in event order. */
   timeline: TimelineItem[];
   phase: ChatPhase;
-  /** Request owning queued/streaming lifecycle. Legacy events without IDs retain their behavior. */
+  /** Request owning submitting/queued/streaming lifecycle. Legacy events without IDs retain their behavior. */
   activeRequestId?: string | null;
   /** Previously owned requests cannot reclaim compaction after a newer request finishes. */
   retiredRequestIds?: string[];
@@ -30,7 +30,7 @@ export function createChatState(): ChatState {
   return { timeline: [], phase: "idle", error: null, stats: null };
 }
 
-/** Append a user message and enter queued phase until the server responds. */
+/** Append a local user message; only server evidence can establish queued/running state. */
 export function addUserMessage(state: ChatState, text: string, messageId?: string, requestId?: string): ChatState {
   const message: TimelineItem = {
     kind: "message",
@@ -42,7 +42,7 @@ export function addUserMessage(state: ChatState, text: string, messageId?: strin
   return {
     ...state,
     timeline: [...state.timeline, message],
-    phase: "queued",
+    phase: "submitting",
     activeRequestId: requestId ?? null,
     retiredRequestIds: retireRequest(state, requestId),
     compaction: null,
@@ -60,7 +60,7 @@ export function ownsSseEvent(state: ChatState, event: SseEvent): boolean {
       state.retiredRequestIds?.includes(event.requestId)) return false;
   if (!event.requestId || !state.activeRequestId) return true;
   if (event.requestId === state.activeRequestId) return true;
-  return state.phase !== "queued" && state.phase !== "streaming" &&
+  return state.phase !== "submitting" && state.phase !== "queued" && state.phase !== "streaming" &&
     (event.type === "status" || event.type === "queued" || event.type === "text_delta" || event.type === "thinking_delta" || event.type === "tool_start" || event.type === "compaction_start");
 }
 

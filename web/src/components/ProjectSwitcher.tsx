@@ -1,23 +1,36 @@
-import { useState } from "react";
-import { Icon } from "./Icon.js";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { Project } from "pi-agent-server/client";
 import { SelectMenu } from "./SelectMenu.js";
 
 export type ProjectSwitcherProps = {
   projects: Project[];
+  children?: ReactNode;
   activeId: string;
   onSelect: (id: string) => void;
   onCreate: (name: string, cwd: string) => void;
-  onDelete: (id: string) => void;
 };
 
-/** 项目切换器：下拉选择 + 新建/删除额外项目（默认项目不可删）。 */
-export function ProjectSwitcher({ projects, activeId, onSelect, onCreate, onDelete }: ProjectSwitcherProps) {
+/** 项目切换器：下拉选择 + 新建项目（Web UI 不提供项目删除）。 */
+export function ProjectSwitcher({ projects, activeId, onSelect, onCreate, children }: ProjectSwitcherProps) {
   const [creating, setCreating] = useState(false);
   const [name, setName] = useState("");
   const [cwd, setCwd] = useState("");
+  const nameInputRef = useRef<HTMLInputElement>(null);
 
   const active = projects.find((p) => p.id === activeId) ?? projects[0];
+
+  useEffect(() => {
+    if (creating) {
+      nameInputRef.current?.focus();
+    }
+  }, [creating]);
+
+  function cancelCreate(): void {
+    setName("");
+    setCwd("");
+    setCreating(false);
+    document.querySelector<HTMLElement>('[data-testid="project-select"]')?.focus();
+  }
 
   function submitCreate(): void {
     const n = name.trim();
@@ -32,47 +45,49 @@ export function ProjectSwitcher({ projects, activeId, onSelect, onCreate, onDele
   return (
     <div className="project-switcher workbench-project-tree" data-testid="project-switcher">
       <div className="project-row workbench-project-row">
-        <span className="workbench-project-icon" aria-hidden="true">
-          <Icon name="folder" />
-        </span>
         <SelectMenu
           className="workbench-project-select"
-          options={projects.map((project) => ({ value: project.id, label: project.name, title: project.cwd }))}
+          chevronIcon="project-chevron-down"
+          openChevronIcon="project-chevron-up"
+          options={projects.map((project) => ({
+            value: project.id,
+            label: project.name,
+            title: project.cwd,
+          }))}
+          action={{
+            label: "新建项目",
+            testId: "new-project",
+            onSelect: () => setCreating(true),
+          }}
+          checkPosition="left"
           value={active?.id ?? ""}
           onChange={onSelect}
+          placeholder="默认项目"
           ariaLabel="选择项目"
           testId="project-select"
         />
-        <div className="project-actions workbench-project-actions">
-          <button
-            className="btn-ghost btn-icon"
-            data-testid="new-project"
-            onClick={() => setCreating((v) => !v)}
-            title="新建项目"
-            aria-label="新建项目"
-          >
-            <Icon name="plus" />
-          </button>
-          {active && !active.isDefault && active.canDelete !== false && (
-            <button
-              className="btn-danger btn-icon"
-              data-testid="delete-project"
-              onClick={() => {
-                if (window.confirm(`删除项目「${active.name}」及其下全部会话？`)) {
-                  onDelete(active.id);
-                }
-              }}
-              title="删除项目"
-              aria-label="删除项目"
-            >
-              <Icon name="trash" />
-            </button>
-          )}
-        </div>
+        {children}
       </div>
       {creating && (
-        <div className="project-create workbench-project-create" data-testid="project-create-form">
+        <form
+          className="project-create workbench-project-create"
+          data-testid="project-create-form"
+          role="dialog"
+          aria-label="新建项目"
+          onSubmit={(e) => {
+            e.preventDefault();
+            submitCreate();
+          }}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") {
+              e.preventDefault();
+              e.stopPropagation();
+              cancelCreate();
+            }
+          }}
+        >
           <input
+            ref={nameInputRef}
             data-testid="project-name-input"
             placeholder="项目名"
             value={name}
@@ -86,10 +101,19 @@ export function ProjectSwitcher({ projects, activeId, onSelect, onCreate, onDele
             onChange={(e) => setCwd(e.target.value)}
             aria-label="项目工作目录"
           />
-          <button data-testid="project-create-submit" onClick={submitCreate}>
-            创建
-          </button>
-        </div>
+          <div className="project-create-actions">
+            <button type="submit" data-testid="project-create-submit">
+              创建
+            </button>
+            <button
+              type="button"
+              data-testid="project-create-cancel"
+              onClick={cancelCreate}
+            >
+              取消
+            </button>
+          </div>
+        </form>
       )}
     </div>
   );

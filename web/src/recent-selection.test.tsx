@@ -31,6 +31,7 @@ beforeEach(() => {
       status = sessionStatus;
       data = sessionRows.filter(row => !url.searchParams.has("projectId") || row.projectId === url.searchParams.get("projectId"));
     }
+    if (url.pathname.endsWith("/control-queue")) data = { requestId: null, revision: 0, items: [] };
     if (url.pathname.endsWith("/export")) data = { messages: [{ role: "user", text: "Synthetic history" }], lastEventId: 0 };
     return new Response(JSON.stringify(data), { status, headers: { "Content-Type": "application/json" } });
   }));

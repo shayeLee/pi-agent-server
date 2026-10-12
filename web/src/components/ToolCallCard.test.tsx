@@ -1,15 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { applySseEvent, createChatState } from "pi-agent-server/client";
 import { render, screen, fireEvent } from "@testing-library/react";
-import { ToolCallCard, rawToolData } from "./ToolCallCard.js";
-
-function viewRaw() {
-  fireEvent.click(screen.getByRole("button", { name: "工具更多操作" }));
-  fireEvent.click(screen.getByRole("menuitem", { name: "查看原始数据" }));
-}
-function rawValue(key: string) {
-  return JSON.parse(document.querySelector("dialog pre")!.textContent!)[key];
-}
+import { ToolCallCard } from "./ToolCallCard.js";
 import type { ToolCall } from "pi-agent-server/client";
 
 function expand() {
@@ -31,7 +23,24 @@ function card(partial: Partial<ToolCall> = {}): ToolCall {
 }
 
 describe("ToolCallCard（工具调用流式卡片）", () => {
-  it("简单数组紧凑一行，保留参数/进度区域且 raw 使用独立 dialog", () => {
+  it.each([['read', 'path'], ['bash', 'command']])("%s 超过180字符的摘要与title完整保留，由CSS省略", (toolName, key) => {
+    const value = `/fixture/${'long-segment/'.repeat(30)}<script>safe</script>\n  tail`;
+    const compact = value.replace(/\s+/g, ' ').trim();
+    const { container } = render(<ToolCallCard call={card({ toolName, args: { [key]: value }, done: true })} />);
+    const preview = container.querySelector('.tool-summary-preview')!;
+    expect(preview.textContent).toBe(compact);
+    expect(preview).toHaveAttribute('title', compact);
+    expect(preview.querySelector('script')).toBeNull();
+  });
+  it.each(["read", "bash", "edit", "write", "__proto__", "constructor", "toString", "hasOwnProperty"])("未知原型链工具 %s 原样渲染并保留原始数据", (toolName) => {
+    render(<ToolCallCard call={card({ toolName, done: true, result: "原始结果" })} />);
+    const header = screen.getByRole("button", { name: /工具调用/ });
+    expect(header).toHaveTextContent(toolName);
+    fireEvent.click(header);
+    expect(screen.getByTestId("tool-result-text")).toHaveTextContent("原始结果");
+    expect(screen.queryByRole("dialog")).toBeNull();
+  });
+  it("简单数组紧凑一行，保留参数/进度区域且无额外 footer", () => {
     const args = { runIds: ["1", "2"], timeoutMs: 600000, flags: [0, false, null] };
     const { container } = render(<ToolCallCard call={card({ toolName: "subagent_wait", args, partialResult: "0/2 settled\nworker: reading" })} />);
     const parameters = screen.getByRole("region", { name: "参数" });
@@ -42,10 +51,9 @@ describe("ToolCallCard（工具调用流式卡片）", () => {
     expect(container.querySelector(".json-label")).toBeNull();
     expect(parameters.compareDocumentPosition(output) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(screen.queryByRole("dialog")).toBeNull();
-    viewRaw();
-    const raw = screen.getByRole("dialog");
-    expect(output.compareDocumentPosition(raw) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(rawValue("args")).toEqual(args);
+    expect(container.querySelector('.tool-call-body')?.children).toHaveLength(2);
+    expect(screen.queryByRole('button', { name: '查看原始数据' })).toBeNull();
+    expect(screen.queryByRole('button', { name: '复制原始数据' })).toBeNull();
   });
   it.each([false, true])("未手动选择时流式展开、完成收起（isError=%s），重新展开可读最终原文", (isError) => {
     const base = card({ toolName: "subagent_wait", args: { runIds: ["r1"] } });
@@ -132,12 +140,10 @@ describe("ToolCallCard（工具调用流式卡片）", () => {
     expect(screen.queryByText("参数原始数据")).toBeNull();
     expect(screen.queryByText("无参数")).toBeNull();
   });
-  it.each([false, 0, { value: "" }])("非空参数 %j 保留区域及 raw", (args) => {
+  it.each([false, 0, { value: "" }])("非空参数 %j 保留参数区域", (args) => {
     render(<ToolCallCard call={card({ args })} />);
     expand();
     expect(screen.getByRole("region", { name: "参数" })).toBeVisible();
-    viewRaw();
-    expect(rawValue("args")).toEqual(args);
   });
   it("bash 收起预览原命令，快照保留收起且展开完整高亮", () => {
     const command = '  printf "%s\\n" "long command"\n' + "x".repeat(300);
@@ -163,7 +169,7 @@ describe("ToolCallCard（工具调用流式卡片）", () => {
     const block = region.querySelector(".code-block")!;
     expect(block).toHaveAttribute("data-language", language);
     expect(block.querySelector("pre")?.textContent).toBe(content);
-    expect(region.querySelectorAll(".code-block")).toHaveLength(1); // content; raw lives after output
+    expect(region.querySelectorAll(".code-block")).toHaveLength(1); // content
     expect(region.querySelector(".tool-readable-value")?.textContent).toBe("nested.py");
     expect(region.textContent).not.toContain(path);
     fireEvent.click(screen.getByRole("button", { name: "复制代码" }));
@@ -176,9 +182,7 @@ describe("ToolCallCard（工具调用流式卡片）", () => {
     expect(screen.getByRole("region", { name: "参数" }).querySelector('.code-block')).toHaveAttribute("data-language", "typescript");
     expect(screen.getByText("plain", { selector: ".tool-readable-value" })).toBeVisible();
   });
-  it.each(["single", "batch"])("edit %s supports languages, empty replacements, exact copy and raw", async (schema) => {
-    const writeText = vi.fn().mockResolvedValue(undefined);
-    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+  it.each(["single", "batch"])("edit %s supports languages and empty replacements", (schema) => {
     const { rerender } = render(<ToolCallCard call={card()} />);
     expand();
     for (const [path, language, oldText, newText] of [
@@ -206,12 +210,7 @@ describe("ToolCallCard（工具调用流式卡片）", () => {
       expect(screen.getByText("0", { selector: ".tool-readable-value" })).toBeVisible();
       expect(screen.getByText("untouched", { selector: ".tool-readable-value" })).toBeVisible();
       if (schema === "batch") expect(blocks[1].textContent).toContain("second");
-      viewRaw();
-      expect(rawValue("args")).toEqual(args);
-      fireEvent.click(screen.getByRole("dialog").querySelector(".code-block button")!);
-      expect(JSON.parse(writeText.mock.calls.at(-1)![0]).args).toEqual(args);
-      await screen.findByText("已复制");
-      fireEvent.click(screen.getByRole("button", { name: "关闭对话框" }));
+
     }
   });
   it("edit explicit language wins; subagent and nested same-name fields stay ordinary parameters", () => {
@@ -221,7 +220,7 @@ describe("ToolCallCard（工具调用流式卡片）", () => {
     expect(screen.getByRole("region", { name: "参数" }).querySelectorAll('.diff-block')).toHaveLength(1);
     expect(screen.getByText("ts", { selector: ".tool-readable-value" })).toBeVisible();
     rerender(<ToolCallCard call={card({ toolName: "subagent", args: { agent: "worker", task: "edit", ...args } })} />);
-    expect(screen.getByRole("region", { name: "参数" }).querySelectorAll(".code-block")).toHaveLength(0); // raw lives after output
+    expect(screen.getByRole("region", { name: "参数" }).querySelectorAll(".code-block")).toHaveLength(0);
   });
   it.each(["subagent", "team.subagent"])("%s 默认展示实际单任务和受理结果，不宣称子任务完成", (toolName) => {
     const task = "  完整提示词\n" + "长任务原文".repeat(100);
@@ -241,9 +240,9 @@ describe("ToolCallCard（工具调用流式卡片）", () => {
     const header = screen.getByRole("button", { name: /工具调用/ });
     expect(header.lastElementChild).toHaveClass("tool-header-icons");
     expect(header.lastElementChild?.lastElementChild).toHaveClass("tool-toggle", "disclosure-chevron");
-    expect(header.querySelector(".tool-toggle")?.previousElementSibling).toHaveClass("tool-status-icon");
-    viewRaw();
-    expect(rawValue("args")).toEqual({ agent: "worker", task, cwd: "/fixture" });
+    expect(header.firstElementChild).toHaveClass("tool-status-icon");
+    expect(header.querySelector('[data-icon="ellipsis"], .tool-call-category')).toBeNull();
+
   });
 
   it("并行 tasks 逐项显示真实代理与完整任务，未知字段原值保留", () => {
@@ -260,8 +259,7 @@ describe("ToolCallCard（工具调用流式卡片）", () => {
     expect(items[0].querySelector("pre")?.textContent).toBe(tasks[0].task);
     expect(items[0]).toHaveTextContent("/one");
     expect(items[1].querySelector(".tool-subagent-agent")).toHaveTextContent("worker");
-    viewRaw();
-    expect(rawValue("args")).toEqual({ tasks, agentScope: "both" });
+
   });
 
   it("仅 subagent 对象形式的单任务也用代理名标题，其他工具结构不变", () => {
@@ -293,8 +291,6 @@ describe("ToolCallCard（工具调用流式卡片）", () => {
     expect(screen.getByText("结果二")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Markdown 展示" }));
     expect(screen.getByTestId("tool-result-text").textContent).toBe(text);
-    viewRaw();
-    expect(rawValue("result")).toEqual(result);
     fireEvent.click(screen.getByRole("button", { name: /工具调用/ }));
     rerender(<ToolCallCard call={card({ ...base, isError: true, done: true, result: "Wait aborted" })} />);
     expect(screen.getByRole("button", { name: /工具调用/ })).toHaveAttribute("aria-expanded", "false");
@@ -332,8 +328,7 @@ describe("ToolCallCard（工具调用流式卡片）", () => {
     expect(screen.getByRole("region", { name: "参数" })).toBeVisible();
     expect(screen.getByText("q")).toBeVisible();
     expect(screen.getByText("x")).toBeVisible();
-    viewRaw();
-    expect(rawValue("result")).toEqual({ output: "完整输出" });
+
   });
 
   it("多次真实 tool_update 快照替换而不重复，tool_end 用最终正文替换", () => {
@@ -357,9 +352,7 @@ describe("ToolCallCard（工具调用流式卡片）", () => {
     expect(screen.queryByText("第二行")).not.toBeInTheDocument();
   });
 
-  it("标准文本数组顺序完整，非文本、metadata 和未知值可从原始数据复制", async () => {
-    const writeText = vi.fn().mockResolvedValue(undefined);
-    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+  it("标准文本数组顺序完整，非文本内容安全占位且不改写结果", () => {
     const result = { content: [{ type: "text", text: "  第一块\n" }, { type: "image", data: "<img onerror=alert(1)>", mimeType: "image/png" }, { type: "text", text: "第二块\n末行" }], details: { nested: { unknown: 0 } } };
     render(<ToolCallCard call={card({ isError: true, done: true, result })} />);
     fireEvent.click(screen.getByRole("button", { name: /工具调用/ }));
@@ -367,11 +360,7 @@ describe("ToolCallCard（工具调用流式卡片）", () => {
     expect(Array.from(blocks, block => block.textContent)).toEqual(["  第一块\n", "第二块\n末行"]);
     expect(screen.getByText(/非文本或未知内容/)).toBeVisible();
     expect(screen.getByTestId("tool-call-card").querySelector("img")).toBeNull();
-    viewRaw();
-    expect(rawValue("result")).toEqual(result);
-    fireEvent.click(screen.getByRole("button", { name: "复制原始数据" }));
-    expect(writeText).toHaveBeenCalledWith(rawToolData(card({ isError: true, done: true, result })));
-    await screen.findByText("已复制");
+    expect(result.details).toEqual({ nested: { unknown: 0 } });
   });
 
   it("复杂参数安全结构化，未知结果完整原值可展开", () => {
@@ -382,8 +371,7 @@ describe("ToolCallCard（工具调用流式卡片）", () => {
     expect(screen.getByTestId("tool-call-card").querySelector("script")).toBeNull();
     expect(screen.getByText("flags")).toBeVisible();
     expect(screen.getByText(/"payload"/, { selector: ".tool-readable-value" })).toBeVisible();
-    viewRaw();
-    expect(rawValue("result")).toEqual({ nested: { payload: [0, false, "原文"] } });
+
   });
 
   it("中止或缺失最终结果不伪造输出，不以部分结果冒充最终结果", () => {
@@ -438,7 +426,7 @@ describe("ToolCallCard（工具调用流式卡片）", () => {
     expect(screen.queryByText("部分结果")).not.toBeInTheDocument();
   });
 
-  it("用户手动展开后，成功与失败结束均保留正文和原始详情", () => {
+  it("用户手动展开后，成功与失败结束均保留正文", () => {
     const { rerender } = render(<ToolCallCard call={card()} />);
     fireEvent.click(screen.getByRole("button", { name: /工具调用/ }));
     fireEvent.click(screen.getByRole("button", { name: /工具调用/ }));

@@ -24,7 +24,7 @@ Pi SDK and pi-ai are pinned to **1.1.0**; this SDK upgrade needs no database mig
 - Multi-user access as a first-class capability.
 - Project and session management as supporting capabilities for organizing work and conversations.
 - HTTP/JSON API plus Server-Sent Events.
-- `steer`, `follow-up`, and `abort` controls while a task is running.
+- Send/Enter starts a primary task when idle or in a new session; while running it queues a `follow-up` by default, without a send-mode selector. Use a follow-up row's guidance button to promote it to `steer`. The Composer has no stop button; backend abort and programmatic API/hooks remain available. The Web UI shows server-authoritative resident queue items, supports individual deletion, and keeps submission notices separate. Follow-ups support text and images (not file attachments); admission clears only the submitted snapshot, preserving newer drafts/attachments. Unknown outcomes are never automatically resent.
 - SQLite by default; explicit PostgreSQL opt-in.
 - Conversations are saved as Pi JSONL files, with project, session, and task state kept in the database; repeated requests return the already-recorded result instead of running again.
 - Role-based route access control that denies by default: `viewer`, `user`, `operator`, and `admin`. IPs in the allowed range without an explicit profile default to `user`.
@@ -99,6 +99,18 @@ Automatic discovery registers verified, eligible workspaces as system-administer
 
 Start the optional standalone Web UI with `pnpm web`.
 
+The redesign is staged: the foundation and two-column sidebar/conversation UI are implemented. It includes sidebar-only project selection, date-grouped sessions, light tool cards, a shared composer, and a single theme menu with Light / Dark / Follow system radio options, accessible in expanded, collapsed, and mobile sidebars. The selected Light / Dark / Follow system mode is cached in localStorage and restored on reload. Missing or invalid preferences default to Follow system; only that mode tracks OS changes. If storage is unavailable, theme selection still works for the current page. Phase three A adds the guidance/append controls and authoritative resident control-queue UI. The Inspector is closed by default and opens as a 380px right sidebar that reduces the conversation column, without a backdrop or focus trap. At widths ≤600px it takes the available layout width while the mounted conversation is hidden; closing or Escape restores chat and trace-entry focus without losing drafts. The left mobile navigation remains a separate overlay drawer. The Inspector now orders tabs as Steps (default), System prompt, Events. Steps includes user messages, thinking, assistant text, tool calls, and independent tool results in authoritative snapshot order, with expandable full content. System prompt identifies current effective text versus a creation snapshot. See [Session steps and Inspector](docs/session-steps.md) for provenance, refresh behavior, and historical-order limits. The additional [control-queue reference](docs/design/reference-control-queues.png) guides only the appended interaction and must not replace the existing 280px sidebar, 26px logo, or original tool names. See [DESIGN.md](DESIGN.md) and the original [workspace visual reference](docs/design/reference-gpt-workspace.png).
+
+The approved [project switcher reference](docs/design/project-switcher-reference.png) streamlines the persistent project row into an integrated trigger (project name closely followed by chevron, x16) on the left and a search button on the right, removing the decorative folder icon and permanent header '+' button. The project dropdown provides project selection with leading checkmarks, a divider, and '+ 新建项目' to open the creation form. The Web UI intentionally does not expose project deletion (backend API, routes, RBAC, and client SDK retain `deleteProject`). Search expands below the row, safely highlights literal title matches, and offers a clear action for no results. Clearing keeps the input open; closing or switching projects clears and exits search. Session rename/export/delete remain available. The sidebar stays 280px by default, with 180–400px resizing, rail/drawer recovery, and mobile 44px targets. The isolated workspace suite covers these interactions, geometry, and light/dark App screenshots at 1440/1280/390px; reference evidence is written to `/tmp/pi-sidebar-v5-final`. This does not certify production deployment or real-device keyboards.
+
+Tool cards retain normal parameter/result expansion and streaming updates, but no longer provide raw-data view/copy actions, a dedicated inspection modal, or a footer placeholder. Protocol data, event logs, code copying, and the shared statistics/large-diff modals are unchanged. Verify this with `volta run pnpm --dir web exec playwright test --config playwright.workspace.config.ts`; the expanded-card screenshot is `web/test-results/workspace/tool-expanded-no-footer.png`.
+
+The UI foundation uses Tailwind v4 without Preflight, prefixed `ui:` utilities, and locally maintained Radix-based components. Global theme tokens live in `web/src/styles/tokens.css`; opt-in `[data-ui]` aliases share those tokens, including in portals. Business components retain their existing data contracts and use system fonts. Utility scanning currently covers `web/src/components/ui` only; explicitly extend it when adopting utilities elsewhere. Chinese UI copy is being extracted incrementally into `web/src/i18n/zh-CN.ts`; English switching is not implemented.
+
+Navigation uses `/p/:projectId` for a project start state and `/p/:projectId/s/:sessionId` for a session. Explicit URLs take precedence over recent selection; session ownership is validated against authorized server metadata. Back/forward and reload restore navigation, not unsent drafts or attachments. Empty projects may disappear from the filtered project list after reload. The standalone Web host must serve its SPA entry for frontend navigation paths only, never for `/v1`, SSE, or missing assets; Fastify does not host the Web UI. Production deep-link fallback still requires deployment verification.
+
+Validate with `pnpm --filter web test`, `pnpm --filter web build`, and `pnpm --dir web exec playwright test --config playwright.ui-foundation.config.ts` (isolated mock/fixtures, no live agent required). The foundation browser suite checks keyboard/focus behavior and compares stylesheet-off/on screenshots for empty and history views at desktop/mobile sizes in both themes; it checks stylesheet isolation, not pixel-perfect reproduction of the reference. Run `pnpm --dir web exec playwright test --config playwright.workspace.config.ts` for the redesigned workspace fixtures and screenshots. Run `volta run pnpm --dir web exec playwright test --config playwright.steps.config.ts` for Inspector component and full-App mock API checks. Real mobile keyboards, 200% zoom, and the full exception-state matrix still require further acceptance testing.
+
 ## Deployment
 
 To deploy on an intranet server, follow [Operations](docs/operations.md) for installation, configuration, and startup checks.
@@ -123,10 +135,19 @@ All routes first check the source IP. `/health` and `/readyz` do not require a t
 | `POST` | `/v1/sessions/:id/messages` | Submit a prompt (`requestId` required) |
 | `GET` | `/v1/sessions/:id/events` | SSE stream; viewer with no live runtime receives `204`. Every turn-related event carries the `requestId` that produced it (`text_delta`, `thinking_delta`, `tool_start`, `tool_update`, `tool_end`, `status`, `usage`, `queued`, `error`, `completed`, `aborted`) |
 | `POST` | `/v1/sessions/:id/steer` | Steer a running task; correlated requests return empty `202`, consumption is confirmed by SSE, not HTTP admission. See [Steering confirmation](docs/steering-confirmation.md) |
-| `POST` | `/v1/sessions/:id/follow-ups` | Queue a follow-up |
+| `POST` | `/v1/sessions/:id/follow-ups` | Queue a follow-up; correlated admission returns empty `202`, legacy text-only admission returns empty `204` |
+| `GET` | `/v1/sessions/:id/control-queue` | Read the authoritative snapshot of resident steer/follow-up items |
+| `DELETE` | `/v1/sessions/:id/control-queue/:controlId` | Delete a queued item by its control identity |
+| `POST` | `/v1/sessions/:id/control-queue/:controlId/promote` | Promote a queued follow-up to steer |
 | `POST` | `/v1/sessions/:id/abort` | Abort the task currently running in this session. The request body can be empty; if provided, it must be `{ "requestId": "..." }`, and the task is aborted only when its request ID matches. A mismatch returns `409` and the task keeps running. |
 | `GET` | `/v1/sessions/:id/export` | Read-only message snapshot; never creates a runtime |
+| `GET` | `/v1/sessions/:id/steps` | Full Inspector steps snapshot in authoritative array order; read-only and never creates a runtime |
+| `GET` / `HEAD` | `/v1/sessions/:id/system-prompt` | Read the system prompt with explicit `live_effective`, `creation_snapshot`, or `unavailable` provenance; read-only and never creates a runtime |
 | `GET` | `/v1/sessions/:id/file-preview?path=<relative>&line=<optional>` | Preview a text file in this session's project directory. `path` is relative to that directory; optional `line` selects a line. Files outside the project directory cannot be read |
+
+Queue removal is not proof that a task completed or that a control was consumed. Public-event reconciliation can be delayed; GET and queue mutations reconcile immediately against resident SDK objects. Mutations use the original control ID and request/acknowledgement identity. See [Control queues](docs/control-queues.md) for guarantees and limits.
+
+Inspector reads use the same session-export authorization tier and do not create a runtime. Step snapshots include all projected semantic blocks, including thinking and separate tool-call/tool-result entries; order is authoritative. Saved history can only preserve its recorded branch/block order: a restart cannot recover parallel tool completion timing that was never persisted, so this is not a permanent complete SDK event archive. A live system prompt comes from the existing public getter, but does not prove what a model was sent; a creation snapshot is not a reconstructed runtime prompt. The existing Events view/stream remains unchanged. See [Session steps and Inspector](docs/session-steps.md) for the contract and limits.
 
 ### Public API contract v1
 
@@ -222,6 +243,8 @@ Development references:
 - [Architecture](docs/architecture.md) and [database design](docs/database-design.md)
 - [IP access control](docs/ip-rbac-design.md)
 - [Plugin integration](docs/plugin-integration.md)
+- [Control queues](docs/control-queues.md)
+- [Session steps and Inspector](docs/session-steps.md)
 - [ADR index and maintenance rules](docs/decisions/README.md)
 
 [Archived material](docs/archive/) contains historical installation procedures, completed plans, evidence, and optional monitoring/IAM proposals. It is not the current production runbook. The separate documentation index has been removed; this section is the entry point.

@@ -13,12 +13,16 @@ export type Project = ProjectDto;
  * Shared access still requires network admission, existing RBAC, and current cwd policy.
  */
 export type Session = SessionDto;
+/** Authorized read-only prompt with provenance; live effective may not yet be sent. */
+export type { SessionStepKind, SessionStep, SessionStepsSnapshot } from "../shared/session-steps.js";
+export type { SessionSystemPrompt } from "../shared/system-prompt.js";
 
 /** Input accepted by `POST /v1/sessions/:id/messages`. */
 export type { MessageInput } from "../shared/api-types.js";
 
 /** Correlated steer identity; HTTP 202 only admits it, SSE confirms SDK consumption. */
 export type { SteeringIdentity, SteeringInput } from "../shared/steering.js";
+export type { ControlIdentity, ControlQueueItem, ControlQueueSnapshot } from "../shared/control-queue.js";
 export type SteeringConsumed = Extract<InternalSseEvent, { type: "steering_consumed" }>;
 
 /** Immediate successful response from a submitted asynchronous message. */
@@ -62,6 +66,7 @@ export const SSE_EVENT_TYPES = [
   "compaction_end",
   "notification",
   "steering_consumed",
+  "control_queue",
   "text_delta",
   "thinking_delta",
   "model_output_progress",

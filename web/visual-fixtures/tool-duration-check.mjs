@@ -17,11 +17,8 @@ try {
   const live = page.locator('[data-tool-call-id="live"]');
   await live.locator('.tool-call-header').click();
   await live.locator('.tool-call-header').click();
-  await live.getByRole('button', { name: '工具更多操作' }).click();
-  await page.getByRole('menuitem', { name: '查看原始数据' }).click();
-  await page.getByRole('dialog').waitFor();
-  await page.screenshot({ path: `${out}/${theme}-${width}-raw.png`, fullPage: true });
-  await page.keyboard.press('Escape');
+  assert.equal(await live.locator('.tool-call-body > :not(section)').count(), 0);
+  await page.screenshot({ path: `${out}/${theme}-${width}-streaming.png`, fullPage: true });
   await page.getByRole('button', { name: '完成 fixture 调用' }).click();
   assert.equal(await live.locator('.tool-call-header').getAttribute('aria-expanded'), 'true');
   assert.equal(await live.locator('.tool-duration').innerText(), '2.3 s');
@@ -29,7 +26,7 @@ try {
   await page.screenshot({ path: `${out}/${theme}-${width}-collapsed.png`, fullPage: true });
   const layout = await page.evaluate(() => ({ overflow: document.documentElement.scrollWidth > innerWidth, cards: [...document.querySelectorAll('.tool-call')].map(card => {
     const name = card.querySelector('.tool-name'); const icons = card.querySelector('.tool-header-icons');
-    return { nameClipped: name.scrollWidth > name.clientWidth + 1, iconsClipped: icons.getBoundingClientRect().right > card.getBoundingClientRect().right, hidden: [...card.querySelectorAll('.tool-status-icon,.tool-toggle,.tool-more-trigger')].some(el => getComputedStyle(el).opacity === '0') };
+    return { nameClipped: name.scrollWidth > name.clientWidth + 1, iconsClipped: icons.getBoundingClientRect().right > card.getBoundingClientRect().right, hidden: [...card.querySelectorAll('.tool-status-icon,.tool-toggle')].some(el => getComputedStyle(el).opacity === '0') };
   }) }));
   assert.equal(layout.overflow, false);
   assert.ok(layout.cards.every(c => !c.nameClipped && !c.iconsClipped && !c.hidden), JSON.stringify(layout));

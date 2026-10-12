@@ -17,7 +17,7 @@ export type ToolMetadata = {
   summarize: (call: ToolCall) => Omit<ToolHeader, "icon">;
 };
 export type ArgumentsProps = { value: unknown; args: unknown };
-export type ResultProps = { label: string; value: unknown; args: unknown; onViewRaw: () => void };
+export type ResultProps = { label: string; value: unknown; args: unknown };
 export type ToolRenderers = {
   Arguments: ComponentType<ArgumentsProps>;
   Result: ComponentType<ResultProps>;

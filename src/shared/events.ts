@@ -44,6 +44,7 @@ export type SseEvent =
   | NotificationEvent
   | ({ type: "compaction_start"; reason: CompactionReason; replay?: boolean } & SseRequestId)
   | ({ type: "compaction_end"; reason: CompactionReason; outcome: "succeeded" | "failed" | "aborted"; willRetry: boolean; tokensBefore?: number; tokensAfter?: number; replay?: boolean } & SseRequestId)
+  | ({ type: "control_queue" } & import("./control-queue.js").ControlQueueSnapshot)
   | ({ type: "steering_consumed" } & import("./steering.js").SteeringConsumed)
   | ({ type: "model_output_progress" } & ModelOutputProgress & SseRequestId)
   | ({ type: "text_delta"; text: string } & SseRequestId)

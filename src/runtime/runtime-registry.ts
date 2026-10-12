@@ -7,6 +7,8 @@
 
 import { SessionRuntime, getExpireHandler, SessionDeletedError } from "./session-runtime.js";
 import { SessionEventBus } from "./session-event-bus.js";
+import { nextControlQueueRevision } from "./control-queue-revision.js";
+import type { ControlQueueSnapshot } from "../shared/control-queue.js";
 import type { ConcurrencyController } from "../core/concurrency-control.js";
 import type { AgentAdapter } from "../agent/agent-adapter.js";
 import type {
@@ -59,6 +61,7 @@ export class RuntimeRegistry {
   private readonly createAdapter: (sessionId: string) => Promise<AgentAdapter>;
   private readonly now: () => number;
   private readonly sessions = new Map<string, ManagedSessionEntry>();
+  private readonly emptyQueueSnapshots = new Map<string, ControlQueueSnapshot>();
   /** 初始化中的 Promise 占位，避免同一 session 的并发 getOrCreate 各自创建（竞态）。 */
   private readonly pending = new Map<string, Promise<ManagedSessionEntry>>();
   /** 删除墓碑（sessionId → 删除时间戳）：已删的 sessionId 在此 map，getOrCreate 拒绝重建；TTL 后清理。 */
@@ -118,6 +121,21 @@ export class RuntimeRegistry {
     return this.sessions.get(sessionId);
   }
 
+  /** Wait for in-flight creation: an empty watermark must not outrank its new runtime. */
+  async getControlQueue(sessionId: string): Promise<ControlQueueSnapshot> {
+    const creating = this.pending.get(sessionId);
+    if (creating) await creating.catch(() => undefined);
+    // No await between this live lookup and absent-watermark allocation.
+    const live = this.sessions.get(sessionId);
+    if (live) return live.runtime.getControlQueue();
+    let empty = this.emptyQueueSnapshots.get(sessionId);
+    if (!empty) {
+      empty = { requestId: null, revision: nextControlQueueRevision(sessionId), items: [] };
+      this.emptyQueueSnapshots.set(sessionId, empty);
+    }
+    return { ...empty, items: [] };
+  }
+
   /** 获取会话绑定；命中删除墓碑或不存在时异步创建（并发安全：同 session 只创建一次）。 */
   async getOrCreate(sessionId: string, ownerKey: string): Promise<SessionEntry> {
     // 删除墓碑：已删的会话拒绝重建，避免「删除后又被并发请求冒出来」
@@ -140,6 +158,7 @@ export class RuntimeRegistry {
         throw new SessionDeletedError(sessionId);
       }
       this.sessions.set(sessionId, entry);
+      this.emptyQueueSnapshots.delete(sessionId);
       return entry;
     } finally {
       this.pending.delete(sessionId);
@@ -205,6 +224,7 @@ export class RuntimeRegistry {
       }
       this.sessions.delete(sessionId);
     }
+    this.emptyQueueSnapshots.set(sessionId, { requestId: null, revision: nextControlQueueRevision(sessionId), items: [] });
   }
 
   /** 优雅关闭时并行中止所有在途任务并释放 adapter 资源（idle 会话的 abort 返回 conflict，无害；dispose 幂等）。 */

@@ -28,8 +28,8 @@ test.beforeAll(async () => {
 test.afterAll(async () => { stream?.end(); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); });
 
 // Business flow representatives: light desktop and dark mobile, not the full cross-product.
-for (const { theme, width } of [{ theme: "light", width: 1280 }, { theme: "dark", width: 390 }] as const) test(`${theme} ${width}: parallel and wait streaming default, manual plain and exact raw`, async ({ browser }) => {
-  const context = await browser.newContext({ permissions: ["clipboard-read", "clipboard-write"], hasTouch: width === 390 });
+for (const { theme, width } of [{ theme: "light", width: 1280 }, { theme: "dark", width: 390 }] as const) test(`${theme} ${width}: parallel and wait streaming default, manual plain and complete body`, async ({ browser }) => {
+  const context = await browser.newContext({ hasTouch: width === 390 });
   const page = await context.newPage();
   let unexpectedLoads = 0;
   page.on("request", req => { if (req.url().includes("tracker.png")) unexpectedLoads++; });
@@ -71,13 +71,7 @@ for (const { theme, width } of [{ theme: "light", width: 1280 }, { theme: "dark"
     expect(await page.evaluate(() => (window as unknown as { __unsafe?: boolean }).__unsafe)).toBeUndefined();
     await card.scrollIntoViewIfNeeded();
     await page.screenshot({ path: `${dir}/${theme}-${width}-${toolName}-markdown-final.png` });
-    await card.getByRole("button", { name: "工具更多操作" }).click();
-    await card.getByRole("menuitem", { name: "查看原始数据" }).click();
-    const raw = JSON.parse((await page.getByRole("dialog").locator("pre").textContent())!);
-    expect(raw.args).toEqual(args); expect(raw.result).toEqual(final);
-    await page.getByRole("dialog").getByRole("button", { name: "复制原始数据" }).click();
-    expect(JSON.parse(await page.evaluate(() => navigator.clipboard.readText()))).toEqual(raw);
-    await page.keyboard.press("Escape");
+    await expect(card.locator('.tool-call-body > :not(section)')).toHaveCount(0);
     await header.click();
   }
   expect(unexpectedLoads).toBe(0);

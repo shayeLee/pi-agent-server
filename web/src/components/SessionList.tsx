@@ -1,13 +1,18 @@
-import { useState } from "react";
+import { Fragment, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { Icon } from "./Icon.js";
 import { resolveSessionDisplayTitle, type SessionRecord } from "pi-agent-server/client";
+
+function validTimestamp(timestamp: number): boolean {
+  return Number.isFinite(timestamp) && timestamp > 0 && !Number.isNaN(new Date(timestamp).getTime());
+}
 
 /** 会话更新时间展示：紧凑弱化的中文相对时间或短日期 */
 export function formatSessionTime(updatedAt: number, now: number = Date.now()): string {
   if (!Number.isFinite(updatedAt) || updatedAt <= 0 || Number.isNaN(new Date(updatedAt).getTime())) {
     return "";
   }
-  const diffMs = Math.max(0, now - updatedAt);
+  if (updatedAt > now) return formatFullSessionTime(updatedAt);
+  const diffMs = now - updatedAt;
   const diffSec = Math.floor(diffMs / 1000);
   const diffMin = Math.floor(diffSec / 60);
   const diffHour = Math.floor(diffMin / 60);
@@ -38,6 +43,19 @@ export function formatSessionTime(updatedAt: number, now: number = Date.now()): 
   return `${date.getFullYear()}/${month}/${day}`;
 }
 
+/** Calendar boundaries use local dates, not elapsed 24-hour guesses. */
+export function sessionDateGroup(timestamp: number, now = Date.now()): string {
+  if (!Number.isFinite(timestamp) || timestamp <= 0 || Number.isNaN(new Date(timestamp).getTime())) return "日期未知";
+  if (timestamp > now) return "未来日期";
+  const today = new Date(now); today.setHours(0, 0, 0, 0);
+  const yesterday = new Date(today); yesterday.setDate(today.getDate() - 1);
+  const week = new Date(today); week.setDate(today.getDate() - 6);
+  if (timestamp >= today.getTime()) return "今天";
+  if (timestamp >= yesterday.getTime()) return "昨天";
+  if (timestamp >= week.getTime()) return "近 7 天";
+  return "更早";
+}
+
 /** 辅助获取完整绝对时间字符串（用于悬停提示） */
 export function formatFullSessionTime(updatedAt: number): string {
   if (!Number.isFinite(updatedAt) || updatedAt <= 0) {
@@ -47,8 +65,27 @@ export function formatFullSessionTime(updatedAt: number): string {
   return Number.isNaN(d.getTime()) ? "" : d.toLocaleString("zh-CN", { hour12: false });
 }
 
+/** Literal matching only; React escapes every text fragment, including markup. */
+export function highlightSessionTitle(title: string, query: string): ReactNode {
+  const needle = query.trim().toLowerCase();
+  if (!needle) return title;
+  const lower = title.toLowerCase();
+  const parts: ReactNode[] = [];
+  let start = 0;
+  let index = lower.indexOf(needle);
+  while (index !== -1) {
+    parts.push(title.slice(start, index), <mark key={index}>{title.slice(index, index + needle.length)}</mark>);
+    start = index + needle.length;
+    index = lower.indexOf(needle, start);
+  }
+  parts.push(title.slice(start));
+  return parts;
+}
+
 export type SessionListProps = {
   sessions: SessionRecord[];
+  loading?: boolean;
+  projectContext?: (searchToggle: ReactNode) => ReactNode;
   activeId: string | null;
   onSelect: (id: string) => void;
   onDelete: (id: string) => void;
@@ -59,6 +96,8 @@ export type SessionListProps = {
 /** 会话列表：搜索 + 标题 + 更新时间，支持选中/删除/重命名/导出。 */
 export function SessionList({
   sessions,
+  loading = false,
+  projectContext,
   activeId,
   onSelect,
   onDelete,
@@ -67,43 +106,76 @@ export function SessionList({
 }: SessionListProps) {
   const [query, setQuery] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
+  const searchId = useId();
+  const inputRef = useRef<HTMLInputElement>(null);
+  const toggleRef = useRef<HTMLButtonElement>(null);
+  const composing = useRef(false);
+  const restoreFocus = useRef(false);
+  useLayoutEffect(() => {
+    if (searchOpen) inputRef.current?.focus();
+    else if (restoreFocus.current) {
+      toggleRef.current?.focus();
+      restoreFocus.current = false;
+    }
+  }, [searchOpen]);
+  function clearSearch() {
+    setQuery("");
+    inputRef.current?.focus();
+  }
+  function closeSearch() {
+    setQuery("");
+    setSearchOpen(false);
+    restoreFocus.current = true;
+  }
 
+  const now = Date.now();
+  // filter creates a copy: sorting must never reorder the controller's array.
   const filtered = sessions.filter((s) =>
     resolveSessionDisplayTitle(s).toLowerCase().includes(query.trim().toLowerCase()),
-  );
+  ).sort((a, b) => {
+    const aValid = validTimestamp(a.updatedAt);
+    const bValid = validTimestamp(b.updatedAt);
+    if (!aValid || !bValid) return Number(bValid) - Number(aValid);
+    return b.updatedAt - a.updatedAt;
+  });
 
   return (
     <section className="session-list" data-testid="session-list">
-      <div className="session-list-header">
-        <span>会话历史</span>
-        <button
-        type="button"
-        className="workbench-search-toggle"
-        aria-label="搜索会话"
-        aria-expanded={searchOpen}
-        onClick={() => setSearchOpen((open) => !open)}
-      >
-        <Icon name="search" />
-        </button>
-      </div>
-      <input
-        className="session-search"
-        data-testid="session-search"
-        type="search"
-        hidden={!searchOpen}
-        placeholder="搜索会话…"
-        value={query}
-        onChange={(e) => setQuery(e.target.value)}
-        aria-label="搜索会话"
-      />
-      {filtered.length === 0 && (
-        <div className="empty-hint" data-testid="empty-sessions">
-          暂无会话
+      {(() => {
+        const toggle = <button ref={toggleRef} type="button" className="workbench-search-toggle"
+          aria-label="搜索会话" aria-expanded={searchOpen} aria-controls={searchId}
+          onClick={() => searchOpen ? closeSearch() : setSearchOpen(true)}><Icon name="search" /></button>;
+        return projectContext ? projectContext(toggle) : toggle;
+      })()}
+        <div id={searchId} className="session-search-bar" hidden={!searchOpen}
+          onKeyDown={(event) => {
+            if (event.key !== "Escape") return;
+            // Keep composition Escape local: it must not dismiss the mobile drawer either.
+            event.stopPropagation();
+            if (composing.current || event.nativeEvent.isComposing || event.keyCode === 229) return;
+            event.preventDefault();
+            closeSearch();
+          }}>
+          <Icon name="search" />
+          <input ref={inputRef} className="session-search" data-testid="session-search"
+            type="text" placeholder="搜索会话…" value={query}
+            onCompositionStart={() => { composing.current = true; }}
+            onCompositionEnd={() => { composing.current = false; }}
+            onChange={(e) => setQuery(e.target.value)} aria-label="搜索会话" />
+          {query !== "" && <button type="button" className="workbench-search-toggle" aria-label="清空搜索"
+            title="清空搜索" onClick={clearSearch}><Icon name="close" /></button>}
+        </div>
+      {loading ? <div className="empty-hint" data-testid="sessions-loading">加载中…</div> : filtered.length === 0 && (
+        <div className="empty-hint session-empty" data-testid="empty-sessions">
+          {query.trim() ? <><Icon name="search" /><p>未找到相关会话</p><button type="button" onClick={clearSearch}>清空搜索</button></> : "暂无会话"}
         </div>
       )}
       <ul className="session-items">
-        {filtered.map((s) => (
-          <li key={s.id} className={`session-item ${s.id === activeId ? "active" : ""}`}>
+        {filtered.map((s, index) => (
+          <Fragment key={s.id}>
+          {(index === 0 || sessionDateGroup(filtered[index - 1]!.updatedAt, now) !== sessionDateGroup(s.updatedAt, now)) &&
+            <li className="session-date-group">{sessionDateGroup(s.updatedAt, now)}</li>}
+          <li className={`session-item ${s.id === activeId ? "active" : ""}`}>
             <button
               type="button"
               className="session-select"
@@ -113,9 +185,8 @@ export function SessionList({
               data-testid={`session-${s.id}`}
               onClick={() => onSelect(s.id)}
             >
-              <span className="session-title" title={resolveSessionDisplayTitle(s)}>{resolveSessionDisplayTitle(s)}</span>
-            </button>
-            <div className="session-meta" id={`session-meta-${s.id}`}>
+              <span className="session-title" title={resolveSessionDisplayTitle(s)}>{highlightSessionTitle(resolveSessionDisplayTitle(s), query)}</span>
+            <span className="session-meta" id={`session-meta-${s.id}`}>
               <time
                 className="session-time"
                 data-testid={`session-time-${s.id}`}
@@ -124,14 +195,15 @@ export function SessionList({
                   : undefined}
                 title={formatFullSessionTime(s.updatedAt)}
               >
-                {formatSessionTime(s.updatedAt)}
+                {formatSessionTime(s.updatedAt, now)}
               </time>
               {(s.visibility === "shared" || s.origin === "native") && (
                 <span className="session-shared-badge" title={s.origin === "native" ? "原生共享会话" : "共享会话"} aria-label={s.origin === "native" ? "原生共享会话" : "共享会话"}>
                   <Icon name="shared" size={14} />
                 </span>
               )}
-            </div>
+            </span>
+            </button>
             <div className="session-actions">
               <button
                 data-testid={`rename-${s.id}`}
@@ -162,6 +234,7 @@ export function SessionList({
               </button>
             </div>
           </li>
+          </Fragment>
         ))}
       </ul>
     </section>

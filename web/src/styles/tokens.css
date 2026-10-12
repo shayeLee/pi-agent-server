@@ -1,0 +1,71 @@
+/* Shared application theme. Loaded by styles.css independently of opt-in UI utilities. */
+:root {
+  /* Seven-level typography scale; session title is the dedicated 18px exception. */
+  --font-xs: 10px;
+  --font-sm: 11px;
+  --font-base-sm: 12px;
+  --font-md: 13px;
+  --font-base: 14px;
+  --font-lg: 16px;
+  --font-xl: 20px;
+  --font-session-title: 18px;
+  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC",
+    "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+  --font-mono: SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  /* Compatibility aliases, never independent scales. */
+  --font-micro: var(--font-xs);
+  --font-small: var(--font-sm);
+  --font-body: var(--font-base);
+  --font-ui: var(--font-base-sm);
+  --font-title: var(--font-xl);
+  --font-h1: var(--font-xl);
+  --font-h2: var(--font-lg);
+  --font-h3: var(--font-base);
+  --font-mono-body: var(--font-base-sm);
+  --font-metric: var(--font-xs);
+  --bg-page: #FFFFFF;
+  --bg-surface: #FFFFFF;
+  --bg-raised: #F5F6F8;
+  --bg-sidebar: #F6F7F9;
+  --bg-hover: #ECEFF5;
+  --text-primary: #111629;
+  --text-secondary: #626B82;
+  --text-tertiary: #626C82;
+  --line: #E0E5EE;
+  --accent: #006BF0;
+  --accent-hover: #23489F;
+  --accent-solid-bg: #006BF0;
+  --accent-solid-fg: #FFFFFF;
+  --accent-soft: #E7EFFF;
+  --success: #2E7D57;
+  --warning: #8A6212;
+  --danger: #B3392F;
+  --thinking: #4A5A7A;
+  --backdrop: rgba(30, 28, 25, 0.45);
+  --shadow-md: 0 6px 18px rgba(30, 28, 25, 0.14), 0 0 0 1px rgba(30, 28, 25, 0.05);
+  --shadow-lg: 0 12px 32px rgba(30, 28, 25, 0.18);
+}
+
+[data-theme="dark"] {
+  --bg-page: #17191E;
+  --bg-surface: #1D2027;
+  --bg-raised: #252933;
+  --bg-sidebar: #1D2027;
+  --bg-hover: #303541;
+  --text-primary: #ECEDF2;
+  --text-secondary: #B1B9CB;
+  --text-tertiary: #949EB4;
+  --line: #353B49;
+  --accent: #8FB0FF;
+  --accent-hover: #A9C3FF;
+  --accent-solid-bg: #8FB0FF;
+  --accent-solid-fg: #141311;
+  --accent-soft: #232C3B;
+  --success: #7BC9A0;
+  --warning: #E0B25C;
+  --danger: #F09A90;
+  --thinking: #9FA8BC;
+  --backdrop: rgba(8, 8, 7, 0.6);
+  --shadow-md: 0 8px 22px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(0, 0, 0, 0.3);
+  --shadow-lg: 0 16px 36px rgba(0, 0, 0, 0.55);
+}

@@ -70,14 +70,14 @@ test("two unregistered Pi workspaces switch histories; zero/excluded hidden; exp
     await expect(page.getByTestId("project-select")).toBeVisible();
     mkdirSync("/tmp/pi-project-discovery", { recursive: true });
     await page.getByTestId("project-select").click();
-    await expect(page.getByRole("option", { name: "workspace-a", exact: true })).toBeVisible();
-    await expect(page.getByRole("option", { name: "默认项目", exact: true })).toBeVisible();
+    await expect(page.getByRole("menuitemradio", { name: "workspace-a", exact: true })).toBeVisible();
+    await expect(page.getByRole("menuitemradio", { name: "默认项目", exact: true })).toBeVisible();
     await page.screenshot({ path: "/tmp/pi-project-discovery/two-workspaces-dropdown.png", fullPage: true });
     await page.keyboard.press("Escape");
     for (const name of ["workspace-a", "workspace-b"]) {
       await page.getByTestId("project-select").click();
-      await expect(page.getByRole("option", { name: "excluded", exact: true })).toHaveCount(0);
-      await page.getByRole("option", { name: name === "workspace-b" ? "默认项目" : name, exact: true }).click();
+      await expect(page.getByRole("menuitemradio", { name: "excluded", exact: true })).toHaveCount(0);
+      await page.getByRole("menuitemradio", { name: name === "workspace-b" ? "默认项目" : name, exact: true }).click();
       const row = page.getByRole("button", { name: `${name} history`, exact: true });
       await expect(row).toBeVisible(); await row.click();
       await expect(page.locator(".message-user")).toContainText(`${name} history`);
@@ -90,7 +90,7 @@ test("two unregistered Pi workspaces switch histories; zero/excluded hidden; exp
       await expect(page.locator(".message-assistant").last()).toContainText("离线模型继续完成");
     }
     await page.getByTestId("project-select").click();
-    await page.getByRole("option", { name: "workspace-a", exact: true }).click();
+    await page.getByRole("menuitemradio", { name: "workspace-a", exact: true }).click();
     await page.getByTestId("new-session").click();
     await page.getByTestId("composer-input").fill("shared project private first send");
     await page.getByTestId("send-button").click();
@@ -131,6 +131,7 @@ test("two unregistered Pi workspaces switch histories; zero/excluded hidden; exp
     await page.screenshot({ path: "/tmp/shared-project-private-create/first-send.png", fullPage: true });
     mkdirSync("/tmp/pi-project-discovery", { recursive: true });
     await page.screenshot({ path: "/tmp/pi-project-discovery/two-workspaces-history.png", fullPage: true });
+    await page.getByTestId("project-select").click();
     await page.getByTestId("new-project").click();
     await page.getByTestId("project-name-input").fill("New draft");
     await page.getByTestId("project-cwd-input").fill(draft);

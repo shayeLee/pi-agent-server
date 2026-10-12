@@ -39,8 +39,6 @@ for (const width of [1280, 390]) for (const theme of ["light", "dark"]) {
     expect(overflow.scroll).toBeGreaterThan(overflow.client);
     expect(overflow.mode).toBe("auto");
     await page.screenshot({ path: `/tmp/code-block-highlight/highlight-${theme}-${width}.png`, fullPage: true });
-    await page.getByRole("button", { name: "工具更多操作" }).click();
-    await page.getByRole("menuitem", { name: "查看原始数据" }).click();
-    await expect(page.getByRole("dialog")).toContainText('window.__executed');
+    await expect(page.getByRole('dialog')).toHaveCount(0);
   });
 }

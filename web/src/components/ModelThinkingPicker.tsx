@@ -45,11 +45,14 @@ export function ModelThinkingPicker({
   thinkingLevel,
   onConfigChange,
 }: ModelThinkingPickerProps) {
-  const [open, setOpen] = useState(false);
+  const [activeEntry, setActiveEntry] = useState<"model" | "thinking" | null>(null);
+  const open = activeEntry !== null;
   const [query, setQuery] = useState("");
   const [panelLayout, setPanelLayout] = useState({ placement: "above" as "above" | "below", maxHeight: 380 });
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
+  const thinkingTriggerRef = useRef<HTMLButtonElement>(null);
+  const activeTriggerRef = useRef<HTMLButtonElement | null>(null);
   const id = useId();
   const panelId = `${id}-panel`;
   const configuredModel = modelProvider && modelId ? modelKey({ provider: modelProvider, id: modelId }) : undefined;
@@ -88,7 +91,7 @@ export function ModelThinkingPicker({
   ];
 
   function updatePanelLayout() {
-    const trigger = triggerRef.current?.getBoundingClientRect();
+    const trigger = activeTriggerRef.current?.getBoundingClientRect();
     if (!trigger) return;
     const spaceAbove = Math.max(0, trigger.top - 16);
     const spaceBelow = Math.max(0, window.innerHeight - trigger.bottom - 16);
@@ -99,15 +102,37 @@ export function ModelThinkingPicker({
       : { placement, maxHeight });
   }
 
+  function toggleEntry(entry: "model" | "thinking") {
+    activeTriggerRef.current = entry === "model" ? triggerRef.current : thinkingTriggerRef.current;
+    if (activeEntry === entry) {
+      setActiveEntry(null);
+    } else {
+      setQuery("");
+      updatePanelLayout();
+      setActiveEntry(entry);
+    }
+  }
+
+  useEffect(() => {
+    if (!activeEntry) return;
+    if (activeEntry === "model") {
+      rootRef.current?.querySelector<HTMLInputElement>(".model-thinking-search")?.focus();
+    } else {
+      const section = rootRef.current?.querySelector(".model-thinking-level-section");
+      const selected = section?.querySelector<HTMLElement>('[aria-checked="true"]');
+      (selected ?? section?.querySelector<HTMLElement>('button'))?.focus();
+    }
+  }, [activeEntry]);
+
   useEffect(() => {
     if (!open) return;
     function handlePointerDown(event: PointerEvent) {
-      if (event.target instanceof Node && !rootRef.current?.contains(event.target)) setOpen(false);
+      if (event.target instanceof Node && !rootRef.current?.contains(event.target)) setActiveEntry(null);
     }
     function handleKeyDown(event: KeyboardEvent) {
       if (event.key === "Escape") {
-        setOpen(false);
-        triggerRef.current?.focus();
+        setActiveEntry(null);
+        (activeTriggerRef.current ?? triggerRef.current)?.focus();
       }
     }
     document.addEventListener("pointerdown", handlePointerDown);
@@ -132,19 +157,18 @@ export function ModelThinkingPicker({
         data-testid="model-thinking-trigger"
         aria-label={`模型：${modelLabel}，思考深度：${selectedThinking || "未设置"}`}
         aria-haspopup="dialog"
-        aria-expanded={open}
+        aria-expanded={activeEntry === "model"}
         aria-controls={panelId}
-        onClick={() => {
-          if (!open) {
-            setQuery("");
-            updatePanelLayout();
-          }
-          setOpen((current) => !current);
-        }}
+        onClick={() => toggleEntry("model")}
       >
         <span className="model-thinking-model">{modelLabel}</span>
-        <span className="model-thinking-level">{selectedThinking}</span>
         <Icon name="down" className="disclosure-chevron" />
+      </button>
+      <button ref={thinkingTriggerRef} type="button" className="model-thinking-trigger thinking-trigger chevron-trigger"
+        data-testid="thinking-trigger" aria-label={`思考深度：${selectedThinking || "未设置"}`}
+        aria-haspopup="dialog" aria-expanded={activeEntry === "thinking"} aria-controls={panelId}
+        onClick={() => toggleEntry("thinking")}>
+        <span>{selectedThinking || "未设置"}</span><Icon name="down" className="disclosure-chevron" />
       </button>
       {open && (
         <div id={panelId} className="model-thinking-panel" style={{ maxHeight: panelLayout.maxHeight }} role="dialog" aria-label="模型与思考深度">

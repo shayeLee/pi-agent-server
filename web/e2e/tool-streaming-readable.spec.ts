@@ -47,7 +47,7 @@ test.beforeAll(async () => {
 });
 test.afterAll(async () => { stream?.end(); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); });
 
-test("真实定时 SSE 在完成前显示两次可读快照，最终替换且原始数据可达", async ({ page }) => {
+test("真实定时 SSE 在完成前显示两次可读快照，最终替换且无额外 footer", async ({ page }) => {
   await mkdir("/tmp/tool-streaming-readable", { recursive: true });
   await page.goto("/");
   await page.getByTestId("composer-input").fill("运行隔离工具");
@@ -56,37 +56,23 @@ test("真实定时 SSE 在完成前显示两次可读快照，最终替换且原
   await expect(card.locator(".tool-call-header")).toHaveAttribute("aria-expanded", "true");
   const output = card.getByTestId("tool-result-text").locator('.code-block[data-language="bash"] pre');
   await expect(output).toHaveText("第一行\n");
-  const stop = page.getByTestId("abort-button");
-  await expect(stop).toBeVisible();
-  await mkdir("/tmp/stop-button-visible", { recursive: true });
+  await expect(page.getByTestId("abort-button")).toHaveCount(0);
+  await expect(page.locator('.composer-runtime-controls')).toHaveCount(0);
   for (const [theme, width, height] of [["dark", 1400, 900], ["light", 1400, 900], ["dark", 390, 844], ["light", 390, 844]] as const) {
     await page.setViewportSize({ width: 1400, height: 900 });
     if (await page.getByTestId("app").getAttribute("data-theme") !== theme) await page.getByTestId("theme-toggle").click();
     await expect(page.getByTestId("app")).toHaveAttribute("data-theme", theme);
     await page.setViewportSize({ width, height });
     await page.waitForTimeout(250);
-    const measurements = await stop.evaluate((button) => {
-      const composer = button.closest(".composer")!;
-      const rect = button.getBoundingClientRect();
-      const icon = button.querySelector("rect")!.getBoundingClientRect();
-      const buttonStyle = getComputedStyle(button);
-      const composerStyle = getComputedStyle(composer);
-      return { button: { width: rect.width, height: rect.height, centerX: rect.x + rect.width / 2, centerY: rect.y + rect.height / 2 },
-        icon: { width: icon.width, height: icon.height }, buttonBg: buttonStyle.backgroundColor, composerBg: composerStyle.backgroundColor,
-        buttonColor: buttonStyle.color };
-    });
-    expect(measurements.buttonBg).not.toBe(measurements.composerBg);
-    expect(measurements.icon.width).toBe(10);
-    expect(measurements.icon.height).toBe(10);
-    expect(measurements.button.width).toBe(width === 390 ? 44 : 34);
-    expect(measurements.button.height).toBe(width === 390 ? 44 : 34);
-    expect(measurements.button.centerX).toBeGreaterThan(0);
-    expect(measurements.button.centerY).toBeGreaterThan(0);
-    await page.screenshot({ path: `/tmp/stop-button-visible/${theme}-${width}.png` });
+    await expect(page.getByTestId('abort-button')).toHaveCount(0);
+    await expect(page.getByTestId('send-button')).toBeInViewport();
+    await page.screenshot({ path: `/tmp/tool-streaming-readable/no-stop-${theme}-${width}.png` });
   }
   expect(finalSent).toBe(false);
   const abortRequest = page.waitForRequest((request) => request.url().endsWith("/abort") && request.method() === "POST");
-  await stop.click();
+  await page.evaluate(async id => {
+    await fetch(`/v1/sessions/${id}/abort`, {method:'POST'});
+  }, sessionId);
   await abortRequest;
   await expect.poll(() => abortRequested).toBe(true);
   expect(finalSent).toBe(false);
@@ -103,9 +89,7 @@ test("真实定时 SSE 在完成前显示两次可读快照，最终替换且原
   await header.click(); await header.click(); // Explicitly keep the result open on completion.
   await expect(card).toHaveAttribute("data-done", "true");
   await expect(output).toHaveText("最终结果\n完整原文");
-  await card.getByRole("button", { name: "工具更多操作" }).click();
-  await card.getByRole("menuitem", { name: "查看原始数据" }).click();
-  await expect(page.getByRole("dialog", { name: "原始数据 · bash" })).toContainText('"exitCode": 0');
-  await expect(card.getByRole("button", { name: "复制原始数据" })).toBeVisible();
-  await page.screenshot({ path: "/tmp/tool-streaming-readable/03-final-raw.png" });
+  await expect(card.locator('.tool-call-body > :not(section)')).toHaveCount(0);
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await page.screenshot({ path: "/tmp/tool-streaming-readable/03-final-expanded.png" });
 });

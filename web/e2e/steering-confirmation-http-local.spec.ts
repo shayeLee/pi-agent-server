@@ -50,7 +50,7 @@ test("consumed SDK steering is visible exactly once before assistant, including 
     window.fetch = async (...args) => {
       const res = await fetch(...args);
       const url = String(args[0]);
-      if (url.endsWith("/steer")) await record({ url, status: res.status, kind: "admission" });
+      if (url.endsWith("/steer") || url.endsWith("/follow-ups")) await record({ url, status: res.status, kind: "admission" });
       if (url.includes("/events") && res.body) {
         await record({ url, status: res.status, contentType: res.headers.get("content-type"), kind: "sse-ready" });
         const reader = res.clone().body!.getReader();
@@ -80,25 +80,80 @@ test("consumed SDK steering is visible exactly once before assistant, including 
     await input.fill("你现在在干嘛？");
     await input.press("Enter");
     await expect.poll(async () => (await evidence()).filter(e => e.kind === "admission").map(e => e.status)).toEqual([202]);
-    await expect(page.getByTestId("composer-pending-controls")).toContainText("HTTP 已接收，等待消费确认");
-    await input.press("Enter"); // Same immutable draft cannot be submitted again while its outcome is unresolved.
-    expect(requests.filter(r => r.url.endsWith("/steer"))).toHaveLength(1);
+    const firstControl = requests.find(r => r.url.endsWith("/follow-ups"))!.body;
+    await expect(input).toHaveValue("");
+    await expect(page.getByRole("group", { name: "运行时发送模式" })).toHaveCount(0);
+    await expect(page.getByRole("region", { name: "追加队列", exact: true }).getByTestId("control-queue-item")).toHaveCount(1);
+    await page.screenshot({ path: join(artifact, "default-send-followUp.png"), fullPage: true });
+    await page.getByRole("button", { name: `引导：${firstControl.text}`, exact: true }).click();
+    await expect(page.getByRole("region", { name: "引导队列", exact: true }).getByTestId("control-queue-item")).toHaveCount(1);
+    await page.screenshot({ path: join(artifact, "default-send-promoted.png"), fullPage: true });
+    await expect(page.getByTestId("control-queue-item")).toContainText(firstControl.text);
+    await expect(page.getByTestId("composer-pending-controls")).toHaveCount(0);
+    await expect.poll(async () => (await events()).some(e => e.type === "control_queue" && e.requestId === firstControl.requestId && e.items.some((item: any) =>
+      item.id === firstControl.controlId && item.acknowledgementId === firstControl.acknowledgementId && item.kind === "steer" && item.status === "queued"))).toBe(true);
+    const readQueue = () => page.evaluate(async () => {
+      const response = await fetch("/v1/sessions/steering-test/control-queue");
+      if (response.status !== 200) throw new Error(`queue HTTP ${response.status}`);
+      return response.json();
+    });
+    expect(await readQueue()).toMatchObject({ requestId: firstControl.requestId, items: [expect.objectContaining({ id: firstControl.controlId, acknowledgementId: firstControl.acknowledgementId, text: firstControl.text })] });
+    await input.press("Enter"); // Admission cleared the original follow-up snapshot; empty Enter must not resend.
+    expect(requests.filter(r => r.url.endsWith("/follow-ups"))).toHaveLength(1);
+    expect(requests.filter(r => r.url.endsWith("/steer"))).toHaveLength(0);
     expect((await events()).filter(e => e.type === "steering_consumed")).toHaveLength(0);
     await page.screenshot({ path: join(artifact, "submitted-waiting-consumption.png"), fullPage: true });
+    // Exercise follow-up admission and identity-preserving promotion/deletion against the same real SDK queue.
+    await input.fill("完成后追加的隔离任务");
+    await page.getByTestId("composer-file-input").setInputFiles({ name: "follow-up.png", mimeType: "image/png", buffer: Buffer.from(png, "base64") });
+    await expect(page.getByTestId("composer-attachment")).toHaveAttribute("data-state", "ready");
+    const followResponse = page.waitForResponse(r => r.url().endsWith("/follow-ups") && r.request().method() === "POST");
+    await input.press("Enter");
+    expect((await followResponse).status()).toBe(202);
+    await expect(input).toHaveValue("");
+    const follow = requests.filter(r => r.url.endsWith("/follow-ups"))[1]!.body;
+    expect(follow).toEqual({ text: "完成后追加的隔离任务", requestId: firstControl.requestId, controlId: expect.any(String), acknowledgementId: expect.any(String), images: [{ mediaType: "image/png", base64: png }] });
+    await expect(page.getByTestId("composer-attachment")).toHaveCount(0);
+    await expect(page.getByRole("region", { name: "追加队列", exact: true }).getByTestId("control-queue-item")).toHaveCount(1);
+    expect(await readQueue()).toMatchObject({ requestId: firstControl.requestId, items: expect.arrayContaining([
+      expect.objectContaining({ id: follow.controlId, kind: "followUp", acknowledgementId: follow.acknowledgementId, text: follow.text, hasImages: true }),
+    ]) });
+    await expect.poll(async () => (await events()).some(e => e.type === "control_queue" && e.items.some((item: any) => item.id === follow.controlId && item.kind === "followUp"))).toBe(true);
+    await expect(page.locator(".message-user")).toHaveCount(1); // Neither 202 is consumption.
+    await input.fill("队列操作不能覆盖的新草稿");
+    const promotion = page.waitForResponse(r => r.url().endsWith(`/control-queue/${follow.controlId}/promote`));
+    await page.getByRole("button", { name: `引导：${follow.text}`, exact: true }).click();
+    expect((await promotion).status()).toBe(200);
+    await expect(page.getByRole("region", { name: "追加队列", exact: true })).toHaveCount(0);
+    await expect(page.getByRole("region", { name: "引导队列", exact: true }).getByTestId("control-queue-item")).toHaveCount(2);
+    expect(requests.find(r => r.url.endsWith(`/control-queue/${follow.controlId}/promote`))!.body).toEqual({ requestId: follow.requestId, acknowledgementId: follow.acknowledgementId });
+    expect(await readQueue()).toMatchObject({ items: expect.arrayContaining([expect.objectContaining({ id: follow.controlId, kind: "steer", acknowledgementId: follow.acknowledgementId, hasImages: true })]) });
+    const deletion = page.waitForResponse(r => r.url().endsWith(`/control-queue/${follow.controlId}`) && r.request().method() === "DELETE");
+    await page.getByRole("button", { name: `删除：${follow.text}`, exact: true }).click();
+    const deleted = await deletion;
+    expect(deleted.status()).toBe(200);
+    expect(deleted.request().postDataJSON()).toEqual({ requestId: follow.requestId, acknowledgementId: follow.acknowledgementId });
+    await expect(page.getByTestId("control-queue-item")).toHaveCount(1);
+    expect((await readQueue()).items.map((item: any) => item.id)).toEqual([firstControl.controlId]);
+    await expect(input).toHaveValue("队列操作不能覆盖的新草稿");
+    await page.screenshot({ path: join(artifact, "default-send-deleted.png"), fullPage: true });
     await input.fill("新草稿不能丢");
     await page.getByTestId("composer-file-input").setInputFiles({ name: "new-draft.png", mimeType: "image/png", buffer: Buffer.from(png, "base64") });
     await expect(page.getByTestId("composer-attachment")).toHaveAttribute("data-state", "ready");
     // Detach with unresolved admission. SDK consumes in the background, then return with the old cursor.
     await page.getByRole("button", { name: "新建会话", exact: true }).click();
     await expect(page.getByTestId("composer-pending-controls")).toHaveCount(0);
+    await expect(page.getByTestId("control-queue-item")).toHaveCount(0);
     f.release();
     await expect.poll(f.waits).toBe(2);
     await page.getByTestId("session-steering-test").click();
     await expect(page.getByTestId("composer-pending-controls")).toHaveCount(0);
     await expect(input).toHaveValue("新草稿不能丢");
     await expect(page.getByTestId("composer-attachment")).toContainText("new-draft.png");
-    expect(Number(cursors.at(-1))).toBeGreaterThan(0);
+    await expect.poll(() => Number(cursors.at(-1))).toBeGreaterThan(0);
     await expect(page.locator(".message-assistant").last()).toContainText("正在写代码，主任务继续。");
+    await expect(page.getByTestId("control-queue-item")).toHaveCount(0);
+    expect(await readQueue()).toMatchObject({ items: [] });
     // The instrumented clone is read independently of the UI's SSE reader.
     await expect.poll(async () => {
       const rows = await events();
@@ -107,10 +162,15 @@ test("consumed SDK steering is visible exactly once before assistant, including 
     }).toBe(true);
     const captured = await events();
     const ack = captured.filter(e => e.type === "steering_consumed"); expect(ack).toHaveLength(1);
-    const body = requests.find(r => r.url.endsWith("/steer"))!.body;
+    const body = firstControl;
     expect(ack[0]).toMatchObject({ type: "steering_consumed", controlId: body.controlId, acknowledgementId: body.acknowledgementId, requestId: body.requestId,
       message: { sourceId: expect.any(String), text: "你现在在干嘛？" } });
     await expect(page.locator(".message-user")).toHaveCount(2);
+    expect(await page.locator(".message-user").last().evaluate(node => {
+      const assistants = document.querySelectorAll(".message-assistant");
+      const continuation = assistants[assistants.length - 1];
+      return !!continuation && !!(node.compareDocumentPosition(continuation) & Node.DOCUMENT_POSITION_FOLLOWING);
+    })).toBe(true);
     expect(captured.findIndex(e => e === ack[0])).toBeLessThan(captured.findIndex((e, i) => i > captured.indexOf(ack[0]) && e.type === "text_delta"));
     expect(captured.some(e => ["completed", "aborted", "error"].includes(e.type))).toBe(false);
     expect(f.session.isStreaming).toBe(true);
@@ -142,7 +202,12 @@ test("consumed SDK steering is visible exactly once before assistant, including 
     await page.getByRole("button", { name: "移除附件 new-draft.png", exact: true }).click();
     await input.fill("主窗口未消费的插话 C");
     await input.press("Enter");
-    await expect(page.getByTestId("composer-pending-controls")).toContainText("HTTP 已接收，等待消费确认");
+    await expect(input).toHaveValue("");
+    await expect(page.getByRole("region", { name: "追加队列", exact: true }).getByTestId("control-queue-item")).toHaveCount(1);
+    await page.getByRole("button", { name: "引导：主窗口未消费的插话 C", exact: true }).click();
+    await expect(page.getByRole("region", { name: "引导队列", exact: true }).getByTestId("control-queue-item")).toHaveCount(2);
+    await expect(page.getByTestId("control-queue-item").filter({ hasText: "主窗口未消费的插话 C" })).toHaveCount(1);
+    await expect(page.getByTestId("composer-pending-controls")).toHaveCount(0);
     await input.fill("新草稿不能丢");
     await page.getByTestId("composer-file-input").setInputFiles({ name: "new-draft.png", mimeType: "image/png", buffer: Buffer.from(png, "base64") });
     await expect(page.getByTestId("composer-attachment")).toHaveAttribute("data-state", "ready");
@@ -158,44 +223,55 @@ test("consumed SDK steering is visible exactly once before assistant, including 
     await expect(page.locator(".message-user").last().locator("img")).toHaveCount(1);
     await expect(observer.locator(".message-user")).toHaveCount(3);
     await expect(observer.locator(".message-user").last().locator("img")).toHaveCount(1);
-    // Seeing the other context's consumption must not clear this context's control snapshot.
-    await expect(page.getByTestId("composer-pending-controls")).toContainText("HTTP 已接收，等待消费确认");
+    // Seeing the other context's consumption must not clear C's authoritative queue entry or draft.
+    await expect(page.getByTestId("control-queue-item")).toHaveCount(1);
+    await expect(page.getByTestId("control-queue-item")).toContainText("主窗口未消费的插话 C");
+    const queuedC = requests.find(r => r.body.text === "主窗口未消费的插话 C")!.body;
+    expect(await readQueue()).toMatchObject({ requestId: body.requestId, items: [expect.objectContaining({ id: queuedC.controlId, acknowledgementId: queuedC.acknowledgementId })] });
     await expect(input).toHaveValue("新草稿不能丢");
     await expect(page.getByTestId("composer-attachment")).toContainText("new-draft.png");
     // B's real SDK turn_start (not a synthetic status) makes the observer streaming.
     await expect.poll(async () => (await events("observer")).some(e => e.type === "status" && e.phase === "turn_start")).toBe(true);
-    await expect(observer.getByTestId("abort-button")).toBeVisible();
+    await expect(observer.getByTestId("abort-button")).toHaveCount(0);
+    await expect(observer.locator('.composer-runtime-controls')).toHaveCount(0);
     await observer.screenshot({ path: join(artifact, "same-owner-browser-visible.png"), fullPage: true });
     // Detach and return: cached timeline plus retained SSE replay must not repeat users.
     await page.getByRole("button", { name: "新建会话", exact: true }).click();
     await page.getByTestId("session-steering-test").click();
     await expect(page.locator(".message-user")).toHaveCount(3);
+    await expect(page.getByTestId("control-queue-item")).toHaveCount(1);
     await page.reload();
     // Recent selection restores history automatically; cold-join active-task phase is unchanged.
     await expect(page.getByTestId("session-steering-test")).toBeVisible();
     await expect(page.locator(".message-user")).toHaveCount(3);
     await expect(page.locator(".message-user").last().locator("img")).toHaveCount(1);
     expect(f.session.isStreaming).toBe(true);
+    await expect(page.getByTestId("control-queue-item")).toHaveCount(1);
+    expect(await readQueue()).toMatchObject({ items: [expect.objectContaining({ id: queuedC.controlId })] });
     await expect(page.locator(".message-user").filter({ hasText: "你现在在干嘛？" })).toHaveCount(3);
     sdkStreamingAtScreenshot = f.session.isStreaming;
     await page.screenshot({ path: join(artifact, "final-success.png"), fullPage: true });
-    // Abort through the real UI -> HTTP -> runtime -> SDK path, while C remains unconsumed.
+    // No stop UI: abort through direct HTTP -> runtime -> SDK, while C remains unconsumed.
     const abortResponse = observer.waitForResponse(r => r.url().endsWith("/abort") && r.request().method() === "POST");
-    await observer.getByTestId("abort-button").click();
+    await observer.evaluate(async () => { await fetch('/v1/sessions/steering-test/abort', {method:'POST'}); });
     expect((await abortResponse).status()).toBe(204);
     await expect.poll(async () => (await events("observer")).some(e => e.type === "aborted")).toBe(true);
     await expect.poll(() => f.session.isStreaming).toBe(false);
     await expect(observer.getByTestId("abort-button")).toHaveCount(0);
+    await expect(observer.getByTestId("control-queue-item")).toHaveCount(0);
+    await expect(page.getByTestId("control-queue-item")).toHaveCount(0);
+    expect(await readQueue()).toMatchObject({ items: [] });
     await expect(observer.locator(".message-user")).toHaveCount(3);
     await expect(page.locator(".message-user")).toHaveCount(3);
-    const controls = requests.filter(r => r.url.endsWith("/steer"));
+    expect(requests.filter(r => r.url.endsWith("/steer"))).toHaveLength(1); // Only the observer's explicit API steering.
+    const controls = requests.filter(r => r.url.endsWith("/follow-ups"));
     expect(controls).toHaveLength(3);
     const c = controls.find(r => r.body.text === "主窗口未消费的插话 C")!;
     expect(c.window).toBe("main");
     for (const windowName of ["main", "observer"]) {
       const acknowledgements = (await events(windowName)).filter(e => e.type === "steering_consumed");
       expect(acknowledgements.filter(e => e.controlId === "image-control")).toHaveLength(1);
-      expect(acknowledgements.some(e => e.controlId === c.body.controlId)).toBe(false);
+      expect(acknowledgements.some(e => e.controlId === c.body.controlId || e.controlId === follow.controlId)).toBe(false);
     }
     expect(f.session.sessionManager.getEntries().filter((e: any) => e.type === "message" && e.message.role === "user")).toHaveLength(3);
   } catch (error) {

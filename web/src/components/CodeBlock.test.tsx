@@ -48,16 +48,15 @@ describe("CodeBlock", () => {
 
 const call: ToolCall = { toolCallId: "code", toolName: "read", args: { path: "/tmp/index.html" }, done: false, isError: false, partialResult: undefined, result: undefined };
 describe("tool code language and snapshots", () => {
-  it("uses path, preserves block order, replaces snapshots, retains raw access", () => {
+  it("uses path, preserves block order and replaces snapshots", () => {
     const result = (text: string) => ({ content: [{ type: "text", text }, { type: "text", text: "<footer>end</footer>\n" }] });
     const { container, rerender } = render(<ToolCallCard call={{ ...call, partialResult: result("<html>\n") }} />);
     expect(screen.getByRole("button", { name: /工具调用/ })).toHaveAttribute("aria-expanded", "true");
     expect(container.querySelector('.tool-result-text .code-block')?.getAttribute("data-language")).toBe("html");
     rerender(<ToolCallCard call={{ ...call, partialResult: result("<html>\n<body>second</body>\n") }} />);
     expect(Array.from(container.querySelectorAll(".tool-result-text pre"), p => p.textContent)).toEqual(["<html>\n<body>second</body>\n", "<footer>end</footer>\n"]);
-    fireEvent.click(screen.getByRole("button", { name: "工具更多操作" }));
-    fireEvent.click(screen.getByRole("menuitem", { name: "查看原始数据" }));
-    expect(JSON.parse(container.querySelector('dialog[open] pre')!.textContent!).partialResult).toEqual(result("<html>\n<body>second</body>\n"));
+    expect(container.querySelector('dialog')).toBeNull();
+    expect(container.querySelector('.tool-call-body > :not(section)')).toBeNull();
   });
   it.each([
     [{ path: "unknown.log" }, "plain prose const true", undefined],

@@ -1,6 +1,6 @@
 import { test, expect } from "@playwright/test";
 
-test("多项目：创建额外项目 → 建会话归属项目 → 切换项目隔离会话 → 删除项目级联", async ({ page }) => {
+test("多项目：创建额外项目 → 建会话归属项目 → 切换项目隔离会话 → 验证无删除入口", async ({ page }) => {
   await page.goto("/");
   await expect(page.getByTestId("new-session")).toBeVisible();
 
@@ -19,16 +19,20 @@ test("多项目：创建额外项目 → 建会话归属项目 → 切换项目�
   const projectList = page.locator(`[id="${listboxId}"]`);
   await expect(trigger).toHaveAttribute("data-value", DEFAULT_PROJECT_ID);
 
-  // 创建额外项目
+  // 通过下拉菜单中的「新建项目」创建额外项目
+  await trigger.click();
   await page.getByTestId("new-project").click();
   await page.getByTestId("project-name-input").fill(projectName);
   await page.getByTestId("project-cwd-input").fill("/tmp/my-repo");
   await page.getByTestId("project-create-submit").click();
+  await expect(trigger).toHaveText(projectName);
   await trigger.click();
-  await expect(projectList.getByRole("option", { name: projectName })).toHaveCount(1);
+  const currentListboxId = await trigger.getAttribute("aria-controls");
+  const activeList = page.locator(`[id="${currentListboxId}"]`);
+  await expect(activeList.getByRole("menuitemradio", { name: projectName })).toHaveCount(1);
+  await page.keyboard.press("Escape");
 
-  // 切到额外项目，建一个会话并重命名为唯一标题
-  await projectList.getByRole("option", { name: projectName }).click();
+  // 在额外项目中建一个会话并重命名为唯一标题
   await expect(trigger).not.toHaveAttribute("data-value", DEFAULT_PROJECT_ID);
   await page.getByTestId("new-session").click();
   await expect(page.getByTestId("chat")).toBeVisible();
@@ -46,15 +50,21 @@ test("多项目：创建额外项目 → 建会话归属项目 → 切换项目�
 
   // 切回默认项目：不该出现额外项目的会话
   await trigger.click();
-  await projectList.getByRole("option", { name: "默认项目" }).click();
+  const returnListboxId = await trigger.getAttribute("aria-controls");
+  await page.locator(`[id="${returnListboxId}"]`).getByRole("menuitemradio", { name: "默认项目" }).click();
   await expect(page.getByText(uniqueTitle)).toHaveCount(0);
 
-  // 切回额外项目，删除项目（级联删除其下会话）
+  // 切回额外项目，验证 Web UI 不暴露项目删除入口（不提供删除入口与请求）
   await trigger.click();
-  await projectList.getByRole("option", { name: projectName }).click();
-  page.once("dialog", (d) => d.accept());
-  await page.getByTestId("delete-project").click();
+  const extraListboxId = await trigger.getAttribute("aria-controls");
+  await page.locator(`[id="${extraListboxId}"]`).getByRole("menuitemradio", { name: projectName }).click();
+  await trigger.click();
+  await expect(page.getByTestId("delete-project")).toHaveCount(0);
+  await expect(page.getByText("删除当前项目")).toHaveCount(0);
+  await expect(page.getByText("删除项目")).toHaveCount(0);
+
+  // 再次切回默认项目确认状态正常
+  const finalListboxId = await trigger.getAttribute("aria-controls");
+  await page.locator(`[id="${finalListboxId}"]`).getByRole("menuitemradio", { name: "默认项目" }).click();
   await expect(trigger).toHaveAttribute("data-value", DEFAULT_PROJECT_ID);
-  await trigger.click();
-  await expect(projectList.getByRole("option", { name: projectName })).toHaveCount(0);
 });

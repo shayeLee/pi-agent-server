@@ -43,7 +43,7 @@ for (const width of [1280, 390]) {
 
       // 起始态：没有会话、没有伪造历史。
       await expect(page.getByTestId("no-session-hint")).toBeVisible();
-      await expect(page.getByTestId("composer-start-settings")).toBeVisible();
+      await expect(page.getByTestId("model-thinking-trigger")).toBeVisible();
       expect(await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth + 1)).toBe(false);
       await page.screenshot({ path: shot(testInfo, `start-${theme}-${width}.png`), animations: "disabled" });
 
@@ -94,7 +94,7 @@ for (const viewport of [
       }),
     }));
     await page.goto("/");
-    await expect(page.getByTestId("composer-start-settings")).toBeVisible();
+    await expect(page.getByTestId("model-thinking-trigger")).toBeVisible();
     await page.getByTestId("model-thinking-trigger").click();
 
     const panel = page.getByRole("dialog", { name: "模型与思考深度" });
@@ -125,7 +125,8 @@ for (const viewport of [
     const scrollY = await page.evaluate(() => window.scrollY);
     await page.getByRole("radio", { name: "medium" }).click();
     await page.getByRole("radio", { name: "xhigh" }).click();
-    await expect(page.getByTestId("model-thinking-trigger")).toContainText("xhigh");
+    await expect(page.getByTestId("thinking-trigger")).toHaveText("xhigh");
+    await expect(page.getByTestId("model-thinking-trigger")).toHaveAccessibleName(/思考深度：xhigh/);
     expect(await page.evaluate(() => window.scrollY)).toBe(scrollY);
 
     const modelOptions = page.locator(".model-thinking-model-options");

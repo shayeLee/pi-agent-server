@@ -12,6 +12,7 @@ test("桌面侧栏折叠后缩窄视口，移动抽屉仍保留项目与会话�
   await page.setViewportSize({ width: 390, height: 844 });
   await page.getByRole("button", { name: "打开工作区导航" }).click();
   await expect(page.getByTestId("project-select")).toBeVisible();
+  await page.getByTestId("project-select").click();
   await page.getByTestId("new-project").click();
   await expect(page.getByTestId("project-create-form")).toBeVisible();
   await page.getByRole("button", { name: "搜索会话" }).click();

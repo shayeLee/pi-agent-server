@@ -17,7 +17,7 @@ for (const touch of [false, true]) for (const theme of ["light", "dark"]) {
       const header = card.locator(".tool-call-header");
       const icon = header.locator(".tool-status-icon");
       await expect(card.locator('.tool-toggle')).toHaveCSS('opacity', '1');
-      await expect(card.locator('.tool-more-trigger')).toHaveCSS('opacity', '1');
+      await expect(card.locator('.tool-call-heading [data-icon="ellipsis"]')).toHaveCount(0);
       // Rotation changes the SVG's axis-aligned bounding box, not its layout slot or center.
       const geometry = () => icon.evaluate(el => {
         const rect = el.getBoundingClientRect();
@@ -31,8 +31,8 @@ for (const touch of [false, true]) for (const theme of ["light", "dark"]) {
         };
       });
       const before = await geometry();
-      expect(before.width).toBe("14px");
-      expect(before.height).toBe("14px");
+      expect(before.width).toBe("18px");
+      expect(before.height).toBe("18px");
       await expect(header).toHaveAttribute("aria-expanded", String(id === "unfinished"));
       await expect(icon).toHaveCSS("opacity", "1");
       await expect(icon.locator("title")).toHaveText(id === "unfinished" ? "进行中" : id === "error" ? "失败" : "已完成");

@@ -29,7 +29,7 @@ describe("ModelThinkingPicker", () => {
     setup();
     expect(screen.getByTestId("model-thinking-trigger")).toHaveTextContent("shared-id");
     expect(screen.getByTestId("model-thinking-trigger")).not.toHaveTextContent("provider-b");
-    expect(screen.getByTestId("model-thinking-trigger")).toHaveTextContent("high");
+    expect(screen.getByTestId("thinking-trigger")).toHaveTextContent("high");
     fireEvent.click(screen.getByTestId("model-thinking-trigger"));
     expect(screen.getByRole("radio", { name: "provider-b/shared-id (Model B)" })).toHaveAttribute("aria-checked", "true");
     expect(screen.getByRole("radio", { name: "provider-a/shared-id (Model A)" })).toHaveAttribute("aria-checked", "false");
@@ -89,6 +89,45 @@ describe("ModelThinkingPicker", () => {
     expect(screen.getByRole("radio", { name: "provider-a/shared-id (Model A)" })).toBeInTheDocument();
     fireEvent.change(search, { target: { value: "missing" } });
     expect(screen.getByText("没有匹配的模型")).toBeInTheDocument();
+  });
+
+  it.each(["model", "thinking"] as const)("%s 入口同入口切换关闭、不同入口切换焦点且 Escape 回到当前入口", (entry) => {
+    const { onConfigChange } = setup();
+    const model = screen.getByTestId("model-thinking-trigger");
+    const thinking = screen.getByTestId("thinking-trigger");
+    const first = entry === "model" ? model : thinking;
+    const second = entry === "model" ? thinking : model;
+    for (const trigger of [first, second, first]) {
+      fireEvent.click(trigger);
+      expect(screen.getByRole("dialog", { name: "模型与思考深度" })).toBeInTheDocument();
+      expect(trigger).toHaveAttribute("aria-expanded", "true");
+      expect(trigger === model ? thinking : model).toHaveAttribute("aria-expanded", "false");
+      expect(trigger === model ? screen.getByRole("searchbox") : screen.getByRole("radio", { name: "high" })).toHaveFocus();
+    }
+    expect(onConfigChange).not.toHaveBeenCalled();
+    fireEvent.keyDown(document.activeElement!, { key: "Escape" });
+    expect(first).toHaveFocus();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    fireEvent.click(second);
+    fireEvent.click(second);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("非默认 high 初始焦点不触发修改，键盘从 high 移动而非默认第一项", () => {
+    const { onConfigChange } = setup();
+    fireEvent.click(screen.getByTestId("thinking-trigger"));
+    expect(screen.getByRole("radio", { name: "high" })).toHaveFocus();
+    expect(onConfigChange).not.toHaveBeenCalled();
+    fireEvent.keyDown(document.activeElement!, { key: "ArrowLeft" });
+    expect(screen.getByRole("radio", { name: "low" })).toHaveFocus();
+    expect(onConfigChange).toHaveBeenCalledExactlyOnceWith({ thinkingLevel: "low" });
+  });
+
+  it("没有匹配思考档位时聚焦第一项但不修改配置", () => {
+    const { onConfigChange } = setup({ thinkingLevel: "unknown" });
+    fireEvent.click(screen.getByTestId("thinking-trigger"));
+    expect(screen.getByRole("radio", { name: "medium" })).toHaveFocus();
+    expect(onConfigChange).not.toHaveBeenCalled();
   });
 
   it("Escape 和点击外部关闭弹层", () => {

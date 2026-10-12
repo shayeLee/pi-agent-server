@@ -1,3 +1,4 @@
+import { projectSystemPrompt } from "../shared/system-prompt.js";
 import type {
   IdempotencyStorePort,
   ModelCatalogPort,
@@ -406,6 +407,44 @@ export class SessionService {
     return (await this.findOwned(ownerKey, id))?.systemPrompt ?? null;
   }
 
+  /** Independent read-only Inspector API. Never creates runtime or reconstructs a historical prompt. */
+  async getSystemPromptSnapshot(ownerKey: string, id: string): Promise<import("../shared/system-prompt.js").SessionSystemPrompt | null> {
+    if (!(await this.findOwned(ownerKey, id))) return null;
+    const allowed = await this.prepareOutputGuard(ownerKey, id);
+    // Recheck after asynchronous native capability preparation (deletion/ownership/source race).
+    const record = await this.findOwned(ownerKey, id);
+    if (!record || !allowed()) return null;
+    try {
+      const live = this.deps.registry.get(id)?.runtime.getEffectiveSystemPrompt?.();
+      const snapshot = projectSystemPrompt(live, record.systemPrompt);
+      return allowed() ? snapshot : null;
+    } catch {
+      // A revoked/disposed native descriptor must not downgrade to a stale creation snapshot.
+      return null;
+    }
+  }
+
+  /** Full independent steps snapshot; neither cold reads nor this lookup create runtime. */
+  async getSessionSteps(ownerKey: string, id: string): Promise<import("../shared/session-steps.js").SessionStepsSnapshot | null> {
+    if (!(await this.findOwned(ownerKey, id))) return null;
+    const allowed = await this.prepareOutputGuard(ownerKey, id);
+    const record = await this.findOwned(ownerKey, id);
+    if (!record || !allowed()) return null;
+    try {
+      const live = this.deps.registry.get(id)?.runtime.getSessionSteps?.();
+      if (live) return allowed() ? live : null;
+      const storage = this.deps.conversationStorage?.require(record);
+      const cold = storage?.readSteps ? await storage.readSteps(record, { sessionId: id, projectId: record.projectId })
+        : record.conversationRef === null ? { sessionId: id, projectionId: `empty:${id}`, revision: 0, steps: [] } : null;
+      if (!(await this.findOwned(ownerKey, id)) || !allowed()) return null;
+      const snapshot = this.deps.registry.get(id)?.runtime.getSessionSteps?.() ?? cold;
+      return allowed() ? snapshot : null;
+    } catch {
+      if (!allowed() || record.origin === "native" || await this.deps.nativeSessions?.hasSourceClaim?.(record)) return null;
+      throw new Error("会话步骤只读解析失败");
+    }
+  }
+
   async deleteSession(ownerKey: string, id: string): Promise<boolean> {
     const record = await this.findOwned(ownerKey, id);
     if (!record) return false;
@@ -641,9 +680,21 @@ export class SessionService {
     const decision = operation === "steer"
       ? await entry.runtime.steer(text!, steering, ownerKey)
       : operation === "follow-up"
-        ? await entry.runtime.followUp(text!)
+        ? await entry.runtime.followUp(text!, steering, ownerKey)
         : await entry.runtime.abort(expectedRequestId);
     return decision;
+  }
+
+  async getControlQueue(ownerKey: string, id: string): Promise<import("../shared/control-queue.js").ControlQueueSnapshot | null> {
+    const record = await this.findOwned(ownerKey, id);
+    if (!record) return null;
+    return this.deps.registry.getControlQueue(id);
+  }
+
+  async mutateControlQueue(ownerKey: string, id: string, identity: import("../shared/control-queue.js").ControlIdentity, operation: "delete" | "promote"): Promise<"not-found" | import("../shared/control-queue.js").ControlQueueMutation> {
+    const record = await this.findOwned(ownerKey, id);
+    if (!record) return "not-found";
+    return this.deps.registry.get(id)?.runtime.mutateControlQueue(identity, operation, ownerKey) ?? { kind: "conflict" };
   }
 
   /** SSE transport uses the event bus, but ownership/runtime lookup remains application logic. */

@@ -1,0 +1,42 @@
+/* No preflight. All generated classes AND Tailwind theme variables use ui- / ui:.
+   Utilities are intentionally unlayered so explicit opt-in classes can override
+   legacy element defaults. Source scanning is restricted to components/ui; callers
+   using new utilities must explicitly expand @source here in a future change. */
+@import "tailwindcss/theme.css" prefix(ui);
+@import "tailwindcss/utilities.css" prefix(ui) source(none);
+@source "../components/ui";
+
+/* Opt-in aliases only; global theme remains active when this stylesheet is disabled.
+   Portals carry data-ui and inherit the same semantic theme as the application. */
+[data-ui] {
+  --foundation-surface: var(--bg-surface);
+  --foundation-foreground: var(--text-primary);
+  --foundation-muted: var(--bg-raised);
+  --foundation-muted-foreground: var(--text-secondary);
+  --foundation-border: var(--line);
+  --foundation-primary: var(--accent-solid-bg);
+  --foundation-primary-foreground: var(--accent-solid-fg);
+  --foundation-danger: var(--danger);
+  --foundation-ring: var(--accent);
+  --foundation-font: var(--font-sans);
+}
+
+@theme inline {
+  --color-surface: var(--foundation-surface);
+  --color-foreground: var(--foundation-foreground);
+  --color-muted: var(--foundation-muted);
+  --color-muted-foreground: var(--foundation-muted-foreground);
+  --color-line: var(--foundation-border);
+  --color-primary: var(--foundation-primary);
+  --color-primary-foreground: var(--foundation-primary-foreground);
+  --color-danger: var(--foundation-danger);
+  --color-ring: var(--foundation-ring);
+  --font-sans: var(--foundation-font);
+  --text-xs: var(--font-xs);
+  --text-sm: var(--font-sm);
+  --text-base-sm: var(--font-base-sm);
+  --text-md: var(--font-md);
+  --text-base: var(--font-base);
+  --text-lg: var(--font-lg);
+  --text-xl: var(--font-xl);
+}

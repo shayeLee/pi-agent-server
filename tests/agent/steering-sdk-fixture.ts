@@ -1,21 +1,28 @@
 // Real SDK 1.1.0, explicit temporary resources/credentials, synthetic stream only.
-import { createAgentSession, createExtensionRuntime, ModelRuntime, SessionManager, SettingsManager, type ResourceLoader } from "@earendil-works/pi-coding-agent";
+import { createAgentSession, createExtensionRuntime, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager, type ResourceLoader, type ExtensionFactory } from "@earendil-works/pi-coding-agent";
 import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
 import { getModel } from "@earendil-works/pi-ai/compat";
 import { join } from "node:path";
 import { PiAgentAdapter, type AgentSessionLike } from "../../src/agent/pi-agent-adapter.js";
 
 export async function steeringSdkFixture(root: string, configure?: (session: Awaited<ReturnType<typeof createAgentSession>>["session"]) => void,
-  sessionManager = SessionManager.inMemory(root)) {
+  sessionManager = SessionManager.inMemory(root), extensionFactories: ExtensionFactory[] = []) {
   const runtime = await ModelRuntime.create({ authPath: join(root, "auth.json"), modelsPath: join(root, "models.json"), refreshOnCreate: false });
   await runtime.setRuntimeApiKey("openai", "offline-not-a-real-key");
-  const loader: ResourceLoader = {
+  let loader: ResourceLoader = {
     getExtensions: () => ({ extensions: [], errors: [], runtime: createExtensionRuntime() }),
     getSkills: () => ({ skills: [], diagnostics: [] }), getPrompts: () => ({ prompts: [], diagnostics: [] }),
     getThemes: () => ({ themes: [], diagnostics: [] }), getAgentsFiles: () => ({ agentsFiles: [] }),
     getSystemPrompt: () => "Isolated offline steering fixture", getSystemPromptSource: () => undefined,
     getAppendSystemPrompt: () => [], getAppendSystemPromptSources: () => [], extendResources: () => {}, reload: async () => {},
   };
+  if (extensionFactories.length) {
+    const isolated = new DefaultResourceLoader({ cwd: root, agentDir: join(root, "agent"),
+      settingsManager: SettingsManager.inMemory({}), noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true,
+      extensionFactories, systemPromptOverride: () => "Isolated offline queue fixture" });
+    await isolated.reload();
+    loader = isolated;
+  }
   let release = () => {};
   let calls = 0;
   let waits = 0;
@@ -47,6 +54,7 @@ export async function steeringSdkFixture(root: string, configure?: (session: Awa
     stream.push({ type: "done", reason: "toolUse", message }); stream.end(message); return stream;
   };
   configure?.(session);
+  if (extensionFactories.length) await session.bindExtensions({ mode: "json" });
   const adapter = new PiAgentAdapter(session as unknown as AgentSessionLike);
   return { session, adapter, release: () => release(), calls: () => calls, waits: () => waits };
 }

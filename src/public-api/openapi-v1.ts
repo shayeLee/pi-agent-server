@@ -35,7 +35,12 @@ export const PUBLIC_API_OPERATIONS = [
   ["/v1/sessions/{id}/config", "patch", "sessions:update-config"],
   ["/v1/sessions/{id}/messages", "post", "sessions:send-message"],
   ["/v1/sessions/{id}/export", "get", "sessions:export"],
+  ["/v1/sessions/{id}/steps", "get", "sessions:export"],
+  ["/v1/sessions/{id}/system-prompt", "get", "sessions:export"],
   ["/v1/sessions/{id}/file-preview", "get", "sessions:file-preview"],
+  ["/v1/sessions/{id}/control-queue", "get", "sessions:export"],
+  ["/v1/sessions/{id}/control-queue/{controlId}", "delete", "sessions:control"],
+  ["/v1/sessions/{id}/control-queue/{controlId}/promote", "post", "sessions:control"],
   ["/v1/sessions/{id}/steer", "post", "sessions:control"],
   ["/v1/sessions/{id}/follow-ups", "post", "sessions:control"],
   ["/v1/sessions/{id}/abort", "post", "sessions:control"],
@@ -52,6 +57,9 @@ export const PUBLIC_API_AUTOMATIC_HEAD_OPERATIONS = [
   ["/v1/projects", "head", "projects:list"],
   ["/v1/sessions", "head", "sessions:list"],
   ["/v1/sessions/{id}/export", "head", "sessions:export"],
+  ["/v1/sessions/{id}/steps", "head", "sessions:export"],
+  ["/v1/sessions/{id}/system-prompt", "head", "sessions:export"],
+  ["/v1/sessions/{id}/control-queue", "head", "sessions:export"],
 ] as const;
 
 type Permission = (typeof PUBLIC_API_OPERATIONS)[number][2];
@@ -295,6 +303,24 @@ export const openapiV1 = {
         "500": headJson("Session export could not be read; the GET response body is suppressed."),
       }, { parameters: sessionParameters }),
     },
+    "/v1/sessions/{id}/steps": {
+      get: operation("getSessionSteps", "sessions:export", {
+        "200": { description: "Complete authoritative steps snapshot, including active unsaved blocks. Recorded history follows selected branch order; observed tool results follow actual completion order. No runtime is created.", ...json(ref("SessionStepsSnapshot")) },
+        "404": error(404, "Session not found or source access revoked."),
+      }, { parameters: sessionParameters }),
+      head: automaticHeadOperation("getSessionStepsHead", "sessions:export", {
+        "200": headJson("Steps snapshot; body suppressed."), "404": headJson("Session not found."),
+      }, { parameters: sessionParameters }),
+    },
+    "/v1/sessions/{id}/system-prompt": {
+      get: operation("getSystemPrompt", "sessions:export", {
+        "200": { description: "Full prompt with explicit provenance. live_effective may not yet have been sent to a model. No runtime is created; unproven history falls back to creation_snapshot or unavailable.", ...json(ref("SessionSystemPrompt")) },
+        "404": error(404, "Session not found or source access revoked."),
+      }, { parameters: sessionParameters }),
+      head: automaticHeadOperation("getSystemPromptHead", "sessions:export", {
+        "200": headJson("Prompt snapshot; body suppressed."), "404": headJson("Session not found."),
+      }, { parameters: sessionParameters }),
+    },
     "/v1/sessions/{id}/file-preview": {
       get: operation("previewSessionFile", "sessions:file-preview", {
         "200": { description: "Read-only, bounded UTF-8 text preview under the session project root.", ...json(ref("FilePreview")) },
@@ -302,11 +328,21 @@ export const openapiV1 = {
         "404": error(404, "Session or file not found."),
       }, { parameters: [...sessionParameters, { name: "path", in: "query", required: true, schema: { type: "string", minLength: 1 }, description: "Project-relative file path; absolute paths and traversal are rejected." }, { name: "line", in: "query", required: false, schema: { type: "integer", minimum: 1 }, description: "Optional 1-based line for a client-side scroll target." }] }),
     },
+    "/v1/sessions/{id}/control-queue": {
+      get: operation("getControlQueue", "sessions:export", { "200": { description: "Authoritative resident SDK queue. Public event reconciliation has propagation delay, not atomic realtime drain notification. No pending input-extension work or custom SDK messages.", ...json(ref("ControlQueueSnapshot")) }, "404": error(404, "Session not found.") }, { parameters: sessionParameters }),
+      head: automaticHeadOperation("getControlQueueHead", "sessions:export", { "200": headJson("Authoritative queue; body suppressed."), "404": headJson("Session not found.") }, { parameters: sessionParameters }),
+    },
+    "/v1/sessions/{id}/control-queue/{controlId}": {
+      delete: operation("deleteControl", "sessions:control", { "200": { description: "Resident object withdrawn (or idempotent deletion). Late input enqueue is fenced.", ...json(ref("ControlQueueSnapshot")) }, "400": error(400, "Malformed identity."), "404": error(404, "Session not found."), "409": error(409, "Unknown identity, actor/run mismatch or already dequeued.") }, { parameters: [...sessionParameters, { name: "controlId", in: "path", required: true, schema: { type: "string", minLength: 1, maxLength: 128 } }], requestBody: request(ref("ControlMutationInput")), ...requestValidation }),
+    },
+    "/v1/sessions/{id}/control-queue/{controlId}/promote": {
+      post: operation("promoteControl", "sessions:control", { "200": { description: "Original follow-up object moved to steer without replaying input processing; resident repeats are idempotent.", ...json(ref("ControlQueueSnapshot")) }, "400": error(400, "Malformed identity."), "404": error(404, "Session not found."), "409": error(409, "Unknown identity, actor/run mismatch, not follow-up or already dequeued.") }, { parameters: [...sessionParameters, { name: "controlId", in: "path", required: true, schema: { type: "string", minLength: 1, maxLength: 128 } }], requestBody: request(ref("ControlMutationInput")), ...requestValidation }),
+    },
     "/v1/sessions/{id}/steer": {
       post: operation("steerSession", "sessions:control", { "202": { description: "Correlated control admitted, empty body. Not consumption: only steering_consumed SSE with the exact session/controlId/requestId/acknowledgementId confirms it; the primary task stays active." }, "204": { description: "Legacy text-only control admitted, empty body; no consumption acknowledgement." }, "400": error(400, "Invalid or incomplete steering identity or images."), "404": error(404, "Session not found."), "409": error(409, "No active task, primary request mismatch, or conflicting control identity/payload/actor.") }, { parameters: sessionParameters, requestBody: request(ref("SteeringInput")), ...requestValidation }),
     },
     "/v1/sessions/{id}/follow-ups": {
-      post: operation("followUpSession", "sessions:control", { "204": noContent, "404": error(404, "Session not found."), "409": error(409, "No active task.") }, { parameters: sessionParameters, requestBody: request(ref("TextInput")), ...requestValidation }),
+      post: operation("followUpSession", "sessions:control", { "202": { description: "Correlated follow-up admitted; empty body. Queue removal and exact consumption acknowledgement are independent." }, "204": noContent, "400": error(400, "Invalid or incomplete identity or images."), "404": error(404, "Session not found."), "409": error(409, "No active task or identity/payload/actor conflict.") }, { parameters: sessionParameters, requestBody: request(ref("SteeringInput")), ...requestValidation }),
     },
     "/v1/sessions/{id}/abort": {
       post: operation("abortSession", "sessions:control", { "204": noContent, "400": error(400, "Invalid abort input."), "404": error(404, "Session not found."), "409": { description: "No active task, requestId mismatch, or model-failback continuation.", content: { "application/json": { schema: { anyOf: [ref("ApiError"), { type: "object", required: ["statusCode", "error", "code", "message"], properties: { statusCode: { const: 409 }, error: { const: "Conflict" }, code: { const: "MODEL_FAILBACK_IN_PROGRESS", description: "A model-failback continuation owns this request; retry abort after its end event." }, message: { type: "string" } }, additionalProperties: false }] } } } } }, {
@@ -352,6 +388,17 @@ export const openapiV1 = {
       Model: { type: "object", required: ["provider", "id", "name"], properties: { provider: { type: "string" }, id: { type: "string" }, name: { type: "string" } }, additionalProperties: false },
       ModelList: { type: "object", required: ["models", "thinkingLevels", "defaultModel", "defaultThinkingLevel"], properties: { models: { type: "array", items: ref("Model") }, thinkingLevels: { type: "array", items: { type: "string" } }, defaultModel: { anyOf: [ref("Model"), { type: "null" }] }, defaultThinkingLevel: { type: "string" } }, additionalProperties: false },
       Project: { type: "object", required: ["id", "name", "cwd", "isDefault"], properties: { id: { type: "string" }, name: { type: "string" }, cwd: { type: "string" }, isDefault: { type: "boolean" }, canDelete: { type: "boolean", description: "Current actor owns this non-default project; shared automatic projects are system-administered." }, canCreateSession: { type: "boolean", description: "Current route RBAC and project access allow creating an actor-owned private session; does not grant project mutation or access to other actors' private resources." } }, additionalProperties: false },
+      SessionStep: { type: "object", additionalProperties: false, required: ["id", "kind", "content", "status", "source"], properties: {
+        id: { type: "string" }, kind: { type: "string", enum: ["user", "thinking", "assistant_text", "tool_call", "tool_result", "notification", "system_event", "error", "compaction", "custom"] }, content: {},
+        status: { type: "string", enum: ["streaming", "completed", "error", "aborted", "unknown"] }, source: { type: "string", enum: ["recorded", "observed"] },
+        timestamp: { type: "string" }, sourceEntryId: { type: "string" }, requestId: { type: "string" }, toolName: { type: "string" }, toolCallId: { type: "string" }, parentToolCallId: { type: "string" }, label: { type: "string" }, omission: { type: "string" },
+        images: { type: "array", items: { type: "object", additionalProperties: false, required: ["mediaType", "base64"], properties: { mediaType: { type: "string" }, base64: { type: "string" } } } },
+      } },
+      SessionStepsSnapshot: { type: "object", additionalProperties: false, required: ["sessionId", "projectionId", "revision", "steps"], properties: { sessionId: { type: "string" }, projectionId: { type: "string" }, revision: { type: "integer", minimum: 0 }, steps: { type: "array", items: ref("SessionStep") } } },
+      SessionSystemPrompt: { oneOf: [
+        { type: "object", additionalProperties: false, required: ["source", "prompt"], properties: { source: { type: "string", enum: ["live_effective", "creation_snapshot"] }, prompt: { type: "string" } } },
+        { type: "object", additionalProperties: false, required: ["source", "prompt"], properties: { source: { type: "string", enum: ["unavailable"] }, prompt: { type: "null" } } },
+      ], description: "Only current effective or creation snapshot provenance is reported. Historical structured records do not prove the forced prompt sent to a model. Empty strings are valid prompts." },
       Session: { type: "object", required: ["id", "ownerKey", "projectId", "title", "createdAt", "updatedAt", "modelProvider", "modelId", "thinkingLevel", "systemPrompt", "capabilityVersions"], properties: { id: { type: "string" }, ownerKey: { type: "string" }, visibility: { type: "string", enum: ["private", "shared"], description: "Native shared sessions are available to admitted users subject to RBAC and cwd exclusions; absent means private." }, origin: { type: "string", enum: ["managed", "native"], description: "Absent means managed." }, projectId: { type: "string" }, title: { type: "string" }, firstPrompt: { type: ["string", "null"], description: "Read-only first persisted user prompt for display; never a rename payload." }, createdAt: { type: "number" }, updatedAt: { type: "number" }, modelProvider: { type: ["string", "null"] }, modelId: { type: ["string", "null"] }, thinkingLevel: { type: ["string", "null"] }, systemPrompt: { type: ["string", "null"] }, capabilityVersions: { type: ["string", "null"] } }, additionalProperties: false },
       CreateProject: { type: "object", required: ["name", "cwd"], properties: { name: { type: "string" }, cwd: { type: "string" } }, additionalProperties: false },
       UploadedFile: { type: "object", required: ["fileId", "name", "mediaType", "size", "status", "agentPath"], properties: { fileId: { type: "string" }, name: { type: "string" }, mediaType: { type: "string" }, size: { type: "integer" }, status: { const: "ready" }, agentPath: { type: "string" } }, additionalProperties: false },
@@ -394,12 +441,17 @@ export const openapiV1 = {
       SteeringIdentity: { type: "object", required: ["controlId", "acknowledgementId", "requestId"], properties: { controlId: { type: "string", minLength: 1, maxLength: 128 }, acknowledgementId: { type: "string", minLength: 1, maxLength: 128 }, requestId: { type: "string", maxLength: 128 } }, additionalProperties: false },
       SteeringInput: { type: "object", required: ["text"], properties: { text: { type: "string", maxLength: 32768 }, controlId: { type: "string", minLength: 1, maxLength: 128 }, acknowledgementId: { type: "string", minLength: 1, maxLength: 128 }, requestId: { type: "string", maxLength: 128 }, images: { type: "array", maxItems: 4, items: ref("ImageInput") } }, anyOf: [{ required: ["controlId", "acknowledgementId", "requestId"] }, { not: { anyOf: [{ required: ["controlId"] }, { required: ["acknowledgementId"] }, { required: ["requestId"] }, { required: ["images"] }] } }], additionalProperties: false, description: "Legacy text-only or complete correlated identity, optionally with images. File attachments are not supported. Admission is not consumption." },
       SteeringConsumed: { type: "object", required: ["type", "controlId", "acknowledgementId", "requestId"], properties: { type: { const: "steering_consumed" }, controlId: { type: "string" }, acknowledgementId: { type: "string" }, requestId: { type: "string" }, message: { type: "object", required: ["sourceId", "text"], properties: { sourceId: { type: "string", minLength: 1 }, text: { type: "string" }, images: { type: "array", maxItems: 4, items: ref("ImageInput") } }, additionalProperties: false } }, additionalProperties: false, description: "Exact queued SDK user-message object was consumed once. Optional message projects its persisted user entry, before subsequent assistant deltas; sourceId deduplicates live/replay/export history. Missing message never implies a visible user bubble. Nonterminal; never acknowledge by matching text." },
+      ControlMutationInput: { type: "object", required: ["requestId", "acknowledgementId"], properties: { requestId: { type: "string", minLength: 1, maxLength: 128 }, acknowledgementId: { type: "string", minLength: 1, maxLength: 128 } }, additionalProperties: false },
+      ControlQueueItem: { type: "object", required: ["id", "kind", "text", "hasImages", "status", "acknowledgementId"], properties: { id: { type: "string" }, kind: { enum: ["steer", "followUp"] }, text: { type: "string" }, hasImages: { type: "boolean" }, status: { const: "queued" }, acknowledgementId: { type: "string" } }, additionalProperties: false },
+      ControlQueueSnapshot: { type: "object", required: ["requestId", "revision", "items"], properties: { requestId: { type: ["string", "null"] }, revision: { type: "integer", minimum: 0 }, items: { type: "array", items: ref("ControlQueueItem") } }, additionalProperties: false },
+      ControlQueueEvent: { type: "object", required: ["type", "requestId", "revision", "items"], properties: { type: { const: "control_queue" }, requestId: { type: ["string", "null"] }, revision: { type: "integer", minimum: 0 }, items: { type: "array", items: ref("ControlQueueItem") } }, additionalProperties: false },
       TextInput: { type: "object", required: ["text"], properties: { text: { type: "string" } }, additionalProperties: false },
       AbortInput: { type: "object", required: ["requestId"], properties: { requestId: { type: "string", maxLength: 128 } }, additionalProperties: false },
       SseEvent: { oneOf: [
         { type: "object", required: ["type", "reason"], properties: { type: { const: "compaction_start" }, reason: { enum: ["manual", "threshold", "overflow"] }, requestId: { type: "string" }, replay: { type: "boolean" } }, additionalProperties: false },
         { type: "object", required: ["type", "reason", "outcome", "willRetry"], properties: { type: { const: "compaction_end" }, reason: { enum: ["manual", "threshold", "overflow"] }, outcome: { enum: ["succeeded", "failed", "aborted"] }, willRetry: { type: "boolean" }, tokensBefore: { type: "number", minimum: 0 }, tokensAfter: { type: "number", minimum: 0 }, requestId: { type: "string" }, replay: { type: "boolean" } }, additionalProperties: false },
         ref("SteeringConsumed"),
+        ref("ControlQueueEvent"),
         { type: "object", required: ["type", "version", "notificationId", "runIds", "text", "entryId", "timestamp"], properties: { type: { const: "notification" }, version: { const: 1 }, notificationId: { type: "string", format: "uuid" }, runIds: { type: "array", minItems: 1, items: { type: "string", minLength: 1 } }, text: { type: "string" }, entryId: { type: "string" }, timestamp: { type: "string" } }, additionalProperties: false },
         { type: "object", required: ["type", "text"], properties: { type: { const: "text_delta" }, text: { type: "string" }, requestId: { type: "string" } }, additionalProperties: false },
         { type: "object", required: ["type", "text"], properties: { type: { const: "thinking_delta" }, text: { type: "string" }, requestId: { type: "string" } }, additionalProperties: false },

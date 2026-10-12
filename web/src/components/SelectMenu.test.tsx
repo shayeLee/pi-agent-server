@@ -15,6 +15,7 @@ describe("SelectMenu", () => {
       <SelectMenu options={options} value="a" onChange={onChange} ariaLabel="选择项目" testId="project-trigger" />,
     );
     const trigger = screen.getByRole("button", { name: "选择项目" });
+    expect(trigger).toHaveAttribute("aria-haspopup", "listbox");
     expect(trigger).toHaveAttribute("data-testid", "project-trigger");
     expect(trigger).toHaveAttribute("data-value", "a");
     expect(trigger).toHaveTextContent("项目 A");
@@ -25,6 +26,16 @@ describe("SelectMenu", () => {
     expect(screen.getByRole("option", { name: "项目 A" })).toHaveAttribute("aria-selected", "true");
     fireEvent.click(screen.getByRole("option", { name: "项目 B" }));
     expect(onChange).toHaveBeenCalledWith("b");
+  });
+
+  it("支持自定义 chevronIcon 属性，默认保持 down", () => {
+    const { rerender } = render(<SelectMenu options={options} value="a" onChange={vi.fn()} ariaLabel="菜单" />);
+    expect(screen.getByRole("button").querySelector("svg")).toHaveAttribute("data-icon", "down");
+
+    rerender(<SelectMenu options={options} value="a" onChange={vi.fn()} ariaLabel="菜单" chevronIcon="project-chevron-down" openChevronIcon="project-chevron-up" />);
+    expect(screen.getByRole("button").querySelector("svg")).toHaveAttribute("data-icon", "project-chevron-down");
+    fireEvent.click(screen.getByRole("button"));
+    expect(screen.getByRole("button").querySelector("svg")).toHaveAttribute("data-icon", "project-chevron-up");
   });
 
   it("支持上下键、Home/End 和 Enter 选择", () => {
@@ -95,7 +106,109 @@ describe("SelectMenu", () => {
     expect(last).toHaveAttribute("data-active", "true");
   });
 
-  it("没有选项时禁用触发按钮", () => {
+  it.each(["ArrowDown", "End"])("空选项 action 可通过 %s + Enter 触发", (key) => {
+    const onAction = vi.fn();
+    render(
+      <SelectMenu
+        options={[]}
+        action={{ label: "新建项目", testId: "new-action", onSelect: onAction }}
+        value=""
+        onChange={vi.fn()}
+        ariaLabel="选择项目"
+      />,
+    );
+    const trigger = screen.getByRole("button", { name: "选择项目" });
+    expect(trigger).not.toBeDisabled();
+    expect(trigger).toHaveAttribute("aria-haspopup", "menu");
+    trigger.focus();
+    fireEvent.keyDown(trigger, { key });
+    const menu = screen.getByRole("menu", { name: "选择项目" });
+    const actionItem = screen.getByRole("menuitem", { name: "新建项目" });
+    expect(menu).toHaveFocus();
+    expect(menu).toHaveAttribute("aria-activedescendant", actionItem.id);
+    expect(actionItem).not.toHaveAttribute("aria-selected");
+    expect(actionItem).not.toHaveAttribute("aria-checked");
+    fireEvent.keyDown(menu, { key: "Enter" });
+    expect(onAction).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+  });
+
+  it("支持通过键盘导航至 action 并按 Enter 触发", () => {
+    const onAction = vi.fn();
+    render(
+      <SelectMenu
+        options={options}
+        action={{ label: "新建项目", testId: "new-action", onSelect: onAction }}
+        value="a"
+        onChange={vi.fn()}
+        ariaLabel="选择项目"
+        checkPosition="left"
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "选择项目" }));
+    const menu = screen.getByRole("menu");
+    expect(screen.getByRole("menuitemradio", { name: "项目 A" })).toHaveAttribute("aria-checked", "true");
+    expect(screen.getByRole("menuitemradio", { name: "项目 B" })).toHaveAttribute("aria-checked", "false");
+    fireEvent.keyDown(menu, { key: "End" });
+    const actionItem = screen.getByRole("menuitem", { name: "新建项目" });
+    const scroll = vi.fn();
+    Object.defineProperty(actionItem, "scrollIntoView", { configurable: true, value: scroll });
+    fireEvent.keyDown(menu, { key: "Home" });
+    fireEvent.keyDown(menu, { key: "End" });
+    expect(scroll).toHaveBeenCalledWith({ block: "nearest" });
+    expect(actionItem).toHaveAttribute("data-active", "true");
+    expect(menu).toHaveAttribute("aria-activedescendant", actionItem.id);
+    fireEvent.keyDown(menu, { key: "Enter" });
+    expect(onAction).toHaveBeenCalledTimes(1);
+  });
+
+  it("带 action 的菜单支持 Space 选择、Escape 回焦和外部关闭", () => {
+    const onChange = vi.fn();
+    const onAction = vi.fn();
+    render(<SelectMenu options={options} action={{ label: "新建项目", onSelect: onAction }} value="a" onChange={onChange} ariaLabel="选择项目" />);
+    const trigger = screen.getByRole("button", { name: "选择项目" });
+    fireEvent.keyDown(trigger, { key: "ArrowDown" });
+    let menu = screen.getByRole("menu");
+    fireEvent.keyDown(menu, { key: "ArrowDown" });
+    const item = screen.getByRole("menuitemradio", { name: "项目 B" });
+    expect(item).not.toHaveAttribute("aria-selected");
+    expect(menu).toHaveAttribute("aria-activedescendant", item.id);
+    fireEvent.keyDown(menu, { key: " " });
+    expect(onChange).toHaveBeenCalledWith("b");
+    expect(trigger).toHaveFocus();
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+    fireEvent.click(trigger);
+    menu = screen.getByRole("menu");
+    fireEvent.keyDown(menu, { key: "Escape" });
+    expect(trigger).toHaveFocus();
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+    fireEvent.click(trigger);
+    fireEvent.pointerDown(document.body);
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+    fireEvent.click(trigger);
+    fireEvent.click(screen.getByRole("menuitem", { name: "新建项目" }));
+    expect(onAction).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+  });
+
+  it("disabled 会禁用带 action 的触发器并关闭已打开菜单", () => {
+    const onAction = vi.fn();
+    const props = { options: [], action: { label: "新建项目", onSelect: onAction }, value: "", onChange: vi.fn(), ariaLabel: "选择项目" };
+    const { rerender } = render(<SelectMenu {...props} />);
+    const trigger = screen.getByRole("button");
+    fireEvent.keyDown(trigger, { key: "End" });
+    expect(screen.getByRole("menu")).toBeInTheDocument();
+    rerender(<SelectMenu {...props} disabled />);
+    expect(trigger).toBeDisabled();
+    expect(trigger).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(trigger);
+    fireEvent.keyDown(trigger, { key: "ArrowDown" });
+    fireEvent.keyDown(trigger, { key: "Enter" });
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+    expect(onAction).not.toHaveBeenCalled();
+  });
+
+  it("没有选项且无 action 时禁用触发按钮", () => {
     const { container } = render(<SelectMenu options={[]} value="" onChange={vi.fn()} ariaLabel="选择项目" />);
     expect(screen.getByRole("button", { name: "选择项目" })).toBeDisabled();
     expect(container.querySelector("select")).not.toBeInTheDocument();

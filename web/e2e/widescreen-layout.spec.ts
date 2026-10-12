@@ -18,14 +18,14 @@ for (const viewport of [{ width: 1920, height: 871, dpr: 2 }, { width: 2470, hei
       });
       await page.goto('http://127.0.0.1:5189');
       const composer = page.getByTestId('composer');
-      await expect(page.getByTestId('composer-start-settings')).toBeVisible();
+      await expect(page.getByTestId('model-thinking-trigger')).toBeVisible();
       const box = (selector: string) => page.locator(selector).boundingBox();
       const app = await box('.app-shell');
       expect(app!.x).toBe(0);
       expect(app!.width).toBe(viewport.width);
       const start = (await composer.boundingBox())!;
       const hint = (await page.getByTestId('no-session-hint').boundingBox())!;
-      expect(start.width).toBeLessThanOrEqual(760);
+      expect(start.width).toBeLessThanOrEqual(1200);
       expect(hint.x + hint.width / 2).toBeCloseTo(start.x + start.width / 2, 0);
       expect(start.y - hint.y - hint.height).toBeGreaterThanOrEqual(0);
       expect(start.y - hint.y - hint.height).toBeLessThanOrEqual(24);
@@ -38,16 +38,20 @@ for (const viewport of [{ width: 1920, height: 871, dpr: 2 }, { width: 2470, hei
       const assertAxis = async () => {
         const reading = (await box('.chat-inner'))!;
         const input = (await composer.boundingBox())!;
-        expect(reading.width).toBeLessThanOrEqual(760);
+        expect(reading.width).toBeLessThanOrEqual(1248);
         expect(reading.x + reading.width / 2).toBeCloseTo(input.x + input.width / 2, 0);
-        // Mobile Composer has its own 16px outer gutter, matching transcript content.
-        expect(reading.width - (viewport.width < 640 ? 32 : 0)).toBeCloseTo(input.width, 0);
+        // Compare transcript content (excluding its responsive padding) to Composer.
+        const readingPadding = await page.locator('.chat-inner').evaluate(element => {
+          const style = getComputedStyle(element);
+          return parseFloat(style.paddingLeft) + parseFloat(style.paddingRight);
+        });
+        expect(reading.width - readingPadding).toBeCloseTo(input.width, 0);
         expect(Math.abs(input.y - start.y)).toBeLessThan(48);
         expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
       };
       await assertAxis();
       await page.screenshot({ path: `${prefix}-session.png` });
-      await page.getByTestId('toggle-events').click();
+      await page.getByTestId('trace-tab').click();
       await expect(page.getByTestId('inspector')).toBeVisible();
       await assertAxis();
       await page.screenshot({ path: `${prefix}-inspector.png` });

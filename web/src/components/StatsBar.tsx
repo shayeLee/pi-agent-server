@@ -73,16 +73,25 @@ export function StatsBar({ stats, timeline, connected, pending = false, modelOut
     { id: "context-tokens", label: "tokens", value: context.tokens },
     { id: "context-window", label: "窗口", value: context.window },
   ] : [];
+  const hasLeft = activityMetrics.length > 0 || validMetric(total);
+  const hasRight = validMetric(context?.percent);
   return <><div className="stats-bar" data-testid="stats-bar">
     <button type="button" className="stats-summary" aria-label="查看统计详情" aria-haspopup="dialog" onClick={() => setDetails(true)}>
-      {activityMetrics.length > 0 && <span className="stats-cluster">
-        <Icon name="activity" />
-        {activityMetrics.map((metric, index) => <span key={metric.id}>{index > 0 && " · "}{metric.content}</span>)}
+      {hasLeft && <span className="stats-group-left">
+        {activityMetrics.length > 0 && <span className="stats-cluster">
+          <Icon name="activity" />
+          {activityMetrics.map((metric, index) => <span key={metric.id}>{index > 0 && " · "}{metric.content}</span>)}
+        </span>}
+        {validMetric(total) && <span className="stats-cluster" title={`末次响应 totalTokens：${rawMetric(total)} tokens。${source}${pending ? "上次快照，非实时。" : ""}`}><Icon name="tokens" /><span data-testid="stat-summary-tokens">{compact(total)} tok</span>
+          {validMetric(response?.cacheHitPercent) && <span className="stats-cache" title={`末次响应缓存命中：${rawMetric(response!.cacheHitPercent!)}%`}>· 缓存命中 {compact(response!.cacheHitPercent!)}%</span>}
+        </span>}
       </span>}
-      {validMetric(total) && <span className="stats-cluster" title={`末次响应 totalTokens：${rawMetric(total)} tokens。${source}${pending ? "上次快照，非实时。" : ""}`}><Icon name="tokens" /><span data-testid="stat-summary-tokens">{compact(total)} tok</span>
-        {validMetric(response?.cacheHitPercent) && <span className="stats-cache" title={`末次响应缓存命中：${rawMetric(response!.cacheHitPercent!)}%`}>· 缓存命中 {compact(response!.cacheHitPercent!)}%</span>}
+      {hasRight && <span className="stats-group-right">
+        <span className="stats-cluster" title={`SDK 当前上下文估算：${rawMetric(context!.percent!)}%；上次结算/export 快照，非实时，非累计。`}>
+          <Icon name="context" />
+          <span>上下文 <span data-testid="stat-summary-context">{compact(context!.percent!)}%</span></span>
+        </span>
       </span>}
-      {validMetric(context?.percent) && <span className="stats-cluster" title={`SDK 当前上下文估算：${rawMetric(context!.percent!)}%；上次结算/export 快照，非实时，非累计。`}><Icon name="context" /><span data-testid="stat-summary-context">{compact(context!.percent!)}%</span></span>}
     </button>
   </div>
   <Modal open={details} onClose={() => setDetails(false)} title="统计详情">

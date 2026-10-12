@@ -34,8 +34,9 @@ for (const width of [1280, 390]) for (const theme of ["dark", "light"]) {
         opacity: getComputedStyle(el.querySelector(".tool-toggle")!).opacity };
     });
     expect(layout).toMatchObject({ outline: "none", shadow: "none", wrapping: "nowrap", truncated: true, size: 12, contained: true, opacity: "1" });
-    // Existing production calibration: 12px desktop, 24px mobile touch spacing.
-    expect(layout.gap).toBe(width === 390 ? 24 : 12);
+    // The workspace header separates status and disclosure with flexible space.
+    // Both remain distinct, contained and vertically aligned at every viewport.
+    expect(layout.gap).toBeGreaterThanOrEqual(12);
     expect(layout.centered).toBeLessThan(1);
     await page.screenshot({ path: `/tmp/tool-display-refinement/${theme}-${width}-collapsed-keyboard.png`, fullPage: true });
     await page.keyboard.press("Enter");
@@ -62,15 +63,7 @@ for (const width of [1280, 390]) for (const theme of ["dark", "light"]) {
       await expect(card.getByRole('region', { name: '结果', exact: true })).toHaveCount(0);
       await expect(card).not.toContainText('Successfully');
     }
-    await write.getByRole('button', { name: '工具更多操作' }).click();
-    await page.getByRole('menuitem', { name: '查看原始数据' }).click();
-    const writeRaw = page.getByRole('dialog', { name: '原始数据 · write', exact: true });
-    const writeSource = (await writeRaw.locator('pre').textContent())!;
-    expect(JSON.parse(writeSource).result).toBe('Successfully wrote to /tmp/example.py');
-    await writeRaw.getByRole('button', { name: '复制原始数据' }).click();
-    await expect(writeRaw.getByRole('status')).toHaveText('已复制');
-    expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(writeSource);
-    await page.keyboard.press('Escape');
+    await expect(write.locator('.tool-call-body > :not(section)')).toHaveCount(0);
     const single = page.locator('[data-tool-call-id="edit-single"]');
     await expect(single.locator('.diff-delete').first()).toContainText('- ');
     await expect(single.locator('.diff-add').first()).toContainText('+ ');
@@ -98,19 +91,7 @@ for (const width of [1280, 390]) for (const theme of ["dark", "light"]) {
     await expect(batchParams.locator('.diff-block').nth(1).locator('.diff-add')).toHaveText('+   <img onerror="window.__executed=1">');
     await expect(batchParams.locator('.diff-block').nth(2).locator('.diff-delete')).toHaveText('- removed');
     await page.screenshot({ path: `/tmp/tool-edit-codeblock/${theme}-${width}-diff.png`, fullPage: true });
-    for (const [card, pairs] of [[single, [{ oldText: originals.editOld, newText: originals.editNew }]], [batch, originals.edits]] as const) {
-      await card.getByRole('button', { name: '工具更多操作' }).click();
-      await page.getByRole('menuitem', { name: '查看原始数据' }).click();
-      const modal = page.getByRole('dialog', { name: '原始数据 · edit', exact: true });
-      const source = (await modal.locator('pre').textContent())!;
-      const args = JSON.parse(source).args;
-      expect(JSON.parse(source).result).toContain('Successfully replaced');
-      expect(args.edits ?? [{ oldText: args.oldText, newText: args.newText }]).toEqual(pairs);
-      await modal.getByRole('button', { name: '复制原始数据' }).click();
-      await expect(modal.getByRole('status')).toHaveText('已复制');
-      expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(source);
-      await page.keyboard.press('Escape');
-    }
+    for (const card of [single, batch]) await expect(card.locator('.tool-call-body > :not(section)')).toHaveCount(0);
     const plain = page.locator('[data-tool-call-id="edit-plain"]');
     await expect(plain.locator('details, .code-block')).toHaveCount(0);
     await expect(page.locator('.diff-block img, .diff-block script')).toHaveCount(0);

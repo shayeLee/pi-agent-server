@@ -249,7 +249,7 @@ for (const viewport of viewports) {
       if (viewport.width === 390) {
         const headerTargets = await page.evaluate(() => {
           const title = document.querySelector<HTMLElement>("[data-testid=chat-session-title]")!.getBoundingClientRect();
-          const selectors = ["[data-testid=chat-tab]", "[data-testid=trace-tab]", "[data-testid=toggle-events]"];
+          const selectors = ["[data-testid=trace-tab]"];
           const boxes = selectors.map((selector) => document.querySelector<HTMLElement>(selector)!.getBoundingClientRect());
           const overlaps = (a: DOMRect, b: DOMRect) => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
           return {
@@ -263,9 +263,9 @@ for (const viewport of viewports) {
             horizontalOverflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
           };
         });
-        expect(headerTargets.titleOverlapsControls).toEqual([false, false, false]);
-        expect(headerTargets.controlsHit).toEqual([true, true, true]);
-        expect(headerTargets.controlsInsideViewport).toEqual([true, true, true]);
+        expect(headerTargets.titleOverlapsControls).toEqual([false]);
+        expect(headerTargets.controlsHit).toEqual([true]);
+        expect(headerTargets.controlsInsideViewport).toEqual([true, true]);
         expect(headerTargets.horizontalOverflow).toBe(false);
       }
 

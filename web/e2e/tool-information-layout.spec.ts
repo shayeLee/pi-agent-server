@@ -2,23 +2,35 @@ import { createServer, type Server, type ServerResponse } from "node:http";
 import { mkdir, writeFile } from "node:fs/promises";
 import { test, expect, type Locator } from "@playwright/test";
 
-async function checkIconRail(card: Locator, name: string) {
+async function checkHeaderIcons(card: Locator, name: string) {
   await card.scrollIntoViewIfNeeded();
   await card.page().mouse.move(0, 0);
-  for (const selector of ['.tool-status-icon', '.tool-toggle', '.tool-more-trigger']) {
+  for (const selector of ['.tool-status-icon', '.tool-toggle']) {
+    await expect(card.locator(selector)).toBeVisible();
     await expect(card.locator(selector)).toHaveCSS('opacity', '1');
   }
   const geometry = await card.evaluate(el => {
-    const rect = (selector: string) => el.querySelector(selector)!.getBoundingClientRect();
-    const icons = ['.tool-status-icon', '.tool-toggle', '[data-icon="ellipsis"]'].map(rect);
-    const heading = rect('.tool-call-heading');
-    return { centers: icons.map(r => r.y + r.height / 2), center: heading.y + heading.height / 2,
-      gaps: [icons[1].left - icons[0].right, icons[2].left - icons[1].right],
-      headerRight: rect('.tool-call-header').right, moreLeft: rect('.tool-more-trigger').left };
+    const rect = (selector: string) => el.querySelector(selector)!.getBoundingClientRect().toJSON();
+    return {
+      status: rect('.tool-status-icon'), name: rect('.tool-name'),
+      toggle: rect('.tool-toggle'), heading: rect('.tool-call-heading'),
+      header: rect('.tool-call-header'), card: el.getBoundingClientRect().toJSON(),
+    };
   });
-  geometry.centers.forEach(y => expect(Math.abs(y - geometry.center)).toBeLessThan(0.1));
-  expect(Math.abs(geometry.gaps[0] - geometry.gaps[1])).toBeLessThan(0.1);
-  expect(geometry.moreLeft).toBeGreaterThanOrEqual(geometry.headerRight);
+  const centerY = (r: { y: number; height: number }) => r.y + r.height / 2;
+  // Status belongs to the name row, even when parallel summaries add another row.
+  expect(geometry.status.left).toBeGreaterThanOrEqual(geometry.header.left);
+  expect(geometry.status.right).toBeLessThanOrEqual(geometry.name.left);
+  expect(Math.abs(centerY(geometry.status) - centerY(geometry.name))).toBeLessThan(1);
+  // Actions center on the actual heading, not the status/name row or body.
+  for (const icon of [geometry.toggle]) {
+    expect(Math.abs(centerY(icon) - centerY(geometry.heading))).toBeLessThan(1);
+    expect(icon.top).toBeGreaterThanOrEqual(geometry.heading.top);
+    expect(icon.bottom).toBeLessThanOrEqual(geometry.heading.bottom);
+  }
+  expect(geometry.name.right).toBeLessThanOrEqual(geometry.toggle.left);
+  expect(geometry.toggle.right).toBeLessThanOrEqual(geometry.header.right);
+  await expect(card.locator('.tool-call-heading [data-icon="ellipsis"], .tool-call-category')).toHaveCount(0);
   await mkdir('/tmp/tool-icons-always/geometry', { recursive: true });
   await writeFile(`/tmp/tool-icons-always/geometry/${name}.json`, JSON.stringify(geometry, null, 2));
   await card.screenshot({ path: `/tmp/tool-icons-always/geometry/${name}.png` });
@@ -54,7 +66,7 @@ test.beforeAll(async () => {
 test.afterAll(async () => { stream?.end(); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); });
 // Visual glyph/hit-target and Markdown spacing/menu checks retain the full matrix.
 for (const theme of ['dark', 'light']) for (const width of [1280, 390]) {
-  test(`${theme} ${width}: subagent visible glyph insets and independent more hit target`, async ({ browser }) => {
+  test(`${theme} ${width}: subagent visible glyph insets and expanded body`, async ({ browser }) => {
     const dir = '/tmp/tool-block-icon-inset';
     await mkdir(dir, { recursive: true });
     const context = await browser.newContext({ hasTouch: width === 390, deviceScaleFactor: 2 });
@@ -70,71 +82,44 @@ for (const theme of ['dark', 'light']) for (const width of [1280, 390]) {
     emit({ type: 'tool_end', toolCallId: 'optical-agent', toolName: 'subagent', result: result('检查完成'), isError: false });
     const card = page.locator('[data-tool-call-id="optical-agent"]');
     const header = card.locator('.tool-call-header');
-    const more = card.getByRole('button', { name: '工具更多操作' });
     await expect(header).toHaveAttribute('aria-expanded', 'false');
     await card.scrollIntoViewIfNeeded();
     const measure = () => card.evaluate(el => {
       const card = el.getBoundingClientRect();
-      const glyph = (selector: string) => {
-        const svg = el.querySelector<SVGSVGElement>(selector)!;
-        const r = svg.getBoundingClientRect();
-        const path = svg.querySelector('path')!;
-        const b = path.getBBox();
-        const scale = r.width / 24;
-        const stroke = parseFloat(getComputedStyle(svg).strokeWidth) / 2;
-        return { x: r.x, y: r.y, width: r.width, height: r.height,
-          left: r.left - card.left, right: card.right - r.right,
-          inkLeft: r.left - card.left + (b.x - stroke) * scale,
-          inkRight: card.right - r.left - (b.x + b.width + stroke) * scale };
-      };
-      return { width: card.width, category: glyph('.tool-call-category'), more: glyph('[data-icon="ellipsis"]'),
+      const glyph = (selector: string) => el.querySelector(selector)!.getBoundingClientRect().toJSON();
+      return { width: card.width, status: glyph('.tool-status-icon'), toggle: glyph('.tool-toggle'),
         name: el.querySelector('.tool-name')!.getBoundingClientRect().toJSON(),
         preview: el.querySelector('.tool-summary-preview')!.getBoundingClientRect().toJSON() };
     });
-    await checkIconRail(card, `${theme}-${width}-single`);
+    await checkHeaderIcons(card, `${theme}-${width}-single`);
     const idle = await measure();
     await header.hover();
     await expect(card.locator('.tool-status-success')).toHaveCSS('opacity', '1');
     await expect(card.locator('.tool-toggle')).toHaveCSS('opacity', '1');
-    await expect(more).toHaveCSS('opacity', '1');
     const hover = await measure();
     await writeFile(`${dir}/${theme}-${width}-glyph.json`, JSON.stringify(hover, null, 2));
     expect(hover).toEqual(idle);
-    expect(Math.abs(hover.category.inkLeft - hover.more.inkRight)).toBeLessThan(0.1);
-    expect(hover.category.left).toBe(13); // 12px card padding + 1px header border
-    expect(Math.abs(hover.category.y - hover.more.y)).toBeLessThan(0.1);
+    expect(Math.abs(hover.status.y + hover.status.height / 2 - hover.name.y - hover.name.height / 2)).toBeLessThan(1);
     await expect(card.locator('.tool-summary-preview')).toHaveCSS('text-overflow', 'ellipsis');
     await page.screenshot({ path: `${dir}/${theme}-${width}-hover.png` });
     await card.screenshot({ path: `${dir}/${theme}-${width}-card.png` });
     await page.mouse.move(0, 0);
     await header.focus();
-    await page.keyboard.press('Tab');
-    await expect(more).toBeFocused();
-    await expect(more).toHaveCSS('outline-style', 'none');
-    await expect(card.locator('.tool-status-success')).toHaveCSS('opacity', '1');
-    await expect(card.locator('.tool-toggle')).toHaveCSS('opacity', '1');
     expect(await measure()).toEqual(idle);
-    await page.screenshot({ path: `${dir}/${theme}-${width}-focus.png` });
-    const hit = await more.boundingBox();
-    const bounds = await card.boundingBox();
-    expect(hit!.x + hit!.width).toBeLessThanOrEqual(bounds!.x + bounds!.width);
-    if (width === 390) { expect(hit!.width).toBeGreaterThanOrEqual(44); expect(hit!.height).toBeGreaterThanOrEqual(44); }
     await page.keyboard.press('Enter');
-    await expect(header).toHaveAttribute('aria-expanded', 'false');
-    const menu = card.getByRole('menu');
-    await expect(menu).toBeVisible();
-    const menuBounds = await menu.boundingBox();
-    expect(menuBounds!.x).toBeGreaterThanOrEqual(0);
-    expect(menuBounds!.x + menuBounds!.width).toBeLessThanOrEqual(width);
-    await page.screenshot({ path: `${dir}/${theme}-${width}-menu.png` });
-    await page.keyboard.press('Escape');
-    await expect(more).toBeFocused();
-    await header.click();
+    await expect(header).toHaveAttribute('aria-expanded', 'true');
+    const bounds = await card.boundingBox();
+    await expect(card.getByTestId('tool-result-text')).toContainText('检查完成');
+    await expect(card.locator('.tool-call-body > :not(section)')).toHaveCount(0);
+    await page.screenshot({ path: `${dir}/${theme}-${width}-expanded.png` });
+    await expect(header).toHaveAttribute('aria-expanded', 'true');
     const body = await card.locator('.tool-call-body').boundingBox();
-    expect(body!.x - bounds!.x).toBe(12);
-    expect(bounds!.x + bounds!.width - body!.x - body!.width).toBe(12);
+    const border = await card.evaluate(el => ({ left: parseFloat(getComputedStyle(el).borderLeftWidth), right: parseFloat(getComputedStyle(el).borderRightWidth) }));
+    // Preserve the 12px content inset measured from the card's inner border edge.
+    expect(body!.x - bounds!.x - border.left).toBe(12);
+    expect(bounds!.x + bounds!.width - border.right - body!.x - body!.width).toBe(12);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-    await writeFile(`${dir}/${theme}-${width}-geometry.json`, JSON.stringify({ idle, hover, hit, bounds, menuBounds }, null, 2));
+    await writeFile(`${dir}/${theme}-${width}-geometry.json`, JSON.stringify({ idle, hover, bounds }, null, 2));
     emit({ type: 'completed' });
     await context.close();
   });
@@ -157,7 +142,7 @@ for (const theme of ['dark', 'light']) for (const width of [1280, 390]) {
     const bash = page.locator('[data-tool-call-id="mixed-bash"]');
     emit({ type: 'tool_update', toolCallId: 'mixed-bash', toolName: 'bash', partialResult: result('designer.md\nworker.md') });
     await expect(bash.getByTestId('tool-result-text')).toContainText('worker.md');
-    await expect(bash.locator('[data-icon="terminal"]')).toHaveCount(1);
+    await expect(bash.getByTestId('tool-name')).toHaveText('bash');
     await page.screenshot({ path: `/tmp/tool-block-actual/${theme}-${width}-streaming.png` });
     emit({ type: 'tool_end', toolCallId: 'mixed-bash', toolName: 'bash', result: result('designer.md\nworker.md'), isError: false });
     await expect(bash.locator('.tool-call-header')).toHaveAttribute('aria-expanded', 'false');
@@ -167,7 +152,7 @@ for (const theme of ['dark', 'light']) for (const width of [1280, 390]) {
     emit({ type: 'tool_start', toolCallId: 'mixed-wait', toolName: 'subagent_wait', args: { runIds: ['1'], timeoutMs: 600000 } });
     emit({ type: 'tool_update', toolCallId: 'mixed-wait', toolName: 'subagent_wait', partialResult: result('0/1 settled\ndesigner: 正在检查明暗主题与长参数。') });
     const wait = page.locator('[data-tool-call-id="mixed-wait"]');
-    await expect(wait.locator('[data-icon="clock"]')).toHaveCount(1);
+    await expect(wait.getByTestId('tool-name')).toHaveText('subagent_wait');
     await expect(wait.getByTestId('tool-result-text')).toContainText('0/1 settled');
     await page.screenshot({ path: `/tmp/tool-block-actual/${theme}-${width}-conversation.png` });
     const header = wait.locator('.tool-call-header');
@@ -176,19 +161,11 @@ for (const theme of ['dark', 'light']) for (const width of [1280, 390]) {
     await page.keyboard.press('Enter');
     emit({ type: 'tool_end', toolCallId: 'mixed-wait', toolName: 'subagent_wait', result: result('检查完成，完整原文与 metadata 保留。'), isError: false });
     await expect(header).toHaveAttribute('aria-expanded', 'true');
-    await wait.getByRole('button', { name: '工具更多操作' }).click();
-    const menu = wait.getByRole('menu');
-    await expect(menu).toBeVisible();
-    const bounds = await menu.boundingBox();
-    expect(bounds!.x).toBeGreaterThanOrEqual(0);
-    expect(bounds!.x + bounds!.width).toBeLessThanOrEqual(width);
-    expect(await menu.evaluate(el => { const r = el.getBoundingClientRect(); return el.contains(document.elementFromPoint(r.x + r.width / 2, r.bottom - 8)); })).toBe(true);
-    await page.screenshot({ path: `/tmp/tool-block-actual/${theme}-${width}-menu.png` });
-    await page.keyboard.press('Escape');
-    await expect(header).toHaveAttribute('aria-expanded', 'true');
+    await expect(wait.getByTestId('tool-result-text')).toContainText('检查完成');
+    await expect(wait.locator('.tool-call-body > :not(section)')).toHaveCount(0);
+    await wait.scrollIntoViewIfNeeded();
+    await page.screenshot({ path: `/tmp/tool-block-actual/${theme}-${width}-expanded.png` });
     if (width === 390) {
-      const hit = await wait.getByRole('button', { name: '工具更多操作' }).boundingBox();
-      expect(hit!.width).toBeGreaterThanOrEqual(44); expect(hit!.height).toBeGreaterThanOrEqual(44);
       await expect(wait.locator('.tool-status-icon')).toHaveCSS('opacity', '1');
       await expect(wait.locator('.tool-toggle')).toHaveCSS('opacity', '1');
     }
@@ -198,9 +175,9 @@ for (const theme of ['dark', 'light']) for (const width of [1280, 390]) {
     const long = page.locator('[data-tool-call-id="mixed-long"]');
     await expect(long.getByTestId('tool-name')).toHaveText(name);
     await long.locator('.tool-call-header').click();
-    await expect(long.getByRole('button', { name: '查看原始数据', exact: true })).toBeVisible();
+    await expect(long.getByRole('region', { name: '结果', exact: true })).toBeVisible();
     expect(await long.getByTestId('tool-name').evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
-    await checkIconRail(long, `${theme}-${width}-long`);
+    await checkHeaderIcons(long, `${theme}-${width}-long`);
     await long.scrollIntoViewIfNeeded();
     await page.screenshot({ path: `/tmp/tool-block-actual/${theme}-${width}-long-unknown.png` });
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
@@ -232,12 +209,8 @@ for (const theme of ['dark', 'light']) for (const width of [1280, 390]) {
     await card.locator('.tool-call-header').click();
     await expect(card.getByRole('heading', { name: '[lite] run 2 — completed' })).toBeVisible();
     await page.screenshot({ path: `/tmp/tool-information-layout/${theme}-${width}-result.png` });
-    await card.getByRole('button', { name: '工具更多操作' }).click();
-    await card.getByRole('menuitem', { name: '查看原始数据' }).click();
-    await expect(card.getByRole('button', { name: '复制原始数据' })).toBeVisible();
-    await expect(page.getByRole('dialog')).toBeVisible();
-    expect(JSON.parse((await page.getByRole('dialog').locator('pre').textContent())!).result).toEqual(result(final));
-    await page.keyboard.press('Escape');
+    await card.getByRole('button', { name: 'Markdown 展示' }).click();
+    await expect(card.getByTestId('tool-result-text')).toHaveText(final);
     await card.locator('.tool-call-header').click();
     const cases = [
       ['single', 'subagent', { agent: 'designer', task: '保留比例字体，检查工具正文。\n不照搬终端外观。', cwd: '/fixture' }, result('## 检查完成\n- 保留完整内容')],
@@ -258,24 +231,17 @@ for (const theme of ['dark', 'light']) for (const width of [1280, 390]) {
       await expect(item).toHaveAttribute('data-done', 'true');
       await expect(item.locator('.tool-call-header')).toHaveAttribute('aria-expanded', 'true');
       await item.scrollIntoViewIfNeeded();
-      if (id === 'parallel') await checkIconRail(item, `${theme}-${width}-parallel`);
+      if (id === 'parallel') await checkHeaderIcons(item, `${theme}-${width}-parallel`);
       await page.screenshot({ path: `/tmp/tool-information-layout/${theme}-${width}-${id}.png` });
-      await item.getByRole('button', { name: '工具更多操作' }).click();
-      await item.getByRole('menuitem', { name: '查看原始数据' }).click();
-      await expect(page.getByRole('dialog')).toBeVisible();
-      const raw = JSON.parse((await page.getByRole('dialog').locator('pre').textContent())!);
-      await page.keyboard.press('Escape');
-      expect(raw.args).toEqual(args);
-      expect(raw.result).toEqual(output);
+      await expect(item.getByRole('region', { name: '结果', exact: true })).toBeVisible();
       await item.locator('.tool-call-header').click();
-      if (id === 'parallel') await checkIconRail(item, `${theme}-${width}-parallel-collapsed`);
+      if (id === 'parallel') await checkHeaderIcons(item, `${theme}-${width}-parallel-collapsed`);
     }
     emit({ type: 'completed' });
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   });
   }
-  test(`${theme} ${width}: adjacent Markdown blocks and intrinsic raw menu`, async ({ page, context }) => {
-    await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+  test(`${theme} ${width}: adjacent Markdown blocks without extra footer`, async ({ page }) => {
     await page.setViewportSize({ width: 1280, height: 1100 });
     await page.goto('/');
     if (await page.getByTestId('app').getAttribute('data-theme') !== theme) await page.getByTestId('theme-toggle').click();
@@ -308,42 +274,8 @@ for (const theme of ['dark', 'light']) for (const width of [1280, 390]) {
     expect(geometry.start).toBe(0); expect(geometry.end).toBe(0);
     await card.scrollIntoViewIfNeeded();
     await page.screenshot({ path: `/tmp/tool-spacing-menu/${theme}-${width}-spacing.png` });
-    const more = card.getByRole('button', { name: '工具更多操作' });
-    await more.focus(); await page.keyboard.press('Enter');
-    const menu = card.getByRole('menu');
-    const measureMenu = () => menu.evaluate(el => {
-      const r = el.getBoundingClientRect();
-      const button = el.querySelector('button')!;
-      const range = document.createRange(); range.selectNodeContents(button);
-      const text = range.getBoundingClientRect();
-      return { width: r.width, leftInset: text.left - r.left, rightInset: r.right - text.right,
-        buttonHeight: button.getBoundingClientRect().height, left: r.left, right: r.right,
-        anchorRight: el.parentElement!.getBoundingClientRect().right };
-    });
-    const menuGeometry = await measureMenu();
-    expect(menuGeometry.leftInset).toBeCloseTo(16, 1);
-    expect(menuGeometry.rightInset).toBeCloseTo(menuGeometry.leftInset, 1);
-    expect(menuGeometry.right).toBeCloseTo(menuGeometry.anchorRight, 1);
-    expect(menuGeometry.left).toBeGreaterThanOrEqual(0); expect(menuGeometry.right).toBeLessThanOrEqual(width);
-    if (width === 390) expect(menuGeometry.buttonHeight).toBeGreaterThanOrEqual(44);
-    await page.screenshot({ path: `/tmp/tool-spacing-menu/${theme}-${width}-menu.png` });
-    // Prove content-driven sizing, not a fixed-width assertion.
-    const labels = await menu.locator('button').allTextContents();
-    await menu.locator('button').evaluateAll(buttons => buttons.forEach(b => { b.textContent += '（完整）'; }));
-    const longerMenu = await measureMenu();
-    expect(longerMenu.width).toBeGreaterThan(menuGeometry.width);
-    expect(longerMenu.leftInset).toBeCloseTo(longerMenu.rightInset, 1);
-    expect(longerMenu.left).toBeGreaterThanOrEqual(0);
-    await menu.locator('button').evaluateAll((buttons, labels) => buttons.forEach((b, i) => { b.textContent = labels[i]; }), labels);
-    await page.keyboard.press('ArrowDown'); await page.keyboard.press('Escape');
-    await expect(more).toBeFocused();
+    await expect(card.locator('.tool-call-body > :not(section)')).toHaveCount(0);
     await expect(card.locator('.tool-call-header')).toHaveAttribute('aria-expanded', 'true');
-    await more.click(); await card.getByRole('menuitem', { name: '复制原始数据' }).click();
-    expect(JSON.parse(await page.evaluate(() => navigator.clipboard.readText())).result).toEqual(result(text));
-    await more.click(); await card.getByRole('menuitem', { name: '查看原始数据' }).click();
-    await expect(page.getByRole('dialog')).toBeVisible();
-    expect(JSON.parse((await page.getByRole('dialog').locator('pre').textContent())!).result).toEqual(result(text));
-    await page.keyboard.press('Escape');
     await card.locator('.tool-call-header').click();
     for (const [id, source] of [
       ['code-edges', '```text\nfirst\n```\n\n段落\n\n```text\nlast\n```'],
@@ -373,7 +305,7 @@ for (const theme of ['dark', 'light']) for (const width of [1280, 390]) {
       await page.screenshot({ path: `/tmp/tool-spacing-menu/${theme}-${width}-${id}.png` });
       await edgeCard.locator('.tool-call-header').click();
     }
-    await writeFile(`/tmp/tool-spacing-menu/${theme}-${width}-geometry.json`, JSON.stringify({ geometry, menuGeometry, longerMenu }, null, 2));
+    await writeFile(`/tmp/tool-spacing-menu/${theme}-${width}-geometry.json`, JSON.stringify({ geometry }, null, 2));
     emit({ type: 'completed' });
   });
 }

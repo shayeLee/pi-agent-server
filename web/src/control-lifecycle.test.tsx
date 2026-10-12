@@ -21,6 +21,7 @@ beforeEach(() => {
   vi.spyOn(ApiClient.prototype, "listSessionsByProject").mockResolvedValue([session, { ...session, id: "s2" }]);
   vi.spyOn(ApiClient.prototype, "listModels").mockResolvedValue({ models: [], thinkingLevels: [], defaultModel: null, defaultThinkingLevel: "off" });
   vi.spyOn(ApiClient.prototype, "exportSession").mockResolvedValue({ messages: [], timeline: [], lastEventId: 0 });
+  vi.spyOn(ApiClient.prototype, "getControlQueue").mockResolvedValue({ requestId: null, revision: 0, items: [] });
   vi.spyOn(ApiClient.prototype, "steer").mockResolvedValue(undefined);
   vi.spyOn(ApiClient.prototype, "followUp").mockResolvedValue(undefined);
   vi.spyOn(ApiClient.prototype, "abort").mockResolvedValue(undefined);
@@ -42,6 +43,22 @@ async function setup(withImage = false) {
   });
   return { ...hook, connection };
 }
+it("refreshes authoritative queue on initial selection and every SSE open/reconnect", async () => {
+  const { result, connection } = await setup();
+  await waitFor(() => expect(result.current.pendingControls[0]?.status).toBe("submitted"));
+  const before = vi.mocked(ApiClient.prototype.getControlQueue).mock.calls.length;
+  vi.mocked(ApiClient.prototype.getControlQueue).mockResolvedValue({ requestId: "r1", revision: 3, items: [
+    { id: "resident", acknowledgementId: "ack", kind: "followUp", status: "queued", text: "restored", hasImages: false },
+  ] });
+  act(() => connection.onOpen?.());
+  await waitFor(() => expect(result.current.controlQueue?.revision).toBe(3));
+  expect(ApiClient.prototype.getControlQueue).toHaveBeenCalledTimes(before + 1);
+  vi.mocked(ApiClient.prototype.getControlQueue).mockResolvedValue({ requestId: "r1", revision: 4, items: [] });
+  act(() => { connection.onDisconnect?.(); connection.onOpen?.(); });
+  await waitFor(() => expect(result.current.controlQueue?.revision).toBe(4));
+  expect(result.current.controlQueue?.items).toEqual([]);
+});
+
 it("settles an accepted steering control only on the matching aborted SSE", async () => {
   const { result, connection } = await setup();
   await waitFor(() => expect(result.current.pendingControls[0]?.status).toBe("submitted"));
@@ -67,20 +84,22 @@ it.each(["202", "rejection"] as const)("does not resurrect a cancelled in-flight
   const oldId = result.current.pendingControls[0]!.id;
   expect(result.current.pendingControls[0]?.status).toBe("submitting");
   act(() => connection.onEvent({ type: "aborted", requestId: "r1" }, 2));
-  expect(result.current.pendingControls).toEqual([]);
+  expect(result.current.pendingControls).toEqual([expect.objectContaining({ id: oldId, requestId: "r1", status: "unknown", blocking: false })]);
   act(() => connection.onEvent({ type: "status", phase: "agent_start", requestId: "r2" }, 3));
   // Same text/revision is now eligible again; transport identity must be new.
   act(() => result.current.steer("unconsumed"));
-  await waitFor(() => expect(result.current.pendingControls[0]?.status).toBe("submitted"));
-  const newId = result.current.pendingControls[0]!.id;
+  await waitFor(() => expect(result.current.pendingControls.find(row => row.requestId === "r2")?.status).toBe("submitted"));
+  const newId = result.current.pendingControls.find(row => row.requestId === "r2")!.id;
   expect(newId).not.toBe(oldId);
   await act(async () => {
     if (outcome === "202") pending.resolve();
     else pending.reject(new ApiError(409, "late rejection"));
     await pending.promise.catch(() => {});
   });
-  expect(result.current.pendingControls).toHaveLength(1);
-  expect(result.current.pendingControls[0]).toMatchObject({ id: newId, requestId: "r2", status: "submitted" });
+  expect(result.current.pendingControls).toHaveLength(2);
+  expect(result.current.pendingControls[0]).toMatchObject({ id: oldId, requestId: "r1", status: "unknown", blocking: false });
+  expect(result.current.pendingControls[1]).toMatchObject({ id: newId, requestId: "r2", status: "submitted" });
+  expect(result.current.draftSource.getSnapshot("session:s1").text).toBe("unconsumed");
   act(() => result.current.steer("unconsumed"));
   expect(ApiClient.prototype.steer).toHaveBeenCalledTimes(2);
 });

@@ -20,7 +20,7 @@ export type ChatStore = {
   /** Set or clear the most recent chat error. */
   setError(error: string | null): ChatState;
   /** Remove a still-pending optimistic user message after a failed send. */
-  rollbackUserMessage(messageId: string, error: string): ChatState;
+  rollbackUserMessage(messageId: string, error: string, preserveOwnership?: boolean): ChatState;
   reset(): ChatState;
   subscribe(listener: ChatStateListener, options?: { emitCurrent?: boolean }): () => void;
 };
@@ -45,7 +45,7 @@ export function createChatStore(initialState: ChatState = createChatState()): Ch
     markDisconnected: () => update({ ...state, modelOutput: null, compaction: finishCompaction(state.compaction, "unknown") }),
     applyEvent: (event) => update(applySseEvent(state, event)),
     addUserMessage: (text, messageId, requestId) => update(addUserMessage(state, text, messageId, requestId)),
-    beginRequest: (requestId) => update({ ...state, activeRequestId: requestId, retiredRequestIds: retireRequest(state, requestId), phase: "queued", compaction: null, modelOutput: null, activeToolCallIds: [] }),
+    beginRequest: (requestId) => update({ ...state, activeRequestId: requestId, retiredRequestIds: retireRequest(state, requestId), phase: "submitting", compaction: null, modelOutput: null, activeToolCallIds: [] }),
     restoreCompaction: (compaction) => compaction === undefined ? state : update({ ...state,
       compaction: finishCompaction(compaction, "unknown"),
       ...(compaction?.status === "running" && compaction.requestId ? { activeRequestId: compaction.requestId } : {}) }),
@@ -55,20 +55,20 @@ export function createChatStore(initialState: ChatState = createChatState()): Ch
     } }),
     restoreHistory: (timeline) => update({ ...state, modelOutput: null, compaction: finishCompaction(state.compaction, "unknown"), activeToolCallIds: [], timeline }),
     setError: (error) => update({ ...state, error, compaction: error ? finishCompaction(state.compaction, "unknown") : state.compaction, modelOutput: error ? null : state.modelOutput }),
-    rollbackUserMessage: (messageId, error) => {
+    rollbackUserMessage: (messageId, error, preserveOwnership = false) => {
       const last = state.timeline[state.timeline.length - 1];
       if (
         last?.kind !== "message" ||
         last.id !== messageId ||
-        state.phase !== "queued"
+        (state.phase !== "queued" && state.phase !== "submitting")
       ) {
         return state;
       }
       return update({
         ...state,
         timeline: state.timeline.slice(0, -1),
-        phase: "idle",
-        activeRequestId: null,
+        phase: preserveOwnership ? "submitting" : "idle",
+        activeRequestId: preserveOwnership ? state.activeRequestId : null,
         error,
       });
     },

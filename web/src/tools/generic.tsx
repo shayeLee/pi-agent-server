@@ -50,7 +50,7 @@ export function Parameters({ value, policy = {}, writeLanguage, editLanguage }: 
   </section>;
 }
 
-export function Result({ label, value, onViewRaw, language, log, initialFormat }: ResultProps & { language?: (text: string) => string | undefined; log?: boolean; initialFormat?: ToolTextFormat }) {
+export function Result({ label, value, language, log, initialFormat }: ResultProps & { language?: (text: string) => string | undefined; log?: boolean; initialFormat?: ToolTextFormat }) {
   if (value === undefined) return <div className="json-label">未提供{label}</div>;
   const content = value !== null && typeof value === "object" && "content" in value
     && Array.isArray(value.content) ? value.content : null;
@@ -63,11 +63,10 @@ export function Result({ label, value, onViewRaw, language, log, initialFormat }
               && "text" in block && typeof block.text === "string") {
               return <ToolResultText key={index} text={block.text} language={language?.(block.text)} log={log} initialFormat={initialFormat} />;
             }
-            return <div className="json-label" key={index}>非文本或未知内容（通过更多菜单查看原始数据）</div>;
+            return <div className="json-label" key={index}>非文本或未知内容</div>;
           })
         ) : <ReadableText text={stringify(value)} />}
       </div>
-      {value !== null && typeof value === "object" && (!content || content.some((block: unknown) => block === null || typeof block !== "object" || !("type" in block) || block.type !== "text" || !("text" in block) || typeof block.text !== "string")) && <button type="button" className="tool-raw-link" onClick={onViewRaw}>查看原始数据</button>}
     </section>
   );
 }

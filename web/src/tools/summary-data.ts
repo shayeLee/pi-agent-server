@@ -10,6 +10,6 @@ export function resultText(value: unknown): string {
 }
 export const line = (value: unknown): string => {
   const compact = text(value).replace(/\s+/g, " ").trim();
-  return compact.length > 180 ? `${compact.slice(0, 180)}…` : compact;
+  return compact;
 };
 export const lines = (value: string): string[] => value.split(/\r?\n/).map(s => s.trim()).filter(Boolean);

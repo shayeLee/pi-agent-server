@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { isMarkdownProse, ToolResultText } from "./ToolResultText.js";
 import { ToolCallCard } from "./ToolCallCard.js";
@@ -36,7 +36,6 @@ describe("tool presentation modes", () => {
     rerender(<ToolCallCard call={{ ...base, partialResult: fallback }} />);
     expect(container.querySelector(".markdown")).toBeNull();
     expect(container.querySelector(".tool-result-text pre")?.textContent).toBe(JSON.stringify(fallback, null, 2));
-    expect(screen.getByRole("button", { name: "查看原始数据" })).toBeInTheDocument();
     rerender(<ToolCallCard call={{ ...base, partialResult: { content: [{ type: "image", data: "untrusted" }] } }} />);
     expect(container.querySelector("img, .markdown")).toBeNull();
     expect(screen.getByText(/非文本或未知内容/)).toBeInTheDocument();
@@ -84,17 +83,13 @@ describe("tool presentation modes", () => {
     expect(container.querySelector(".markdown")).toBeNull();
     expect(container.querySelector("pre")?.textContent).toBe(text);
   });
-  it("empty parameters are absent while exact raw result stays copyable", async () => {
-    const writeText = vi.fn().mockResolvedValue(undefined);
-    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+  it("empty parameters are absent while exact result stays readable", () => {
     render(<ToolCallCard call={{ toolCallId: "generic", toolName: "any_tool", args: {}, result: text, partialResult: undefined, done: true, isError: false }} />);
     fireEvent.click(screen.getByRole("button", { name: /工具调用/ }));
     expect(screen.queryByRole("region", { name: "参数" })).toBeNull();
     expect(screen.queryByText("无参数")).toBeNull();
     expect(screen.queryByText("参数原始数据")).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "工具更多操作" }));
-    fireEvent.click(screen.getByRole("menuitem", { name: "查看原始数据" }));
-    fireEvent.click(screen.getByRole("button", { name: "复制原始数据" }));
-    expect(JSON.parse(writeText.mock.calls[0][0]).result).toBe(text);
+    fireEvent.click(screen.getByRole('button', { name: 'Markdown 展示' }));
+    expect(screen.getByTestId('tool-result-text').querySelector('pre')?.textContent).toBe(text);
   });
 });

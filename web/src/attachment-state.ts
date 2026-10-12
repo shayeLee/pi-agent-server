@@ -72,13 +72,16 @@ export function classifyFile(file: Pick<File, "name" | "type" | "size">):
 
 export function validateSelection(current: readonly UnsentAttachment[], file: Pick<File, "name" | "type" | "size">):
   | { kind: "image" | FileKind }
+  | { ignored: true }
   | { error: string } {
   const classification = classifyFile(file);
   if ("error" in classification) return classification;
   const image = classification.kind === "image";
   const existing = current.filter((item) => (item.kind === "image") === image);
   const limit = image ? IMAGE_LIMITS : FILE_LIMITS;
-  if (existing.length >= limit.maxCount) return { error: image ? "每条消息最多 4 张图片" : "每条消息最多 5 个文件" };
+  // All retained images reserve a slot, including processing and failed reads.
+  // Ignore excess images before size checks or any draft/read/preview work.
+  if (existing.length >= limit.maxCount) return image ? { ignored: true } : { error: "每条消息最多 5 个文件" };
   if (file.size > limit.maxEach) return { error: image ? "单张图片不能超过 4 MiB" : "单个文件不能超过 20 MiB" };
   if (existing.reduce((total, item) => total + item.size, 0) + file.size > limit.maxTotal) {
     return { error: image ? "图片总量不能超过 6 MiB" : "文件总量不能超过 50 MiB" };

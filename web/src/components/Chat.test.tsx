@@ -55,10 +55,7 @@ function setup(partial: Partial<Parameters<typeof Chat>[0]> = {}) {
     stats: null,
     onSend: vi.fn(),
     onAddFile: vi.fn(async () => undefined),
-    onSteer: vi.fn(),
     onFollowUp: vi.fn(),
-    onAbort: vi.fn(),
-    onToggleDetails: vi.fn(),
     onConfigChange: vi.fn(),
     ...partial,
   };
@@ -70,6 +67,34 @@ function setup(partial: Partial<Parameters<typeof Chat>[0]> = {}) {
 }
 
 describe("Chat（聊天区）", () => {
+  it("将单一轨迹开关状态与点击传给父级，不维护虚假的本地页签", () => {
+    const onToggleTrace = vi.fn();
+    const view = setup({ traceOpen: false, onToggleTrace });
+    const toggle = screen.getByRole('button', { name: '轨迹' });
+    expect(screen.queryByTestId('chat-tab')).not.toBeInTheDocument();
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    fireEvent.click(toggle);
+    expect(onToggleTrace).toHaveBeenCalledTimes(1);
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    view.update({ traceOpen: true });
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+    fireEvent.click(toggle);
+    expect(onToggleTrace).toHaveBeenCalledTimes(2);
+  });
+
+  it("separates primary queue status from empty control synchronization", () => {
+    const props = setup({ queued: true, controlQueueLoading: true, deleteControl: vi.fn(), promoteControl: vi.fn() });
+    expect(screen.getByTestId("phase-queued")).toHaveTextContent("消息正在排队，等待运行");
+    expect(screen.queryByTestId("control-queue")).toBeNull();
+    props.update({ streaming: true, queued: false });
+    expect(screen.queryByTestId("control-queue")).toBeNull();
+    expect(screen.queryByText(/正在同步队列/)).toBeNull();
+    props.update({ controlQueueError: "队列读取失败" });
+    expect(screen.getByRole("alert")).toHaveTextContent("队列读取失败");
+    expect(screen.queryByTestId("control-queue-item")).toBeNull();
+    props.update({ queued: true, controlQueue: {requestId:"r", revision:1, items:[{id:"q", kind:"steer", text:"真实条目"}]} });
+    expect(screen.getByTestId("control-queue-item")).toHaveTextContent("真实条目");
+  });
   it("isolates success banner timers when switching sessions", () => {
     vi.useFakeTimers();
     try {
@@ -249,17 +274,11 @@ describe("Chat（聊天区）", () => {
     expect(welcome.querySelector("button")).toBeNull();
   });
 
-  it("无会话时显示项目选择器并通过 onSend 提交创建消息", () => {
+  it("无会话时不重复侧栏项目选择并通过 onSend 提交创建消息", () => {
     const props = setup({ session: null, timeline: [] });
-    const projectSelect = screen.getByTestId("composer-project-select");
-    expect(screen.queryByText("新会话设置")).not.toBeInTheDocument();
-    expect(projectSelect).toHaveAttribute("data-value", "p1");
-    expect(projectSelect).toHaveTextContent("我的仓库");
-    expect(screen.queryByText("工作区内修改")).not.toBeInTheDocument();
-
-    fireEvent.click(projectSelect);
-    fireEvent.click(screen.getByRole("option", { name: "示例项目" }));
-    expect(props.onSelectProject).toHaveBeenCalledWith("p2");
+    expect(screen.queryByTestId("composer-project-select")).not.toBeInTheDocument();
+    expect(screen.getByTestId("model-thinking-trigger")).toBeInTheDocument();
+    expect(props.onSelectProject).not.toHaveBeenCalled();
     fireEvent.change(screen.getByTestId("composer-input"), { target: { value: "创建前提问" } });
     fireEvent.click(screen.getByTestId("send-button"));
     expect(props.onSend).toHaveBeenCalledWith("创建前提问");
@@ -277,7 +296,7 @@ describe("Chat（聊天区）", () => {
       activeProjectId: null,
       canCreateSession: false,
     });
-    expect(screen.getByTestId("composer-project-select")).toBeDisabled();
+    expect(screen.queryByTestId("composer-project-select")).not.toBeInTheDocument();
     expect(screen.getByTestId("send-button")).toBeDisabled();
   });
 
@@ -314,7 +333,7 @@ describe("Chat（聊天区）", () => {
     });
     expect(screen.getByTestId("model-thinking-trigger")).toHaveTextContent("gpt-5.5");
     expect(screen.getByTestId("model-thinking-trigger")).not.toHaveTextContent("openai-codex");
-    expect(screen.getByTestId("model-thinking-trigger")).toHaveTextContent("medium");
+    expect(screen.getByTestId("thinking-trigger")).toHaveTextContent("medium");
     fireEvent.click(screen.getByTestId("model-thinking-trigger"));
     expect(screen.getByRole("radio", { name: "openai-codex/gpt-5.5 (GPT-5.5)" })).toBeInTheDocument();
     expect(screen.getByRole("radio", { name: "medium" })).toBeInTheDocument();
@@ -330,11 +349,13 @@ describe("Chat（聊天区）", () => {
     expect(screen.getByRole("dialog", { name: "模型与思考深度" })).toBeInTheDocument();
   });
 
-  it("流式时显示中止按钮", () => {
+  it("流式时没有独立停止按钮或空控制行，发送仍追加", () => {
     setup({ streaming: true });
-    expect(screen.getByRole("button", { name: "中止" })).toContainElement(screen.getByTestId("abort-button").querySelector("svg"));
-    expect(screen.getByTestId("abort-button")).toHaveTextContent("");
-    expect(screen.queryByTestId("send-button")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /中止|停止/ })).not.toBeInTheDocument();
+    expect(document.querySelector('.composer-runtime-controls')).toBeNull();
+    expect(screen.getByTestId("send-button")).toBeInTheDocument();
+    expect(screen.getByTestId("send-button")).toHaveAttribute("title", "追加到队列");
+    expect(screen.queryByRole("group", { name: "运行时发送模式" })).toBeNull();
   });
 
   it("排队状态禁用发送", () => {

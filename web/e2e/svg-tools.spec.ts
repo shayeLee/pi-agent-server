@@ -59,14 +59,7 @@ for (const theme of ["light", "dark"]) for (const width of [1280, 390]) {
     const original = await page.evaluate(async () => (await import("/visual-fixtures/svg-tools.tsx")).waitText);
     await wait.getByRole("button", { name: "Markdown 展示" }).click();
     expect(await wait.locator(".tool-readable-value").textContent()).toBe(original);
-    await wait.getByRole("button", { name: "工具更多操作" }).click();
-    await wait.getByRole("menuitem", { name: "查看原始数据" }).click();
-    await expect(page.getByRole("dialog")).toBeVisible();
-    await page.getByRole("dialog").getByRole("button", { name: "复制原始数据" }).click();
-    const raw = JSON.parse(await page.evaluate(() => navigator.clipboard.readText()));
-    expect(raw.result.content[0].text).toBe(original);
-    expect(raw.result.details).toEqual({ fixture: true });
-    await page.keyboard.press("Escape");
+
     await cards.first().locator(".tool-parameters").getByRole("button", { name: "复制代码" }).click();
     expect(await page.evaluate(() => navigator.clipboard.readText())).toBe('stat -f "%N  modified=%Sm size=%z" review-sample.py lite-smoke-test.txt worker-smoke-test.txt');
   });

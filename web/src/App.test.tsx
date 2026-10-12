@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor, act, within } from "@testing-library/react";
 import App from "./App.js";
+import { themePreferenceKey } from "./theme-preference.js";
 import { DEFAULT_PROJECT_ID } from "pi-agent-server/client";
 import type { Project, SseEvent, SessionRecord } from "pi-agent-server/client";
 
@@ -24,6 +25,11 @@ const mocks = vi.hoisted(() => {
     sendMessage: ReturnType<typeof vi.fn>;
     steer: ReturnType<typeof vi.fn>;
     followUp: ReturnType<typeof vi.fn>;
+    getControlQueue: ReturnType<typeof vi.fn>;
+    getSessionSteps: ReturnType<typeof vi.fn>;
+    getSystemPrompt: ReturnType<typeof vi.fn>;
+    deleteControl: ReturnType<typeof vi.fn>;
+    promoteControl: ReturnType<typeof vi.fn>;
     abort: ReturnType<typeof vi.fn>;
     exportSession: ReturnType<typeof vi.fn>;
   }[] = [];
@@ -164,6 +170,11 @@ const mocks = vi.hoisted(() => {
     sendMessage = vi.fn((): Promise<unknown> => Promise.resolve(undefined));
     steer = vi.fn(() => Promise.resolve(undefined));
     followUp = vi.fn(() => Promise.resolve(undefined));
+    getControlQueue = vi.fn(() => Promise.resolve({ requestId: null, revision: 0, items: [] }));
+    deleteControl = vi.fn(() => Promise.resolve({ requestId: null, revision: 1, items: [] }));
+    promoteControl = vi.fn(() => Promise.resolve({ requestId: null, revision: 1, items: [] }));
+    getSessionSteps = vi.fn((sessionId: string) => Promise.resolve({ sessionId, projectionId: "test", revision: 0, steps: [] }));
+    getSystemPrompt = vi.fn(() => Promise.resolve({ source: "unavailable", prompt: null }));
     abort = vi.fn(() => Promise.resolve(undefined));
     exportSession = vi.fn((): Promise<unknown> => Promise.resolve([]));
     constructor(options: { baseUrl?: string; token?: string }) {
@@ -269,7 +280,18 @@ async function enterChat() {
 }
 
 describe("App（顶层流程）", () => {
-  it("图片插话仅原会话精确消费才清除原草稿与图片", async () => {
+  it("呈现中文基础文案且保留原有标签与提示", async () => {
+    await enterIntranet();
+    expect(screen.getByTestId("toggle-sidebar")).toHaveAttribute("title", "折叠侧边栏");
+    expect(screen.getByTestId("toggle-sidebar")).toHaveAttribute("aria-label", "折叠侧边栏");
+    expect(screen.getByTestId("new-session")).toHaveTextContent("新建会话");
+    expect(screen.queryByText("工作区 / 项目")).not.toBeInTheDocument();
+    expect(screen.queryByText("会话")).not.toBeInTheDocument();
+    expect(screen.getByTestId("project-select")).toBeVisible();
+    expect(screen.getByRole("button", { name: "打开工作区导航" })).toBeInTheDocument();
+    expect(screen.getByTestId("theme-toggle")).toHaveAttribute("aria-label", "主题");
+  });
+  it("图片追加结果未知时仅原会话精确确认才清除原草稿与图片", async () => {
     const inst = await enterChat();
     const input = screen.getByTestId("composer-input");
     fireEvent.change(input, { target: { value: "primary" } });
@@ -277,12 +299,13 @@ describe("App（顶层流程）", () => {
     await waitFor(() => expect(inst.sendMessage).toHaveBeenCalledOnce());
     const request = inst.sendMessage.mock.calls[0]![1] as { requestId: string };
     act(() => mocks.sse.onEvent?.({ type: "status", phase: "agent_start", requestId: request.requestId }));
+    inst.followUp.mockRejectedValueOnce(new Error('lost image admission'));
     fireEvent.change(input, { target: { value: "image steering" } });
     fireEvent.paste(input, { clipboardData: { files: [new File([new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10])], "small.png", { type: "image/png" })] } });
     await waitFor(() => expect(screen.getByTestId("composer-attachment")).toHaveAttribute("data-state", "ready"));
     fireEvent.keyDown(input, { key: "Enter" });
-    await waitFor(() => expect(inst.steer).toHaveBeenCalledWith("s1", "image steering", expect.objectContaining({ images: [expect.objectContaining({ mediaType: "image/png", base64: expect.any(String) })] })));
-    const identity = inst.steer.mock.calls[0]![2] as { controlId: string; acknowledgementId: string; requestId: string };
+    await waitFor(() => expect(inst.followUp).toHaveBeenCalledWith("s1", "image steering", expect.objectContaining({ images: [expect.objectContaining({ mediaType: "image/png", base64: expect.any(String) })] })));
+    const identity = inst.followUp.mock.calls[0]![2] as { controlId: string; acknowledgementId: string; requestId: string };
     const ack: SseEvent = { type: "steering_consumed", controlId: identity.controlId, acknowledgementId: identity.acknowledgementId, requestId: identity.requestId };
     fireEvent.click(screen.getByTestId("session-s2"));
     await waitFor(() => expect(mocks.createSseConnection).toHaveBeenCalledTimes(2));
@@ -298,7 +321,7 @@ describe("App（顶层流程）", () => {
     expect(screen.queryByTestId("composer-pending-controls")).not.toBeInTheDocument();
   });
 
-  it.each(["http-first", "sse-first", "unknown"])("插话精确消费，%s 不终止主任务、不丢新草稿附件", async order => {
+  it.each(["http-first", "sse-first", "unknown"])("追加准入与精确确认，%s 不终止主任务、不丢新草稿附件", async order => {
     const inst = await enterChat();
     const input = screen.getByTestId("composer-input");
     fireEvent.change(input, { target: { value: "primary" } });
@@ -307,15 +330,16 @@ describe("App（顶层流程）", () => {
     const request = inst.sendMessage.mock.calls[0]![1] as { requestId: string };
     act(() => mocks.sse.onEvent?.({ type: "status", phase: "agent_start", requestId: request.requestId }));
     let finish!: () => void;
-    inst.steer.mockImplementationOnce(() => order === "unknown" ? Promise.reject(new Error("lost response")) : new Promise<void>(resolve => { finish = resolve; }));
+    inst.followUp.mockImplementationOnce(() => order === "unknown" ? Promise.reject(new Error("lost response")) : new Promise<void>(resolve => { finish = resolve; }));
     fireEvent.change(input, { target: { value: "same" } });
     fireEvent.keyDown(input, { key: "Enter" });
-    await waitFor(() => expect(inst.steer).toHaveBeenCalledOnce());
-    const [sessionId, , identity] = inst.steer.mock.calls[0] as unknown as [string, string, { controlId: string; acknowledgementId: string; requestId: string }];
+    await waitFor(() => expect(inst.followUp).toHaveBeenCalledOnce());
+    expect(inst.steer).not.toHaveBeenCalled();
+    const [sessionId, , identity] = inst.followUp.mock.calls[0] as unknown as [string, string, { controlId: string; acknowledgementId: string; requestId: string }];
     expect(sessionId).toBe("s1");
     const ack: SseEvent = { type: "steering_consumed", ...identity, message: { sourceId: "actual-entry", text: "consumed same" } };
     expect(screen.queryByText("consumed same")).not.toBeInTheDocument();
-    if (order === "http-first") { await act(async () => finish()); expect(screen.getByTestId("composer-pending-controls")).toHaveTextContent("HTTP 已接收，等待消费确认"); }
+    if (order === "http-first") { await act(async () => finish()); expect(screen.getByTestId("composer-pending-controls")).toHaveTextContent("已提交，等待确认"); expect(input).toHaveValue(''); }
     if (order === "unknown") await waitFor(() => expect(screen.getByTestId("composer-pending-controls")).toHaveTextContent("状态未知"));
     act(() => {
       mocks.sse.onEvent?.({ ...ack, controlId: "foreign", message: { sourceId: "shared-entry", text: "shared actor consumed" } });
@@ -323,7 +347,7 @@ describe("App（顶层流程）", () => {
       mocks.sse.onEvent?.({ ...ack, requestId: "foreign", message: { sourceId: "wrong-request", text: "must not display" } });
     });
     expect(screen.getByTestId("composer-pending-controls")).toBeInTheDocument();
-    expect(input).toHaveValue("same");
+    expect(input).toHaveValue(order === 'http-first' ? '' : 'same');
     expect(screen.getByText("shared actor consumed")).toBeInTheDocument();
     expect(screen.queryByText("must not display")).not.toBeInTheDocument();
     fireEvent.change(input, { target: { value: "new draft" } });
@@ -338,7 +362,8 @@ describe("App（顶层流程）", () => {
     act(() => mocks.sse.onEvent?.({ type: "text_delta", text: "primary still active", requestId: request.requestId }));
     expect(screen.getByText("primary still active")).toBeInTheDocument();
     fireEvent.keyDown(input, { key: "Enter" });
-    expect(inst.steer).toHaveBeenCalledOnce();
+    expect(inst.followUp).toHaveBeenCalledOnce();
+    expect(inst.steer).not.toHaveBeenCalled();
     expect(input).toHaveValue("new draft");
     expect(screen.getByTestId("composer-attachment")).toBeInTheDocument();
   });
@@ -358,7 +383,7 @@ describe("App（顶层流程）", () => {
     await waitFor(() => expect(screen.getByTestId("composer-input")).toBeEnabled());
     expect(screen.getByTestId("new-session")).toBeDisabled();
   });
-  it("跟随系统主题，手动切换后忽略系统变化且按钮可往返切换", async () => {
+  it("主题菜单默认跟随系统，手动模式忽略系统变化，切回系统立即应用", async () => {
     const originalMatchMedia = window.matchMedia;
     let matches = true;
     const listeners = new Set<(event: MediaQueryListEvent) => void>();
@@ -375,25 +400,107 @@ describe("App（顶层流程）", () => {
       render(<App />);
       const app = screen.getByTestId("app");
       const toggle = screen.getByTestId("theme-toggle");
+      const openMenu = async () => {
+        fireEvent.keyDown(toggle, { key: "ArrowDown" });
+        await screen.findByRole("menuitemradio", { name: "跟随系统" });
+      };
+      const choose = async (name: string) => {
+        await openMenu();
+        fireEvent.click(screen.getByRole("menuitemradio", { name }));
+      };
+      await openMenu();
+      expect(screen.getAllByRole("menuitemradio")).toHaveLength(3);
+      expect(screen.getByRole("menuitemradio", { name: "跟随系统" })).toHaveAttribute("aria-checked", "true");
+      fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
+      expect(screen.queryByText("已跟随系统")).not.toBeInTheDocument();
+      const brand = document.querySelector("img.brand-mark");
+      expect(brand).toHaveAttribute("aria-hidden", "true");
+      expect(brand).toHaveAttribute("alt", "");
+      expect(brand).toHaveAttribute("src", (await import('./icons/svg/brand-pi.svg')).default);
+      expect(brand).toHaveAttribute("width", "26");
+      expect(brand).toHaveAttribute("height", "26");
+      expect(document.querySelector("svg.brand-mark")).toBeNull();
       expect(app).toHaveAttribute("data-theme", "dark");
       await waitFor(() => expect(document.documentElement).toHaveAttribute("data-theme", "dark"));
 
       matches = false;
       act(() => listeners.forEach((listener) => listener({ matches, media: "(prefers-color-scheme: dark)" } as MediaQueryListEvent)));
       expect(app).toHaveAttribute("data-theme", "light");
-      expect(toggle).toHaveAttribute("aria-label", "切换为暗色主题");
-      fireEvent.click(toggle);
+      expect(toggle).toHaveAttribute("aria-label", "主题");
+      await choose("深色");
+      expect(localStorage.getItem(themePreferenceKey())).toBe("dark");
       expect(app).toHaveAttribute("data-theme", "dark");
-      fireEvent.click(toggle);
+      matches = false;
+      act(() => listeners.forEach((listener) => listener({ matches } as MediaQueryListEvent)));
+      expect(app).toHaveAttribute("data-theme", "dark");
+      await choose("浅色");
+      expect(localStorage.getItem(themePreferenceKey())).toBe("light");
       expect(app).toHaveAttribute("data-theme", "light");
 
       matches = true;
       act(() => listeners.forEach((listener) => listener({ matches, media: "(prefers-color-scheme: dark)" } as MediaQueryListEvent)));
       expect(app).toHaveAttribute("data-theme", "light");
-      expect(toggle).toHaveAttribute("aria-label", "切换为暗色主题");
+      await openMenu();
+      expect(screen.getByRole("menuitemradio", { name: "浅色" })).toHaveAttribute("aria-checked", "true");
+      fireEvent.click(screen.getByRole("menuitemradio", { name: "跟随系统" }));
+      expect(app).toHaveAttribute("data-theme", "dark");
+      expect(localStorage.getItem(themePreferenceKey())).toBe("system");
+      matches = false;
+      act(() => listeners.forEach((listener) => listener({ matches } as MediaQueryListEvent)));
+      expect(app).toHaveAttribute("data-theme", "light");
+      expect(localStorage.getItem(themePreferenceKey())).toBe("system");
+      await choose("浅色");
+      // Restore following even when the current palette already matches the OS.
+      await choose("跟随系统");
+      await openMenu();
+      expect(screen.getByRole("menuitemradio", { name: "跟随系统" })).toHaveAttribute("aria-checked", "true");
     } finally {
       Object.defineProperty(window, "matchMedia", { configurable: true, value: originalMatchMedia });
     }
+  });
+
+  it.each(["light", "dark", "system"] as const)("刷新重挂载恢复 %s 模式，初始主题与模式一致", async (mode) => {
+    const originalMatchMedia = window.matchMedia;
+    let matches = mode !== "dark";
+    const listeners = new Set<(event: MediaQueryListEvent) => void>();
+    Object.defineProperty(window, "matchMedia", { configurable: true, value: (query: string) => ({
+      get matches() { return query === "(prefers-color-scheme: dark)" && matches; },
+      addEventListener: (_type: string, listener: (event: MediaQueryListEvent) => void) => listeners.add(listener),
+      removeEventListener: (_type: string, listener: (event: MediaQueryListEvent) => void) => listeners.delete(listener),
+    }) });
+    try {
+      const first = render(<App />);
+      fireEvent.keyDown(screen.getByTestId("theme-toggle"), { key: "ArrowDown" });
+      fireEvent.click(await screen.findByRole("menuitemradio", { name: { light: "浅色", dark: "深色", system: "跟随系统" }[mode] }));
+      expect(localStorage.getItem(themePreferenceKey())).toBe(mode);
+      first.unmount();
+      matches = !matches;
+      const restored = render(<App />);
+      const expected = mode === "system" ? (matches ? "dark" : "light") : mode;
+      expect(screen.getByTestId("app")).toHaveAttribute("data-theme", expected);
+      expect(document.documentElement).toHaveAttribute("data-theme", expected);
+      fireEvent.keyDown(screen.getByTestId("theme-toggle"), { key: "ArrowDown" });
+      expect(await screen.findByRole("menuitemradio", { name: { light: "浅色", dark: "深色", system: "跟随系统" }[mode] })).toHaveAttribute("aria-checked", "true");
+      matches = !matches;
+      act(() => listeners.forEach(listener => listener({ matches } as MediaQueryListEvent)));
+      expect(screen.getByTestId("app")).toHaveAttribute("data-theme", mode === "system" ? (matches ? "dark" : "light") : mode);
+      restored.unmount();
+    } finally {
+      Object.defineProperty(window, "matchMedia", { configurable: true, value: originalMatchMedia });
+    }
+  });
+
+  it("存储读写失败不妨碍 App 启动与手动选择", async () => {
+    const read = vi.spyOn(Storage.prototype, "getItem").mockImplementation(() => { throw new Error("denied"); });
+    const write = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => { throw new Error("quota"); });
+    try {
+      render(<App />);
+      fireEvent.keyDown(screen.getByTestId("theme-toggle"), { key: "ArrowDown" });
+      expect(await screen.findByRole("menuitemradio", { name: "跟随系统" })).toHaveAttribute("aria-checked", "true");
+      fireEvent.click(screen.getByRole("menuitemradio", { name: "深色" }));
+      expect(screen.getByTestId("app")).toHaveAttribute("data-theme", "dark");
+      expect(document.documentElement).toHaveAttribute("data-theme", "dark");
+    } finally { read.mockRestore(); write.mockRestore(); }
   });
 
   it("系统为亮色时以亮色启动", async () => {
@@ -402,7 +509,7 @@ describe("App（顶层流程）", () => {
     try {
       render(<App />);
       expect(screen.getByTestId("app")).toHaveAttribute("data-theme", "light");
-      expect(screen.getByTestId("theme-toggle")).toHaveAttribute("aria-label", "切换为暗色主题");
+      expect(screen.getByTestId("theme-toggle")).toHaveAttribute("aria-label", "主题");
     } finally {
       Object.defineProperty(window, "matchMedia", { configurable: true, value: originalMatchMedia });
     }
@@ -417,17 +524,61 @@ describe("App（顶层流程）", () => {
     expect(window.localStorage.length).toBe(0);
   });
 
-  it("默认呈现对话布局，轨迹标签可打开并关闭事件面板", async () => {
+  it("默认呈现对话布局，单一轨迹开关可打开并关闭事件面板", async () => {
     await enterChat();
     expect(screen.queryByTestId("inspector")).not.toBeInTheDocument();
-    expect(screen.getByTestId("chat-tab")).toHaveAttribute("aria-current", "page");
+    expect(screen.queryByTestId("chat-tab")).not.toBeInTheDocument();
+    expect(screen.getByTestId("trace-tab")).toHaveAttribute("aria-expanded", "false");
 
     fireEvent.click(screen.getByTestId("trace-tab"));
     expect(screen.getByTestId("inspector")).toBeInTheDocument();
-    expect(screen.getByTestId("trace-tab")).toHaveAttribute("aria-current", "page");
+    expect(screen.getByTestId("trace-tab")).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByTestId("inspector")).toHaveAttribute("id", screen.getByTestId("trace-tab").getAttribute("aria-controls"));
+    expect(screen.getByTestId("inspector-tab-steps")).toHaveAttribute("aria-selected", "true");
+    await waitFor(() => expect(mocks.instances[0].getSessionSteps).toHaveBeenCalled());
+    expect(mocks.instances[0].getSystemPrompt).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByTestId("inspector-tab-systemPrompt"));
+    await waitFor(() => expect(mocks.instances[0].getSystemPrompt).toHaveBeenCalled());
+    expect(screen.getByTestId("inspector-tab-systemPrompt")).toHaveAttribute("aria-selected", "true");
+    fireEvent.click(screen.getByTestId("inspector-tab-events"));
+    expect(screen.getByTestId("inspector-tab-events")).toHaveAttribute("aria-selected", "true");
 
-    fireEvent.click(screen.getByTestId("chat-tab"));
+    fireEvent.click(screen.getByTestId("trace-tab"));
+    expect(screen.getByTestId("trace-tab")).toHaveAttribute("aria-expanded", "false");
     expect(screen.queryByTestId("inspector")).not.toBeInTheDocument();
+  });
+
+  it("Inspector 无遮罩、不捕获 Tab；Esc 关闭回焦并保留草稿", async () => {
+    await enterChat();
+    const input = screen.getByTestId("composer-input");
+    fireEvent.change(input, { target: { value: "sidebar draft" } });
+    fireEvent.click(screen.getByTestId("trace-tab"));
+    expect(document.querySelector('.workbench-inspector-backdrop')).toBeNull();
+    expect(screen.getByTestId("app").style.getPropertyValue('--layout-inspector-width')).toBe('380px');
+    input.focus();
+    const tab = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true });
+    input.dispatchEvent(tab);
+    expect(tab.defaultPrevented).toBe(false);
+    expect(input).toHaveFocus();
+    fireEvent.keyDown(input, { key: 'Escape' });
+    expect(screen.queryByTestId("inspector")).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByTestId('trace-tab')).toHaveFocus());
+    expect(input).toHaveValue('sidebar draft');
+  });
+
+  it("打开 Inspector 与主题菜单不改变事件流或触发额外检查请求", async () => {
+    await enterChat();
+    act(() => mocks.sse.onEvent?.({ type: "text_delta", text: "event fixture" }));
+    fireEvent.click(screen.getByTestId("trace-tab"));
+    await waitFor(() => expect(mocks.instances[0].getSessionSteps).toHaveBeenCalledTimes(1));
+    fireEvent.click(screen.getByTestId("inspector-tab-events"));
+    const events = screen.getByTestId("event-log").textContent;
+    expect(events).toContain("event fixture");
+    fireEvent.keyDown(screen.getByTestId("theme-toggle"), { key: "ArrowDown" });
+    expect(await screen.findByRole("menuitemradio", { name: "跟随系统" })).toBeInTheDocument();
+    expect(screen.getByTestId("event-log").textContent).toBe(events);
+    expect(mocks.instances[0].getSessionSteps).toHaveBeenCalledTimes(1);
+    expect(mocks.instances[0].getSystemPrompt).not.toHaveBeenCalled();
   });
 
   it("创建前可选择项目，首次发送在所选项目创建会话并发送消息，创建后隐藏项目选择", async () => {
@@ -436,10 +587,11 @@ describe("App（顶层流程）", () => {
       { id: "p1", name: "我的仓库", cwd: "/path/a", isDefault: false },
     ]);
     const inst = await enterIntranet();
-    const picker = screen.getByTestId("composer-project-select");
+    const picker = screen.getByTestId("project-select");
+    expect(screen.queryByTestId("composer-project-select")).not.toBeInTheDocument();
     expect(picker).toHaveAttribute("data-value", mocks.DEFAULT_PROJECT_ID);
     fireEvent.click(picker);
-    fireEvent.click(screen.getByRole("option", { name: "我的仓库" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "我的仓库" }));
     await waitFor(() => expect(inst.listSessionsByProject).toHaveBeenLastCalledWith("p1"));
 
     fireEvent.change(screen.getByTestId("composer-input"), { target: { value: "新项目的第一条消息" } });
@@ -452,6 +604,64 @@ describe("App（顶层流程）", () => {
     expect(screen.queryByTestId("composer-project-select")).not.toBeInTheDocument();
   });
 
+  it.each([false, true])("new-session Enter stays primary across creation and streaming (unknown HTTP: %s)", async unknown => {
+    const inst = await enterIntranet();
+    let releaseCreate!: (value: unknown) => void;
+    let releaseSend!: () => void;
+    let rejectSend!: (error: Error) => void;
+    let releaseConfig!: (value: unknown) => void;
+    inst.updateSessionConfig.mockImplementationOnce(() => new Promise(resolve => { releaseConfig = resolve; }));
+    fireEvent.click(screen.getByTestId("thinking-trigger"));
+    fireEvent.click(screen.getByRole("radio", { name: "low" }));
+    fireEvent.click(screen.getByTestId("thinking-trigger"));
+    inst.createSession.mockImplementationOnce(() => new Promise(resolve => { releaseCreate = resolve; }));
+    inst.sendMessage.mockImplementationOnce(() => new Promise<void>((resolve, reject) => { releaseSend = resolve; rejectSend = reject; }));
+    const input = screen.getByTestId("composer-input");
+    fireEvent.change(input, { target: { value: "primary first" } });
+    const enter = () => fireEvent.keyDown(screen.getByTestId("composer-input"), { key: "Enter", code: "Enter" });
+    enter(); enter();
+    expect(inst.createSession).toHaveBeenCalledTimes(1);
+    expect(inst.sendMessage).not.toHaveBeenCalled();
+    expect(screen.getByTestId("send-button")).toBeDisabled();
+    const created = { ...sessions[0]!, id: "new-session", title: "" };
+    await act(async () => releaseCreate(created));
+    await waitFor(() => expect(inst.updateSessionConfig).toHaveBeenCalledTimes(1));
+    enter();
+    expect(screen.getByTestId("send-button")).toBeDisabled();
+    expect(inst.sendMessage).not.toHaveBeenCalled();
+    expect(inst.steer).not.toHaveBeenCalled();
+    await act(async () => releaseConfig({ ...created, thinkingLevel: "low" }));
+    await waitFor(() => expect(inst.sendMessage).toHaveBeenCalledTimes(1));
+    const [, primary] = inst.sendMessage.mock.calls[0] as unknown as [string, { requestId: string; prompt: string }];
+    expect(primary.prompt).toBe("primary first");
+    if (!unknown) act(() => mocks.sse.onEvent?.({ type: "status", phase: "agent_start", requestId: primary.requestId }));
+    enter();
+    expect(screen.getByTestId("composer-input")).toHaveValue("primary first");
+    expect(screen.getByTestId("send-button")).toBeDisabled();
+    expect(inst.steer).not.toHaveBeenCalled();
+    expect(inst.followUp).not.toHaveBeenCalled();
+    await act(async () => unknown ? rejectSend(new Error("lost HTTP receipt")) : releaseSend());
+    if (unknown) {
+      await waitFor(() => expect(screen.getByTestId("composer-submit-notice")).toHaveTextContent("结果未知"));
+      enter();
+      expect(screen.getByTestId("send-button")).toBeDisabled();
+      expect(screen.getByTestId("composer-input")).toHaveValue("primary first");
+      expect(inst.steer).not.toHaveBeenCalled();
+      expect(inst.followUp).not.toHaveBeenCalled();
+      act(() => mocks.sse.onEvent?.({ type: "status", phase: "agent_start", requestId: primary.requestId }));
+    }
+    await waitFor(() => expect(screen.getByTestId("composer-input")).toHaveValue(""));
+    enter();
+    expect(inst.sendMessage).toHaveBeenCalledTimes(1);
+    expect(inst.steer).not.toHaveBeenCalled();
+    expect(inst.followUp).not.toHaveBeenCalled();
+    fireEvent.change(screen.getByTestId("composer-input"), { target: { value: "new intentional guide" } });
+    enter();
+    await waitFor(() => expect(inst.followUp).toHaveBeenCalledTimes(1));
+    expect(inst.followUp).toHaveBeenCalledWith("new-session", "new intentional guide", expect.objectContaining({ requestId: primary.requestId }));
+    expect(inst.steer).not.toHaveBeenCalled();
+  });
+
   it("活动用户请求期间异属 error/terminal/queued 不停止 controller UI", async () => {
     const inst = await enterChat();
     fireEvent.change(screen.getByTestId("composer-input"), { target: { value: "active user" } });
@@ -462,7 +672,7 @@ describe("App（顶层流程）", () => {
       mocks.sse.onEvent?.({ type: "status", phase: "agent_start", requestId: request.requestId });
       mocks.sse.onEvent?.({ type: "text_delta", text: "owned answer", requestId: request.requestId });
     });
-    await waitFor(() => expect(screen.getByTestId("abort-button")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId("send-button")).toHaveAttribute("title", "追加到队列"));
     act(() => {
       mocks.sse.onEvent?.({ type: "error", message: "pending notification rejected", requestId: "notification-race" });
       mocks.sse.onEvent?.({ type: "completed", requestId: "old" });
@@ -470,13 +680,14 @@ describe("App（顶层流程）", () => {
       mocks.sse.onEvent?.({ type: "status", phase: "agent_start", requestId: "old" });
       mocks.sse.onEvent?.({ type: "text_delta", text: " foreign text", requestId: "old" });
     });
-    expect(screen.getByTestId("abort-button")).toBeInTheDocument();
+    expect(screen.getByTestId("send-button")).toHaveAttribute("title", "追加到队列");
     expect(screen.queryByTestId("phase-queued")).not.toBeInTheDocument();
     expect(screen.queryByText(/foreign text/)).not.toBeInTheDocument();
     act(() => mocks.sse.onEvent?.({ type: "text_delta", text: " continues", requestId: request.requestId }));
     expect(screen.getByText("owned answer continues")).toBeInTheDocument();
     act(() => mocks.sse.onEvent?.({ type: "completed", requestId: request.requestId }));
-    await waitFor(() => expect(screen.queryByTestId("abort-button")).not.toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId("send-button")).toHaveAttribute("title", "发送"));
+    expect(screen.queryByTestId("abort-button")).not.toBeInTheDocument();
   });
 
   it("未知结果收到匹配 requestId 的 SSE 正面确认后清除旧输入，不重发", async () => {
@@ -499,7 +710,7 @@ describe("App（顶层流程）", () => {
     fireEvent.click(screen.getByTestId("send-button"));
     await waitFor(() => expect(screen.getByTestId("composer-submit-notice")).toHaveTextContent("创建状态未知"));
     expect(screen.getByTestId("composer-input")).toHaveValue("请分析这个项目");
-    expect(screen.getByTestId("composer-project-select")).toBeInTheDocument();
+    expect(screen.getByTestId("project-select")).toBeInTheDocument();
   });
 
   it("创建响应未知时仅使用原 createRequestId 核对，不创建第二个会话", async () => {
@@ -614,11 +825,11 @@ describe("App（顶层流程）", () => {
     await enterIntranet();
     fireEvent.change(screen.getByTestId("composer-file-input"), { target: { files: [new File(["data"], "notes.txt", { type: "text/plain" })] } });
     await waitFor(() => expect(screen.getByTestId("composer-attachment")).toBeInTheDocument());
-    fireEvent.click(screen.getByTestId("composer-project-select"));
-    fireEvent.click(screen.getByRole("option", { name: "其他项目" }));
+    fireEvent.click(screen.getByTestId("project-select"));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "其他项目" }));
     await waitFor(() => expect(screen.queryByTestId("composer-attachment")).not.toBeInTheDocument());
-    fireEvent.click(screen.getByTestId("composer-project-select"));
-    fireEvent.click(screen.getByRole("option", { name: "默认项目" }));
+    fireEvent.click(screen.getByTestId("project-select"));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "默认项目" }));
     await waitFor(() => expect(screen.getByTestId("composer-attachment")).toHaveTextContent("notes.txt"));
   });
 
@@ -650,7 +861,7 @@ describe("App（顶层流程）", () => {
     expect(mocks.createSseConnection.mock.calls[0]![0]).toMatchObject({ lastEventId: 42 });
   });
 
-  it.each([false, true])("restores actual exported tool durations (orphan result: %s), preserves raw precision and live merge", async orphan => {
+  it.each([false, true])("restores actual exported tool durations (orphan result: %s), preserves title precision and live merge", async orphan => {
     const inst = await enterIntranet();
     const values = [2345.6789, 0, null, undefined, -1, Infinity, NaN];
     inst.exportSession.mockResolvedValue({ messages: [], lastEventId: 7,
@@ -665,9 +876,9 @@ describe("App（顶层流程）", () => {
     act(() => mocks.sse.onEvent?.({ type: "tool_end", toolCallId: "duration-0", toolName: "fixture", result: {}, isError: false }, 8));
     expect(document.querySelector('[data-tool-call-id="duration-0"] .tool-duration')).toHaveTextContent("2.3 s");
     const card = document.querySelector('[data-tool-call-id="duration-0"]') as HTMLElement;
-    fireEvent.click(within(card).getByRole("button", { name: "工具更多操作" }));
-    fireEvent.click(screen.getByRole("menuitem", { name: "查看原始数据" }));
-    expect(screen.getByRole("dialog").textContent).toContain("2345.6789");
+    fireEvent.click(within(card).getByRole("button", { name: /工具调用/ }));
+    expect(card.querySelector('.tool-duration')).toHaveAttribute('title', '工具调用耗时：2345.6789 ms');
+    expect(card.querySelector('.tool-call-body')).not.toBeNull();
   });
 
   it("thinking 从导出快照恢复，切换会话再返回仍可展开读取原文", async () => {
@@ -951,11 +1162,12 @@ describe("App（顶层流程）", () => {
       // A's delayed terminal cannot end B.
       mocks.sse.onEvent?.({ type: "completed", requestId: "A" }, 126);
     });
-    expect(screen.getByTestId("abort-button")).toBeInTheDocument();
+    expect(screen.getByTestId("send-button")).toHaveAttribute("title", "追加到队列");
     expect(screen.getAllByText("answer A")).toHaveLength(1);
     expect(screen.getAllByText("answer B")).toHaveLength(1);
     expect(screen.getAllByText("history row 119")).toHaveLength(1);
     act(() => mocks.sse.onEvent?.({ type: "completed", requestId: "B" }, 127));
+    expect(screen.getByTestId("send-button")).toHaveAttribute("title", "发送");
     expect(screen.queryByTestId("abort-button")).not.toBeInTheDocument();
     fireEvent.click(screen.getByTestId("session-s2"));
     await waitFor(() => expect(mocks.createSseConnection).toHaveBeenCalledTimes(4));
@@ -973,11 +1185,12 @@ describe("App（顶层流程）", () => {
     await waitFor(() => expect(screen.getByAltText("已发送图片 1")).toHaveAttribute("src", `data:image/png;base64,${png}`));
   });
 
-  it("cancel button keeps running compaction until actual aborted terminal", async () => {
+  it("API abort keeps running compaction until actual aborted terminal without a stop UI", async () => {
     const inst = await enterChat();
     act(() => { mocks.sse.onOpen?.(); mocks.sse.onEvent?.({ type: "compaction_start", reason: "threshold", requestId: "r1" }); });
     expect(screen.getByTestId("compaction-banner")).toHaveAttribute("data-status", "running");
-    fireEvent.click(screen.getByTestId("abort-button"));
+    expect(screen.queryByTestId("abort-button")).not.toBeInTheDocument();
+    await (inst.abort as (sessionId: string) => Promise<void>)("s1");
     expect(inst.abort).toHaveBeenCalledWith("s1");
     expect(screen.getByTestId("compaction-banner")).toHaveAttribute("data-status", "running");
     act(() => mocks.sse.onEvent?.({ type: "aborted", requestId: "r1" }));
@@ -1005,13 +1218,12 @@ describe("App（顶层流程）", () => {
     expect(screen.getByTestId("compaction-banner")).toHaveAttribute("data-status", "unknown");
   });
 
-  it("流式阶段可中止", async () => {
+  it("流式阶段没有停止 UI，程序 API 仍可中止", async () => {
     const inst = await enterChat();
 
-    mocks.sse.onEvent?.({ type: "tool_start", toolCallId: "t1", toolName: "search", args: {} });
-    await waitFor(() => expect(screen.getByTestId("abort-button")).toBeInTheDocument());
-
-    fireEvent.click(screen.getByTestId("abort-button"));
+    act(() => mocks.sse.onEvent?.({ type: "tool_start", toolCallId: "t1", toolName: "search", args: {} }));
+    expect(screen.queryByTestId("abort-button")).not.toBeInTheDocument();
+    await (inst.abort as (sessionId: string) => Promise<void>)("s1");
     expect(inst.abort).toHaveBeenCalledWith("s1");
   });
 
@@ -1065,7 +1277,7 @@ describe("App（顶层流程）", () => {
     expect(screen.getByTestId("new-session")).toBeInTheDocument();
   });
 
-  it("删除当前额外项目后回退到服务端 isDefault 标示的默认项目", async () => {
+  it("Web UI 不暴露项目删除入口且不触发 deleteProject 请求，额外项目仅支持选择与切换", async () => {
     mocks.setProjects([
       { id: mocks.DEFAULT_PROJECT_ID, name: "默认项目", cwd: "/tmp/default", isDefault: true },
       { id: "p1", name: "我的仓库", cwd: "/path/a", isDefault: false },
@@ -1074,18 +1286,22 @@ describe("App（顶层流程）", () => {
 
     // 切到额外项目
     fireEvent.click(screen.getByTestId("project-select"));
-    fireEvent.click(screen.getByRole("option", { name: "我的仓库" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "我的仓库" }));
     await waitFor(() => expect(inst.listSessionsByProject).toHaveBeenCalledWith("p1"));
 
-    // 删除当前额外项目：确认后回到 isDefault 标示的默认项目
-    vi.spyOn(window, "confirm").mockReturnValue(true);
-    fireEvent.click(screen.getByTestId("delete-project"));
+    // 额外项目下拉菜单中不暴露删除项目入口，不触发 deleteProject
+    fireEvent.click(screen.getByTestId("project-select"));
+    expect(screen.queryByTestId("delete-project")).not.toBeInTheDocument();
+    expect(screen.queryByText("删除项目")).not.toBeInTheDocument();
+    expect(inst.deleteProject).not.toHaveBeenCalled();
+
+    // 切回默认项目
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "默认项目" }));
     await waitFor(() => {
       expect(screen.getByTestId("project-select")).toHaveAttribute("data-value", mocks.DEFAULT_PROJECT_ID);
     });
-    expect(inst.deleteProject).toHaveBeenCalledWith("p1");
     expect(inst.listSessionsByProject).toHaveBeenLastCalledWith(mocks.DEFAULT_PROJECT_ID);
-    vi.restoreAllMocks();
+    expect(inst.deleteProject).not.toHaveBeenCalled();
   });
 
   it("项目列表失败：侧边栏显示可重试错误、不加载项目会话、不启用新建；重试后推导默认项目并加载", async () => {
@@ -1151,12 +1367,12 @@ describe("App（顶层流程）", () => {
       fireEvent.click(screen.getByRole("button", { name: "打开工作区导航" }));
       expect(screen.getByTestId("app")).toHaveClass("mobile-sidebar-open");
       fireEvent.click(screen.getByTestId("project-select"));
-      fireEvent.keyDown(screen.getByRole("listbox", { name: "选择项目" }), { key: "Escape" });
+      fireEvent.keyDown(screen.getByRole("menu", { name: "选择项目" }), { key: "Escape" });
       expect(screen.getByTestId("app")).toHaveClass("mobile-sidebar-open");
       fireEvent.keyDown(document, { key: "Escape" });
       expect(screen.getByTestId("app")).not.toHaveClass("mobile-sidebar-open");
 
-      fireEvent.click(screen.getByTestId("toggle-events"));
+      fireEvent.click(screen.getByTestId("trace-tab"));
       expect(screen.getByTestId("inspector")).toBeInTheDocument();
       fireEvent.click(screen.getByTestId("inspector-close"));
       expect(screen.queryByTestId("inspector")).not.toBeInTheDocument();
@@ -1176,12 +1392,12 @@ describe("App（顶层流程）", () => {
 
     // 切到 p1：请求已发出但仍挂起
     fireEvent.click(screen.getByTestId("project-select"));
-    fireEvent.click(screen.getByRole("option", { name: "仓库一" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "仓库一" }));
     await waitFor(() => expect(inst.listSessionsByProject).toHaveBeenLastCalledWith("p1"));
 
     // 快速切回默认项目：该请求立即成功（展示会话一/会话二）
     fireEvent.click(screen.getByTestId("project-select"));
-    fireEvent.click(screen.getByRole("option", { name: "默认项目" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "默认项目" }));
     await waitFor(() => expect(inst.listSessionsByProject).toHaveBeenCalledTimes(3));
 
     // p1 的陈旧响应最后才返回：不得覆盖当前默认项目的会话
@@ -1277,7 +1493,7 @@ describe("会话显示标题兜底", () => {
     await waitFor(() => expect(api.renameSession).toHaveBeenCalled());
     mocks.deferSessionsFor("p1");
     fireEvent.click(screen.getByTestId("project-select"));
-    fireEvent.click(screen.getByRole("option", { name: "仓库一" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "仓库一" }));
     await waitFor(() => expect(api.listSessionsByProject).toHaveBeenLastCalledWith("p1"));
     await act(async () => { finishRename({ ...sessions[0]!, title: "旧项目标题" }); });
     await act(async () => { mocks.releaseDeferredSessions("p1", [{ ...sessions[0]!, id: "p1-session", projectId: "p1", title: "新项目会话" }]); });
@@ -1302,10 +1518,10 @@ describe("会话显示标题兜底", () => {
     expectTitle("未命名会话");
     mocks.setSessions([{ ...sessions[0]!, title: "", firstPrompt: "可信的历史第一条" }, sessions[1]!]);
     fireEvent.click(screen.getByTestId("project-select"));
-    fireEvent.click(screen.getByRole("option", { name: "仓库一" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "仓库一" }));
     await waitFor(() => expect(api.listSessionsByProject).toHaveBeenLastCalledWith("p1"));
     fireEvent.click(screen.getByTestId("project-select"));
-    fireEvent.click(screen.getByRole("option", { name: "默认项目" }));
+    fireEvent.click(screen.getByRole("menuitemradio", { name: "默认项目" }));
     await waitFor(() => expect(screen.getByTestId("session-s1").querySelector(".session-title")).toHaveAttribute("title", "可信的历史第一条"));
     api.exportSession.mockRejectedValueOnce(new Error("still unavailable"));
     fireEvent.click(screen.getByTestId("session-s1"));

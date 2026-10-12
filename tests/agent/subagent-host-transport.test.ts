@@ -169,7 +169,7 @@ describe("session-local subagent host admission", () => {
     s.emit({ type: "entry_appended", entry: { type: "custom", customType: "agent-team:notification", id: "entry", timestamp: "2026-01-01T00:00:00Z", data: p } } as any);
     const ack = await s.transport.post(p); expect(ack).toMatchObject({ accepted: true, mode: "run" });
     expect(s.events[0]).toMatchObject({ type: "notification", notificationId: p.notificationId });
-    expect(s.events[1]).toMatchObject({ type: "status", phase: "agent_start", requestId: (ack as any).requestId });
+    expect(s.events.filter(e => e.type !== "control_queue")[1]).toMatchObject({ type: "status", phase: "agent_start", requestId: (ack as any).requestId });
     s.finish(); await flush(); expect(s.events.filter(e => e.type === "completed")).toHaveLength(1);
     expect(s.users).toEqual([]); runtime.dispose();
   });

@@ -4,6 +4,7 @@ import { act, renderHook, waitFor } from "@testing-library/react";
 import { DEFAULT_PROJECT_ID, ApiClient, ApiError, createSseConnection, type Project, type SseEvent, type SessionRecord } from "pi-agent-server/client";
 import { useWebAppController } from "./hooks/useWebAppController.js";
 import { readRecentSelection } from "./recent-selection.js";
+import { IMAGE_LIMITS } from "./attachment-state.js";
 
 vi.mock("pi-agent-server/client", async original => ({
   ...await original<typeof import("pi-agent-server/client")>(),
@@ -72,6 +73,57 @@ describe("compaction initial export and reconnect wiring", () => {
   });
 });
 
+it("sends the first ready images normally after excess image selections are silently ignored", async () => {
+  const { result } = await setup("image");
+  const selected = Array.from({ length: IMAGE_LIMITS.maxCount + 1 }, (_, index) => attachment(`extra-${index}`, "image"));
+  await act(async () => { await Promise.all(selected.map(file => result.current.addUnsentFile(file))); });
+  expect(draft(result.current).attachments.map(item => item.name))
+    .toEqual([attachment("X", "image").name, ...selected.slice(0, IMAGE_LIMITS.maxCount - 1).map(file => file.name)]);
+  expect(draft(result.current).attachments.every(item => item.status === "ready" && !item.error)).toBe(true);
+  expect(ApiClient.prototype.uploadFile).not.toHaveBeenCalled();
+  await act(async () => expect(await result.current.sendMessage("A")).toBe(true));
+  expect(ApiClient.prototype.sendMessage).toHaveBeenCalledTimes(1);
+  expect(vi.mocked(ApiClient.prototype.sendMessage).mock.calls[0]![1].images).toHaveLength(IMAGE_LIMITS.maxCount);
+  expect(draft(result.current).attachments).toEqual([]);
+});
+
+describe("primary admission is not queue evidence", () => {
+  it.each(["accepted", "queued"] as const)("explicit HTTP %s establishes only its own phase", async status => {
+    const { result } = await setup("image");
+    vi.mocked(ApiClient.prototype.sendMessage).mockResolvedValueOnce({ status });
+    await act(async () => expect(await result.current.sendMessage("A")).toBe(true));
+    expect(result.current.chatState.phase).toBe(status === "queued" ? "queued" : "submitting");
+    act(() => result.current.setUnsentText("B"));
+    await act(async () => expect(await result.current.sendMessage("B")).toBe(false));
+    expect(ApiClient.prototype.sendMessage).toHaveBeenCalledTimes(1);
+    expect(draft(result.current).text).toBe("B");
+  });
+
+  it.each(["streaming", "completed"] as const)("late queued HTTP cannot rewind SSE %s", async phase => {
+    const { result } = await setup("image");
+    const response = deferred<unknown>();
+    vi.mocked(ApiClient.prototype.sendMessage).mockReturnValueOnce(response.promise);
+    let sending!: Promise<boolean>;
+    act(() => { sending = result.current.sendMessage("A"); });
+    await waitFor(() => expect(ApiClient.prototype.sendMessage).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(vi.mocked(createSseConnection).mock.calls.some(([options]) => options.url.includes("/created/"))).toBe(true));
+    const connection = [...vi.mocked(createSseConnection).mock.calls].reverse().find(([options]) => options.url.includes("/created/"))![0];
+    const requestId = result.current.chatState.activeRequestId!;
+    act(() => {
+      connection.onEvent({ type: "status", phase: "agent_start", requestId }, 1);
+      if (phase === "completed") connection.onEvent({ type: "completed", requestId }, 2);
+      result.current.setUnsentText("B");
+    });
+    expect(result.current.submitState?.phase).toBe("submitting");
+    expect(draft(result.current).attachments).toHaveLength(1);
+    await act(async () => { response.resolve({ status: "queued" }); expect(await sending).toBe(true); });
+    expect(result.current.chatState.phase).toBe(phase);
+    expect(draft(result.current).text).toBe("B");
+    expect(draft(result.current).attachments).toHaveLength(0);
+    expect(result.current.chatState.timeline.filter(item => item.kind === "message" && item.role === "user")).toHaveLength(1);
+  });
+});
+
 describe("first-create project metadata invalidation", () => {
   const defaultProject: Project = { id: DEFAULT_PROJECT_ID, name: "Default", cwd: "/fixture/default", isDefault: true };
 
@@ -82,6 +134,24 @@ describe("first-create project metadata invalidation", () => {
     const { result } = renderHook(useWebAppController, { wrapper });
     await waitFor(() => expect(result.current.sessions).toEqual([]));
     expect(result.current.projects).toEqual([]);
+    act(() => result.current.setUnsentText("first"));
+    await act(async () => expect(await result.current.sendMessage("first")).toBe(!rejected));
+    await waitFor(() => expect(result.current.projects).toEqual([defaultProject]));
+    expect(result.current.activeProjectId).toBe(DEFAULT_PROJECT_ID);
+    expect(result.current.activeSessionId).toBe(created.id);
+    expect(result.current.submitState?.phase).toBe(rejected ? "failed" : "accepted");
+    expect(draft(result.current).text).toBe(rejected ? "first" : "");
+    expect(ApiClient.prototype.createSession).toHaveBeenCalledTimes(1);
+    expect(ApiClient.prototype.sendMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([false, true])("refreshes an explicitly listed empty project after creation (send rejected: %s)", async rejected => {
+    vi.mocked(ApiClient.prototype.listProjects).mockResolvedValue([defaultProject]);
+    vi.mocked(ApiClient.prototype.createSession).mockResolvedValue({ ...created, projectId: DEFAULT_PROJECT_ID });
+    if (rejected) vi.mocked(ApiClient.prototype.sendMessage).mockRejectedValueOnce(new ApiError(400, "rejected"));
+    const { result } = renderHook(useWebAppController, { wrapper });
+    await waitFor(() => expect(result.current.sessions).toEqual([]));
+    expect(result.current.projects).toEqual([defaultProject]);
     act(() => result.current.setUnsentText("first"));
     await act(async () => expect(await result.current.sendMessage("first")).toBe(!rejected));
     await waitFor(() => expect(result.current.projects).toEqual([defaultProject]));
@@ -154,7 +224,39 @@ describe("first-create project metadata invalidation", () => {
   });
 });
 
+describe("primary snapshot cannot become a control", () => {
+  it.each(["submitting", "unknown"] as const)("blocks direct control dispatch while primary is %s after session migration", async phase => {
+    const { result } = await setup("image");
+    const send = deferred<void>();
+    vi.mocked(ApiClient.prototype.sendMessage).mockReturnValueOnce(send.promise);
+    const steer = vi.spyOn(ApiClient.prototype, "steer").mockResolvedValue(undefined);
+    const followUp = vi.spyOn(ApiClient.prototype, "followUp").mockResolvedValue(undefined);
+    vi.spyOn(ApiClient.prototype, "getControlQueue").mockResolvedValue({ requestId: null, revision: 0, items: [] });
+    let sending!: Promise<boolean>;
+    act(() => { sending = result.current.sendMessage("A"); });
+    await waitFor(() => expect(result.current.submitState?.phase).toBe("submitting"));
+    await waitFor(() => expect(result.current.historyLoading).toBe(false));
+    const primary = vi.mocked(ApiClient.prototype.sendMessage).mock.calls[0]![1];
+    const connection = [...vi.mocked(createSseConnection).mock.calls].reverse().find(([options]) => options.url.includes("/created/"))![0];
+    if (phase === "unknown") await act(async () => { send.reject(new Error("lost response")); await sending; });
+    else act(() => connection.onEvent({ type: "status", phase: "agent_start", requestId: primary.requestId }, 1));
+    expect(result.current.submitState?.phase).toBe(phase);
+    expect(draft(result.current).text).toBe("A");
+    act(() => { result.current.steer("A"); result.current.followUp("A"); });
+    expect(steer).not.toHaveBeenCalled();
+    expect(followUp).not.toHaveBeenCalled();
+    expect(ApiClient.prototype.sendMessage).toHaveBeenCalledTimes(1);
+    if (phase === "submitting") await act(async () => { send.resolve(); await sending; });
+  });
+});
+
 describe("pending first-create snapshot ownership", () => {
+  beforeEach(() => {
+    // Navigation selects authorized rows, not arbitrary IDs absent from metadata.
+    vi.mocked(ApiClient.prototype.listSessionsByProject).mockImplementation(async projectId => projectId === "p1"
+      ? [{ ...created, id: "other-session" }, ...(vi.mocked(ApiClient.prototype.createSession).mock.calls.length ? [created] : [])]
+      : [{ ...created, id: "wrong-session", projectId: "p2" }]);
+  });
   it.each(["image", "file"] as const)("migrates edited B + new %s Y, consumes only X and does not resend X", async kind => {
     const { result } = await setup(kind);
     const creation = deferred<SessionRecord>();
@@ -170,6 +272,12 @@ describe("pending first-create snapshot ownership", () => {
     expect(draft(result.current).attachments.map(item => item.name)).toEqual([`Y.${kind === "image" ? "png" : "txt"}`]);
     expect(draft(result.current, "new:p1").attachments).toEqual([]);
     await waitFor(() => expect(result.current.historyLoading).toBe(false));
+    expect(result.current.chatState.phase).toBe("submitting");
+    await act(async () => expect(await result.current.sendMessage("B")).toBe(false));
+    expect(ApiClient.prototype.sendMessage).toHaveBeenCalledTimes(1);
+    const connection = [...vi.mocked(createSseConnection).mock.calls].reverse().find(([options]) => options.url.includes("/created/"))![0];
+    const requestId = result.current.chatState.activeRequestId!;
+    act(() => connection.onEvent({ type: "completed", requestId }, 1));
     await act(async () => expect(await result.current.sendMessage("B")).toBe(true));
     const calls = vi.mocked(ApiClient.prototype.sendMessage).mock.calls;
     expect(calls.map(call => call[1].prompt)).toEqual(["A", "B"]);
@@ -321,8 +429,7 @@ describe("pending first-create snapshot ownership", () => {
     const connection = [...vi.mocked(createSseConnection).mock.calls].reverse().find(([options]) => options.url.includes("/created/"))![0];
     act(() => connection.onEvent(event("wrong-request"), 2));
     expect(draft(result.current, "new:p1").attachments).toHaveLength(2);
-    // A text rollback leaves an idle store, which may legitimately receive another lifecycle.
-    // Finish that lifecycle before replaying the original; never bypass active-request ownership.
+    // An unknown submission retains its owner; foreign lifecycle/terminal events cannot steal it.
     act(() => connection.onEvent({ type: "aborted", requestId: "wrong-request" }, 2));
     act(() => connection.onEvent(event(), 3));
     if (order === "sse-first") await act(async () => { response.reject(new Error("lost response")); expect(await sending).toBe(true); });

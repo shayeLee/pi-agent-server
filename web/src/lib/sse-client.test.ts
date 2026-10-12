@@ -128,6 +128,21 @@ describe("consumeSse", () => {
 });
 
 describe("createSseConnection", () => {
+  it("sends the initial epoch and resets internal cursors before id-less restart events and reconnect", async () => {
+    vi.useFakeTimers();
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(sseResponse(['data: {"type":"completed"}\n\n'], 200, { "x-server-epoch": "B" }))
+      .mockResolvedValue(new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const onEvent = vi.fn();
+    const connection = createSseConnection({ url: "http://x/events", initialEpoch: "A", lastEventId: 100, onEvent, reconnectDelay: 1 });
+    try {
+      await vi.advanceTimersByTimeAsync(10);
+      expect(fetchMock.mock.calls[0]![1].headers).toMatchObject({ "last-event-id": "100", "x-client-epoch": "A" });
+      expect(onEvent).toHaveBeenCalledWith({ type: "completed" }, 0);
+      expect(fetchMock.mock.calls[1]![1].headers).toMatchObject({ "last-event-id": "0", "x-client-epoch": "B" });
+    } finally { connection.close(); }
+  });
   it("HTTP 204 停止重连并通知 no-live-stream", async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
     vi.stubGlobal("fetch", fetchMock);
