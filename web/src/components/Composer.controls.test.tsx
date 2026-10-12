@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { SessionRecord } from 'pi-agent-server/client';
 import { Composer, type ComposerProps } from './Composer.js';
 import type { SubmissionState } from '../attachment-state.js';
+import { Modal } from './Modal.js';
 const base = (): ComposerProps => ({ session: {id:'s'} as SessionRecord, projects:[], activeProjectId:null, onSelectProject:vi.fn(), canCreateSession:false, models:[], thinkingLevels:[], defaultModel:null, defaultThinkingLevel:'off', streaming:true, queued:false, placeholder:'task', onSend:vi.fn(), onFollowUp:vi.fn(), onConfigChange:vi.fn(), draft:{text:'draft',attachments:[],settings:{}}, onDraftText:vi.fn() });
 describe('runtime composer dispatcher', () => {
   it('uses followUp for click and Enter without mode buttons, preserves controlled draft across scopes', async () => {
@@ -74,5 +75,59 @@ describe('runtime composer dispatcher', () => {
     fireEvent.click(screen.getByTestId('send-button')); await waitFor(() => expect(props.onFollowUp).toHaveBeenCalledWith(''));
     view.rerender(<Composer {...props} draft={{text:'draft',settings:{},attachments:[{...image,kind:'text'}]}} />);
     expect(screen.getByTestId('send-button')).toBeDisabled(); expect(screen.getByText(/追加仅支持文字和图片/)).toBeVisible();
+  });
+});
+
+describe('runtime abort controls', () => {
+  it('ignores the closed native Modal mounted by the app', () => {
+    const props = { ...base(), onAbort: vi.fn() };
+    render(<><Composer {...props} /><Modal open={false} onClose={() => {}} title="隐藏对话框">内容</Modal></>);
+    expect(document.querySelector('dialog[role="dialog"]')).not.toHaveAttribute('open');
+    fireEvent.keyDown(screen.getByTestId('composer-input'), { key: 'Escape' });
+    expect(props.onAbort).toHaveBeenCalledOnce();
+  });
+  it('ignores a custom overlay inside a hidden ancestor', () => {
+    const props = { ...base(), onAbort: vi.fn() };
+    render(<><Composer {...props} /><div style={{display:'none'}}><div role="dialog" /></div></>);
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(props.onAbort).toHaveBeenCalledOnce();
+  });
+  it('stops by button and Escape while preserving the draft and Enter followUp', async () => {
+    const props = { ...base(), onAbort: vi.fn() };
+    const view = render(<Composer {...props} />);
+    expect(screen.queryByTestId('send-button')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('abort-button'));
+    fireEvent.keyDown(screen.getByTestId('composer-input'), { key: 'Escape' });
+    expect(props.onAbort).toHaveBeenCalledTimes(2);
+    expect(props.onDraftText).not.toHaveBeenCalled();
+    fireEvent.keyDown(screen.getByTestId('composer-input'), { key: 'Enter' });
+    await waitFor(() => expect(props.onFollowUp).toHaveBeenCalledWith('draft'));
+    view.rerender(<Composer {...props} streaming={false} />);
+    expect(screen.getByTestId('send-button')).toBeEnabled();
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(props.onAbort).toHaveBeenCalledTimes(2);
+  });
+  it('allows stopping with empty input and blocked pending controls', () => {
+    const props = { ...base(), onAbort: vi.fn(), controlsBlocked: true, draft: { text: '', attachments: [], settings: {} } };
+    render(<Composer {...props} />);
+    expect(screen.getByTestId('abort-button')).toBeEnabled();
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(props.onAbort).toHaveBeenCalledOnce();
+  });
+  it.each([{ queued: true }, { canWrite: false }, { historyLoading: true }, { session: null }])('does not abort unavailable targets %j', overrides => {
+    const props = { ...base(), onAbort: vi.fn(), ...overrides };
+    render(<Composer {...props} />);
+    expect(screen.queryByTestId('abort-button')).not.toBeInTheDocument();
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(props.onAbort).not.toHaveBeenCalled();
+  });
+  it('leaves Escape to dialogs and ignores IME and repeated keydowns', () => {
+    const props = { ...base(), onAbort: vi.fn() };
+    const view = render(<><Composer {...props} /><div role="dialog" /></>);
+    fireEvent.keyDown(document, { key: 'Escape' });
+    view.rerender(<Composer {...props} />);
+    fireEvent.keyDown(document, { key: 'Escape', isComposing: true });
+    fireEvent.keyDown(document, { key: 'Escape', repeat: true });
+    expect(props.onAbort).not.toHaveBeenCalled();
   });
 });

@@ -36,6 +36,7 @@ export type ComposerProps = {
   onRemoveFile?: (localId: string) => void;
   onRetrySubmit?: () => Promise<SubmitOutcome>;
   onConfirmCreation?: () => Promise<SubmitOutcome>;
+  onAbort?: () => void;
   onFollowUp: (text: string) => void | Promise<boolean>;
   onConfigChange: (config: { modelProvider?: string; modelId?: string; thinkingLevel?: string }) => void;
 };
@@ -45,7 +46,7 @@ export function Composer({
   models, thinkingLevels, defaultModel, defaultThinkingLevel,
   streaming, queued, primaryAwaitingStart = false, historyLoading = false, controlsBlocked = false, placeholder, onSend,
   draft: suppliedDraft, draftSource, draftScope = "", submission, pendingControls, onDraftText, onDraftSettings, onAddFile, onRetryFile, onRemoveFile, onRetrySubmit, onConfirmCreation,
-  onFollowUp, onConfigChange,
+  onAbort, onFollowUp, onConfigChange,
 }: ComposerProps) {
   const subscribeDraft = useCallback((listener: () => void) =>
     draftSource?.subscribe(draftScope, listener) ?? (() => {}), [draftSource, draftScope]);
@@ -65,6 +66,29 @@ export function Composer({
   const submitting = submission?.phase === "creating" || submission?.phase === "configuring" || submission?.phase === "submitting";
   const primaryPending = primaryAwaitingStart || submitting || submission?.phase === "unknown";
   const runtimeControls = streaming && !queued && !primaryPending;
+  const canAbort = Boolean(onAbort && session && canWrite && streaming && !queued && !historyLoading);
+  useEffect(() => {
+    if (!canAbort) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape" || event.defaultPrevented || event.repeat || event.isComposing || event.keyCode === 229) return;
+      const overlays = document.querySelectorAll('dialog[open], [role="dialog"], [role="alertdialog"], [role="menu"], .app-shell:not(.details-collapsed) [data-testid="inspector"], .mobile-sidebar-open [data-testid="sidebar"], .select-menu[data-open="true"], .model-thinking-picker[data-open="true"]');
+      const visibleOverlay = Array.from(overlays).some(element => {
+        // Modal keeps its native dialog mounted while closed. Only visible
+        // overlays own Escape; their mere presence must not block abort.
+        if (element.closest('dialog:not([open]), [hidden], [aria-hidden="true"]')) return false;
+        for (let current: Element | null = element; current; current = current.parentElement) {
+          const style = getComputedStyle(current);
+          if (style.display === "none" || style.visibility === "hidden") return false;
+        }
+        return true;
+      });
+      if (visibleOverlay) return;
+      event.preventDefault();
+      onAbort?.();
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [canAbort, onAbort]);
   const blockedByAttachment = attachments.some((item) => item.status !== "ready");
   const hasContent = Boolean(text.trim()) || attachments.some((item) => item.status === "ready");
   const controlPending = pendingControls?.some(item => item.blocking !== false && (item.status === "submitting" || item.status === "unknown")) ?? false;
@@ -192,7 +216,7 @@ export function Composer({
         </div>
       )}
       <textarea ref={textareaRef} data-testid="composer-input" rows={1} placeholder={placeholder}
-        aria-label="消息内容" title="Enter 发送，Shift+Enter 换行" value={text}
+        aria-label="消息内容" title={canAbort ? "Enter 追加到队列，Shift+Enter 换行，Esc 中止" : "Enter 发送，Shift+Enter 换行"} value={text}
         onChange={(event) => setText(event.target.value)} onKeyDown={handleKeyDown} onPaste={handlePaste}
         disabled={!canWrite || historyLoading} />
       <div className="composer-toolbar">
@@ -211,12 +235,15 @@ export function Composer({
             modelId={session ? session.modelId : draft?.settings.modelId ?? null}
             thinkingLevel={session ? session.thinkingLevel : draft?.settings.thinkingLevel ?? null}
             onConfigChange={session ? onConfigChange : (config) => onDraftSettings?.(config)} />
-          <button type="button" className="send-button" data-testid="send-button" onClick={() => void handleSubmit()}
+          {canAbort ? <button type="button" className="send-button" data-testid="abort-button"
+            onClick={onAbort} aria-label="中止" title="中止（Esc）">
+            <span className="send-button-visual"><Icon name="stop" /></span>
+          </button> : <button type="button" className="send-button" data-testid="send-button" onClick={() => void handleSubmit()}
             disabled={!canSubmit} aria-label="发送" title={runtimeControls ? "追加到队列" : "发送"}>
             <span className="send-button-visual">
               <Icon name="send" />
             </span>
-          </button>
+          </button>}
         </div>
       </div>
     </div>

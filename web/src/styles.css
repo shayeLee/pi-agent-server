@@ -1794,13 +1794,15 @@ details[open] > summary > .details-chevron { transform: rotate(90deg); }
 }
 
 .composer {
+  --composer-action-inset: 9px;
+  --composer-action-bottom: 6px;
   display: flex;
   flex-direction: column;
   gap: var(--space-8);
   width: 100%;
   max-width: var(--reading-max);
   margin-inline: auto;
-  padding: 14px 16px 6px 16px;
+  padding: 14px var(--composer-action-inset) var(--composer-action-bottom);
   border: 1px solid var(--line);
   border-radius: 14px;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04), 0 4px 14px rgba(0, 0, 0, 0.02);
@@ -1849,12 +1851,15 @@ details[open] > summary > .details-chevron { transform: rotate(90deg); }
 }
 
 .composer-left {
-  margin-left: -8.67px;
+  /* The plus is centered in a square hit area: compensate only for the
+     difference between horizontal and bottom padding. */
+  margin-left: calc(var(--composer-action-bottom) - var(--composer-action-inset));
 }
 
 .composer-right {
   margin-left: auto;
-  gap: 8px;
+  /* The adjacent picker contributes 8px of trailing padding visually. */
+  gap: calc(var(--composer-action-inset) - 8px);
   justify-content: flex-end;
 }
 
@@ -2135,7 +2140,7 @@ details[open] > summary > .details-chevron { transform: rotate(90deg); }
   height: 32px;
   padding: 0;
   border: 0;
-  border-radius: 8px;
+  border-radius: 50%;
   background: #2563eb;
   color: #ffffff;
   box-shadow: 0 1px 2px rgba(37, 99, 235, 0.25);
@@ -2164,8 +2169,13 @@ details[open] > summary > .details-chevron { transform: rotate(90deg); }
 
 .send-button svg,
 .send-button-visual svg {
-  width: 15px;
-  height: 15px;
+  width: 24px;
+  height: 24px;
+}
+
+.send-button svg[data-icon="stop"] {
+  width: 20px;
+  height: 20px;
 }
 
 .send-button:disabled svg path,
@@ -3066,8 +3076,10 @@ details[open] > summary > .details-chevron { transform: rotate(90deg); }
   }
 
   .composer {
+    --composer-action-inset: 12px;
+    --composer-action-bottom: 12px;
     gap: 6px;
-    padding: 6px var(--space-12) var(--space-4);
+    padding: 6px var(--composer-action-inset) var(--composer-action-inset);
   }
 
   /* 仅内容区内部滚动；不限制整个 Composer，避免裁掉输入与动作行。 */
@@ -3122,7 +3134,7 @@ details[open] > summary > .details-chevron { transform: rotate(90deg); }
     padding: var(--space-16) var(--space-16) var(--space-24);
   }
 
-  .composer { min-height: auto; padding: 12px 14px 6px; }
+  .composer { --composer-action-inset: 14px; --composer-action-bottom: 14px; min-height: auto; padding: 12px var(--composer-action-inset) var(--composer-action-bottom); }
   .composer textarea { min-height: 30px; padding-block: 3px; }
   .workbench-mobile-menu { background: transparent; }
   .stats-bar { padding-inline: var(--space-12); }
@@ -3200,7 +3212,7 @@ details[open] > summary > .details-chevron { transform: rotate(90deg); }
     gap: var(--space-8);
   }
 
-  .composer-left { grid-area: 2 / 1; margin-left: -8.67px; }
+  .composer-left { grid-area: 2 / 1; }
   .composer-right { display: contents; }
   .composer-right > .model-thinking-picker {
     grid-area: 1 / 1 / 2 / -1;
@@ -3235,8 +3247,8 @@ details[open] > summary > .details-chevron { transform: rotate(90deg); }
 @media (max-width: 640px) and (max-height: 480px) {
   /* Preserve the reading slot with 22px headings and 16px input, not smaller text. */
   .chat-footer { padding-top: 4px; }
-  .composer { padding-block: 4px; gap: 4px; }
-  .composer-toolbar { grid-template-columns: 32px minmax(0, 1fr) 32px; grid-template-rows: 32px; gap: 4px; }
+  .composer { --composer-action-inset: 12px; --composer-action-bottom: 12px; padding-top: 4px; gap: 4px; }
+  .composer-toolbar { grid-template-columns: 32px minmax(0, 1fr) 32px; grid-template-rows: 32px; gap: 8px; }
   .composer-left { grid-area: 1 / 1; }
   .composer-right > .model-thinking-picker { grid-area: 1 / 2; }
   .composer-right > .send-button { grid-area: 1 / 3; }

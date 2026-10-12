@@ -338,6 +338,7 @@ export default function App() {
         onRetrySubmit={controller.retryFailedSubmission}
         onConfirmCreation={controller.confirmUnknownCreation}
         onSend={activeSession ? controller.sendMessage : controller.createSessionWithMessage}
+        onAbort={controller.abort}
         onFollowUp={controller.followUp}
         onToggleTrace={() => { setMobileSidebarOpen(false); if (detailsCollapsed) setDetailsCollapsed(false); else closeInspector(); }}
         traceOpen={!detailsCollapsed}

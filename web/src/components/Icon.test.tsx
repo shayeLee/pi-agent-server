@@ -13,6 +13,11 @@ import projectChevronUp from '../icons/svg/project-chevron-up.svg?raw';
 function graphics(source: string) {
   return new DOMParser().parseFromString(source, 'image/svg+xml').querySelector('svg')!;
 }
+it('renders the stop glyph without a second button background', () => {
+  const { container } = render(<Icon name="stop" />);
+  expect(container.querySelector('circle')).toBeNull();
+  expect(container.querySelector('rect')).toHaveAttribute('fill', 'currentColor');
+});
 it.each<[IconName, string]>([['project-chevron-down', projectChevronDown], ['project-chevron-up', projectChevronUp]])('uses dedicated 12px geometry for %s', (name, source) => {
   const { container } = render(<Icon name={name} size={12} className="disclosure-chevron" />);
   const svg = container.querySelector('svg')!;

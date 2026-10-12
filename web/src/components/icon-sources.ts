@@ -34,12 +34,12 @@ const sources = { sidebar, plus, 'plus-neutral': plusNeutral, folder, chevron, d
 export type SourceIconName = keyof typeof sources;
 const bodies = Object.fromEntries(Object.entries(sources).map(([name, source]) => {
   let body = source.replace(/^<svg\b[^>]*>/, '').replace(/<\/svg>\s*$/, '').replace(/<title>[^<]*<\/title>/, '');
-  // The existing circular send button owns the background, not the asset's rect.
+  // Composer buttons own the background; these assets supply only the glyph.
   if (name === 'send') body = body.replace(/<rect\b[^>]*\/>/, '');
   // Neutral colors inherit theme/disabled state; meaningful white and status fills remain.
-  if (name === 'stop') body = body.replace(/#121721/g, 'var(--text-primary)').replace(/#fff/g, 'var(--bg-page)');
+  if (name === 'stop') body = body.replace(/<circle\b[^>]*\/>/, '').replace(/#fff/g, 'currentColor');
   const viewBoxMatch = source.match(/viewBox="([^"]+)"/);
-  const viewBox = viewBoxMatch ? viewBoxMatch[1] : '0 0 24 24';
+  const viewBox = name === 'stop' ? '5 5 14 14' : viewBoxMatch ? viewBoxMatch[1] : '0 0 24 24';
   return [name, { __html: body, viewBox }];
 })) as Record<SourceIconName, { __html: string; viewBox: string }>;
 export function iconSource(name: string) {

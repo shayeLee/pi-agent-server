@@ -637,7 +637,8 @@ describe("App（顶层流程）", () => {
     if (!unknown) act(() => mocks.sse.onEvent?.({ type: "status", phase: "agent_start", requestId: primary.requestId }));
     enter();
     expect(screen.getByTestId("composer-input")).toHaveValue("primary first");
-    expect(screen.getByTestId("send-button")).toBeDisabled();
+    if (unknown) expect(screen.getByTestId("send-button")).toBeDisabled();
+    else expect(screen.getByTestId("abort-button")).toBeEnabled();
     expect(inst.steer).not.toHaveBeenCalled();
     expect(inst.followUp).not.toHaveBeenCalled();
     await act(async () => unknown ? rejectSend(new Error("lost HTTP receipt")) : releaseSend());
@@ -672,7 +673,7 @@ describe("App（顶层流程）", () => {
       mocks.sse.onEvent?.({ type: "status", phase: "agent_start", requestId: request.requestId });
       mocks.sse.onEvent?.({ type: "text_delta", text: "owned answer", requestId: request.requestId });
     });
-    await waitFor(() => expect(screen.getByTestId("send-button")).toHaveAttribute("title", "追加到队列"));
+    await waitFor(() => expect(screen.getByTestId("abort-button")).toHaveAttribute("title", "中止（Esc）"));
     act(() => {
       mocks.sse.onEvent?.({ type: "error", message: "pending notification rejected", requestId: "notification-race" });
       mocks.sse.onEvent?.({ type: "completed", requestId: "old" });
@@ -680,7 +681,7 @@ describe("App（顶层流程）", () => {
       mocks.sse.onEvent?.({ type: "status", phase: "agent_start", requestId: "old" });
       mocks.sse.onEvent?.({ type: "text_delta", text: " foreign text", requestId: "old" });
     });
-    expect(screen.getByTestId("send-button")).toHaveAttribute("title", "追加到队列");
+    expect(screen.getByTestId("abort-button")).toHaveAttribute("title", "中止（Esc）");
     expect(screen.queryByTestId("phase-queued")).not.toBeInTheDocument();
     expect(screen.queryByText(/foreign text/)).not.toBeInTheDocument();
     act(() => mocks.sse.onEvent?.({ type: "text_delta", text: " continues", requestId: request.requestId }));
@@ -1162,7 +1163,7 @@ describe("App（顶层流程）", () => {
       // A's delayed terminal cannot end B.
       mocks.sse.onEvent?.({ type: "completed", requestId: "A" }, 126);
     });
-    expect(screen.getByTestId("send-button")).toHaveAttribute("title", "追加到队列");
+    expect(screen.getByTestId("abort-button")).toHaveAttribute("title", "中止（Esc）");
     expect(screen.getAllByText("answer A")).toHaveLength(1);
     expect(screen.getAllByText("answer B")).toHaveLength(1);
     expect(screen.getAllByText("history row 119")).toHaveLength(1);
@@ -1185,13 +1186,13 @@ describe("App（顶层流程）", () => {
     await waitFor(() => expect(screen.getByAltText("已发送图片 1")).toHaveAttribute("src", `data:image/png;base64,${png}`));
   });
 
-  it("API abort keeps running compaction until actual aborted terminal without a stop UI", async () => {
+  it("Escape abort keeps running compaction until actual aborted terminal", async () => {
     const inst = await enterChat();
     act(() => { mocks.sse.onOpen?.(); mocks.sse.onEvent?.({ type: "compaction_start", reason: "threshold", requestId: "r1" }); });
     expect(screen.getByTestId("compaction-banner")).toHaveAttribute("data-status", "running");
-    expect(screen.queryByTestId("abort-button")).not.toBeInTheDocument();
-    await (inst.abort as (sessionId: string) => Promise<void>)("s1");
-    expect(inst.abort).toHaveBeenCalledWith("s1");
+    expect(screen.getByTestId("abort-button")).toBeEnabled();
+    fireEvent.keyDown(document, { key: "Escape" });
+    await waitFor(() => expect(inst.abort).toHaveBeenCalledWith("s1"));
     expect(screen.getByTestId("compaction-banner")).toHaveAttribute("data-status", "running");
     act(() => mocks.sse.onEvent?.({ type: "aborted", requestId: "r1" }));
     expect(screen.getByTestId("compaction-banner")).toHaveAttribute("data-status", "aborted");
@@ -1218,13 +1219,12 @@ describe("App（顶层流程）", () => {
     expect(screen.getByTestId("compaction-banner")).toHaveAttribute("data-status", "unknown");
   });
 
-  it("流式阶段没有停止 UI，程序 API 仍可中止", async () => {
+  it("工具运行阶段显示中止按钮并调用 API", async () => {
     const inst = await enterChat();
 
     act(() => mocks.sse.onEvent?.({ type: "tool_start", toolCallId: "t1", toolName: "search", args: {} }));
-    expect(screen.queryByTestId("abort-button")).not.toBeInTheDocument();
-    await (inst.abort as (sessionId: string) => Promise<void>)("s1");
-    expect(inst.abort).toHaveBeenCalledWith("s1");
+    fireEvent.click(screen.getByTestId("abort-button"));
+    await waitFor(() => expect(inst.abort).toHaveBeenCalledWith("s1"));
   });
 
   it("queued 状态显示排队提示，completed 后恢复", async () => {

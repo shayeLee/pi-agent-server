@@ -54,6 +54,7 @@ export type ChatProps = {
   onRemoveFile?: (localId: string) => void;
   onRetrySubmit?: () => Promise<SubmitOutcome>;
   onConfirmCreation?: () => Promise<SubmitOutcome>;
+  onAbort?: () => void;
   onFollowUp: (text: string) => void | Promise<boolean>;
   onToggleTrace?: () => void;
   traceOpen?: boolean;
@@ -103,6 +104,7 @@ export function Chat({
   onRemoveFile,
   onRetrySubmit,
   onConfirmCreation,
+  onAbort,
   onFollowUp,
   onToggleTrace,
   traceOpen,
@@ -279,6 +281,7 @@ export function Chat({
             onRemoveFile={onRemoveFile}
             onRetrySubmit={onRetrySubmit}
             onConfirmCreation={onConfirmCreation}
+            onAbort={onAbort}
             onFollowUp={onFollowUp}
             onConfigChange={onConfigChange}
           />
