@@ -24,18 +24,21 @@ export function ControlQueue({ items, disabled, loading, error, operations = {},
     {(["steer", "followUp"] as const).map(kind => {
       const rows = items.filter(item => item.kind === kind);
       if (!rows.length) return null;
-      return <section key={kind} className={`control-queue-group ${kind}`} aria-label={kind === "steer" ? zhCN.controlQueue.steerQueue : zhCN.controlQueue.followUpQueue}>
-        <header><Icon name={kind === "steer" ? "paper-plane" : "clock"} size={kind === "steer" ? 20 : 16} /><strong>{kind === "steer" ? zhCN.controlQueue.steerQueue : zhCN.controlQueue.followUpQueue}</strong><span className="control-queue-count">{rows.length}</span></header>
-        <ul>{rows.map(item => {
+      return <section key={kind} className="control-queue-group" aria-label={kind === "steer" ? zhCN.controlQueue.steerQueue : zhCN.controlQueue.followUpQueue}>
+        <ul>{rows.map((item, index) => {
+          const position = index + 1 + (kind === "followUp" ? items.filter(item => item.kind === "steer").length : 0);
           const operation = operations[item.id];
           const blocked = disabled || loading || operation?.status === "pending" || operation?.status === "unknown";
-          return <li key={item.id} data-testid="control-queue-item">
+          return <li key={item.id} className={`control-queue-row ${kind}`} data-testid="control-queue-item">
+            <header><Icon name={kind === "steer" ? "paper-plane" : "clock"} size={kind === "steer" ? 20 : 16} /><strong>{kind === "steer" ? zhCN.controlQueue.steerQueue : zhCN.controlQueue.followUpQueue}</strong><span className="control-queue-count" aria-label={`第 ${position} 条`}>{position}</span></header>
+            <div className="control-queue-content">
             <div className="control-queue-copy"><span title={item.text}>{item.text || zhCN.controlQueue.imageMessage}{item.text && item.hasImages ? zhCN.controlQueue.withImages : ""}</span>
               {operation && <small role="status">{operation.status === "pending" ? zhCN.controlQueue.pending : operation.status === "unknown" ? zhCN.controlQueue.unknown : operation.error || zhCN.controlQueue.failed}</small>}
             </div>
             <div className="control-queue-actions">
-              {kind === "followUp" && <button type="button" disabled={blocked} onClick={() => onPromote(item.id)} aria-label={zhCN.controlQueue.steerMessage(item.text || zhCN.controlQueue.imageMessage)}>{zhCN.controlQueue.steer}</button>}
+              {kind === "followUp" && <button className="control-queue-promote" type="button" disabled={blocked} onClick={() => onPromote(item.id)} aria-label={zhCN.controlQueue.steerMessage(item.text || zhCN.controlQueue.imageMessage)}>{zhCN.controlQueue.steer}</button>}
               <button type="button" disabled={blocked} onClick={() => onDelete(item.id)} aria-label={zhCN.controlQueue.deleteMessage(item.text || zhCN.controlQueue.imageMessage)}><Icon name="trash" size={19} /></button>
+            </div>
             </div>
           </li>;
         })}</ul>

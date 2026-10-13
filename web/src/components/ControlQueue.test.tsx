@@ -29,3 +29,14 @@ it('unknown is refresh-only, failure stays actionable', () => {
   view.rerender(<ControlQueue {...props} operations={{a:{status:'failed',error:'冲突'}}} />);
   expect(screen.getByText('冲突')).toBeVisible(); expect(screen.getByRole('button',{name:'删除：A'})).toBeEnabled();
 });
+it('renders each message with its own queue label, position and actions', () => {
+  render(<ControlQueue items={[{id:'a',kind:'steer',text:'A'},{id:'b',kind:'followUp',text:'B'},{id:'c',kind:'followUp',text:'C'}]} onDelete={vi.fn()} onPromote={vi.fn()} />);
+  const rows = screen.getAllByTestId('control-queue-item');
+  rows.forEach((row, index) => {
+    expect(within(row).getByText(index === 0 ? '引导队列' : '追加队列')).toBeVisible();
+    expect(within(row).getByLabelText(`第 ${index + 1} 条`)).toBeVisible();
+    expect(within(row).getByRole('button', {name:`删除：${['A','B','C'][index]}`})).toBeEnabled();
+  });
+  expect(within(rows[1]).getByRole('button', {name:'引导：B'})).toBeEnabled();
+  expect(within(rows[2]).getByRole('button', {name:'引导：C'})).toBeEnabled();
+});
