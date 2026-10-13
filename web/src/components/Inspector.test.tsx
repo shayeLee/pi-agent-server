@@ -11,22 +11,22 @@ describe('Inspector steps', () => {
  it('preserves full array order and count including thinking, calls and parallel results', () => {
   const rows = [step('u', 'hello', 'user'), step('t', 'think', 'thinking'), {...step('a', {count: 0}, 'tool_call'), toolName: 'subagent_wait'}, step('b', 'B result', 'tool_result'), step('c', 'A result', 'tool_result')];
   render(<Inspector {...base} steps={snapshot(rows)} />);
-  expect(screen.getByRole('tab', {name: '步骤 5'})).toHaveAttribute('aria-selected', 'true');
+  expect(screen.getByRole('tab', {name: '轨迹 5'})).toHaveAttribute('aria-selected', 'true');
   expect(screen.getAllByTestId('session-step').map(el => el.dataset.stepId)).toEqual(['u','t','a','b','c']);
   expect(screen.getByText('subagent_wait')).toBeVisible();
  });
  it('retains expanded identity through streaming updates but resets projection and session', () => {
-  const { rerender } = render(<Inspector {...base} steps={snapshot([step('a', 'first')])} />);
+  const { rerender } = render(<Inspector {...base} steps={snapshot([step('a', 'first'.repeat(40))])} />);
   fireEvent.click(screen.getByRole('button', {name: '助手消息'}));
   const full = 'stream '.repeat(5000) + 'FINAL';
   rerender(<Inspector {...base} steps={snapshot([step('a', full)])} />);
-  expect(screen.getByRole('button', {name: '助手消息'})).toHaveAttribute('aria-expanded', 'true');
-  expect(screen.getByText(full)).toHaveTextContent('FINAL');
+  expect(screen.getByRole('dialog')).toBeVisible();
+  expect(screen.getByRole('dialog')).toHaveTextContent('FINAL');
   rerender(<Inspector {...base} steps={snapshot([step('a', full)], 'new')} />);
-  expect(screen.getByRole('button', {name: '助手消息'})).toHaveAttribute('aria-expanded', 'false');
+  expect(screen.queryByRole('dialog')).toBeNull();
   rerender(<Inspector {...base} session={{id:'other'} as SessionRecord} steps={snapshot([step('a', full)])} />);
   expect(screen.queryByText(full)).toBeNull();
-  expect(screen.getByRole('tab', {name: '步骤 0'})).toBeVisible();
+  expect(screen.getByRole('tab', {name: '轨迹 0'})).toBeVisible();
  });
  it('renders missing, empty, null, false, zero and unknown safely without remote images or HTML', () => {
   render(<Inspector {...base} steps={snapshot([step('1', undefined), step('2', ''), step('3', null), step('4', false), step('5', 0), {...step('6', '<script>unsafe</script>', 'custom'), images: [{mediaType:'image/svg+xml',base64:'abcd'}]}, step('7', {}, 'constructor' as SessionStep['kind'])])} />);
@@ -59,13 +59,24 @@ describe('Inspector steps', () => {
   const change = vi.fn(), close = vi.fn();
   const { rerender } = render(<Inspector {...base} onTabChange={change} onClose={close} stepsLoading />);
   expect(screen.getByRole('status')).toHaveTextContent('正在加载');
-  fireEvent.keyDown(screen.getByRole('tab', {name: '步骤 0'}), {key:'ArrowRight'});
+  fireEvent.keyDown(screen.getByRole('tab', {name: '轨迹 0'}), {key:'ArrowRight'});
   expect(change).toHaveBeenCalledWith('systemPrompt');
   fireEvent.keyDown(screen.getByTestId('inspector'), {key:'Escape'});
   expect(close).toHaveBeenCalledOnce();
   rerender(<Inspector {...base} activeTab="steps" stepsError="offline" />);
   expect(screen.getByRole('alert')).toHaveTextContent('offline');
   fireEvent.click(screen.getByRole('tab', {name:'事件流'}));
-  expect(screen.getByRole('tab', {name:'步骤 0'})).toHaveAttribute('aria-selected','true');
+  expect(screen.getByRole('tab', {name:'轨迹 0'})).toHaveAttribute('aria-selected','true');
  });
+});
+
+it('keeps the directory open when Escape is pressed inside step details', () => {
+  const close = vi.fn();
+  render(<Inspector {...base} onClose={close} steps={snapshot([step('long', 'detail '.repeat(50), 'system_event')])} />);
+  fireEvent.click(screen.getByRole('button', {name:'系统事件'}));
+  fireEvent.keyDown(screen.getByRole('dialog'), {key:'Escape'});
+  expect(close).not.toHaveBeenCalled();
+  fireEvent(screen.getByRole('dialog'), new Event('cancel', {bubbles:false, cancelable:true}));
+  expect(screen.queryByRole('dialog')).toBeNull();
+  expect(screen.getByTestId('session-steps')).toBeVisible();
 });

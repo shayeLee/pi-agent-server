@@ -252,9 +252,9 @@ describe("Chat（聊天区）", () => {
     expect(screen.getByTestId("tool-call-card")).toBeInTheDocument();
     expect(screen.getByTestId("tool-name")).toHaveTextContent("weather");
     expect(screen.getByTestId("message-list").children).toHaveLength(3);
-    expect(screen.getByTestId("message-list").children[0]).toHaveClass("row-user");
-    expect(screen.getByTestId("message-list").children[1]).toHaveClass("row-assistant");
-    expect(screen.getByTestId("message-list").children[2]).toHaveClass("tool-call");
+    expect(screen.getByTestId("message-list").children[0].firstElementChild).toHaveClass("row-user");
+    expect(screen.getByTestId("message-list").children[1].firstElementChild).toHaveClass("row-assistant");
+    expect(screen.getByTestId("message-list").children[2].firstElementChild).toHaveClass("tool-call");
     // Reading-first：旧 Crossband 固定来源槽及其标签已废除。
     expect(screen.queryByText("用户原文")).not.toBeInTheDocument();
     expect(screen.queryByText("模型正文")).not.toBeInTheDocument();

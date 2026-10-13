@@ -1,6 +1,7 @@
 import { useLayoutEffect, useRef, useState } from "react";
 import { Icon } from "./Icon.js";
 import type { ChatState, ModelInfo, Project, SessionRecord, UsageStats } from "pi-agent-server/client";
+import { ConversationMinimap } from "./ConversationMinimap.js";
 import { Timeline } from "./Timeline.js";
 import type { DraftSource } from "../draft-store.js";
 import { Composer } from "./Composer.js";
@@ -57,6 +58,7 @@ export type ChatProps = {
   onAbort?: () => void;
   onFollowUp: (text: string) => void | Promise<boolean>;
   onToggleTrace?: () => void;
+  onNavigateTurn?: (timelineId: string) => void;
   traceOpen?: boolean;
   onConfigChange: (config: { modelProvider?: string; modelId?: string; thinkingLevel?: string }) => void;
 };
@@ -107,6 +109,7 @@ export function Chat({
   onAbort,
   onFollowUp,
   onToggleTrace,
+  onNavigateTurn,
   traceOpen,
   onConfigChange,
 }: ChatProps) {
@@ -178,7 +181,8 @@ export function Chat({
           onToggleTrace={() => onToggleTrace?.()}
         />
       )}
-      <div className="chat-body" ref={bodyRef} data-testid="chat-body"
+      <div className="chat-scroll-region">
+      <div id="chat-transcript" className="chat-body" ref={bodyRef} data-testid="chat-body"
         role="region" aria-label="会话内容" tabIndex={0}
         onKeyDown={(event) => {
           if (event.target !== event.currentTarget || (event.key !== "Home" && event.key !== "End") || event.currentTarget.isContentEditable || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || event.nativeEvent.isComposing) return;
@@ -232,6 +236,8 @@ export function Chat({
             )}
           </div>
         )}
+      </div>
+      <ConversationMinimap key={session?.id ?? "empty"} timeline={timeline} viewport={bodyRef} onNavigate={timelineId => { followRef.current = false; onNavigateTurn?.(timelineId); }} />
       </div>
       {session && hasMessages && (
         <div className="chat-latest-row">

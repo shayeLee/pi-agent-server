@@ -53,6 +53,7 @@ export function Modal({ open, onClose, title, children, footer }: ModalProps) {
       if (dismiss) onClose();
     }}
     onKeyDown={event => {
+      if (event.key === "Escape") { event.stopPropagation(); return; }
       if (event.key !== "Tab") return;
       const items = Array.from(event.currentTarget.querySelectorAll<HTMLElement>('button:not(:disabled), [href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])')).filter(el => el.getClientRects().length > 0 && !el.closest('[inert]'));
       const first = items[0]; const last = items.at(-1);

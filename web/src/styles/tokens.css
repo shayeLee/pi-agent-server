@@ -37,6 +37,7 @@
   --accent-solid-bg: #006BF0;
   --accent-solid-fg: #FFFFFF;
   --accent-soft: #E7EFFF;
+  --navigation-highlight: #FFF4D6;
   --success: #2E7D57;
   --warning: #8A6212;
   --danger: #B3392F;
@@ -61,6 +62,7 @@
   --accent-solid-bg: #8FB0FF;
   --accent-solid-fg: #141311;
   --accent-soft: #232C3B;
+  --navigation-highlight: #3B3323;
   --success: #7BC9A0;
   --warning: #E0B25C;
   --danger: #F09A90;

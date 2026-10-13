@@ -2,6 +2,7 @@ import { useState } from "react";
 import { IconSelect } from "./IconSelect.js";
 import { Icon } from "./Icon.js";
 import type { EventLogEntry } from "../types.js";
+import { useFollowBottom } from "../hooks/useFollowBottom.js";
 
 /** 把 unknown 值序列化为可读文本（字符串原样，其它 JSON 美化）。 */
 function stringify(value: unknown): string {
@@ -35,6 +36,7 @@ const INTERESTING_TYPES = [
 /** 调试面板：按到达顺序展示原始 SSE 事件，可按类型过滤、清空。 */
 export function EventLog({ entries, onClear, showHeader = true }: EventLogProps) {
   const [filter, setFilter] = useState<string>("all");
+  const scroll = useFollowBottom(filter, entries);
 
   const filtered = entries.filter((e) => filter === "all" || e.type === filter);
 
@@ -82,7 +84,8 @@ export function EventLog({ entries, onClear, showHeader = true }: EventLogProps)
           </button>
         </div>
       )}
-      <div className="event-log-list">
+      <div className="event-log-list" ref={scroll.ref} onScroll={scroll.onScroll}
+        onClickCapture={(event) => { if ((event.target as Element).closest('summary')) scroll.pause(); }}>
         {filtered.length === 0 ? (
           <div className="empty-hint" data-testid="event-empty">
             暂无事件

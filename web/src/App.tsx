@@ -4,6 +4,7 @@ import { Icon } from "./components/Icon.js";
 import { useWebAppController } from "./hooks/useWebAppController.js";
 import { SessionList } from "./components/SessionList.js";
 import { ProjectSwitcher } from "./components/ProjectSwitcher.js";
+import type { TraceNavigation } from "./components/step-navigation.js";
 import { Chat } from "./components/Chat.js";
 import { Inspector, type InspectorTab } from "./components/Inspector.js";
 import { useSessionInspection } from "./hooks/useSessionInspection.js";
@@ -29,7 +30,9 @@ export default function App() {
   const mobileMenuRef = useRef<HTMLButtonElement>(null);
   const [detailsCollapsed, setDetailsCollapsed] = useState(true);
   const shellRef = useRef<HTMLElement>(null);
+  const [traceNavigation, setTraceNavigation] = useState<TraceNavigation | null>(null);
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>("steps");
+  useEffect(() => { setTraceNavigation(null); }, [detailsCollapsed, inspectorTab, controller.activeSessionId]);
   const [themeMode, setThemeMode] = useState<ThemeMode>(readThemeMode);
   const [theme, setTheme] = useState<"dark" | "light">(() => resolveTheme(themeMode));
   // Only system mode follows OS changes; manual choices survive reloads.
@@ -342,6 +345,11 @@ export default function App() {
         onFollowUp={controller.followUp}
         onToggleTrace={() => { setMobileSidebarOpen(false); if (detailsCollapsed) setDetailsCollapsed(false); else closeInspector(); }}
         traceOpen={!detailsCollapsed}
+        onNavigateTurn={timelineId => {
+          if (activeSession && !detailsCollapsed && inspectorTab === 'steps') {
+            setTraceNavigation(previous => ({sessionId:activeSession.id, timelineId, sequence:(previous?.sequence ?? 0) + 1}));
+          }
+        }}
         onConfigChange={(config) => {
           if (activeSession) void controller.changeSessionConfig(activeSession.id, config);
         }}
@@ -354,6 +362,7 @@ export default function App() {
           session={activeSession}
           entries={controller.eventLog}
           {...inspection}
+          navigation={traceNavigation}
           activeTab={inspectorTab}
           onTabChange={setInspectorTab}
           onClearEvents={controller.clearEventLog}

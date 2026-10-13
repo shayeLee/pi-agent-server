@@ -319,6 +319,17 @@ textarea::placeholder {
   padding: 0 var(--space-8) 0 var(--space-16);
 }
 
+.app-shell.sidebar-collapsed:not(.mobile-sidebar-open) .sidebar-header {
+  width: 100%;
+  justify-content: center;
+  gap: 0;
+  padding: 0;
+}
+
+.app-shell.sidebar-collapsed:not(.mobile-sidebar-open) .sidebar-header .brand {
+  display: none;
+}
+
 .brand {
   display: flex;
   align-items: center;
@@ -975,6 +986,7 @@ textarea::placeholder {
    ===================================================================== */
 
 .chat {
+  --minimap-gutter: 22px;
   grid-column: 2;
   display: flex;
   flex-direction: column;
@@ -992,7 +1004,7 @@ textarea::placeholder {
   display: flex;
   align-items: stretch;
   min-height: var(--header-height);
-  padding: 0;
+  padding: 0 var(--minimap-gutter) 0 0;
   background: var(--bg-page);
   border-bottom: 1px solid var(--line);
 }
@@ -1116,8 +1128,8 @@ textarea::placeholder {
 }
 
 /* 连续工具步骤收紧到 8px，仍是一条纵向顺序列表 */
-.timeline > .tool-call + .tool-call {
-  margin-top: calc(var(--space-8) - var(--space-16));
+.timeline > .timeline-entry:has(> .tool-call) + .timeline-entry:has(> .tool-call) {
+  margin-top: calc(var(--space-8) - var(--space-16) - 8px);
 }
 
 .chat-history-notice {
@@ -1938,7 +1950,7 @@ details[open] > summary > .details-chevron { transform: rotate(90deg); }
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 12px;
+  font-size: var(--font-base-sm);
   font-weight: 500;
   color: var(--text-primary);
   max-width: 260px;
@@ -1946,7 +1958,7 @@ details[open] > summary > .details-chevron { transform: rotate(90deg); }
 
 .composer-attachment-details small {
   color: var(--text-secondary);
-  font-size: 11px;
+  font-size: var(--font-sm);
   white-space: nowrap;
   flex: none;
 }
@@ -2019,7 +2031,7 @@ details[open] > summary > .details-chevron { transform: rotate(90deg); }
   border-radius: 4px;
   background: transparent;
   color: var(--danger);
-  font-size: 11px;
+  font-size: var(--font-sm);
   cursor: pointer;
 }
 
@@ -2038,7 +2050,7 @@ details[open] > summary > .details-chevron { transform: rotate(90deg); }
   border: 0;
   background: transparent;
   color: var(--text-tertiary);
-  font-size: 11px;
+  font-size: var(--font-sm);
   cursor: pointer;
 }
 
@@ -2284,7 +2296,7 @@ details[open] > summary > .details-chevron { transform: rotate(90deg); }
   border-radius: 6px;
   background: transparent;
   color: var(--text-secondary);
-  font-size: 13px;
+  font-size: var(--font-md);
   font-weight: 500;
   text-align: left;
   cursor: pointer;
@@ -2766,7 +2778,6 @@ details[open] > summary > .details-chevron { transform: rotate(90deg); }
 .session-step-tool_result .step-content { padding: 8px; border-radius: var(--radius-control); background: color-mix(in srgb, var(--accent) 5%, var(--bg-surface)); }
 .step-status { display: inline-block; margin-top: 4px; color: var(--text-tertiary); font-size: var(--font-xs); }
 .step-note { margin-top: 6px; }
-.step-omission-marker { color: var(--text-tertiary); font-size: var(--font-xs); }
 .session-step-system_event .step-content.collapsed pre { -webkit-line-clamp: 1; }
 .session-step-tool_result .step-content { display: flex; align-items: flex-start; gap: 6px; }
 .session-step-tool_result .step-content pre { min-width: 0; flex: 1; }
@@ -3325,3 +3336,71 @@ details[open] > summary > .details-chevron { transform: rotate(90deg); }
 .diff-no-newline { color: var(--text-secondary); }
 .diff-originals summary { cursor: pointer; overflow-wrap: anywhere; }
 .diff-status { color: var(--text-secondary); }
+
+/* Reserve the highlight inset without moving message content when it activates. */
+.timeline-entry {
+  padding: 8px 12px;
+  margin: -8px -12px;
+  position: relative;
+  isolation: isolate;
+  scroll-margin-block: 24px;
+}
+/* Paint to the chat viewport edges without widening or shifting the reading column.
+   Shadows do not add scrollable width; chat-body clips the horizontal paint. */
+.timeline-entry-highlight::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background: var(--navigation-highlight);
+  box-shadow: 0 0 0 100vmax var(--navigation-highlight);
+  clip-path: inset(0 -100vmax);
+}
+.timeline-entry:focus { outline: none; }
+.step-detail-text { white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--font-mono); font-size: var(--font-base); line-height: 1.65; }
+.step-content.collapsed { cursor: pointer; }
+
+/* Keep native scrolling without a visible scrollbar; reserve a separate navigation rail. */
+.chat-scroll-region { position: relative; display: flex; flex: 1; min-height: 0; min-width: 0; padding-right: var(--minimap-gutter); }
+.chat-scroll-region > .chat-body { min-width: 0; scrollbar-width: none; }
+.chat-scroll-region > .chat-body::-webkit-scrollbar { display: none; width: 0; height: 0; }
+
+.trace-search { position: sticky; top: 0; z-index: 3; display: flex; flex-direction: column; gap: 6px; margin: -12px -12px 0; padding: 12px; background: var(--bg-surface); }
+.trace-search input { width: 100%; min-width: 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--radius-control); background: var(--bg-page); color: var(--text-primary); font: inherit; }
+.trace-search input:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.trace-search-count { color: var(--text-secondary); font-size: var(--font-sm); }
+
+/* Compact turn navigation floats beside the reading column. */
+.conversation-minimap { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); max-height: min(280px, 60%); width: 32px; z-index: 4; overflow-y: auto; scrollbar-width: none; display: flex; flex-direction: column; align-items: center; }
+.conversation-minimap::-webkit-scrollbar { display: none; }
+.conversation-minimap button { display: flex; flex: 0 0 10px; min-height: 6px; width: 32px; padding: 0 3px; align-items: center; justify-content: flex-end; border: 0; background: transparent; cursor: pointer; }
+.conversation-minimap button span { display: block; height: 2px; background: var(--text-tertiary); opacity: .25; border-radius: 1px; }
+.conversation-minimap button[aria-current="true"] span, .conversation-minimap button:hover span, .conversation-minimap button:focus-visible span { opacity: 1; background: var(--accent); }
+.conversation-minimap button:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
+.minimap-preview { position: absolute; right: 44px; z-index: 5; width: min(340px, calc(100% - 60px)); padding: 14px 16px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg-raised); color: var(--text-primary); box-shadow: var(--shadow-md); pointer-events: none; font-size: var(--font-base); }
+.minimap-preview strong { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+.minimap-preview p { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; margin: 8px 0 0; color: var(--text-secondary); }
+
+.conversation-minimap button span { transition: width 160ms ease-out, opacity 120ms ease; }
+.conversation-minimap button[aria-current="true"] span { height: 3px; }
+.minimap-preview-meta { display: flex; justify-content: space-between; margin-bottom: 10px; font-size: var(--font-sm); color: var(--text-tertiary); }
+.minimap-preview-meta span { color: var(--accent); }
+.minimap-preview-hint { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--line); font-size: var(--font-sm); color: var(--text-tertiary); }
+@media (prefers-reduced-motion: reduce) { .conversation-minimap button span { transition: none; } }
+
+.conversation-minimap { overscroll-behavior: contain; }
+.minimap-preview { max-height: calc(100% - 16px); overflow: hidden; }
+
+/* Extend the trace highlight through the list padding without moving its columns. */
+.session-step.trace-step-highlight { isolation: isolate; }
+.session-step.trace-step-highlight::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background: var(--navigation-highlight);
+  box-shadow: 0 0 0 100vmax var(--navigation-highlight);
+  clip-path: inset(0 -100vmax);
+}
