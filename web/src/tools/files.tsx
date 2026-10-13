@@ -1,3 +1,4 @@
+import { zhCN } from "../i18n/zh-CN.js";
 import { CodeBlock, codeLanguage, fileCodeLanguage } from "../components/CodeBlock.js";
 import { ParameterFields, Parameters, Result } from "./generic.js";
 import { record } from "./summary-data.js";
@@ -12,7 +13,7 @@ export function WriteArguments({ value }: ArgumentsProps) {
   const args = record(value);
   if (typeof args.path !== "string" || typeof args.content !== "string") return <Parameters value={value} />;
   const extra = Object.fromEntries(Object.entries(args).filter(([key]) => key !== "path" && key !== "content"));
-  return <section className="json-block" aria-label="参数">
+  return <section className="json-block" aria-label={zhCN.toolParameters.label}>
     <CodeBlock code={args.content} language={argumentLanguage(value) ?? "plaintext"} />
     {Object.keys(extra).length > 0 && <ParameterFields value={extra} />}
   </section>;
@@ -29,7 +30,7 @@ export function EditArguments({ value }: ArgumentsProps) {
   const edits = batch ? args.edits as (Record<string, unknown> & { oldText: string; newText: string })[] : [args as Record<string, unknown> & { oldText: string; newText: string }];
   const extra = Object.fromEntries(Object.entries(args).filter(([key]) => key !== "path" && (batch ? key !== "edits" : key !== "oldText" && key !== "newText")));
   const extraFields = (fields: Record<string, unknown>) => Object.keys(fields).length > 0 ? <ParameterFields value={fields} /> : null;
-  return <section className="json-block" aria-label="参数">
+  return <section className="json-block" aria-label={zhCN.toolParameters.label}>
     {edits.map((edit, index) => <div key={index}>
       <DiffBlock oldText={edit.oldText} newText={edit.newText} language={argumentLanguage(value)} />
       {batch && extraFields(Object.fromEntries(Object.entries(edit).filter(([key]) => key !== "oldText" && key !== "newText")))}

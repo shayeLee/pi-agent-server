@@ -1,3 +1,4 @@
+import { zhCN } from "../i18n/zh-CN.js";
 import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { Icon, type IconName } from "./Icon.js";
 import type { KeyboardEvent } from "react";
@@ -36,7 +37,7 @@ export function SelectMenu({
   disabled,
   testId,
   className,
-  placeholder = "请选择",
+  placeholder = zhCN.select.placeholder,
   checkPosition = "right",
   chevronIcon = "down",
   openChevronIcon,

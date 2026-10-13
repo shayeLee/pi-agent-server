@@ -1,3 +1,4 @@
+import { zhCN } from "../i18n/zh-CN.js";
 import { memo, useEffect, useRef, useState } from "react";
 import { ToolStatusIcon } from "./ToolStatusIcon.js";
 import { Icon } from "./Icon.js";
@@ -17,8 +18,8 @@ export const ToolCallCard = memo(function ToolCallCard({ call }: { call: ToolCal
     if (!userToggled.current) setExpanded(!call.done);
   }, [call.done]);
   const duration = call.done ? formatToolDuration(call.durationMs) : null;
-  const durationTitle = `工具调用耗时：${call.durationMs} ms${call.toolName === "subagent_wait" ? "（本次 wait 调用，非子 agent 运行时长）" : ""}`;
-  const status = call.done ? (call.isError ? "失败" : "已完成") : "进行中";
+  const durationTitle = zhCN.toolCall.duration(call.durationMs, call.toolName === "subagent_wait" ? zhCN.toolCall.waitScope : "");
+  const status = call.done ? (call.isError ? zhCN.composer.failed : zhCN.status.completed) : zhCN.steps.streaming;
   const { header, Arguments, Result } = toolPresentation(call);
   const { summary, badge, priorityLabels, preview } = header;
 
@@ -38,7 +39,7 @@ export const ToolCallCard = memo(function ToolCallCard({ call }: { call: ToolCal
           setExpanded((v) => !v);
         }}
         aria-expanded={expanded}
-        aria-label={`工具调用 ${call.toolName}，状态：${status}`} title={call.toolName}
+        aria-label={zhCN.toolCall.label(call.toolName, status)} title={call.toolName}
       >
         <ToolStatusIcon done={call.done} isError={call.isError} />
         <span className="tool-name" data-testid="tool-name" title={call.toolName}>
@@ -58,9 +59,9 @@ export const ToolCallCard = memo(function ToolCallCard({ call }: { call: ToolCal
         <div className="tool-call-body">
           <Arguments value={call.args} args={call.args} />
           {call.done ? (
-            <Result label="结果" value={call.result} args={call.args} />
+            <Result label={zhCN.toolCall.result} value={call.result} args={call.args} />
           ) : call.partialResult !== undefined ? (
-            <Result label="部分结果" value={call.partialResult} args={call.args} />
+            <Result label={zhCN.toolCall.partialResult} value={call.partialResult} args={call.args} />
           ) : null}
         </div>
       )}

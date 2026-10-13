@@ -1,3 +1,4 @@
+import { zhCN } from "../i18n/zh-CN.js";
 import { useMemo, useState } from "react";
 import { Modal } from "./Modal.js";
 import { CodeBlock } from "./CodeBlock.js";
@@ -27,16 +28,16 @@ export function fragmentDiff(oldText: string, newText: string): DiffLine[] | nul
 export function DiffBlock({ oldText, newText, language }: { oldText: string; newText: string; language?: string }) {
   const diff = useMemo(() => fragmentDiff(oldText, newText), [oldText, newText]);
   const [rawOpen, setRawOpen] = useState(false);
-  return <div className="diff-block" aria-label="片段 diff：仅比较 oldText / newText，非全文件，无文件行号">
-    {diff === null ? <><p role="status">片段过大，未计算 diff。</p><button type="button" className="tool-raw-link" onClick={() => setRawOpen(true)}>查看原始数据</button></> : <>
-      {oldText === newText && <p className="diff-status">片段相同（无修改）</p>}
-      {diff.length > 0 && <pre className="diff-lines" tabIndex={0} aria-label="片段差异：- 删除，+ 添加，空格未变"><code>{diff.map((line, index) => <span key={index} className={`diff-line diff-${line.kind}`}><span aria-hidden="true">{line.kind === "delete" ? "-" : line.kind === "add" ? "+" : " "} </span>{line.text.endsWith("\n") ? line.text : <>{line.text}{"\n"}</>}</span>)}</code></pre>}
+  return <div className="diff-block" aria-label={zhCN.diff.scope}>
+    {diff === null ? <><p role="status">{zhCN.diff.tooLarge}</p><button type="button" className="tool-raw-link" onClick={() => setRawOpen(true)}>{zhCN.diff.showOriginal}</button></> : <>
+      {oldText === newText && <p className="diff-status">{zhCN.diff.identical}</p>}
+      {diff.length > 0 && <pre className="diff-lines" tabIndex={0} aria-label={zhCN.diff.legend}><code>{diff.map((line, index) => <span key={index} className={`diff-line diff-${line.kind}`}><span aria-hidden="true">{line.kind === "delete" ? "-" : line.kind === "add" ? "+" : " "} </span>{line.text.endsWith("\n") ? line.text : <>{line.text}{"\n"}</>}</span>)}</code></pre>}
     </>}
-    {diff === null && <Modal open={rawOpen} onClose={() => setRawOpen(false)} title="原始数据 · edit 片段">
+    {diff === null && <Modal open={rawOpen} onClose={() => setRawOpen(false)} title={zhCN.diff.original}>
       <div className="json-label">oldText</div>
-      <CodeBlock code={oldText} language={language} copyLabel="复制 oldText" />
+      <CodeBlock code={oldText} language={language} copyLabel={zhCN.diff.copyBefore} />
       <div className="json-label">newText</div>
-      <CodeBlock code={newText} language={language} copyLabel="复制 newText" />
+      <CodeBlock code={newText} language={language} copyLabel={zhCN.diff.copyAfter} />
     </Modal>}
   </div>;
 }

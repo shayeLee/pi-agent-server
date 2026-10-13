@@ -1,3 +1,4 @@
+import { zhCN } from "../i18n/zh-CN.js";
 import {
   useCallback,
   useEffect,
@@ -97,7 +98,7 @@ export function useWebAppController() {
     if (current.some((item) => item.id === id)) return;
     const index = imageInsertionRef.current.get(snapshot.requestId) ?? current.length;
     store.restoreHistory([...current.slice(0, index), { kind: "message", id, role: "user",
-      text: snapshot.text || (snapshot.fileIds.length ? `附件（${snapshot.fileIds.length} 个）` : ""),
+      text: snapshot.text || (snapshot.fileIds.length ? zhCN.errors.attachmentCount(snapshot.fileIds.length) : ""),
       images: snapshot.images, streaming: false }, ...current.slice(index)]);
     imageInsertionRef.current.delete(snapshot.requestId);
   }
@@ -291,7 +292,7 @@ export function useWebAppController() {
       if (projectsRef.current !== null && revision !== selectionRevisionRef.current) return;
       ++sessionsRequestSeqRef.current;
       setProjectsError(
-        `项目列表加载失败：${err instanceof Error ? err.message : String(err)}。请确认服务可用后重试。`,
+        zhCN.errors.loadProjects(err instanceof Error ? err.message : String(err)),
       );
       // 默认项目未能确定时，不创建会话或查询特定项目会话。
       setActiveProjectId(null);
@@ -324,14 +325,14 @@ export function useWebAppController() {
         else {
           if (target) clearMatchingRecent(target.projectId, sessionId);
           sessionId = null;
-          if (typeof input === "object") navigationError = "会话不存在或无权限访问";
+          if (typeof input === "object") navigationError = zhCN.errors.sessionUnavailable;
           if (recent) { clearRecentSelection(); projectId = fallback; }
         }
       } catch (error) {
         if (generation !== navigationGenerationRef.current) return;
         transient = !(error instanceof ApiError && (error.status === 403 || error.status === 404));
         if (!transient && target) clearMatchingRecent(target.projectId, sessionId);
-        navigationError = !transient && typeof input === "object" ? "会话不存在或无权限访问" : error instanceof Error ? error.message : String(error);
+        navigationError = !transient && typeof input === "object" ? zhCN.errors.sessionUnavailable : error instanceof Error ? error.message : String(error);
         sessionId = null;
         if (recent) projectId = fallback;
       }
@@ -387,7 +388,7 @@ export function useWebAppController() {
     } else if (sessionId) {
       clearMatchingRecent(projectId, sessionId);
       sessionId = null;
-      if (typeof input === "object") setLoadError("会话不存在或无权限访问");
+      if (typeof input === "object") setLoadError(zhCN.errors.sessionUnavailable);
     }
     if (!transient && target?.sessionId === null && target.projectId === projectId && revision === selectionRevisionRef.current) {
       writeRecentSelection(projectId, null);
@@ -490,7 +491,7 @@ export function useWebAppController() {
       if (activeProjectIdRef.current) clearMatchingRecent(activeProjectIdRef.current, sessionId);
       activeSessionIdRef.current = null;
       setActiveSessionId(null);
-      setLoadError("会话不存在或无权限访问");
+      setLoadError(zhCN.errors.sessionUnavailable);
       setNavigationRetryAvailable(false);
       writeRoute(activeProjectIdRef.current ? { projectId: activeProjectIdRef.current, sessionId: null } : null, "replace");
     },
@@ -528,7 +529,7 @@ export function useWebAppController() {
   });
 
   const projectAllowsCreation = projects?.find(project => project.id === activeProjectId)?.canCreateSession !== false;
-  const creationNotice = projectAllowsCreation ? null : "当前权限无法在此项目新建会话";
+  const creationNotice = projectAllowsCreation ? null : zhCN.errors.creationForbidden;
 
   /** Enter a page-local start state; this action never calls the session creation API. */
   function createSession(): void {
@@ -712,7 +713,7 @@ export function useWebAppController() {
       update("submitting");
       const store = getChatStore(snapshot.sessionId!);
       messageId = `confirmed-${snapshot.requestId}`;
-      const label = snapshot.text || (snapshot.fileIds.length ? `附件（${snapshot.fileIds.length} 个）` : "");
+      const label = snapshot.text || (snapshot.fileIds.length ? zhCN.errors.attachmentCount(snapshot.fileIds.length) : "");
       // Image snapshots are projected only after acceptance, never as a sent-looking optimistic image.
       if (!snapshot.images.length) store.addUserMessage(label, messageId, snapshot.requestId);
       else {
@@ -736,7 +737,7 @@ export function useWebAppController() {
       return "accepted";
     } catch (error) {
       if (stage === "send" && messageId && !snapshot.images.length && !receipt?.accepted) {
-        getChatStore(snapshot.sessionId!).rollbackUserMessage(messageId, "消息提交结果未确认", !knownRejection(error));
+        getChatStore(snapshot.sessionId!).rollbackUserMessage(messageId, zhCN.errors.submissionUnconfirmed, !knownRejection(error));
       }
       if (stage === "send" && receipt?.accepted) {
         if (snapshot.images.length) projectAcceptedImages(getChatStore(snapshot.sessionId!), snapshot);

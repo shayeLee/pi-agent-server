@@ -1,3 +1,4 @@
+import { zhCN } from "../i18n/zh-CN.js";
 import { useId, useLayoutEffect, useRef, type ReactNode } from "react";
 import { Icon } from "./Icon.js";
 
@@ -61,7 +62,7 @@ export function Modal({ open, onClose, title, children, footer }: ModalProps) {
       else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
     }}>
     {open && <>
-      <header className="modal-header"><h2 id={titleId}>{title}</h2><button ref={close} type="button" className="modal-close" aria-label="关闭对话框" onClick={onClose}><Icon name="close" size={20} /></button></header>
+      <header className="modal-header"><h2 id={titleId}>{title}</h2><button ref={close} type="button" className="modal-close" aria-label={zhCN.common.closeDialog} onClick={onClose}><Icon name="close" size={20} /></button></header>
       <div className="modal-body">{children}</div>
       {footer && <footer className="modal-footer">{footer}</footer>}
     </>}

@@ -1,3 +1,4 @@
+import { zhCN } from "../i18n/zh-CN.js";
 import type { ToolCall } from "pi-agent-server/client";
 import type { ToolHeader, ToolMetadata } from "./contract.js";
 import { record, line, lines, resultText } from "./summary-data.js";
@@ -16,7 +17,7 @@ const file: ToolMetadata = {
   icon: "file",
   summarize(call) {
     const args = record(call.args);
-    return { summary: line(args.path) + (Array.isArray(args.edits) ? ` · ${args.edits.length} 项修改` : "") };
+    return { summary: line(args.path) + (Array.isArray(args.edits) ? zhCN.toolParameters.editCount(args.edits.length) : "") };
   },
 };
 /** Explicit registrations; unknown tools need no adapter to remain readable. */

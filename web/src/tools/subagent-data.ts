@@ -1,3 +1,4 @@
+import { zhCN } from "../i18n/zh-CN.js";
 import { record, line } from "./summary-data.js";
 import type { ToolMetadata } from "./contract.js";
 
@@ -21,7 +22,7 @@ export const subagentMetadata: ToolMetadata = {
     if (tasks && tasks.length > 1) {
       const priorityLabels = tasks.map(item => item.agent);
       const preview = tasks.map(item => line(item.task)).join(" · ");
-      return { summary: `${priorityLabels.join("、")} · ${preview}`, badge: `并行 ${tasks.length}`, priorityLabels, preview };
+      return { summary: `${priorityLabels.join("、")} · ${preview}`, badge: zhCN.toolParameters.parallel(tasks.length), priorityLabels, preview };
     }
     return { summary: tasks ? `${tasks[0].agent}: ${line(tasks[0].task)}`
       : isSubagentTask(args) && !("tasks" in args) ? `${args.agent}: ${line(args.task)}` : line(call.args) };

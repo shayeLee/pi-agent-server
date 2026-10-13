@@ -1,3 +1,4 @@
+import { zhCN } from "./i18n/zh-CN.js";
 import type { UploadedFile } from "pi-agent-server/client";
 
 export type FileKind = "text" | "code" | "csv" | "json" | "pdf" | "docx" | "xlsx" | "pptx";
@@ -63,11 +64,11 @@ export function classifyFile(file: Pick<File, "name" | "type" | "size">):
   | { kind: "image" | FileKind }
   | { error: string } {
   const extension = file.name.split(".").at(-1)?.toLowerCase() ?? "";
-  if (LEGACY.has(extension)) return { error: "旧版 .doc/.xls/.ppt 不受支持；请另存为 .docx/.xlsx/.pptx" };
+  if (LEGACY.has(extension)) return { error: zhCN.attachments.legacyFormat };
   if (IMAGE_MIME.has(file.type)) return { kind: "image" };
-  if (["png", "jpg", "jpeg", "webp"].includes(extension)) return { error: "图片类型无法确认；请选择 PNG/JPEG/WebP" };
+  if (["png", "jpg", "jpeg", "webp"].includes(extension)) return { error: zhCN.attachments.unknownImageFormat };
   const kind = EXT_KIND[extension];
-  return kind ? { kind } : { error: "不支持该格式；压缩包与可执行文件不能上传" };
+  return kind ? { kind } : { error: zhCN.attachments.unsupportedFormat };
 }
 
 export function validateSelection(current: readonly UnsentAttachment[], file: Pick<File, "name" | "type" | "size">):
@@ -81,10 +82,10 @@ export function validateSelection(current: readonly UnsentAttachment[], file: Pi
   const limit = image ? IMAGE_LIMITS : FILE_LIMITS;
   // All retained images reserve a slot, including processing and failed reads.
   // Ignore excess images before size checks or any draft/read/preview work.
-  if (existing.length >= limit.maxCount) return image ? { ignored: true } : { error: "每条消息最多 5 个文件" };
-  if (file.size > limit.maxEach) return { error: image ? "单张图片不能超过 4 MiB" : "单个文件不能超过 20 MiB" };
+  if (existing.length >= limit.maxCount) return image ? { ignored: true } : { error: zhCN.attachments.maxFiles };
+  if (file.size > limit.maxEach) return { error: image ? zhCN.attachments.maxImageSize : zhCN.attachments.maxFileSize };
   if (existing.reduce((total, item) => total + item.size, 0) + file.size > limit.maxTotal) {
-    return { error: image ? "图片总量不能超过 6 MiB" : "文件总量不能超过 50 MiB" };
+    return { error: image ? zhCN.attachments.maxImagesSize : zhCN.attachments.maxFilesSize };
   }
   return classification;
 }

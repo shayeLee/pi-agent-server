@@ -1,3 +1,4 @@
+import { zhCN } from "../i18n/zh-CN.js";
 import { useLayoutEffect, useRef, useState } from "react";
 import { Icon } from "./Icon.js";
 import type { ChatState, ModelInfo, Project, SessionRecord, UsageStats } from "pi-agent-server/client";
@@ -170,7 +171,18 @@ export function Chat({
   // Real resident items remain visible; an empty control read is not the primary request queue.
   const showControlQueue = !!controlQueue?.items.length || !!controlQueueError;
   const hasMessages = timeline.length > 0;
-  const placeholder = "描述任务…";
+  let lastUserIndex = -1;
+  for (let index = timeline.length - 1; index >= 0; index--) {
+    const item = timeline[index];
+    if (item.kind === "message" && item.role === "user") { lastUserIndex = index; break; }
+  }
+  const currentReply = timeline.slice(lastUserIndex + 1);
+  const waitingForReply = (streaming || primaryAwaitingStart) && !queued &&
+    !currentReply.some(item => item.kind === "message" && item.role === "assistant" && item.text.trim());
+  const waitingLabel = !connected ? zhCN.stats.disconnected : primaryAwaitingStart ? zhCN.status.submitting
+    : activeTools ? zhCN.stats.toolRunning : currentReply.some(item => item.kind === "thinking" && item.streaming)
+      ? zhCN.chat.thinkingReply : zhCN.chat.waitingReply;
+  const placeholder = zhCN.chat.placeholder;
 
   return (
     <section className="chat" data-testid="chat">
@@ -183,7 +195,7 @@ export function Chat({
       )}
       <div className="chat-scroll-region">
       <div id="chat-transcript" className="chat-body" ref={bodyRef} data-testid="chat-body"
-        role="region" aria-label="会话内容" tabIndex={0}
+        role="region" aria-label={zhCN.chat.transcript} tabIndex={0}
         onKeyDown={(event) => {
           if (event.target !== event.currentTarget || (event.key !== "Home" && event.key !== "End") || event.currentTarget.isContentEditable || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey || event.nativeEvent.isComposing) return;
           event.preventDefault();
@@ -214,7 +226,7 @@ export function Chat({
         {!session ? (
           <div className="workbench-welcome" data-testid="no-session-hint">
             {loadError && <div className="chat-phase-banner error" role="alert">{loadError}</div>}
-            <p className="workbench-welcome-copy">选择项目并发送第一条消息，会话将保存在该项目中。</p>
+            <p className="workbench-welcome-copy">{zhCN.chat.welcome}</p>
           </div>
         ) : (
           <div className="chat-inner">
@@ -226,14 +238,14 @@ export function Chat({
             )}
             {queued && (
               <div className="chat-phase-banner queued" data-testid="phase-queued">
-                消息正在排队，等待运行…
-              </div>
+                {zhCN.chat.queued}</div>
             )}
             {!hasMessages ? (
               <EmptyState />
             ) : (
               <Timeline timeline={timeline} />
             )}
+            {waitingForReply && <div className="assistant-waiting-status" role="status" data-testid="waiting-reply">{waitingLabel}</div>}
           </div>
         )}
       </div>
@@ -242,7 +254,7 @@ export function Chat({
       {session && hasMessages && (
         <div className="chat-latest-row">
           {showLatest && (
-            <button type="button" className="chat-latest" aria-label="回到最新" title="回到最新" onClick={goToLatest}>
+            <button type="button" className="chat-latest" aria-label={zhCN.chat.latest} title={zhCN.chat.latest} onClick={goToLatest}>
               <span className="chat-latest-face" aria-hidden="true"><Icon name="down" /></span>
             </button>
           )}

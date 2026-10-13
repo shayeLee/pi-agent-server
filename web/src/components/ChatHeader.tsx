@@ -1,3 +1,4 @@
+import { zhCN } from "../i18n/zh-CN.js";
 import { resolveSessionDisplayTitle, type SessionRecord } from "pi-agent-server/client";
 import { Icon } from "./Icon.js";
 
@@ -22,11 +23,10 @@ export function ChatHeader({ session, traceOpen, onToggleTrace }: ChatHeaderProp
             onClick={onToggleTrace}
             aria-expanded={traceOpen}
             aria-controls="session-inspector"
-            title={traceOpen ? "关闭轨迹" : "打开轨迹"}
+            title={traceOpen ? zhCN.trace.close : zhCN.trace.open}
           >
             <Icon name="file" size={15} />
-            轨迹
-          </button>
+            {zhCN.trace.title}</button>
         </div>
       </div>
     </header>

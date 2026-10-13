@@ -12,6 +12,8 @@
   --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC",
     "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
   --font-mono: SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  /* Inline code scales with its surrounding prose. */
+  --font-inline-code: 0.875em;
   /* Compatibility aliases, never independent scales. */
   --font-micro: var(--font-xs);
   --font-small: var(--font-sm);

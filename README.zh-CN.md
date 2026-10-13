@@ -104,7 +104,7 @@ PI_EXTENSION_PATHS=/absolute/path/to/pi-extension
 
 工具卡保留正常参数／结果展开及流式更新，不再提供原始数据查看／复制操作、专用检查弹窗或 footer 占位。协议数据、事件日志、代码复制及共用统计／超大 diff 弹窗不变。可运行 `volta run pnpm --dir web exec playwright test --config playwright.workspace.config.ts` 验证；展开工具卡截图位于 `web/test-results/workspace/tool-expanded-no-footer.png`。
 
-UI 基础采用不含 Preflight 的 Tailwind v4、`ui:` 前缀工具类及本地维护的 Radix 基础组件。全局主题 token 位于 `web/src/styles/tokens.css`，按 `[data-ui]` 启用的别名与 Portal 共用这些 token。业务组件保留既有数据契约，使用系统字体。工具类目前仅扫描 `web/src/components/ui`，其他区域接入时需显式扩展扫描范围。中文文案正在逐步提取至 `web/src/i18n/zh-CN.ts`，尚未实现英文切换。
+UI 基础采用不含 Preflight 的 Tailwind v4、`ui:` 前缀工具类及本地维护的 Radix 基础组件。全局主题 token 位于 `web/src/styles/tokens.css`，按 `[data-ui]` 启用的别名与 Portal 共用这些 token。业务组件保留既有数据契约，使用系统字体。工具类目前仅扫描 `web/src/components/ui`，其他区域接入时需显式扩展扫描范围。固定 UI 文案、无障碍标签、提示及前端校验／错误消息统一使用 `web/src/i18n/zh-CN.ts` 中的中文语言对象，按功能分组，动态文案使用函数。Thinking／Thought 显示为“正在思考”／“思考过程”，并提供中文展开／收起提示。用户及服务端内容、模型 ID、工具名称与协议字段保留原值。目前仅使用中文，尚未实现语言切换。 模型面板打开时会将当前模型滚到可见区，并保留搜索焦点。可用思考级别去重后按 `off → minimal → low → medium → high → xhigh → max` 排列；未来未知级别仍保留在末尾。选中项显示强调色描边及较高字重。 助手正文首字到来前，回复区域显示明确等待提示，并区分等待运行确认、思考、工具执行及断线状态。中止后的半截回复保留“已中止”标记，发送下一轮后仍可见；历史仅在导出包含明确的 `stopReason: "aborted"` 证据时恢复该标记。
 
 导航使用 `/p/:projectId` 表示项目起始态，`/p/:projectId/s/:sessionId` 表示会话。显式 URL 优先于最近选择，会话归属通过服务端授权元数据校验。返回／前进和刷新恢复导航，不恢复未发送草稿或附件。空项目可能在刷新后从过滤的项目列表中消失。独立 Web 托管服务只应为前端导航路径提供 SPA 入口，不能兜底 `/v1`、SSE 或缺失资源；Fastify 不托管 Web UI。生产深链接兜底仍需部署验收。
 

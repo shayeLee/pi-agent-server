@@ -1,8 +1,9 @@
+import { zhCN } from "../i18n/zh-CN.js";
 import { iconSource } from './icon-sources.js';
 
 export function ToolStatusIcon({ done, isError }: { done: boolean; isError: boolean }) {
   const state = !done ? "running" : isError ? "error" : "success";
-  const label = !done ? "进行中" : isError ? "失败" : "已完成";
+  const label = !done ? zhCN.steps.streaming : isError ? zhCN.composer.failed : zhCN.status.completed;
   if (done) return <svg className={`tool-status-icon tool-status-${state}`} data-icon={isError ? 'error-circle' : 'check-circle'} width="14" height="14" viewBox="0 0 24 24" fill="none" role="img" aria-label={label} focusable="false">
     <title>{label}</title><g dangerouslySetInnerHTML={iconSource(isError ? 'error-circle' : 'check-circle')} />
   </svg>;

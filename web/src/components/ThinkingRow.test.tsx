@@ -29,15 +29,17 @@ describe("ThinkingRow", () => {
     expect(screen.getByTestId("thinking-body-late").textContent).toBe(text + "结束");
   });
   it.each([
-    [true, "Thinking"],
-    [false, "Thought"],
+    [true, "正在思考"],
+    [false, "思考过程"],
   ])("shows only the %s status title and keeps the full body", (streaming, title) => {
     const text = "第一行\n" + "思考内容".repeat(30);
     const { container } = render(<ThinkingRow thinking={{ kind: "thinking", id: "no-preview", text, streaming }} />);
     const toggle = screen.getByRole("button", { name: "思考过程" });
     expect(toggle).toHaveTextContent(title);
+    expect(toggle).toHaveAttribute("title", streaming ? "收起思考过程" : "展开思考过程");
     expect(container.querySelector(".thinking-summary")).toBeNull();
     if (!streaming) fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute("title", "收起思考过程");
     expect(screen.getByTestId("thinking-body-no-preview").textContent).toBe(text);
   });
   it("流式思考默认展开，但用户可收合；完成后保留用户选择", () => {

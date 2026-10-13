@@ -1,4 +1,5 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { zhCN } from "../i18n/zh-CN.js";
+import { useEffect, useLayoutEffect, useId, useRef, useState } from "react";
 
 import { Icon } from "./Icon.js";
 import type { ModelInfo } from "pi-agent-server/client";
@@ -17,6 +18,8 @@ export type ModelThinkingPickerProps = {
 function modelKey(model: Pick<ModelInfo, "provider" | "id">): string {
   return JSON.stringify([model.provider, model.id]);
 }
+
+const THINKING_ORDER = ["off", "minimal", "low", "medium", "high", "xhigh", "max"];
 
 function handleRadioKeyDown(event: React.KeyboardEvent<HTMLButtonElement>) {
   const direction = event.key === "ArrowDown" || event.key === "ArrowRight"
@@ -81,14 +84,19 @@ export function ModelThinkingPicker({
   }
 
   const selectedModelInfo = availableModels.find((model) => modelKey(model) === selectedModel);
-  const modelLabel = selectedModelInfo?.id ?? "默认模型";
+  const modelLabel = selectedModelInfo?.id ?? zhCN.model.defaultModel;
   const filteredModels = availableModels.filter((model) =>
     `${model.provider}/${model.id} ${model.name}`.toLowerCase().includes(query.trim().toLowerCase()),
   );
-  const availableThinkingLevels = [
-    ...(defaultThinkingLevel ? [defaultThinkingLevel] : []),
-    ...thinkingLevels.filter((level) => level !== defaultThinkingLevel),
-  ];
+  const availableThinkingLevels = [...new Set([
+    ...thinkingLevels, ...(defaultThinkingLevel ? [defaultThinkingLevel] : []),
+  ])].sort((left, right) => {
+    const rank = (level: string) => {
+      const index = THINKING_ORDER.indexOf(level);
+      return index < 0 ? THINKING_ORDER.length : index;
+    };
+    return rank(left) - rank(right);
+  });
 
   function updatePanelLayout() {
     const trigger = activeTriggerRef.current?.getBoundingClientRect();
@@ -116,13 +124,25 @@ export function ModelThinkingPicker({
   useEffect(() => {
     if (!activeEntry) return;
     if (activeEntry === "model") {
-      rootRef.current?.querySelector<HTMLInputElement>(".model-thinking-search")?.focus();
+      rootRef.current?.querySelector<HTMLInputElement>(".model-thinking-search")?.focus({ preventScroll: true });
     } else {
       const section = rootRef.current?.querySelector(".model-thinking-level-section");
       const selected = section?.querySelector<HTMLElement>('[aria-checked="true"]');
       (selected ?? section?.querySelector<HTMLElement>('button'))?.focus();
     }
   }, [activeEntry]);
+
+  useLayoutEffect(() => {
+    if (!open) return;
+    const list = rootRef.current?.querySelector<HTMLElement>(".model-thinking-model-options");
+    const selected = list?.querySelector<HTMLElement>('[aria-checked="true"]');
+    if (!list || !selected) return;
+    const bounds = list.getBoundingClientRect();
+    const row = selected.getBoundingClientRect();
+    if (row.top < bounds.top || row.bottom > bounds.bottom) {
+      list.scrollTop += row.top - bounds.top - (list.clientHeight - row.height) / 2;
+    }
+  }, [activeEntry, selectedModel, query, panelLayout.maxHeight, models, defaultModel]);
 
   useEffect(() => {
     if (!open) return;
@@ -155,7 +175,7 @@ export function ModelThinkingPicker({
         type="button"
         className="model-thinking-trigger chevron-trigger"
         data-testid="model-thinking-trigger"
-        aria-label={`模型：${modelLabel}，思考深度：${selectedThinking || "未设置"}`}
+        aria-label={zhCN.model.summary(modelLabel, selectedThinking || zhCN.model.unset)}
         aria-haspopup="dialog"
         aria-expanded={activeEntry === "model"}
         aria-controls={panelId}
@@ -165,20 +185,20 @@ export function ModelThinkingPicker({
         <Icon name="down" className="disclosure-chevron" />
       </button>
       <button ref={thinkingTriggerRef} type="button" className="model-thinking-trigger thinking-trigger chevron-trigger"
-        data-testid="thinking-trigger" aria-label={`思考深度：${selectedThinking || "未设置"}`}
+        data-testid="thinking-trigger" aria-label={zhCN.model.thinkingSummary(selectedThinking || zhCN.model.unset)}
         aria-haspopup="dialog" aria-expanded={activeEntry === "thinking"} aria-controls={panelId}
         onClick={() => toggleEntry("thinking")}>
-        <span>{selectedThinking || "未设置"}</span><Icon name="down" className="disclosure-chevron" />
+        <span>{selectedThinking || zhCN.model.unset}</span><Icon name="down" className="disclosure-chevron" />
       </button>
       {open && (
-        <div id={panelId} className="model-thinking-panel" style={{ maxHeight: panelLayout.maxHeight }} role="dialog" aria-label="模型与思考深度">
+        <div id={panelId} className="model-thinking-panel" style={{ maxHeight: panelLayout.maxHeight }} role="dialog" aria-label={zhCN.model.dialog}>
           <section className="model-thinking-section model-thinking-model-section" aria-labelledby={`${id}-models-label`}>
-            <h2 id={`${id}-models-label`}>模型</h2>
+            <h2 id={`${id}-models-label`}>{zhCN.model.model}</h2>
             <input
               className="model-thinking-search"
               type="search"
-              aria-label="搜索模型"
-              placeholder="搜索 provider / model"
+              aria-label={zhCN.model.search}
+              placeholder={zhCN.model.searchPlaceholder}
               value={query}
               onChange={(event) => setQuery(event.target.value)}
             />
@@ -206,11 +226,11 @@ export function ModelThinkingPicker({
                 })}
               </div>
             ) : (
-              <p className="model-thinking-empty">{query ? "没有匹配的模型" : "暂无可用模型"}</p>
+              <p className="model-thinking-empty">{query ? zhCN.model.noMatches : zhCN.model.empty}</p>
             )}
           </section>
           <section className="model-thinking-section model-thinking-level-section" aria-labelledby={`${id}-thinking-label`}>
-            <h2 id={`${id}-thinking-label`}>思考深度</h2>
+            <h2 id={`${id}-thinking-label`}>{zhCN.model.thinkingLevel}</h2>
             <div className="model-thinking-options model-thinking-level-options" role="radiogroup" aria-labelledby={`${id}-thinking-label`}>
               {availableThinkingLevels.map((level) => (
                 <button

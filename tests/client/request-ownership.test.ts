@@ -3,6 +3,20 @@ import { addUserMessage, applySseEvent, createChatState } from "../../src/client
 import type { SseEvent } from "../../src/client/types.js";
 
 describe("request-owned chat lifecycle", () => {
+  it("retains explicit abort evidence on the partial reply through a later request", () => {
+    let state = addUserMessage(createChatState(), "hello", "u1", "r1");
+    state = applySseEvent(state, { type: "text_delta", text: "partial", requestId: "r1" });
+    state = applySseEvent(state, { type: "aborted", requestId: "other" });
+    expect(state.timeline[1]).toMatchObject({ streaming: true });
+    expect(state.timeline[1]).not.toHaveProperty("stopReason");
+    state = applySseEvent(state, { type: "aborted", requestId: "r1" });
+    expect(state.timeline[1]).toMatchObject({ text: "partial", streaming: false, stopReason: "aborted" });
+    state = addUserMessage(state, "next", "u2", "r2");
+    state = applySseEvent(state, { type: "text_delta", text: "complete", requestId: "r2" });
+    state = applySseEvent(state, { type: "completed", requestId: "r2" });
+    expect(state.timeline[1]).toMatchObject({ stopReason: "aborted" });
+    expect(state.timeline.at(-1)).not.toHaveProperty("stopReason");
+  });
   it("foreign notification admission failures cannot end the active user answer", () => {
     let state = addUserMessage(createChatState(), "hello", "user-card", "user");
     state = applySseEvent(state, { type: "status", phase: "agent_start", requestId: "user" });

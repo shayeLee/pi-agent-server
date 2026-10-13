@@ -1,3 +1,4 @@
+import { zhCN } from "../i18n/zh-CN.js";
 import { useId, useState } from "react";
 import type { SessionRecord } from "pi-agent-server/client";
 import type { SessionStepsSnapshot } from "../../../src/shared/session-steps.js";
@@ -12,9 +13,9 @@ import { useFollowBottom } from "../hooks/useFollowBottom.js";
 
 export type InspectorTab = 'steps' | 'systemPrompt' | 'events';
 const TABS = [
-  { id: "steps", label: "轨迹" },
-  { id: "systemPrompt", label: "系统提示词" },
-  { id: "events", label: "事件流" },
+  { id: "steps", label: zhCN.trace.title },
+  { id: "systemPrompt", label: zhCN.trace.systemPrompt },
+  { id: "events", label: zhCN.trace.events },
 ] as const;
 export type InspectorProps = {
   session: SessionRecord | null;
@@ -43,11 +44,11 @@ export function Inspector({ session, entries, onClearEvents, onClose, navigation
   return <aside id="session-inspector" className="inspector" data-testid="inspector" onKeyDown={(event) => {
     if (event.key === 'Escape' && onClose && !(event.target instanceof Element && event.target.closest('dialog'))) { event.stopPropagation(); onClose(); }
   }}>
-    {onClose && <button type="button" className="workbench-inspector-close" data-testid="inspector-close" aria-label="关闭审查器" onClick={onClose}><Icon name="close" /></button>}
-    <div className="inspector-tabs" role="tablist" aria-label="会话审查器">
+    {onClose && <button type="button" className="workbench-inspector-close" data-testid="inspector-close" aria-label={zhCN.sidebar.closeInspector} onClick={onClose}><Icon name="close" /></button>}
+    <div className="inspector-tabs" role="tablist" aria-label={zhCN.trace.inspector}>
       {TABS.map((tab, index) => <button key={tab.id} type="button" role="tab"
-        aria-label={tab.id === 'steps' ? `轨迹 ${snapshot?.steps.length ?? 0}` : tab.label}
-        title={tab.id === 'steps' ? '历史按已保存记录顺序；实时按观察顺序。时间为记录时间或首次观察时间。' : undefined}
+        aria-label={tab.id === 'steps' ? zhCN.trace.count(snapshot?.steps.length ?? 0) : tab.label}
+        title={tab.id === 'steps' ? zhCN.trace.provenance : undefined}
         id={`${id}-${tab.id}`} aria-controls={`${id}-panel`} aria-selected={activeTab === tab.id}
         tabIndex={activeTab === tab.id ? 0 : -1} className={activeTab === tab.id ? 'active' : ''}
         onClick={() => select(tab.id)} data-testid={`inspector-tab-${tab.id}`}

@@ -1,3 +1,4 @@
+import { zhCN } from "../i18n/zh-CN.js";
 import type { TimelineItem } from "pi-agent-server/client";
 import { readMessageImages } from "../message-images.js";
 import { toolDurationMs } from "../../../src/shared/tool-duration.js";
@@ -20,6 +21,7 @@ export function projectExportTimeline(raw: readonly unknown[], messages: readonl
     } else if (row.type === "message" && (row.role === "user" || row.role === "assistant") && typeof row.text === "string") {
       items.push({ kind: "message", id: row.role === "user" && typeof row.messageId === "string" ? `history-message:${row.messageId}` : `history-${String(row.id ?? items.length)}`,
         role: row.role, text: row.text, streaming: false,
+        ...(row.role === "assistant" && row.stopReason === "aborted" ? { stopReason: "aborted" as const } : {}),
         ...(row.role === "user" && typeof row.messageId === "string" ? { images: imagesBySource.get(row.messageId) } : {}) });
     } else if (row.type === "thinking" && typeof row.text === "string") {
       items.push({ kind: "thinking", id: `history-${String(row.id ?? items.length)}`,
@@ -44,7 +46,7 @@ export function projectExportTimeline(raw: readonly unknown[], messages: readonl
         } };
       } else {
         items.push({ kind: "tool", id: `history-${String(row.id ?? items.length)}`, call: {
-          toolCallId: row.toolCallId, toolName: String(row.toolName ?? "工具"), args: undefined,
+          toolCallId: row.toolCallId, toolName: String(row.toolName ?? zhCN.errors.toolFallback), args: undefined,
           partialResult: undefined, result: row.result, isError: row.isError === true, done: true, ...duration,
         } });
       }

@@ -1,3 +1,4 @@
+import { zhCN } from "../i18n/zh-CN.js";
 import { useState } from "react";
 import { CodeBlock } from "./CodeBlock.js";
 import { Icon } from "./Icon.js";
@@ -11,7 +12,7 @@ export function isMarkdownProse(text: string): boolean {
 }
 export type ToolTextFormat = "text" | "markdown";
 export function DisplayModeToggle({ markdown, onToggle }: { markdown: boolean; onToggle: () => void }) {
-  return <button type="button" className="tool-display-mode" aria-label="Markdown 展示" title={markdown ? "切换原文视图" : "切换 Markdown 视图"} aria-pressed={markdown}
+  return <button type="button" className="tool-display-mode" aria-label={zhCN.toolResult.markdown} title={markdown ? zhCN.toolResult.showOriginal : zhCN.toolResult.showMarkdown} aria-pressed={markdown}
     onClick={onToggle}><Icon name="markdown" /></button>;
 }
 export function ToolResultText({ text, language, log = false, initialFormat }: { text: string; language?: string; log?: boolean; initialFormat?: ToolTextFormat }) {

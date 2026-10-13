@@ -1,3 +1,4 @@
+import { zhCN } from "../i18n/zh-CN.js";
 import { memo } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -10,7 +11,7 @@ export const Markdown = memo(function Markdown({ text, imagePolicy = "allow" }: 
       <ReactMarkdown remarkPlugins={[remarkGfm]} components={{
         // Tool output is untrusted: show a sanitized link, never request an image src.
         img: ({ src, alt, title }) => imagePolicy === "link"
-          ? <a href={src || undefined} title={title} rel="noopener noreferrer">{alt || "图片"}</a>
+          ? <a href={src || undefined} title={title} rel="noopener noreferrer">{alt || zhCN.sessionList.image}</a>
           : <img src={src} alt={alt} title={title} />,
         pre: ({ node }) => {
           const code = node?.children.find(child => child.type === "element" && child.tagName === "code");

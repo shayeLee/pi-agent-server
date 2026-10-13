@@ -35,7 +35,7 @@ export type ExportMessage = { role: string; text: string; sourceId?: string; id?
 /** Block-ordered timeline item returned by `GET /v1/sessions/:id/export`. */
 export type ExportTimelineItem =
   | (Omit<import("../shared/events.js").NotificationEvent, "type" | "requestId"> & { id: string; type: "notification"; order: number })
-  | { id: string; type: "message"; role: "user" | "assistant"; messageId: string; turnId: string | null; text: string; order: number; timestamp?: string }
+  | { id: string; type: "message"; role: "user" | "assistant"; messageId: string; turnId: string | null; text: string; order: number; timestamp?: string; stopReason?: "aborted" }
   | { id: string; type: "thinking"; messageId: string; turnId: string | null; text: string; order: number; timestamp?: string }
   | { id: string; type: "tool_call"; messageId: string; turnId: string | null; callId: string; toolCallId: string; toolName: string; args: unknown; status: "completed" | "error" | "no_result"; order: number; timestamp?: string }
   | { id: string; type: "tool_result"; messageId: string | null; turnId: string | null; callId: string; toolCallId: string; toolName: string; result: unknown; isError: boolean; durationMs?: number | null; order: number; timestamp?: string }

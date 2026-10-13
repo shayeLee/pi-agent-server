@@ -1,3 +1,4 @@
+import { zhCN } from "../i18n/zh-CN.js";
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Icon } from "./Icon.js";
 
@@ -93,7 +94,7 @@ export function Composer({
   const hasContent = Boolean(text.trim()) || attachments.some((item) => item.status === "ready");
   const controlPending = pendingControls?.some(item => item.blocking !== false && (item.status === "submitting" || item.status === "unknown")) ?? false;
   const attachmentNotice = runtimeControls && attachments.length > 0
-    ? attachments.some(item => item.kind !== "image") ? "追加仅支持文字和图片，不支持文件附件；输入已保留。" : null
+    ? attachments.some(item => item.kind !== "image") ? zhCN.composer.followUpFilesUnsupported : null
     : null;
   const canSubmit = canWrite && !historyLoading && !primaryPending && !dispatching && !controlPending && !controlsBlocked && !queued && !attachmentNotice && submission?.phase !== "unknown" && !blockedByAttachment && hasContent &&
     (session !== null || canCreateSession);
@@ -130,7 +131,7 @@ export function Composer({
       const accepted = result instanceof Promise ? await result : result;
       if (!draft && accepted !== false) setLocalText("");
     } catch (error) {
-      setLocalError(error instanceof Error ? error.message : "发送失败");
+      setLocalError(error instanceof Error ? error.message : zhCN.composer.sendFailed);
     } finally {
       submittingRef.current = false;
       setDispatching(false);
@@ -172,23 +173,23 @@ export function Composer({
                 <strong title={item.name}>{item.name}</strong>
                 <small>{(item.size / 1024).toFixed(0)} KiB</small>
                 {item.status === "ready" ? (
-                  <span className="sr-only">就绪</span>
+                  <span className="sr-only">{zhCN.composer.ready}</span>
                 ) : (
                   <small className="composer-attachment-status">
-                    · {item.status === "uploading" || item.status === "processing" ? "处理中" :
-                      item.status === "interrupted" ? "上传中断" : "失败"}
+                    · {item.status === "uploading" || item.status === "processing" ? zhCN.composer.processing :
+                      item.status === "interrupted" ? zhCN.composer.interrupted : zhCN.composer.failed}
                   </small>
                 )}
                 {item.error && <small className="composer-attachment-error">{item.error}</small>}
               </span>
               {item.status === "error" && item.file && onRetryFile && (
-                <button type="button" onClick={() => void onRetryFile(item.localId)} aria-label={`重试上传 ${item.name}`}>重试</button>
+                <button type="button" onClick={() => void onRetryFile(item.localId)} aria-label={zhCN.composer.retryUpload(item.name)}>{zhCN.composer.retry}</button>
               )}
               {item.status === "interrupted" && (
                 <button type="button" onClick={() => { onRemoveFile?.(item.localId); filePickerRef.current?.click(); }}
-                  aria-label={`重新选择 ${item.name}`}>重新选择</button>
+                  aria-label={zhCN.composer.reselectAttachment(item.name)}>{zhCN.composer.reselect}</button>
               )}
-              <button type="button" className="composer-attachment-remove" onClick={() => onRemoveFile?.(item.localId)} aria-label={`移除附件 ${item.name}`} title="移除附件"><Icon name="close" size={11} /></button>
+              <button type="button" className="composer-attachment-remove" onClick={() => onRemoveFile?.(item.localId)} aria-label={zhCN.composer.removeAttachment(item.name)} title={zhCN.composer.remove}><Icon name="close" size={11} /></button>
             </div>
           ))}
         </div>
@@ -196,34 +197,34 @@ export function Composer({
       {pendingControls && pendingControls.length > 0 && (
         <div className="composer-pending-controls" data-testid="composer-pending-controls" aria-live="polite">
           {pendingControls.map((item) => <div className="composer-pending-item" key={item.id}>
-            <span>{item.kind === "steer" ? "引导提交" : "追加提交"} · {item.text}</span>
-            <small>{item.status === "submitting" ? "提交中" : item.status === "submitted" ? (item.kind === "steer" ? "HTTP 已接收，等待消费确认" : "已提交，等待确认") :
-              item.status === "unknown" ? "状态未知" : "提交失败"}</small>
+            <span>{item.kind === "steer" ? zhCN.composer.steerSubmission : zhCN.composer.followUpSubmission} · {item.text}</span>
+            <small>{item.status === "submitting" ? zhCN.composer.submitting : item.status === "submitted" ? (item.kind === "steer" ? zhCN.composer.accepted : zhCN.composer.confirmationPending) :
+              item.status === "unknown" ? zhCN.steps.unknown : zhCN.composer.submissionFailed}</small>
           </div>)}
         </div>
       )}
       {(submission?.phase === "failed" || submission?.phase === "unknown" || localError) && (
         <div className="composer-submit-notice" role="alert" data-testid="composer-submit-notice">
           {submission?.phase === "unknown"
-            ? submission.stage === "create" ? "会话创建状态未知；保留本次输入，不会自动创建第二个会话。" : "提交结果未知，等待确认；不会自动重发。"
+            ? submission.stage === "create" ? zhCN.composer.creationUnknown : zhCN.composer.submissionUnknown
             : submission?.error ?? localError}
           {submission?.phase === "failed" && onRetrySubmit && (
-            <button type="button" onClick={() => void onRetrySubmit()} data-testid="retry-submission">重试本次快照</button>
+            <button type="button" onClick={() => void onRetrySubmit()} data-testid="retry-submission">{zhCN.composer.retrySnapshot}</button>
           )}
           {submission?.phase === "unknown" && submission.stage === "create" && onConfirmCreation && (
-            <button type="button" onClick={() => void onConfirmCreation()} data-testid="confirm-creation">用原创建标识核对会话</button>
+            <button type="button" onClick={() => void onConfirmCreation()} data-testid="confirm-creation">{zhCN.composer.confirmCreation}</button>
           )}
         </div>
       )}
       <textarea ref={textareaRef} data-testid="composer-input" rows={1} placeholder={placeholder}
-        aria-label="消息内容" title={canAbort ? "Enter 追加到队列，Shift+Enter 换行，Esc 中止" : "Enter 发送，Shift+Enter 换行"} value={text}
+        aria-label={zhCN.composer.message} title={canAbort ? zhCN.composer.queueKeyboardHint : zhCN.composer.sendKeyboardHint} value={text}
         onChange={(event) => setText(event.target.value)} onKeyDown={handleKeyDown} onPaste={handlePaste}
         disabled={!canWrite || historyLoading} />
       <div className="composer-toolbar">
         <div className="composer-left">
           <input ref={filePickerRef} type="file" multiple className="composer-file-input"
-            data-testid="composer-file-input" aria-label="选择图片或文件" onChange={chooseFiles} />
-          <button type="button" className="composer-add" aria-label="添加附件" title="添加图片或文件"
+            data-testid="composer-file-input" aria-label={zhCN.composer.chooseFiles} onChange={chooseFiles} />
+          <button type="button" className="composer-add" aria-label={zhCN.composer.addAttachment} title={zhCN.composer.addFiles}
             onClick={() => filePickerRef.current?.click()} disabled={!canWrite || !onAddFile || historyLoading}>
             <Icon name="plus" />
           </button>
@@ -236,10 +237,10 @@ export function Composer({
             thinkingLevel={session ? session.thinkingLevel : draft?.settings.thinkingLevel ?? null}
             onConfigChange={session ? onConfigChange : (config) => onDraftSettings?.(config)} />
           {canAbort ? <button type="button" className="send-button" data-testid="abort-button"
-            onClick={onAbort} aria-label="中止" title="中止（Esc）">
+            onClick={onAbort} aria-label={zhCN.composer.abort} title={zhCN.composer.abortHint}>
             <span className="send-button-visual"><Icon name="stop" /></span>
           </button> : <button type="button" className="send-button" data-testid="send-button" onClick={() => void handleSubmit()}
-            disabled={!canSubmit} aria-label="发送" title={runtimeControls ? "追加到队列" : "发送"}>
+            disabled={!canSubmit} aria-label={zhCN.composer.send} title={runtimeControls ? zhCN.composer.queue : zhCN.composer.send}>
             <span className="send-button-visual">
               <Icon name="send" />
             </span>

@@ -1,3 +1,4 @@
+import { zhCN } from "../i18n/zh-CN.js";
 import { useState, useEffect, useLayoutEffect, useRef, useMemo, type CSSProperties } from 'react';
 import { stepSummary, stepTitles } from './step-summary.js';
 import { ToolStatusIcon } from './ToolStatusIcon.js';
@@ -9,15 +10,15 @@ import { Modal } from './Modal.js';
 import { stepTarget, highlightTimelineTarget, type TraceNavigation } from './step-navigation.js';
 
 const TYPES: Record<SessionStep['kind'], [string, IconName]> = {
-  user: ['用户消息', 'user'], thinking: ['助手思考', 'sparkles'], assistant_text: ['助手消息', 'markdown'],
-  tool_call: ['工具调用', 'terminal'], tool_result: ['工具结果', 'file'], notification: ['通知', 'activity'],
-  system_event: ['系统事件', 'context'], error: ['错误', 'close'], compaction: ['上下文压缩', 'context'], custom: ['自定义记录', 'file'],
+  user: [zhCN.steps.user, 'user'], thinking: [zhCN.steps.thinking, 'sparkles'], assistant_text: [zhCN.steps.assistant, 'markdown'],
+  tool_call: [zhCN.steps.toolCall, 'terminal'], tool_result: [zhCN.steps.toolResult, 'file'], notification: [zhCN.steps.notification, 'activity'],
+  system_event: [zhCN.steps.systemEvent, 'context'], error: [zhCN.steps.error, 'close'], compaction: [zhCN.steps.compaction, 'context'], custom: [zhCN.steps.custom, 'file'],
 };
 function contentText(content: unknown): string {
-  if (content === undefined) return '未提供内容';
-  if (content === '') return '""（空字符串）';
+  if (content === undefined) return zhCN.steps.missingContent;
+  if (content === '') return zhCN.steps.emptyString;
   if (typeof content === 'string') return content;
-  try { return JSON.stringify(content, null, 2) ?? String(content); } catch { return '内容无法序列化'; }
+  try { return JSON.stringify(content, null, 2) ?? String(content); } catch { return zhCN.steps.unserializable; }
 }
 // Only interpret the projector's content-block boundaries, never arbitrary nested
 // payloads (notably tool arguments). React renders every section as inert text.
@@ -66,17 +67,17 @@ function Step({ step, index, navigate }: { step: SessionStep; index: number; nav
     <div className="step-main">
       <button type="button" className="step-toggle" onClick={activate}>
         <span className="step-heading"><strong>{semanticTitle ?? title}</strong>{step.toolName !== undefined && <span className="step-tool-name">{step.toolName}</span>}{step.label !== undefined && !semanticTitle && <span className="step-label">{step.label}</span>}</span>
-        {step.timestamp && <time dateTime={step.timestamp} title={`${step.source === 'recorded' ? '记录时间' : '首次观察时间'}：${step.timestamp}`}>{/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d/.test(step.timestamp) ? step.timestamp.slice(11, 19) : step.timestamp}</time>}
+        {step.timestamp && <time dateTime={step.timestamp} title={`${step.source === 'recorded' ? zhCN.steps.recordedTime : zhCN.steps.observedTime}：${step.timestamp}`}>{/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d/.test(step.timestamp) ? step.timestamp.slice(11, 19) : step.timestamp}</time>}
       </button>
       <div className="step-content collapsed" onClick={activate}>
         {step.kind === 'tool_result' && (step.status === 'completed' || step.status === 'error' || step.status === 'streaming') && <ToolStatusIcon done={step.status !== 'streaming'} isError={step.status === 'error'} />}
         <pre ref={preview}>{text}</pre>
       </div>
-      <Modal open={detailsOpen} onClose={() => setDetailsOpen(false)} title={`轨迹 ${index + 1} · ${semanticTitle ?? title}`}>
+      <Modal open={detailsOpen} onClose={() => setDetailsOpen(false)} title={zhCN.steps.detailTitle(index + 1, semanticTitle ?? title)}>
         <pre className="step-detail-text">{content.full}</pre>
-        {readMessageImages(step.images).map((image, i) => <img key={i} className="step-image" src={imageDataUrl(image)} alt={`轨迹 ${index + 1} 图片 ${i + 1}`} />)}
+        {readMessageImages(step.images).map((image, i) => <img key={i} className="step-image" src={imageDataUrl(image)} alt={zhCN.steps.image(index + 1, i + 1)} />)}
       </Modal>
-      {step.status !== 'completed' && <span className="step-status">{({ streaming: '进行中', error: '错误', aborted: '已中止', unknown: '状态未知' } as const)[step.status] ?? step.status}</span>}
+      {step.status !== 'completed' && <span className="step-status">{({ streaming: zhCN.steps.streaming, error: zhCN.steps.error, aborted: zhCN.steps.aborted, unknown: zhCN.steps.unknown } as const)[step.status] ?? step.status}</span>}
     </div>
   </li>;
 }
@@ -122,20 +123,20 @@ export function SessionSteps({ sessionSelected, snapshot, loading, error, naviga
     cleanup.current = highlightTimelineTarget(target);
     return true;
   };
-  if (!sessionSelected) return <div className="empty-hint">未选择会话</div>;
+  if (!sessionSelected) return <div className="empty-hint">{zhCN.systemPrompt.noSession}</div>;
   return <div ref={root} className="session-steps" data-testid="session-steps" aria-busy={loading}>
     <div className="trace-search">
-      <input type="search" aria-label="搜索轨迹" placeholder="搜索类型、工具或内容…" value={query}
+      <input type="search" aria-label={zhCN.steps.search} placeholder={zhCN.steps.searchPlaceholder} value={query}
         onChange={event => setQuery(event.target.value)}
         onKeyDown={event => {
           if (event.key === 'Escape' && query) { event.preventDefault(); event.stopPropagation(); setQuery(''); }
         }} />
-      {terms.length > 0 && <span className="trace-search-count" aria-live="polite">{matches.length} / {snapshot?.steps.length ?? 0} 条</span>}
+      {terms.length > 0 && <span className="trace-search-count" aria-live="polite">{matches.length} / {snapshot?.steps.length ?? 0}  {zhCN.steps.countUnit}</span>}
     </div>
-    {terms.length > 0 && matches.length === 0 && !loading && <div className="empty-hint">没有匹配的轨迹</div>}
-    {loading && <p className="step-note" role="status">正在加载轨迹…</p>}
-    {error && <p className="step-note" role="alert">轨迹加载失败：{error}{snapshot ? '（保留上次快照）' : ''}</p>}
-    {!loading && !error && !snapshot?.steps.length && <div className="empty-hint">暂无轨迹</div>}
+    {terms.length > 0 && matches.length === 0 && !loading && <div className="empty-hint">{zhCN.steps.noMatches}</div>}
+    {loading && <p className="step-note" role="status">{zhCN.steps.loading}</p>}
+    {error && <p className="step-note" role="alert">{zhCN.steps.loadFailed}{error}{snapshot ? zhCN.steps.previousSnapshot : ''}</p>}
+    {!loading && !error && !snapshot?.steps.length && <div className="empty-hint">{zhCN.steps.empty}</div>}
     <ol className="steps-list" style={{ '--step-number-width': `max(22px, calc(${String(snapshot?.steps.length ?? 0).length}ch + 10px))` } as CSSProperties} key={`${snapshot?.sessionId}:${snapshot?.projectionId}`}>
       {matches.map(({step, index}) => <Step key={step.id} step={step} index={index} navigate={navigate} />)}
     </ol>

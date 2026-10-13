@@ -87,6 +87,8 @@ export type TimelineItem =
       images?: readonly { mediaType: string; base64: string }[];
       /** 是否仍在流式接收增量（未完成）。 */
       streaming: boolean;
+      /** Explicit terminal evidence for an interrupted assistant reply. */
+      stopReason?: "aborted";
     }
   | { kind: "thinking"; id: string; text: string; streaming: boolean }
   | { kind: "tool"; id: string; call: ToolCall };

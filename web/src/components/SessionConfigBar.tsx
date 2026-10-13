@@ -1,3 +1,4 @@
+import { zhCN } from "../i18n/zh-CN.js";
 import { IconSelect } from "./IconSelect.js";
 import type { ModelInfo, SessionRecord } from "pi-agent-server/client";
 
@@ -19,18 +20,18 @@ export function SessionConfigBar({ session, models, thinkingLevels, onChange }: 
   return (
     <div className="session-config" data-testid="session-config">
       <div className="field">
-        <label htmlFor="model-select">模型</label>
+        <label htmlFor="model-select">{zhCN.model.model}</label>
         <IconSelect
           id="model-select"
           data-testid="model-select"
-          aria-label="选择模型"
+          aria-label={zhCN.common.selectModel}
           value={currentModel}
           onChange={(e) => {
             const [provider, id] = e.target.value.split("/");
             if (provider && id) onChange({ modelProvider: provider, modelId: id });
           }}
         >
-          <option value="">服务端默认</option>
+          <option value="">{zhCN.common.serverDefault}</option>
           {models.map((m) => (
             <option key={`${m.provider}/${m.id}`} value={`${m.provider}/${m.id}`}>
               {m.provider} / {m.name}
@@ -39,15 +40,15 @@ export function SessionConfigBar({ session, models, thinkingLevels, onChange }: 
         </IconSelect>
       </div>
       <div className="field">
-        <label htmlFor="thinking-level-select">思考级别</label>
+        <label htmlFor="thinking-level-select">{zhCN.common.thinkingLevel}</label>
         <IconSelect
           id="thinking-level-select"
           data-testid="thinking-level-select"
-          aria-label="选择思考级别"
+          aria-label={zhCN.common.selectThinkingLevel}
           value={session.thinkingLevel ?? ""}
           onChange={(e) => onChange({ thinkingLevel: e.target.value || undefined })}
         >
-          <option value="">默认</option>
+          <option value="">{zhCN.common.default}</option>
           {thinkingLevels.map((l) => (
             <option key={l} value={l}>
               {l}

@@ -1,3 +1,4 @@
+import { zhCN } from "../i18n/zh-CN.js";
 import { Fragment, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { Icon } from "./Icon.js";
 import { resolveSessionDisplayTitle, type SessionRecord } from "pi-agent-server/client";
@@ -19,16 +20,16 @@ export function formatSessionTime(updatedAt: number, now: number = Date.now()): 
   const diffDay = Math.floor(diffHour / 24);
 
   if (diffMin < 1) {
-    return "刚刚";
+    return zhCN.sessionList.now;
   }
   if (diffMin < 60) {
-    return `${diffMin}分钟前`;
+    return zhCN.sessionList.minutesAgo(diffMin);
   }
   if (diffHour < 24) {
-    return `${diffHour}小时前`;
+    return zhCN.sessionList.hoursAgo(diffHour);
   }
   if (diffDay < 30) {
-    return `${diffDay}天前`;
+    return zhCN.sessionList.daysAgo(diffDay);
   }
 
   // 跨更长时间或跨年：输出短日期（如 3/1 或 2023/3/1）
@@ -38,22 +39,22 @@ export function formatSessionTime(updatedAt: number, now: number = Date.now()): 
   const month = date.getMonth() + 1;
   const day = date.getDate();
   if (isSameYear) {
-    return `${month}月${day}日`;
+    return zhCN.sessionList.date(month, day);
   }
   return `${date.getFullYear()}/${month}/${day}`;
 }
 
 /** Calendar boundaries use local dates, not elapsed 24-hour guesses. */
 export function sessionDateGroup(timestamp: number, now = Date.now()): string {
-  if (!Number.isFinite(timestamp) || timestamp <= 0 || Number.isNaN(new Date(timestamp).getTime())) return "日期未知";
-  if (timestamp > now) return "未来日期";
+  if (!Number.isFinite(timestamp) || timestamp <= 0 || Number.isNaN(new Date(timestamp).getTime())) return zhCN.sessionList.unknownDate;
+  if (timestamp > now) return zhCN.sessionList.futureDate;
   const today = new Date(now); today.setHours(0, 0, 0, 0);
   const yesterday = new Date(today); yesterday.setDate(today.getDate() - 1);
   const week = new Date(today); week.setDate(today.getDate() - 6);
-  if (timestamp >= today.getTime()) return "今天";
-  if (timestamp >= yesterday.getTime()) return "昨天";
-  if (timestamp >= week.getTime()) return "近 7 天";
-  return "更早";
+  if (timestamp >= today.getTime()) return zhCN.sessionList.today;
+  if (timestamp >= yesterday.getTime()) return zhCN.sessionList.yesterday;
+  if (timestamp >= week.getTime()) return zhCN.sessionList.lastWeek;
+  return zhCN.sessionList.earlier;
 }
 
 /** 辅助获取完整绝对时间字符串（用于悬停提示） */
@@ -143,7 +144,7 @@ export function SessionList({
     <section className="session-list" data-testid="session-list">
       {(() => {
         const toggle = <button ref={toggleRef} type="button" className="workbench-search-toggle"
-          aria-label="搜索会话" aria-expanded={searchOpen} aria-controls={searchId}
+          aria-label={zhCN.sessionList.search} aria-expanded={searchOpen} aria-controls={searchId}
           onClick={() => searchOpen ? closeSearch() : setSearchOpen(true)}><Icon name="search" /></button>;
         return projectContext ? projectContext(toggle) : toggle;
       })()}
@@ -158,16 +159,16 @@ export function SessionList({
           }}>
           <Icon name="search" />
           <input ref={inputRef} className="session-search" data-testid="session-search"
-            type="text" placeholder="搜索会话…" value={query}
+            type="text" placeholder={zhCN.sessionList.searchPlaceholder} value={query}
             onCompositionStart={() => { composing.current = true; }}
             onCompositionEnd={() => { composing.current = false; }}
-            onChange={(e) => setQuery(e.target.value)} aria-label="搜索会话" />
-          {query !== "" && <button type="button" className="workbench-search-toggle" aria-label="清空搜索"
-            title="清空搜索" onClick={clearSearch}><Icon name="close" /></button>}
+            onChange={(e) => setQuery(e.target.value)} aria-label={zhCN.sessionList.search} />
+          {query !== "" && <button type="button" className="workbench-search-toggle" aria-label={zhCN.sessionList.clearSearch}
+            title={zhCN.sessionList.clearSearch} onClick={clearSearch}><Icon name="close" /></button>}
         </div>
-      {loading ? <div className="empty-hint" data-testid="sessions-loading">加载中…</div> : filtered.length === 0 && (
+      {loading ? <div className="empty-hint" data-testid="sessions-loading">{zhCN.sidebar.loading}</div> : filtered.length === 0 && (
         <div className="empty-hint session-empty" data-testid="empty-sessions">
-          {query.trim() ? <><Icon name="search" /><p>未找到相关会话</p><button type="button" onClick={clearSearch}>清空搜索</button></> : "暂无会话"}
+          {query.trim() ? <><Icon name="search" /><p>{zhCN.sessionList.noMatches}</p><button type="button" onClick={clearSearch}>{zhCN.sessionList.clearSearch}</button></> : zhCN.sessionList.empty}
         </div>
       )}
       <ul className="session-items">
@@ -198,7 +199,7 @@ export function SessionList({
                 {formatSessionTime(s.updatedAt, now)}
               </time>
               {(s.visibility === "shared" || s.origin === "native") && (
-                <span className="session-shared-badge" title={s.origin === "native" ? "原生共享会话" : "共享会话"} aria-label={s.origin === "native" ? "原生共享会话" : "共享会话"}>
+                <span className="session-shared-badge" title={s.origin === "native" ? zhCN.sessionList.nativeShared : zhCN.sessionList.shared} aria-label={s.origin === "native" ? zhCN.sessionList.nativeShared : zhCN.sessionList.shared}>
                   <Icon name="shared" size={14} />
                 </span>
               )}
@@ -207,10 +208,10 @@ export function SessionList({
             <div className="session-actions">
               <button
                 data-testid={`rename-${s.id}`}
-                title="重命名"
-                aria-label="重命名"
+                title={zhCN.sessionList.rename}
+                aria-label={zhCN.sessionList.rename}
                 onClick={() => {
-                  const title = window.prompt("新标题", s.title);
+                  const title = window.prompt(zhCN.sessionList.newTitle, s.title);
                   if (title && title.trim()) onRename(s.id, title.trim());
                 }}
               >
@@ -218,16 +219,16 @@ export function SessionList({
               </button>
               <button
                 data-testid={`export-${s.id}`}
-                title="导出 JSON"
-                aria-label="导出 JSON"
+                title={zhCN.sessionList.export}
+                aria-label={zhCN.sessionList.export}
                 onClick={() => onExport(s.id)}
               >
                 <Icon name="download" />
               </button>
               <button
                 data-testid={`delete-${s.id}`}
-                title={s.origin === "native" ? "从共享列表移除（保留原始文件）" : "删除"}
-                aria-label="删除"
+                title={s.origin === "native" ? zhCN.sessionList.removeShared : zhCN.sessionList.delete}
+                aria-label={zhCN.sessionList.delete}
                 onClick={() => onDelete(s.id)}
               >
                 <Icon name="trash" />

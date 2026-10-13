@@ -1,3 +1,4 @@
+import { zhCN } from "../i18n/zh-CN.js";
 import { useEffect, useRef, useState } from "react";
 import type { ApiClient, SessionStepsSnapshot, SessionSystemPrompt } from "pi-agent-server/client";
 import type { InspectorTab } from "../components/Inspector.js";
@@ -66,7 +67,7 @@ function useInspectionSnapshot<T>({ api, sessionId, enabled, refreshKey, interva
 
 const readSteps = (api: ApiClient, id: string) => api.getSessionSteps(id);
 const acceptSteps = (next: SessionStepsSnapshot, previous: SessionStepsSnapshot | null, id: string) => {
-  if (next.sessionId !== id) throw new Error("轨迹快照来源与当前会话不一致");
+  if (next.sessionId !== id) throw new Error(zhCN.errors.inspectionMismatch);
   if (previous?.projectionId === next.projectionId && next.revision <= previous.revision) return previous;
   return next;
 };

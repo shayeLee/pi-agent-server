@@ -16,8 +16,13 @@ for (const width of [1280, 390]) for (const theme of ["light", "dark"]) {
     await expect(thinking.locator(".thinking-summary")).toHaveCount(0);
     await expect(thinking.getByRole("button")).toHaveAttribute("aria-expanded", "true");
     expect(await thinking.locator(".thinking-body").textContent()).toBe(original.fullThinking);
-    const style = await thinking.locator(".thinking-body").evaluate(el => ({ font: getComputedStyle(el).fontSize, line: getComputedStyle(el).lineHeight }));
-    expect(style).toEqual({ font: "15px", line: "24.75px" });
+    const style = await thinking.locator(".thinking-body").evaluate(el => {
+      const computed = getComputedStyle(el);
+      return { font: computed.fontSize, line: computed.lineHeight, token: computed.getPropertyValue("--font-md").trim() };
+    });
+    expect(style.token).not.toBe("");
+    expect(style.font).toBe(style.token);
+    expect(parseFloat(style.line)).toBeCloseTo(parseFloat(style.font) * 1.65, 2);
     await thinking.getByRole("button").click();
     await page.getByRole("button", { name: "结束思考" }).click();
     await expect(thinking.getByRole("button")).toHaveAttribute("aria-expanded", "false");

@@ -6,6 +6,16 @@ const legacyFailbackFixture = JSON.parse(readFileSync(new URL("../fixtures/model
 const entry = (id: string, parentId: string | null, message: unknown) => ({ type: "message", id, parentId, timestamp: "2026-01-01T00:00:00.000Z", message });
 
 describe("Pi export tool timeline", () => {
+  it("exports abort evidence without guessing from incomplete-looking text", () => {
+    const snapshot = projectExportSnapshot([], [
+      entry("u", null, { role: "user", content: "hello" }),
+      entry("a", "u", { role: "assistant", stopReason: "aborted", content: [{ type: "text", text: "partial" }] }),
+      entry("b", "a", { role: "assistant", stopReason: "stop", content: [{ type: "text", text: "also short" }] }),
+    ] as any);
+    expect(snapshot.timeline[1]).toMatchObject({ type: "message", text: "partial", stopReason: "aborted" });
+    expect(snapshot.timeline[0]).not.toHaveProperty("stopReason");
+    expect(snapshot.timeline[2]).not.toHaveProperty("stopReason");
+  });
   it("keeps assistant block order, exact thinking, parallel same-name calls, full output, errors, and abort gaps", () => {
     const branch = [
       entry("u1", null, { role: "user", content: "run" }),

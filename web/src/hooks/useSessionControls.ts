@@ -1,3 +1,4 @@
+import { zhCN } from "../i18n/zh-CN.js";
 import { useEffect, useRef, useState, type RefObject } from "react";
 import { ApiError, ownsSseEvent, type ApiClient, type ChatStore, type ControlQueueSnapshot, type SseEvent } from "pi-agent-server/client";
 import type { SubmitSnapshot, UnsentMessage } from "../attachment-state.js";
@@ -50,7 +51,7 @@ export function useSessionControls({ api, activeSessionId, navigationGeneration,
     controlSnapshotsRef.current.clear();
     setPendingControls(current => Object.fromEntries(Object.entries(current).map(([sessionId, rows]) => [sessionId,
       rows.map(row => row.status === "submitting" || row.status === "unknown"
-        ? { ...row, status: "unknown" as const, blocking: false, error: "服务已重启，原控制消息结果未确认；输入已保留，不会自动重发。" }
+        ? { ...row, status: "unknown" as const, blocking: false, error: zhCN.errors.controlsAfterRestart }
         : { ...row, blocking: false })])));
     refreshControlQueue();
   }
@@ -123,7 +124,7 @@ export function useSessionControls({ api, activeSessionId, navigationGeneration,
       setPendingControls(current => ({ ...current, [sessionId]: (current[sessionId] ?? []).flatMap(row => {
         if (row.requestId !== event.requestId) return [row];
         if (row.status === "submitting" || row.status === "unknown") return [{ ...row, status: "unknown" as const, blocking: false,
-          error: "原请求已结束，控制消息结果仍未确认；输入已保留，不会自动重发。" }];
+          error: zhCN.errors.controlsAfterCompletion }];
         return row.kind === "steer" ? [] : [{ ...row, blocking: false }];
       }) }));
     }
@@ -154,7 +155,7 @@ export function useSessionControls({ api, activeSessionId, navigationGeneration,
     const scope = `session:${sessionId}`;
     const snapshot = captureSnapshot(scope, text);
     if (!snapshot) return;
-    if (snapshot.fileIds.length) { reportChatError(sessionId, new Error("控制消息暂不支持文件附件；输入已保留")); return; }
+    if (snapshot.fileIds.length) { reportChatError(sessionId, new Error(zhCN.errors.controlFilesUnsupported)); return; }
     const textRevision = draftTextRevisionsRef.current.get(scope) ?? 0;
     if ([...controlSnapshotsRef.current.values()].some(old => old.sessionId === sessionId && old.textRevision === textRevision &&
       old.snapshot.text === snapshot.text && old.snapshot.localIds.join() === snapshot.localIds.join())) return;

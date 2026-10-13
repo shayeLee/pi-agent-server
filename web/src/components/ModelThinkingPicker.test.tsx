@@ -74,8 +74,8 @@ describe("ModelThinkingPicker", () => {
     expect(screen.getByRole("radio", { name: "xhigh" })).toBeInTheDocument();
 
     fireEvent.keyDown(screen.getByRole("radio", { name: "low" }), { key: "ArrowRight" });
-    expect(screen.getByRole("radio", { name: "high" })).toHaveFocus();
-    expect(onConfigChange).toHaveBeenCalledWith({ thinkingLevel: "high" });
+    expect(screen.getByRole("radio", { name: "medium" })).toHaveFocus();
+    expect(onConfigChange).toHaveBeenCalledWith({ thinkingLevel: "medium" });
   });
 
   it("可按 provider、model ID 或名称搜索，且无匹配时显示空状态", () => {
@@ -119,14 +119,14 @@ describe("ModelThinkingPicker", () => {
     expect(screen.getByRole("radio", { name: "high" })).toHaveFocus();
     expect(onConfigChange).not.toHaveBeenCalled();
     fireEvent.keyDown(document.activeElement!, { key: "ArrowLeft" });
-    expect(screen.getByRole("radio", { name: "low" })).toHaveFocus();
-    expect(onConfigChange).toHaveBeenCalledExactlyOnceWith({ thinkingLevel: "low" });
+    expect(screen.getByRole("radio", { name: "medium" })).toHaveFocus();
+    expect(onConfigChange).toHaveBeenCalledExactlyOnceWith({ thinkingLevel: "medium" });
   });
 
   it("没有匹配思考档位时聚焦第一项但不修改配置", () => {
     const { onConfigChange } = setup({ thinkingLevel: "unknown" });
     fireEvent.click(screen.getByTestId("thinking-trigger"));
-    expect(screen.getByRole("radio", { name: "medium" })).toHaveFocus();
+    expect(screen.getByRole("radio", { name: "off" })).toHaveFocus();
     expect(onConfigChange).not.toHaveBeenCalled();
   });
 
@@ -142,5 +142,30 @@ describe("ModelThinkingPicker", () => {
     fireEvent.click(trigger);
     fireEvent.pointerDown(document.body);
     expect(screen.queryByRole("dialog", { name: "模型与思考深度" })).not.toBeInTheDocument();
+  });
+
+  it("deduplicates and sorts supported levels by strength, retaining future levels at the end", () => {
+    setup({ thinkingLevels: ["high", "off", "minimal", "low", "medium", "xhigh", "max", "low", "future"], defaultThinkingLevel: "high" });
+    fireEvent.click(screen.getByTestId("thinking-trigger"));
+    expect(screen.getAllByTestId("model-thinking-level-option").map(option => option.textContent)).toEqual([
+      "off", "minimal", "low", "medium", "high", "xhigh", "max", "future",
+    ]);
+    expect(screen.getByRole("radio", { name: "high" })).toHaveAttribute("aria-checked", "true");
+  });
+
+  it("scrolls the current model into its own list without changing selection or moving search focus", () => {
+    const bounds = vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+      return this.classList.contains("model-thinking-model-options") ? { top:100, bottom:200 } as DOMRect
+        : this.getAttribute("role") === "radio" && this.getAttribute("aria-checked") === "true"
+          ? { top:500, bottom:540, height:40 } as DOMRect : { top:0, bottom:0, height:0 } as DOMRect;
+    });
+    const height = vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockReturnValue(100);
+    try {
+      const { onConfigChange } = setup();
+      fireEvent.click(screen.getByTestId("model-thinking-trigger"));
+      expect(screen.getByRole("radiogroup", { name:"模型" }).scrollTop).toBeGreaterThan(0);
+      expect(screen.getByRole("searchbox")).toHaveFocus();
+      expect(onConfigChange).not.toHaveBeenCalled();
+    } finally { bounds.mockRestore(); height.mockRestore(); }
   });
 });

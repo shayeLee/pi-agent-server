@@ -1,3 +1,4 @@
+import { zhCN } from "../i18n/zh-CN.js";
 import { useMemo, useState, type ReactNode } from "react";
 import { Icon } from "./Icon.js";
 import { createLowlight } from "lowlight";
@@ -56,7 +57,7 @@ function highlighted(code: string, language?: string): ReactNode {
 }
 
 export type CodeBlockProps = { code: string; language?: string; copyLabel?: string };
-export function CodeBlock({ code, language, copyLabel = "复制代码" }: CodeBlockProps) {
+export function CodeBlock({ code, language, copyLabel = zhCN.code.copy }: CodeBlockProps) {
   const resolved = codeLanguage(language);
   const content = useMemo(() => highlighted(code, resolved), [code, resolved]);
   // Tie feedback to the exact snapshot, not an obsolete streamed value.
@@ -64,10 +65,10 @@ export function CodeBlock({ code, language, copyLabel = "复制代码" }: CodeBl
   return <div className="code-block" data-language={resolved ?? "plain"}>
     <div className="code-block-toolbar"><span>{resolved ?? (language === "plaintext" ? "plaintext" : "plain")}</span>
       <button type="button" aria-label={copyLabel} onClick={async () => {
-        try { await navigator.clipboard.writeText(code); setCopy({ code, message: "已复制" }); }
-        catch { setCopy({ code, message: "复制失败，请选择原文复制" }); }
+        try { await navigator.clipboard.writeText(code); setCopy({ code, message: zhCN.code.copied }); }
+        catch { setCopy({ code, message: zhCN.code.copyFailed }); }
       }}><Icon name="copy" /></button><span role="status">{copy?.code === code ? copy.message : ""}</span>
     </div>
-    <pre tabIndex={0} aria-label="代码原文"><code>{content}</code></pre>
+    <pre tabIndex={0} aria-label={zhCN.code.original}><code>{content}</code></pre>
   </div>;
 }

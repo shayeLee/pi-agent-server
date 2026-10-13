@@ -1,3 +1,4 @@
+import { zhCN } from "../i18n/zh-CN.js";
 import { GenericResult, ParameterFields, Parameters, type ParameterPolicy } from "./generic.js";
 import { subagentTasks, isSubagentTask } from "./subagent-data.js";
 import type { ArgumentsProps, ResultProps } from "./contract.js";
@@ -20,9 +21,9 @@ export function SubagentTaskFields({ value }: { value: { agent: string; task: st
 export function SubagentArguments({ value }: ArgumentsProps) {
   const tasks = subagentTasks("subagent", value);
   if (!tasks) return <Parameters value={value} policy={subagentPolicy} />;
-  return <section className="json-block" aria-label="参数"><div className="tool-subagent-parameters">
+  return <section className="json-block" aria-label={zhCN.toolParameters.label}><div className="tool-subagent-parameters">
     {Object.entries(value as object).map(([name, field]) => name === "tasks"
-      ? <ol key={name} className="tool-parallel-tasks" aria-label="代理任务">{tasks.map((task, index) => <li key={index}><SubagentTaskFields value={task} /></li>)}</ol>
+      ? <ol key={name} className="tool-parallel-tasks" aria-label={zhCN.toolParameters.agentTasks}>{tasks.map((task, index) => <li key={index}><SubagentTaskFields value={task} /></li>)}</ol>
       : <ParameterFields key={name} value={{ [name]: field }} policy={subagentPolicy} />)}
   </div></section>;
 }

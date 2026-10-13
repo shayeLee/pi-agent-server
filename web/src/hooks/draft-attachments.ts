@@ -1,3 +1,4 @@
+import { zhCN } from "../i18n/zh-CN.js";
 import { ApiError, type ApiClient } from "pi-agent-server/client";
 import { validateSelection, type UnsentAttachment, type UnsentMessage } from "../attachment-state.js";
 import type { createDraftStore } from "../draft-store.js";
@@ -31,8 +32,8 @@ export function createDraftAttachmentActions({ api, draftStore, currentScope, ge
   function fileBytes(file: File): Promise<Uint8Array> {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
-      reader.onload = () => reader.result instanceof ArrayBuffer ? resolve(new Uint8Array(reader.result)) : reject(new Error("文件读取失败"));
-      reader.onerror = () => reject(new Error("文件读取失败"));
+      reader.onload = () => reader.result instanceof ArrayBuffer ? resolve(new Uint8Array(reader.result)) : reject(new Error(zhCN.errors.fileRead));
+      reader.onerror = () => reject(new Error(zhCN.errors.fileRead));
       reader.readAsArrayBuffer(file);
     });
   }
@@ -46,7 +47,7 @@ export function createDraftAttachmentActions({ api, draftStore, currentScope, ge
       const interrupted = !(error instanceof ApiError);
       updateAttachment(scope, localId, (item) => ({ ...item, status: interrupted ? "interrupted" : "error",
         file: interrupted ? undefined : file,
-        error: interrupted ? "上传中断；请重新选择文件" : error instanceof Error ? error.message : "上传失败" }));
+        error: interrupted ? zhCN.errors.uploadInterrupted : error instanceof Error ? error.message : zhCN.errors.uploadFailed }));
     }
   }
   async function addUnsentFile(file: File): Promise<void> {
@@ -76,12 +77,12 @@ export function createDraftAttachmentActions({ api, draftStore, currentScope, ge
         updateAttachment(scope, localId, (current) => ({ ...current, status: "ready",
           image: { mediaType: file.type, base64, preview: `data:${file.type};base64,${base64}` } }));
       } catch {
-        updateAttachment(scope, localId, (current) => ({ ...current, status: "error", error: "图片读取失败" }));
+        updateAttachment(scope, localId, (current) => ({ ...current, status: "error", error: zhCN.errors.imageRead }));
       }
     } else if (projectId) {
       await uploadSelectedFile(scope, projectId, localId, file, check.kind, item.uploadKey!);
     } else {
-      updateAttachment(scope, localId, (current) => ({ ...current, status: "error", error: "请先选择项目" }));
+      updateAttachment(scope, localId, (current) => ({ ...current, status: "error", error: zhCN.errors.selectProject }));
     }
   }
   async function retryUnsentAttachment(localId: string): Promise<void> {

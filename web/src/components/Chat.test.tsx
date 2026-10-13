@@ -67,6 +67,32 @@ function setup(partial: Partial<Parameters<typeof Chat>[0]> = {}) {
 }
 
 describe("Chat（聊天区）", () => {
+  it("shows first-reply waiting feedback until text arrives and closes it on termination", () => {
+    vi.useFakeTimers();
+    try {
+      const user: TimelineItem = { kind: "message", id: "new", role: "user", text: "new request", streaming: false };
+      const view = setup({ timeline: [...timeline, user], streaming: true });
+      expect(screen.getByTestId("waiting-reply")).toHaveTextContent("正在等待模型回复…");
+      expect(screen.getByTestId("waiting-reply")).toHaveAttribute("role", "status");
+      act(() => vi.advanceTimersByTime(33000));
+      expect(screen.getByTestId("waiting-reply")).toHaveTextContent("正在等待模型回复…");
+      view.update({ activeTools: true });
+      expect(screen.getByTestId("waiting-reply")).toHaveTextContent("工具执行中");
+      view.update({ connected: false });
+      expect(screen.getByTestId("waiting-reply")).toHaveTextContent("连接已断开");
+      view.update({ connected: true, activeTools: false, timeline: [...timeline, user,
+        { kind: "message", id: "partial", role: "assistant", text: "half", streaming: true }] });
+      expect(screen.queryByTestId("waiting-reply")).toBeNull();
+      view.update({ streaming: false, timeline: [...timeline, user,
+        { kind: "message", id: "partial", role: "assistant", text: "half", streaming: false, stopReason: "aborted" }] });
+      expect(screen.getByTestId("aborted-partial")).toHaveTextContent("已中止");
+      expect(screen.queryByTestId("waiting-reply")).toBeNull();
+      view.update({ streaming: false, primaryAwaitingStart: true, timeline: [...timeline, user] });
+      expect(screen.getByTestId("waiting-reply")).toHaveTextContent("等待运行确认");
+      view.update({ primaryAwaitingStart: false, queued: true });
+      expect(screen.queryByTestId("waiting-reply")).toBeNull();
+    } finally { vi.useRealTimers(); }
+  });
   it("将单一轨迹开关状态与点击传给父级，不维护虚假的本地页签", () => {
     const onToggleTrace = vi.fn();
     const view = setup({ traceOpen: false, onToggleTrace });

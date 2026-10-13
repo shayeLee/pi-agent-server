@@ -1,3 +1,4 @@
+import { zhCN } from "../i18n/zh-CN.js";
 import { useState } from "react";
 import { Icon } from "./Icon.js";
 import type { TimelineItem } from "pi-agent-server/client";
@@ -24,9 +25,10 @@ export function ThinkingRow({ thinking }: ThinkingRowProps) {
         className="thinking-header chevron-trigger"
         onClick={() => setManualExpanded(!visible)}
         aria-expanded={visible}
-        aria-label="思考过程"
+        aria-label={zhCN.thinking.label}
+        title={visible ? zhCN.thinking.collapse : zhCN.thinking.expand}
       >
-        <span className="thinking-label">{thinking.streaming ? "Thinking" : "Thought"}</span>
+        <span className="thinking-label">{thinking.streaming ? zhCN.thinking.thinking : zhCN.thinking.thought}</span>
         <Icon name="chevron" className="disclosure-chevron thinking-chevron" />
       </button>
       {visible && (

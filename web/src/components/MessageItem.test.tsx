@@ -42,7 +42,7 @@ describe("MessageItem streaming cursor", () => {
     expect(container.querySelectorAll(cursor)).toHaveLength(1);
     rerender(<MessageItem item={{ ...item, streaming: false }} />);
     expect(container.querySelectorAll(cursor)).toHaveLength(0);
-    expect(screen.getByRole("button")).toHaveTextContent("Thought");
+    expect(screen.getByRole("button")).toHaveTextContent("思考过程");
     expect(screen.getByTestId("thinking-body-cancelled-thinking")).toHaveTextContent(item.text);
   });
 });

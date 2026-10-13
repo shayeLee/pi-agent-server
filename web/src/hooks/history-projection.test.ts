@@ -2,6 +2,16 @@ import { describe, expect, it } from "vitest";
 import { projectExportTimeline, projectLegacyHistory } from "./history-projection.js";
 
 describe("export history projection", () => {
+  it("restores abort evidence only for assistant replies", () => {
+    const result = projectExportTimeline([
+      { type: "message", role: "user", text: "question", stopReason: "aborted" },
+      { type: "message", role: "assistant", text: "partial", stopReason: "aborted" },
+      { type: "message", role: "assistant", text: "complete", stopReason: "stop" },
+    ], []);
+    expect(result[0]).not.toHaveProperty("stopReason");
+    expect(result[1]).toMatchObject({ stopReason: "aborted", streaming: false });
+    expect(result[2]).not.toHaveProperty("stopReason");
+  });
   it("associates images by source ID, not identical prompt text", () => {
     const images = [{ mediaType: "image/png", base64: "AA==" }];
     const result = projectExportTimeline([

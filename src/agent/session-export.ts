@@ -18,7 +18,7 @@ export type ExportMessage = {
 
 export type ExportTimelineItem =
   | (Omit<import("./subagent-notification.js").NotificationEvent, "type" | "requestId"> & { id: string; type: "notification"; order: number })
-  | { id: string; type: "message"; role: "user" | "assistant"; messageId: string; turnId: string | null; text: string; order: number; timestamp?: string }
+  | { id: string; type: "message"; role: "user" | "assistant"; messageId: string; turnId: string | null; text: string; order: number; timestamp?: string; stopReason?: "aborted" }
   | { id: string; type: "thinking"; messageId: string; turnId: string | null; text: string; order: number; timestamp?: string }
   | { id: string; type: "tool_call"; messageId: string; turnId: string | null; callId: string; toolCallId: string; toolName: string; args: unknown; status: "completed" | "error" | "no_result"; order: number; timestamp?: string }
   | { id: string; type: "tool_result"; messageId: string | null; turnId: string | null; callId: string; toolCallId: string; toolName: string; result: unknown; isError: boolean; durationMs?: number | null; order: number; timestamp?: string }
@@ -101,7 +101,7 @@ export function projectExportSnapshot(messages: readonly unknown[], branch: read
       continue;
     }
     if (entry.type !== "message" || presentation.hiddenContinuationIds.has(entry.id)) continue;
-    const message = entry.message as { role?: unknown; content?: unknown; toolCallId?: unknown; toolName?: unknown; isError?: unknown; details?: unknown; durationMs?: unknown };
+    const message = entry.message as { role?: unknown; content?: unknown; toolCallId?: unknown; toolName?: unknown; isError?: unknown; details?: unknown; durationMs?: unknown; stopReason?: unknown };
     const timestamp = typeof entry.timestamp === "string" ? entry.timestamp : undefined;
     if (message.role === "user") {
       turnId = entry.id;
@@ -117,7 +117,7 @@ export function projectExportSnapshot(messages: readonly unknown[], branch: read
         const block = asRecord(blocks[index]);
         if (!block) continue;
         if (block.type === "text" && typeof block.text === "string") {
-          timeline.push({ id: `assistant-text:${entry.id}:${index}`, type: "message", role: "assistant", messageId: entry.id, turnId, text: block.text, order: order++, ...(timestamp ? { timestamp } : {}) });
+          timeline.push({ id: `assistant-text:${entry.id}:${index}`, type: "message", role: "assistant", messageId: entry.id, turnId, text: block.text, order: order++, ...(timestamp ? { timestamp } : {}), ...(message.stopReason === "aborted" ? { stopReason: "aborted" as const } : {}) });
           emittedTimelineItem = true;
         } else if (block.type === "thinking" && typeof block.thinking === "string") {
           timeline.push({ id: `thinking:${entry.id}:${index}`, type: "thinking", messageId: entry.id, turnId, text: block.thinking, order: order++, ...(timestamp ? { timestamp } : {}) });

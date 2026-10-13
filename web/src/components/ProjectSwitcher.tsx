@@ -1,3 +1,4 @@
+import { zhCN } from "../i18n/zh-CN.js";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { Project } from "pi-agent-server/client";
 import { SelectMenu } from "./SelectMenu.js";
@@ -55,15 +56,15 @@ export function ProjectSwitcher({ projects, activeId, onSelect, onCreate, childr
             title: project.cwd,
           }))}
           action={{
-            label: "新建项目",
+            label: zhCN.project.newProject,
             testId: "new-project",
             onSelect: () => setCreating(true),
           }}
           checkPosition="left"
           value={active?.id ?? ""}
           onChange={onSelect}
-          placeholder="默认项目"
-          ariaLabel="选择项目"
+          placeholder={zhCN.project.defaultProject}
+          ariaLabel={zhCN.project.select}
           testId="project-select"
         />
         {children}
@@ -73,7 +74,7 @@ export function ProjectSwitcher({ projects, activeId, onSelect, onCreate, childr
           className="project-create workbench-project-create"
           data-testid="project-create-form"
           role="dialog"
-          aria-label="新建项目"
+          aria-label={zhCN.project.newProject}
           onSubmit={(e) => {
             e.preventDefault();
             submitCreate();
@@ -89,29 +90,27 @@ export function ProjectSwitcher({ projects, activeId, onSelect, onCreate, childr
           <input
             ref={nameInputRef}
             data-testid="project-name-input"
-            placeholder="项目名"
+            placeholder={zhCN.project.name}
             value={name}
             onChange={(e) => setName(e.target.value)}
-            aria-label="项目名"
+            aria-label={zhCN.project.name}
           />
           <input
             data-testid="project-cwd-input"
-            placeholder="工作目录绝对路径（如 /path/to/repo）"
+            placeholder={zhCN.project.directoryPlaceholder}
             value={cwd}
             onChange={(e) => setCwd(e.target.value)}
-            aria-label="项目工作目录"
+            aria-label={zhCN.project.directory}
           />
           <div className="project-create-actions">
             <button type="submit" data-testid="project-create-submit">
-              创建
-            </button>
+              {zhCN.project.create}</button>
             <button
               type="button"
               data-testid="project-create-cancel"
               onClick={cancelCreate}
             >
-              取消
-            </button>
+              {zhCN.project.cancel}</button>
           </div>
         </form>
       )}

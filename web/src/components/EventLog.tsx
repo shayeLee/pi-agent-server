@@ -1,3 +1,4 @@
+import { zhCN } from "../i18n/zh-CN.js";
 import { useState } from "react";
 import { IconSelect } from "./IconSelect.js";
 import { Icon } from "./Icon.js";
@@ -44,15 +45,15 @@ export function EventLog({ entries, onClear, showHeader = true }: EventLogProps)
     <aside className="event-log" data-testid="event-log">
       {showHeader ? (
         <header className="panel-header">
-          <h3>事件流</h3>
+          <h3>{zhCN.trace.events}</h3>
           <div className="panel-actions">
             <IconSelect
               data-testid="event-filter"
               value={filter}
               onChange={(e) => setFilter(e.target.value)}
-              aria-label="按事件类型过滤"
+              aria-label={zhCN.eventLog.filter}
             >
-              <option value="all">全部</option>
+              <option value="all">{zhCN.toolParameters.all}</option>
               {INTERESTING_TYPES.map((t) => (
                 <option key={t} value={t}>
                   {t}
@@ -60,8 +61,7 @@ export function EventLog({ entries, onClear, showHeader = true }: EventLogProps)
               ))}
             </IconSelect>
             <button data-testid="event-clear" onClick={onClear}>
-              清空
-            </button>
+              {zhCN.eventLog.clear}</button>
           </div>
         </header>
       ) : (
@@ -70,9 +70,9 @@ export function EventLog({ entries, onClear, showHeader = true }: EventLogProps)
             data-testid="event-filter"
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
-            aria-label="按事件类型过滤"
+            aria-label={zhCN.eventLog.filter}
           >
-            <option value="all">全部</option>
+            <option value="all">{zhCN.toolParameters.all}</option>
             {INTERESTING_TYPES.map((t) => (
               <option key={t} value={t}>
                 {t}
@@ -80,16 +80,14 @@ export function EventLog({ entries, onClear, showHeader = true }: EventLogProps)
             ))}
           </IconSelect>
           <button data-testid="event-clear" onClick={onClear}>
-            清空
-          </button>
+            {zhCN.eventLog.clear}</button>
         </div>
       )}
       <div className="event-log-list" ref={scroll.ref} onScroll={scroll.onScroll}
         onClickCapture={(event) => { if ((event.target as Element).closest('summary')) scroll.pause(); }}>
         {filtered.length === 0 ? (
           <div className="empty-hint" data-testid="event-empty">
-            暂无事件
-          </div>
+            {zhCN.eventLog.empty}</div>
         ) : (
           filtered.map((e) => (
             <details key={e.seq} className="event-entry" data-testid={`event-${e.seq}`}>

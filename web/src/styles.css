@@ -1331,7 +1331,7 @@ textarea::placeholder {
 
 .markdown code {
   font-family: var(--font-mono);
-  font-size: 0.875em;
+  font-size: var(--font-inline-code);
   padding: 1px 5px;
   border-radius: var(--radius-panel);
   background: var(--bg-raised);
@@ -1380,6 +1380,9 @@ textarea::placeholder {
 }
 
 /* ---------- 思考（渐进披露；顺序保留） ---------- */
+.assistant-waiting-status, .assistant-terminal-status { color: var(--text-secondary); font-size: var(--font-md); line-height: 1.65; }
+.assistant-waiting-status { margin-top: var(--space-16); }
+.assistant-terminal-status { margin-top: var(--space-8); }
 
 .thinking-row {
   min-width: 0;
@@ -2444,6 +2447,8 @@ details[open] > summary > .details-chevron { transform: rotate(90deg); }
 .model-thinking-option[aria-checked="true"] {
   background: var(--accent-soft);
   color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
+  font-weight: 600;
 }
 
 .model-thinking-empty {
@@ -3032,7 +3037,7 @@ details[open] > summary > .details-chevron { transform: rotate(90deg); }
   .workbench-topbar {
     max-width: none;
     margin-inline: 0;
-    padding: 0 var(--space-16) 0 calc(52px + var(--space-16));
+    padding: 0 var(--reading-inline-inset) 0 calc(52px + var(--space-16));
   }
 
   .resize-handle {
@@ -3168,7 +3173,7 @@ details[open] > summary > .details-chevron { transform: rotate(90deg); }
 
   .workbench-topbar {
     /* ≤640 同样为 fixed 汉堡按钮保留文档流占位（左 52px + 16px 内距），不盖标题 */
-    padding: 0 var(--space-16) 0 calc(52px + var(--space-16));
+    padding: 0 var(--reading-inline-inset) 0 calc(52px + var(--space-16));
   }
 
   .chat-header-left {
@@ -3362,6 +3367,9 @@ details[open] > summary > .details-chevron { transform: rotate(90deg); }
 .step-content.collapsed { cursor: pointer; }
 
 /* Keep native scrolling without a visible scrollbar; reserve a separate navigation rail. */
+.chat { --reading-inline-inset: var(--space-24); }
+.chat-footer { padding-left: var(--reading-inline-inset); padding-right: calc(var(--reading-inline-inset) + var(--minimap-gutter)); }
+@media (max-width: 640px) { .chat { --reading-inline-inset: var(--space-16); } }
 .chat-scroll-region { position: relative; display: flex; flex: 1; min-height: 0; min-width: 0; padding-right: var(--minimap-gutter); }
 .chat-scroll-region > .chat-body { min-width: 0; scrollbar-width: none; }
 .chat-scroll-region > .chat-body::-webkit-scrollbar { display: none; width: 0; height: 0; }

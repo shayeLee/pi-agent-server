@@ -4493,6 +4493,10 @@
               },
               "timestamp": {
                 "type": "string"
+              },
+              "stopReason": {
+                "const": "aborted",
+                "description": "Explicitly interrupted assistant text; omitted when unavailable, never inferred from partial text."
               }
             },
             "additionalProperties": false

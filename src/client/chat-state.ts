@@ -173,7 +173,7 @@ export function applySseEvent(state: ChatState, event: SseEvent, now: () => numb
     case "completed":
       return closeCurrentAssistant({ ...state, compaction: finishCompaction(state.compaction, "unknown"), modelOutput: null, activeToolCallIds: [], phase: "completed", error: null });
     case "aborted":
-      return closeCurrentAssistant({ ...state, compaction: finishCompaction(state.compaction, "aborted"), modelOutput: null, activeToolCallIds: [], phase: "aborted" });
+      return closeCurrentAssistant({ ...state, compaction: finishCompaction(state.compaction, "aborted"), modelOutput: null, activeToolCallIds: [], phase: "aborted" }, true);
     case "error":
       // An error ends this answer; subsequent text_delta starts a new message.
       return closeCurrentAssistant({ ...state, compaction: finishCompaction(state.compaction, "failed"), modelOutput: null, activeToolCallIds: [], phase: "idle", error: event.message });
@@ -250,10 +250,10 @@ function closeCurrentThinking(timeline: TimelineItem[]): TimelineItem[] {
 }
 
 /** Close all streaming assistant messages and thinking segments at terminal events. */
-function closeCurrentAssistant(state: ChatState): ChatState {
+function closeCurrentAssistant(state: ChatState, aborted = false): ChatState {
   const timeline = state.timeline.map(item =>
     ((item.kind === "thinking" || (item.kind === "message" && item.role === "assistant")) && item.streaming)
-      ? { ...item, streaming: false } : item,
+      ? { ...item, streaming: false, ...(aborted && item.kind === "message" ? { stopReason: "aborted" as const } : {}) } : item,
   );
   return { ...state, timeline };
 }
