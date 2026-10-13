@@ -78,6 +78,7 @@ describe("SessionList（会话列表）", () => {
     const badge = screen.getByLabelText("原生共享会话");
     expect(badge.querySelector('svg[data-icon="shared"]')).not.toBeNull();
     expect(badge).toHaveTextContent("");
+    fireEvent.contextMenu(screen.getByTestId("session-s1"));
     expect(screen.getByTestId("delete-s1")).toHaveAttribute("title", "从共享列表移除（保留原始文件）");
     expect(screen.getByTestId("session-s2").querySelector(".session-shared-badge")).toBeNull();
   });
@@ -87,7 +88,9 @@ describe("SessionList（会话列表）", () => {
     const { props } = setup({ sessions: [{ ...sessions[0]!, title, visibility: "shared" }], activeId: "s1" });
     const select = screen.getByRole("button", { name: title });
     expect(select).toHaveAttribute("aria-current", "true");
-    expect(select.querySelector(".session-title")).toHaveAttribute("title", title);
+    expect(screen.queryByTestId("rename-s1")).not.toBeInTheDocument();
+    fireEvent.contextMenu(select);
+    expect(screen.getByRole("dialog", { name: "会话详情" })).toHaveTextContent(title);
     const meta = screen.getByTestId("session-time-s1").parentElement!;
     expect(meta).toContainElement(screen.getByLabelText("共享会话"));
     expect(select).toHaveAttribute("aria-describedby", meta.id);
@@ -97,8 +100,11 @@ describe("SessionList（会话列表）", () => {
       expect(button.tabIndex).toBe(0);
     }
     vi.spyOn(window, "prompt").mockReturnValue("新标题");
+    fireEvent.contextMenu(screen.getByTestId("session-s1"));
     fireEvent.click(screen.getByTestId("rename-s1"));
+    fireEvent.contextMenu(screen.getByTestId("session-s1"));
     fireEvent.click(screen.getByTestId("export-s1"));
+    fireEvent.contextMenu(screen.getByTestId("session-s1"));
     fireEvent.click(screen.getByTestId("delete-s1"));
     expect(props.onSelect).not.toHaveBeenCalled();
     vi.restoreAllMocks();
@@ -108,7 +114,7 @@ describe("SessionList（会话列表）", () => {
     const { props } = setup();
     const select = screen.getByTestId('session-s1');
     expect(select.tagName).toBe('BUTTON');
-    expect(select.parentElement?.tagName).toBe('LI');
+    expect(select.closest("li")).not.toBeNull();
     expect(select.querySelector('button')).toBeNull();
     fireEvent.click(screen.getByText('会话一'));
     expect(props.onSelect).toHaveBeenCalledTimes(1);
@@ -199,7 +205,9 @@ describe("SessionList（会话列表）", () => {
     expect(screen.getByText("今天")).toBeInTheDocument();
     expect(screen.queryByText("昨天")).not.toBeInTheDocument();
     expect(screen.getByLabelText("原生共享会话")).toBeInTheDocument();
+    fireEvent.contextMenu(screen.getByTestId("session-s2"));
     expect(screen.getByTestId("delete-s2")).toHaveAttribute("title", "从共享列表移除（保留原始文件）");
+    fireEvent.contextMenu(screen.getByTestId("session-s2"));
     fireEvent.click(screen.getByTestId("export-s2"));
     expect(props.onExport).toHaveBeenCalledWith("s2");
     expect(props.onSelect).not.toHaveBeenCalled();
@@ -214,6 +222,7 @@ describe("SessionList（会话列表）", () => {
 
   it("删除按钮触发 onDelete(id)", () => {
     const { props } = setup();
+    fireEvent.contextMenu(screen.getByTestId("session-s1"));
     fireEvent.click(screen.getByTestId("delete-s1"));
     expect(props.onDelete).toHaveBeenCalledWith("s1");
   });
@@ -221,6 +230,7 @@ describe("SessionList（会话列表）", () => {
   it("重命名按钮触发 onRename(id, title)", () => {
     const { props } = setup();
     vi.spyOn(window, "prompt").mockReturnValue("新标题");
+    fireEvent.contextMenu(screen.getByTestId("session-s2"));
     fireEvent.click(screen.getByTestId("rename-s2"));
     expect(props.onRename).toHaveBeenCalledWith("s2", "新标题");
     vi.restoreAllMocks();
@@ -265,6 +275,7 @@ describe("SessionList（会话列表）", () => {
 
   it("导出按钮触发 onExport(id)", () => {
     const { props } = setup();
+    fireEvent.contextMenu(screen.getByTestId("session-s2"));
     fireEvent.click(screen.getByTestId("export-s2"));
     expect(props.onExport).toHaveBeenCalledWith("s2");
   });

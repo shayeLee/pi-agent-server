@@ -39,52 +39,66 @@ for (const width of [1280, 390]) for (const theme of ["light", "dark"] as const)
     const selected = page.getByTestId("session-s1");
     await expect(selected).toHaveAttribute("aria-current", "true");
     await expect(selected).toHaveAccessibleName(titles[1]!);
-    await expect(selected.locator(".session-title")).toHaveAttribute("title", titles[1]!);
     for (const row of await page.locator(".session-item").all()) {
       const select = await row.locator(".session-select").boundingBox();
-      const actions = await row.locator(".session-actions").boundingBox();
-      expect(select!.y + select!.height).toBeLessThanOrEqual(actions!.y + 1);
       const box = await row.boundingBox();
       expect(select!.width).toBeCloseTo(box!.width, 0);
-      const badge = row.locator(".session-shared-badge");
-      if (await badge.count()) {
-        const time = await row.locator("time").boundingBox(); const icon = await badge.boundingBox();
-        expect(icon!.x - time!.x - time!.width).toBeCloseTo(6, 0);
-        expect(Math.abs(icon!.y + icon!.height / 2 - time!.y - time!.height / 2)).toBeLessThan(1);
-      }
+      expect(box!.height).toBeLessThanOrEqual(width === 390 ? 44 : 40);
+      expect(await row.locator(".session-actions").count()).toBe(0);
+      await expect(row.locator(".session-title")).toHaveCSS("text-overflow", "ellipsis");
     }
+    const details = page.getByRole("dialog", { name: "会话详情" });
+    const showDetails = async (id: string) => {
+      if (await details.count()) await page.keyboard.press("Escape");
+      await page.mouse.move(380, 800);
+      if (width === 390) await page.getByTestId(`session-${id}`).dispatchEvent("contextmenu");
+      else await page.getByTestId(`session-${id}`).hover();
+      await expect(page.getByTestId(`rename-${id}`)).toBeVisible();
+    };
     await mkdir("/tmp/session-list-refine", { recursive: true });
-    await page.mouse.move(900, 800);
-    await selected.blur();
-    await page.screenshot({ path: `/tmp/session-list-refine/${width}-${theme}-selected.png` });
     const restingBox = await selected.boundingBox();
-    const restingBackground = await selected.locator("..").evaluate(el => getComputedStyle(el).backgroundColor);
-    await selected.hover();
+    if (width === 1280) {
+      await page.mouse.move(380, 800);
+      await selected.hover();
+      await page.waitForTimeout(1000);
+      await expect(details).toHaveCount(0);
+      await page.mouse.move(380, 800);
+      await page.waitForTimeout(1200);
+      await expect(details).toHaveCount(0);
+    }
+    await showDetails("s1");
+    await expect(details.locator(".interactive-tooltip-arrow")).toBeVisible();
+    await expect(details).toContainText(titles[1]!);
+    await expect(details).toContainText("创建时间：");
+    await expect(details).toContainText("更新时间：");
+    await details.hover();
+    await page.waitForTimeout(350);
+    await expect(details).toBeVisible();
     expect(await selected.boundingBox()).toEqual(restingBox);
-    expect(await selected.locator("..").evaluate(el => getComputedStyle(el).backgroundColor)).toBe(restingBackground);
-    await expect(selected.locator("..").locator(".session-actions")).toHaveCSS("opacity", "1");
     await page.screenshot({ path: `/tmp/session-list-refine/${width}-${theme}-hover.png` });
+    await page.keyboard.press("Escape");
+    await expect(details).toHaveCount(0);
     await selected.focus();
+    if (!(await details.count())) await page.keyboard.press("ArrowDown");
+    // Focus opens the details and Tab enters its actions.
     await page.keyboard.press("Tab");
     await expect(page.getByTestId("rename-s1")).toBeFocused();
-    await page.keyboard.press("Shift+Tab");
-    await expect(selected.locator(".session-title")).toHaveCSS("text-decoration-line", "underline");
-    await expect(selected).toHaveCSS("outline-style", "none");
-    await expect(selected).toHaveCSS("background-color", "rgba(0, 0, 0, 0)");
-    expect(await selected.boundingBox()).toEqual(restingBox);
-    await page.screenshot({ path: `/tmp/session-list-refine/${width}-${theme}-keyboard.png` });
-    if (width === 390) for (const b of await page.locator(".session-actions button").all()) {
+    await page.keyboard.press("Escape");
+    await expect(details).toHaveCount(0);
+    await showDetails("s3");
+    if (width === 390) for (const b of await details.locator("button").all()) {
       const box = await b.boundingBox(); expect(box!.width).toBeGreaterThanOrEqual(44); expect(box!.height).toBeGreaterThanOrEqual(44);
     }
-    // Separate action hit targets must not select another session.
     page.once("dialog", dialog => dialog.accept("已重命名"));
     await page.getByTestId("rename-s3").click();
     await expect(page.getByTestId("session-s3")).toHaveAccessibleName("已重命名");
     await expect(selected).toHaveAttribute("aria-current", "true");
+    await showDetails("s3");
     const count = exports.length;
     await page.getByTestId("export-s3").click();
     await expect.poll(() => exports.length).toBeGreaterThan(count);
     await expect(selected).toHaveAttribute("aria-current", "true");
+    await showDetails("s3");
     page.once("dialog", dialog => dialog.accept());
     await page.getByTestId("delete-s3").click();
     await expect(page.getByTestId("session-s3")).toHaveCount(0);

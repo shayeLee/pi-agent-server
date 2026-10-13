@@ -1,5 +1,6 @@
 import { zhCN } from "../i18n/zh-CN.js";
 import { Fragment, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { InteractiveTooltip } from "./ui/interactive-tooltip.js";
 import { Icon } from "./Icon.js";
 import { resolveSessionDisplayTitle, type SessionRecord } from "pi-agent-server/client";
 
@@ -177,34 +178,11 @@ export function SessionList({
           {(index === 0 || sessionDateGroup(filtered[index - 1]!.updatedAt, now) !== sessionDateGroup(s.updatedAt, now)) &&
             <li className="session-date-group">{sessionDateGroup(s.updatedAt, now)}</li>}
           <li className={`session-item ${s.id === activeId ? "active" : ""}`}>
-            <button
-              type="button"
-              className="session-select"
-              aria-label={resolveSessionDisplayTitle(s)}
-              aria-current={s.id === activeId ? "true" : undefined}
-              aria-describedby={`session-meta-${s.id}`}
-              data-testid={`session-${s.id}`}
-              onClick={() => onSelect(s.id)}
-            >
-              <span className="session-title" title={resolveSessionDisplayTitle(s)}>{highlightSessionTitle(resolveSessionDisplayTitle(s), query)}</span>
-            <span className="session-meta" id={`session-meta-${s.id}`}>
-              <time
-                className="session-time"
-                data-testid={`session-time-${s.id}`}
-                dateTime={Number.isFinite(s.updatedAt) && s.updatedAt > 0 && !Number.isNaN(new Date(s.updatedAt).getTime())
-                  ? new Date(s.updatedAt).toISOString()
-                  : undefined}
-                title={formatFullSessionTime(s.updatedAt)}
-              >
-                {formatSessionTime(s.updatedAt, now)}
-              </time>
-              {(s.visibility === "shared" || s.origin === "native") && (
-                <span className="session-shared-badge" title={s.origin === "native" ? zhCN.sessionList.nativeShared : zhCN.sessionList.shared} aria-label={s.origin === "native" ? zhCN.sessionList.nativeShared : zhCN.sessionList.shared}>
-                  <Icon name="shared" size={14} />
-                </span>
-              )}
-            </span>
-            </button>
+            <InteractiveTooltip delayDuration={2000} label="会话详情" content={<>
+              <div className="session-details-title">{resolveSessionDisplayTitle(s)}</div>
+              <div className="session-details-time">创建时间：{formatFullSessionTime(s.createdAt) || zhCN.sessionList.unknownDate}</div>
+              <div className="session-details-time">更新时间：{formatFullSessionTime(s.updatedAt) || zhCN.sessionList.unknownDate}</div>
+              <div className="session-details-time">{s.origin === "native" ? zhCN.sessionList.nativeShared : s.visibility === "shared" ? zhCN.sessionList.shared : "私有会话"}</div>
             <div className="session-actions">
               <button
                 data-testid={`rename-${s.id}`}
@@ -234,6 +212,36 @@ export function SessionList({
                 <Icon name="trash" />
               </button>
             </div>
+            </>}>
+            <button
+              type="button"
+              className="session-select"
+              aria-label={resolveSessionDisplayTitle(s)}
+              aria-current={s.id === activeId ? "true" : undefined}
+              aria-describedby={`session-meta-${s.id}`}
+              data-testid={`session-${s.id}`}
+              onClick={() => onSelect(s.id)}
+            >
+              <span className="session-title">{highlightSessionTitle(resolveSessionDisplayTitle(s), query)}</span>
+            <span className="session-meta" id={`session-meta-${s.id}`}>
+              <time
+                className="session-time"
+                data-testid={`session-time-${s.id}`}
+                dateTime={Number.isFinite(s.updatedAt) && s.updatedAt > 0 && !Number.isNaN(new Date(s.updatedAt).getTime())
+                  ? new Date(s.updatedAt).toISOString()
+                  : undefined}
+                title={formatFullSessionTime(s.updatedAt)}
+              >
+                {formatSessionTime(s.updatedAt, now)}
+              </time>
+              {(s.visibility === "shared" || s.origin === "native") && (
+                <span className="session-shared-badge" title={s.origin === "native" ? zhCN.sessionList.nativeShared : zhCN.sessionList.shared} aria-label={s.origin === "native" ? zhCN.sessionList.nativeShared : zhCN.sessionList.shared}>
+                  <Icon name="shared" size={14} />
+                </span>
+              )}
+            </span>
+            </button>
+            </InteractiveTooltip>
           </li>
           </Fragment>
         ))}

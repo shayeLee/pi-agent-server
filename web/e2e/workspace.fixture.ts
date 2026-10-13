@@ -16,6 +16,8 @@ export async function workspaceFixture(page: Page, command = 'printf "fixture ou
       if (path === '/v1/models') return json({ models: [{ provider: 'fixture', id: 'fixture-model', name: 'Fixture model' }], defaultModel: { provider: 'fixture', id: 'fixture-model' }, thinkingLevels: ['off', 'medium'], defaultThinkingLevel: 'off' });
       if (path === '/v1/sessions') return json(sessions);
       if (/^\/v1\/sessions\/fixture-\d+\/control-queue$/.test(path)) return json({ requestId: null, revision: 0, items: [] });
+      const subagentsMatch = /^\/v1\/sessions\/(fixture-\d+)\/subagents$/.exec(path);
+      if (subagentsMatch) return json({ sessionId: subagentsMatch[1], runs: [] });
       const stepsMatch = /^\/v1\/sessions\/(fixture-\d+)\/steps$/.exec(path);
       if (stepsMatch) return json({ sessionId: stepsMatch[1], projectionId: 'workspace-fixture', revision: 0, steps: [] });
       if (/^\/v1\/sessions\/fixture-\d+\/system-prompt$/.test(path)) return json({ source: 'unavailable', prompt: null });

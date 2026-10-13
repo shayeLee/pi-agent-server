@@ -853,6 +853,8 @@ textarea::placeholder {
 }
 
 .session-item {
+  display: flex;
+  align-items: center;
   position: relative;
   margin-bottom: 3px;
   border-radius: 0;
@@ -870,14 +872,11 @@ textarea::placeholder {
 
 .session-select {
   display: flex;
-  flex-direction: column;
-  align-items: stretch;
-  justify-content: center;
-  gap: 3px;
-  width: 100%;
+  flex: 1;
+  align-items: center;
   min-width: 0;
-  min-height: 56px;
-  padding: 9px 16px;
+  min-height: 40px;
+  padding: 8px 16px;
   border: 0;
   border-radius: 0;
   text-align: left;
@@ -898,11 +897,13 @@ textarea::placeholder {
 
 
 .session-meta {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-  padding-right: 92px;
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
 }
 
 .session-shared-badge {
@@ -921,11 +922,9 @@ textarea::placeholder {
 }
 
 .session-actions {
-  /* Independent sibling actions overlay only their own hit areas. */
-  position: absolute;
-  right: 19px;
-  bottom: 2px;
-  margin: 0;
+  justify-content: flex-end;
+  flex: none;
+  margin: 16px 0 0;
   display: flex;
   gap: 2px;
   padding: 2px;
@@ -933,10 +932,6 @@ textarea::placeholder {
   border-radius: var(--radius-control);
   background: transparent;
   box-shadow: none;
-  opacity: 0;
-}
-
-.session-item:hover .session-actions {
   opacity: 1;
 }
 
@@ -955,6 +950,9 @@ textarea::placeholder {
 .session-actions svg { display: block; width: 14px; height: 14px; }
 
 .session-actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   padding: 4px;
   min-height: 28px;
   min-width: 28px;
@@ -974,10 +972,9 @@ textarea::placeholder {
 }
 
 @media (hover: none), (pointer: coarse) {
-  .session-select { min-height: 76px; }
-  .session-meta { padding-right: 136px; }
+  .session-select { min-height: 44px; padding-block: 12px; }
   .workbench-search-toggle, .workbench-project-actions .btn-icon, .workbench-new-session { min-height: 44px; min-width: 44px; }
-  .session-actions { opacity: 1; gap: 0; padding: 0; right: 0; }
+  .session-actions { opacity: 1; gap: 0; padding: 0; margin-right: 0; }
   .session-actions button { min-height: 44px; min-width: 44px; }
 }
 
@@ -1814,17 +1811,17 @@ details[open] > summary > .details-chevron { transform: rotate(90deg); }
 }
 
 .composer {
-  --composer-action-inset: 9px;
-  --composer-action-bottom: 6px;
+  --composer-action-inset: 12px;
+  --composer-action-bottom: 12px;
   display: flex;
   flex-direction: column;
   gap: var(--space-8);
   width: 100%;
   max-width: var(--reading-max);
   margin-inline: auto;
-  padding: 14px var(--composer-action-inset) var(--composer-action-bottom);
+  padding: 7px 8px;
   border: 1px solid var(--line);
-  border-radius: 14px;
+  border-radius: 22px;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04), 0 4px 14px rgba(0, 0, 0, 0.02);
   background: var(--bg-surface);
 }
@@ -1834,9 +1831,9 @@ details[open] > summary > .details-chevron { transform: rotate(90deg); }
 }
 
 .composer textarea {
-  min-height: 24px;
+  min-height: 40px;
   max-height: min(260px, 40dvh);      /* 约 12 行，超出内部滚动（组件负责增高） */
-  padding: var(--space-4) 2px;
+  padding: var(--space-4) 5px;
   border: 0;
   background: transparent;
   color: var(--text-primary);
@@ -2107,6 +2104,9 @@ details[open] > summary > .details-chevron { transform: rotate(90deg); }
 /* ---------- 输入动作按钮 ---------- */
 
 .composer-add {
+  position: relative;
+  top: 4px;
+  right: 2px;
   flex: none;
   display: inline-flex;
   align-items: center;
@@ -3156,13 +3156,12 @@ details[open] > summary > .details-chevron { transform: rotate(90deg); }
   }
 
   .composer { --composer-action-inset: 14px; --composer-action-bottom: 14px; min-height: auto; padding: 12px var(--composer-action-inset) var(--composer-action-bottom); }
-  .composer textarea { min-height: 30px; padding-block: 3px; }
+  .composer textarea { min-height: 38px; padding-block: 3px; }
   .workbench-mobile-menu { background: transparent; }
   .stats-bar { padding-inline: var(--space-12); }
-  .session-select { min-height: 76px; }
-  .session-meta { padding-right: 136px; }
+  .session-select { min-height: 44px; padding-block: 12px; }
   .workbench-search-toggle, .workbench-project-actions .btn-icon, .workbench-new-session { min-height: 44px; min-width: 44px; }
-  .session-actions { opacity: 1; gap: 0; padding: 0; right: 0; }
+  .session-actions { opacity: 1; gap: 0; padding: 0; margin-right: 0; }
   .session-actions button { min-height: 44px; min-width: 44px; }
   .thinking-header { min-height: 44px; }
 
@@ -3466,3 +3465,17 @@ details[open] > summary > .details-chevron { transform: rotate(90deg); }
 .subagent-list-heading .subagent-status-icon { align-self: center; }
 
 .subagent-duration-status { display: inline-flex; align-items: center; gap: 5px; white-space: nowrap; }
+
+.interactive-tooltip-anchor { display: flex; flex: 1; min-width: 0; }
+.interactive-tooltip-content[data-ui] { z-index: 100; max-width: min(360px, calc(100vw - 24px)); padding: 0; overflow: visible; }
+.session-details-title { font-weight: 500; overflow-wrap: anywhere; margin-bottom: 8px; white-space: pre-wrap; }
+.session-details-time { color: var(--text-secondary); font-size: var(--font-xs); line-height: 1.7; }
+
+.interactive-tooltip-body { padding: 16px; max-height: var(--radix-popover-content-available-height); overflow-y: auto; }
+.interactive-tooltip-arrow { overflow: visible; transform: translateY(-1px); }
+.interactive-tooltip-arrow-fill { fill: var(--bg-surface); }
+.interactive-tooltip-arrow-edge { fill: none; stroke: var(--line); stroke-width: 1px; stroke-linejoin: round; }
+
+.interactive-tooltip-body:has(.session-actions) { padding-bottom: 8px; }
+
+.interactive-tooltip-body .session-actions { margin-right: -8px; }

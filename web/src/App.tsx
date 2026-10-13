@@ -162,7 +162,7 @@ export default function App() {
       .filter((element) => element.getClientRects().length > 0);
     if (isSidebar) focusable()[0]?.focus();
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.defaultPrevented || document.querySelector('[data-ui="dropdown-menu"][data-state="open"]')) return;
+      if (event.defaultPrevented || document.querySelector('[data-ui="dropdown-menu"][data-state="open"], .interactive-tooltip-content[data-state="open"]')) return;
       if (event.key === "Escape") {
         if (document.querySelector('.select-menu[data-open="true"], .model-thinking-picker[data-open="true"]')) return;
         event.preventDefault();
