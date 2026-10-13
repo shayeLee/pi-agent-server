@@ -1,3 +1,4 @@
+import { projectSubagents } from "./subagent-transcript.js";
 // Pi 专属会话存储：Pi Session 的 JSONL v3 恢复、只读导出、引用清理和 DB-only 引用校验。
 // 通用层只通过 ConversationStorage 访问本模块，不解释 conversationRef。
 
@@ -377,6 +378,31 @@ export class PiJsonlConversationStorage implements ConversationStorage {
     if (this.isUnified(conversation.conversationRef)) return this.unifiedStorage!.readExport(await this.unifiedConversation(conversation, context), context);
     this.assertReadReference(conversation, context);
     return readPiJsonlExport(conversation.conversationRef);
+  }
+
+  private subagentCache = new Map<string, { fingerprint: string; entries: SessionEntry[] }>();
+  async readSubagents(conversation: ConversationDescriptor, context: ConversationReadContext, runId?: string) {
+    if (this.isUnified(conversation.conversationRef)) return this.unifiedStorage!.readSubagents(await this.unifiedConversation(conversation, context), context, runId);
+    this.assertReadReference(conversation, context);
+    const file = conversation.conversationRef;
+    if (!file) return projectSubagents(context.sessionId, []);
+    const nodes = snapshotPromptPath(this.dataDir, file);
+    const fingerprint = promptFileIdentity(nodes.at(-1)!.stat);
+    const cached = this.subagentCache.get(file);
+    if (cached?.fingerprint === fingerprint && unchangedPromptPath(nodes)) return projectSubagents(context.sessionId, cached.entries, undefined, runId);
+    const before = fileFingerprint(file);
+    const content = readFileSync(file, "utf8");
+    assertCurrentPiJsonl(content);
+    const entries = parseSessionEntries(content) as SessionEntry[];
+    const manager = SessionManager.inMemory(process.cwd(), undefined, entries);
+    const branch = manager.getBranch().filter(e => (e.type === "custom" && e.customType === "agent-team:transcript") ||
+      (e.type === "message" && e.message.role === "toolResult" && ["subagent", "subagent_wait"].includes(e.message.toolName)));
+    const result = projectSubagents(context.sessionId, branch, undefined, runId);
+    if (!sameFingerprint(before, fileFingerprint(file))) throw new Error("session history changed during read");
+    if (!unchangedPromptPath(nodes)) throw new Error("session history changed during read");
+    if (this.subagentCache.size >= 8) this.subagentCache.delete(this.subagentCache.keys().next().value!);
+    this.subagentCache.set(file, { fingerprint, entries: branch });
+    return result;
   }
 
   async readSteps(conversation: ConversationDescriptor, context: ConversationReadContext) {

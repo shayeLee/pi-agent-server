@@ -1,3 +1,4 @@
+import { projectSubagents } from "./subagent-transcript.js";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import type { ConversationDescriptor, ConversationReadContext, ConversationStorage } from "../application/ports/conversation-port.js";
 import type { NativeSessionIndexPort } from "../application/native-session-service.js";
@@ -79,6 +80,26 @@ export class NativePiConversationStorage implements ConversationStorage {
         usageSnapshot: { execution: projectExecutionSnapshot(manager.getEntries()) } };
       fd.check();
       return result;
+    } finally { fd.close(); }
+  }
+
+  private subagentCache = new Map<string, { fingerprint: string; branch: import("@earendil-works/pi-coding-agent").SessionEntry[] }>();
+  async readSubagents(conversation: ConversationDescriptor, context: ConversationReadContext, runId?: string) {
+    const binding = await this.binding(conversation, context);
+    const fd = new NativeSessionFd(this.source, binding, false);
+    try {
+      const stat = fd.verifiedMetadata();
+      const fingerprint = `${stat.sourceDev}:${stat.sourceIno}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
+      let cached = this.subagentCache.get(binding.sourcePath);
+      if (cached?.fingerprint !== fingerprint) {
+        const manager = SessionManager.inMemory(binding.cwd, undefined, nativeEntries(fd));
+        // Only retain transcript/custom records and legacy subagent results, not the entire parent history.
+        cached = { fingerprint, branch: manager.getBranch().filter(e => (e.type === "custom" && e.customType === "agent-team:transcript") || (e.type === "message" && e.message.role === "toolResult" && ["subagent", "subagent_wait"].includes(e.message.toolName))) };
+        if (this.subagentCache.size >= 8) this.subagentCache.delete(this.subagentCache.keys().next().value!);
+        this.subagentCache.set(binding.sourcePath, cached);
+      }
+      fd.check();
+      return projectSubagents(context.sessionId, cached.branch, undefined, runId);
     } finally { fd.close(); }
   }
 

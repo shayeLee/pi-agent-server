@@ -83,6 +83,8 @@ export type TimelineItem =
       kind: "message";
       id: string;
       role: "user" | "assistant";
+      /** Provenance supplied by a read-only child conversation. */
+      sourceLabel?: string;
       text: string;
       images?: readonly { mediaType: string; base64: string }[];
       /** 是否仍在流式接收增量（未完成）。 */

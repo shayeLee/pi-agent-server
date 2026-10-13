@@ -425,6 +425,26 @@ export class SessionService {
   }
 
   /** Full independent steps snapshot; neither cold reads nor this lookup create runtime. */
+  async getSubagents(ownerKey: string, id: string, runId?: string): Promise<import("../shared/subagents.js").SubagentSnapshot | null> {
+    if (!(await this.findOwned(ownerKey, id))) return null;
+    const allowed = await this.prepareOutputGuard(ownerKey, id);
+    const record = await this.findOwned(ownerKey, id);
+    if (!record || !allowed()) return null;
+    try {
+      const live = this.deps.registry.get(id)?.runtime.getSubagents?.(runId);
+      if (live) return allowed() ? live : null;
+      const storage = this.deps.conversationStorage?.require(record);
+      const cold = storage?.readSubagents ? await storage.readSubagents(record, { sessionId: id, projectId: record.projectId }, runId)
+        : record.conversationRef === null ? { sessionId: id, runs: [] } : null;
+      if (!(await this.findOwned(ownerKey, id)) || !allowed()) return null;
+      const snapshot = this.deps.registry.get(id)?.runtime.getSubagents?.(runId) ?? cold;
+      return allowed() ? snapshot : null;
+    } catch {
+      if (!allowed() || record.origin === "native" || await this.deps.nativeSessions?.hasSourceClaim?.(record)) return null;
+      throw new Error("子代理记录读取失败");
+    }
+  }
+
   async getSessionSteps(ownerKey: string, id: string): Promise<import("../shared/session-steps.js").SessionStepsSnapshot | null> {
     if (!(await this.findOwned(ownerKey, id))) return null;
     const allowed = await this.prepareOutputGuard(ownerKey, id);

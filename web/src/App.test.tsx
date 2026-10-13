@@ -26,6 +26,7 @@ const mocks = vi.hoisted(() => {
     steer: ReturnType<typeof vi.fn>;
     followUp: ReturnType<typeof vi.fn>;
     getControlQueue: ReturnType<typeof vi.fn>;
+    getSubagents: ReturnType<typeof vi.fn>;
     getSessionSteps: ReturnType<typeof vi.fn>;
     getSystemPrompt: ReturnType<typeof vi.fn>;
     deleteControl: ReturnType<typeof vi.fn>;
@@ -173,6 +174,7 @@ const mocks = vi.hoisted(() => {
     getControlQueue = vi.fn(() => Promise.resolve({ requestId: null, revision: 0, items: [] }));
     deleteControl = vi.fn(() => Promise.resolve({ requestId: null, revision: 1, items: [] }));
     promoteControl = vi.fn(() => Promise.resolve({ requestId: null, revision: 1, items: [] }));
+    getSubagents = vi.fn(async (sessionId: string, _runId?: string): Promise<import("pi-agent-server/client").SubagentSnapshot> => ({ sessionId, runs: [] }));
     getSessionSteps = vi.fn((sessionId: string) => Promise.resolve({ sessionId, projectionId: "test", revision: 0, steps: [] }));
     getSystemPrompt = vi.fn(() => Promise.resolve({ source: "unavailable", prompt: null }));
     abort = vi.fn(() => Promise.resolve(undefined));
@@ -249,6 +251,7 @@ const sessions: SessionRecord[] = [
 ];
 
 beforeEach(() => {
+  window.sessionStorage.clear();
   vi.clearAllMocks();
   window.localStorage.clear();
   mocks.instances.length = 0;
@@ -846,6 +849,37 @@ describe("App（顶层流程）", () => {
     expect(options.lastEventId).toBe(0);
   });
 
+  it("preserves the session sidebar and parent draft while opening complete child history, then restores selection", async () => {
+    const inst = await enterIntranet();
+    const run = { id: "child-uuid", runId: "1", agent: "worker", task: "检查任务", startedAt: 1, endedAt: 2, status: "completed" as const, revision: 10 };
+    inst.getSubagents.mockImplementation(async (sessionId: string, runId?: string) => ({ sessionId, runs: [run], ...(runId ? { conversation: {
+      run, messages: [], inputs: [], timeline: [
+        { kind: "message" as const, id: "u", role: "user" as const, text: "完整 steer 内容", streaming: false, sourceLabel: "主代理 · steer · 已送达" },
+        { kind: "message" as const, id: "a", role: "assistant" as const, text: "子代理完整回复", streaming: false },
+        { kind: "tool" as const, id: "t", call: { toolCallId: "t", toolName: "bash", args: { command: "echo proof" }, partialResult: null, result: { content: [{ type: "text", text: "工具结果末行" }] }, done: true, isError: false } },
+      ],
+    } } : {}) }));
+    fireEvent.click(screen.getByTestId("session-s1"));
+    await waitFor(() => expect(inst.getSubagents).toHaveBeenCalled());
+    fireEvent.change(screen.getByTestId("composer-input"), { target: { value: "保留主会话草稿" } });
+    fireEvent.click(screen.getByTestId("trace-tab"));
+    fireEvent.click(screen.getByRole("tab", { name: /子代理/ }));
+    fireEvent.click(await screen.findByRole("button", { name: /worker #1/ }));
+    const child = await screen.findByTestId("subagent-chat");
+    await waitFor(() => expect(within(child).getByText("完整 steer 内容")).toBeVisible());
+    expect(within(child).getByText("主代理 · steer · 已送达")).toBeVisible();
+    expect(within(child).getByText("子代理完整回复")).toBeVisible();
+    fireEvent.click(within(child).getByRole("button", { name: /工具调用/ }));
+    expect(child.querySelector(".tool-call-body")).toHaveTextContent("工具结果末行");
+    expect(screen.getByTestId("sidebar")).toBeVisible();
+    expect(screen.getByTestId("session-s2")).toBeVisible();
+    expect(screen.getByTestId("composer-input")).not.toBeVisible();
+    expect(JSON.parse(sessionStorage.getItem("pi:selected-subagent")!)).toEqual({ sessionId: "s1", runId: run.id });
+    fireEvent.click(within(child).getByRole("button", { name: "← 返回主会话" }));
+    expect(screen.getByTestId("composer-input")).toBeVisible();
+    expect(screen.getByTestId("composer-input")).toHaveValue("保留主会话草稿");
+  });
+
   it("恢复会话历史并将导出游标用于 SSE 续传", async () => {
     const inst = await enterIntranet();
     inst.exportSession.mockResolvedValue({
@@ -871,11 +905,11 @@ describe("App（顶层流程）", () => {
         { type: "tool_result", id: `result-${i}`, toolCallId: `duration-${i}`, toolName: "fixture", result: {}, durationMs },
       ]) });
     fireEvent.click(screen.getByTestId("session-s1"));
-    await waitFor(() => expect(document.querySelector('[data-tool-call-id="duration-0"] .tool-duration')).toHaveTextContent("2.3 s"));
-    expect(document.querySelector('[data-tool-call-id="duration-1"] .tool-duration')).toHaveTextContent("0 ms");
+    await waitFor(() => expect(document.querySelector('[data-tool-call-id="duration-0"] .tool-duration')).toHaveTextContent("2.3s"));
+    expect(document.querySelector('[data-tool-call-id="duration-1"] .tool-duration')).toHaveTextContent("0ms");
     for (let i = 2; i < values.length; i++) expect(document.querySelector(`[data-tool-call-id="duration-${i}"] .tool-duration`)).toBeNull();
     act(() => mocks.sse.onEvent?.({ type: "tool_end", toolCallId: "duration-0", toolName: "fixture", result: {}, isError: false }, 8));
-    expect(document.querySelector('[data-tool-call-id="duration-0"] .tool-duration')).toHaveTextContent("2.3 s");
+    expect(document.querySelector('[data-tool-call-id="duration-0"] .tool-duration')).toHaveTextContent("2.3s");
     const card = document.querySelector('[data-tool-call-id="duration-0"]') as HTMLElement;
     fireEvent.click(within(card).getByRole("button", { name: /工具调用/ }));
     expect(card.querySelector('.tool-duration')).toHaveAttribute('title', '工具调用耗时：2345.6789 ms');

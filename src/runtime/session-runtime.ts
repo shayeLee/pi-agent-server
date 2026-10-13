@@ -758,6 +758,11 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
     return { kind: "ok" };
   }
 
+  getSubagents(runId?: string) {
+    if (this.disposed) return null;
+    return this.adapter.getSubagents?.(this.sessionId, runId) ?? null;
+  }
+
   getSessionSteps(): import("../shared/session-steps.js").SessionStepsSnapshot | null {
     if (this.disposed) throw new SessionDeletedError(this.sessionId);
     return this.adapter.getSessionSteps?.(this.sessionId) ?? null;

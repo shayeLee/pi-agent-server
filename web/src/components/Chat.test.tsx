@@ -93,10 +93,10 @@ describe("Chat（聊天区）", () => {
       expect(screen.queryByTestId("waiting-reply")).toBeNull();
     } finally { vi.useRealTimers(); }
   });
-  it("将单一轨迹开关状态与点击传给父级，不维护虚假的本地页签", () => {
+  it("将右侧栏图标开关状态与点击传给父级，不维护虚假的本地页签", () => {
     const onToggleTrace = vi.fn();
     const view = setup({ traceOpen: false, onToggleTrace });
-    const toggle = screen.getByRole('button', { name: '轨迹' });
+    const toggle = screen.getByRole('button', { name: '展开右侧栏' });
     expect(screen.queryByTestId('chat-tab')).not.toBeInTheDocument();
     expect(toggle).toHaveAttribute('aria-expanded', 'false');
     fireEvent.click(toggle);

@@ -1,3 +1,5 @@
+import { SubagentChat, SubagentList } from "./components/Subagents.js";
+import { useSubagents } from "./hooks/useSubagents.js";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { readThemeMode, resolveTheme, writeThemeMode, type ThemeMode } from "./theme-preference.js";
 import { Icon } from "./components/Icon.js";
@@ -92,6 +94,15 @@ export default function App() {
   const activeSession =
     controller.sessions?.find((session) => session.id === controller.activeSessionId) ?? null;
   useEffect(() => { if (!activeSession) setDetailsCollapsed(true); }, [activeSession?.id]);
+  const [childSelection, setChildSelection] = useState<{ sessionId: string; runId: string } | null>(() => {
+    try {
+      const saved = JSON.parse(sessionStorage.getItem("pi:selected-subagent") ?? "null");
+      return saved && typeof saved.sessionId === "string" && typeof saved.runId === "string" ? saved : null;
+    } catch { return null; }
+  });
+  useEffect(() => { try { sessionStorage.setItem("pi:selected-subagent", JSON.stringify(childSelection)); } catch { /* Storage is optional. */ } }, [childSelection]);
+  const selectedChild = childSelection?.sessionId === activeSession?.id ? childSelection?.runId ?? null : null;
+  const subagents = useSubagents(controller.api, activeSession?.id ?? null, selectedChild, !detailsCollapsed && inspectorTab === "subagents");
   const inspection = useSessionInspection({ api: controller.api, sessionId: activeSession?.id ?? null,
     visible: !detailsCollapsed && !mobileSidebarOpen, activeTab: inspectorTab,
     refreshKey: controller.inspectionRefreshKey });
@@ -100,7 +111,7 @@ export default function App() {
   // into the chat, so wrapping and resize can also shrink it without a loop.
   useLayoutEffect(() => {
     const shell = shellRef.current;
-    const header = shell?.querySelector<HTMLElement>('[data-testid="chat-header"]');
+    const header = shell?.querySelector<HTMLElement>(selectedChild ? '[data-testid="child-chat-header"]' : '[data-testid="chat-header"]');
     if (!shell || !header || detailsCollapsed) return;
     const sync = () => {
       if (window.innerWidth > 600) shell.style.setProperty('--inspector-header-height', `${header.getBoundingClientRect().height}px`);
@@ -115,7 +126,7 @@ export default function App() {
       window.removeEventListener('resize', sync);
       shell.style.removeProperty('--inspector-header-height');
     };
-  }, [activeSession?.id, detailsCollapsed]);
+  }, [activeSession?.id, detailsCollapsed, selectedChild]);
   const streaming = controller.chatState.phase === "streaming";
   const queued = controller.chatState.phase === "queued";
   const canCreateSession =
@@ -131,9 +142,14 @@ export default function App() {
     window.setTimeout(() => mobileMenuRef.current?.focus(), 0);
   };
 
+  const toggleInspector = () => {
+    if (detailsCollapsed) { setMobileSidebarOpen(false); setDetailsCollapsed(false); }
+    else closeInspector();
+  };
+
   const closeInspector = () => {
     setDetailsCollapsed(true);
-    window.setTimeout(() => document.querySelector<HTMLButtonElement>('[data-testid="trace-tab"]')?.focus(), 0);
+    window.setTimeout(() => document.querySelector<HTMLButtonElement>('[data-testid="child-subagents-toggle"], .chat:not([hidden]) [data-testid="trace-tab"]')?.focus(), 0);
   };
 
   useEffect(() => {
@@ -299,7 +315,10 @@ export default function App() {
       {mobileSidebarOpen && <button type="button" className="workbench-drawer-backdrop" aria-label={zhCN.sidebar.closeNavigation} onClick={closeMobileSidebar} />}
 
       {/* 聊天区 */}
+      {activeSession && selectedChild && <SubagentChat {...subagents} title={activeSession.title || activeSession.firstPrompt || "主会话"}
+        inspectorOpen={!detailsCollapsed} onBack={() => setChildSelection(null)} onToggleInspector={toggleInspector} />}
       <Chat
+        hidden={!!selectedChild}
         session={activeSession}
         projects={controller.projects}
         activeProjectId={controller.activeProjectId}
@@ -343,7 +362,7 @@ export default function App() {
         onSend={activeSession ? controller.sendMessage : controller.createSessionWithMessage}
         onAbort={controller.abort}
         onFollowUp={controller.followUp}
-        onToggleTrace={() => { setMobileSidebarOpen(false); if (detailsCollapsed) setDetailsCollapsed(false); else closeInspector(); }}
+        onToggleTrace={toggleInspector}
         traceOpen={!detailsCollapsed}
         onNavigateTurn={timelineId => {
           if (activeSession && !detailsCollapsed && inspectorTab === 'steps') {
@@ -358,6 +377,11 @@ export default function App() {
       {/* 右侧 Inspector */}
       {activeSession && !detailsCollapsed && (
         <Inspector
+          subagentCount={subagents.runs.length}
+          subagents={<SubagentList {...subagents} selected={selectedChild} onSelect={runId => {
+            setChildSelection({ sessionId: activeSession.id, runId });
+            if (window.innerWidth < 1180) setDetailsCollapsed(true);
+          }} />}
           onClose={closeInspector}
           session={activeSession}
           entries={controller.eventLog}

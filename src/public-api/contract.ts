@@ -81,3 +81,5 @@ export const SSE_EVENT_TYPES = [
   "completed",
   "aborted",
 ] as const;
+
+export type { SubagentRun, SubagentSnapshot, SubagentConversation, SubagentInput } from "../shared/subagents.js";

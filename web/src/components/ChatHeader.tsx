@@ -1,4 +1,3 @@
-import { zhCN } from "../i18n/zh-CN.js";
 import { resolveSessionDisplayTitle, type SessionRecord } from "pi-agent-server/client";
 import { Icon } from "./Icon.js";
 
@@ -16,19 +15,17 @@ export function ChatHeader({ session, traceOpen, onToggleTrace }: ChatHeaderProp
           <span className="session-title-main" data-testid="chat-session-title" title={resolveSessionDisplayTitle(session)}>
             {resolveSessionDisplayTitle(session)}
           </span>
-          <button
-            type="button"
-            className="trace-toggle"
-            data-testid="trace-tab"
-            onClick={onToggleTrace}
-            aria-expanded={traceOpen}
-            aria-controls="session-inspector"
-            title={traceOpen ? zhCN.trace.close : zhCN.trace.open}
-          >
-            <Icon name="file" size={15} />
-            {zhCN.trace.title}</button>
+          <InspectorToggle open={traceOpen} onToggle={onToggleTrace} />
         </div>
       </div>
     </header>
   );
+}
+
+export function InspectorToggle({ open, onToggle, testId = "trace-tab" }: { open: boolean; onToggle: () => void; testId?: string }) {
+  const label = open ? "收起右侧栏" : "展开右侧栏";
+  return <button type="button" className="btn-ghost btn-icon inspector-toggle" data-testid={testId}
+    onClick={onToggle} aria-expanded={open} aria-controls="session-inspector" aria-label={label} title={label}>
+    <Icon name="sidebar" size={16} />
+  </button>;
 }

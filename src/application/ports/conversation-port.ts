@@ -90,6 +90,7 @@ export interface ConversationStorage {
   readonly conversationFormat: string;
   /** Read-only export; the implementation validates session/project ownership context. */
   readExport(conversation: ConversationDescriptor, context: ConversationReadContext): Promise<unknown>;
+  readSubagents?(conversation: ConversationDescriptor, context: ConversationReadContext, runId?: string): Promise<import("../../shared/subagents.js").SubagentSnapshot>;
   readSteps?(conversation: ConversationDescriptor, context: ConversationReadContext): Promise<import("../../shared/session-steps.js").SessionStepsSnapshot>;
   /** Read only the first persisted user prompt, without exporting full history or creating a runtime. */
   readFirstPrompt?(conversation: ConversationDescriptor, context: ConversationReadContext): Promise<string | null>;

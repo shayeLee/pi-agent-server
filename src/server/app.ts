@@ -644,6 +644,11 @@ export function buildApp(deps: ServerDeps): FastifyInstance {
       const exported = await sessions.exportSession(ownerKeyOf(request), request.params.id);
       return exported ? reply.code(200).send(exported) : NOT_FOUND(reply);
     });
+    api.get<{ Params: { id: string }; Querystring: { runId?: string } }>("/sessions/:id/subagents", { ...requirePermission("sessions:export") }, async (request, reply) => {
+      const runId = typeof request.query.runId === "string" ? request.query.runId : undefined;
+      const snapshot = await sessions.getSubagents(ownerKeyOf(request), request.params.id, runId);
+      return snapshot ? reply.code(200).send(snapshot) : NOT_FOUND(reply);
+    });
     api.get<{ Params: { id: string } }>("/sessions/:id/steps", { ...requirePermission("sessions:export") }, async (request, reply) => {
       const snapshot = await sessions.getSessionSteps(ownerKeyOf(request), request.params.id);
       return snapshot ? reply.code(200).send(snapshot) : NOT_FOUND(reply);

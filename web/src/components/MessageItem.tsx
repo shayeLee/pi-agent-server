@@ -22,6 +22,7 @@ export const MessageItem = memo(function MessageItem({ item }: MessageItemProps)
     return (
       <div className="message-row row-user" data-testid={`message-${item.id}`}>
         <div className="message-user">
+          {item.sourceLabel && <div className="subagent-message-source">{item.sourceLabel}</div>}
           <div className="user-bubble">
             {item.text && <div>{item.text}</div>}
             {readMessageImages(item.images).length > 0 && <div className="message-images">

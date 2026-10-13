@@ -68,7 +68,7 @@ describe.skipIf(!entry)("real agent-team process lifecycle (explicit opt-in)", (
       if (event.type === "tool_execution_start" && event.toolName === "subagent_wait") waiting = true;
       if (event.type === "tool_execution_end") results.push(event.result);
     });
-    const adapter = new PiAgentAdapter(session as unknown as AgentSessionLike);
+    const adapter = new PiAgentAdapter(session as unknown as AgentSessionLike, undefined, bus);
     await session.bindExtensions({ mode: "json", onError: error => { throw error; } });
     const db = await makeInitializedMemoryDb({ dataDir: root });
     await db.sessions.create({ id: "lifecycle", title: "fixture", ownerKey: identityKey({ kind: "ip", ip: "127.0.0.1" }), projectId: DEFAULT_PROJECT_ID,
@@ -114,6 +114,14 @@ describe.skipIf(!entry)("real agent-team process lifecycle (explicit opt-in)", (
       await invoke("subagent_stop", { runId: id });
       const stopped = await invoke("subagent_wait", { runIds: [id], timeoutMs: 10000 });
       expect(stopped.details.results[0].stopReason).toBe("stopped");
+      // The installed extension writes independent records even before wait is collected.
+      const childSnapshot = adapter.getSubagents("lifecycle");
+      const childRun = childSnapshot.runs.find(run => run.runId === id)!;
+      expect(childRun).toMatchObject({ agent: "worker", status: "stopped" });
+      const childConversation = adapter.getSubagents("lifecycle", childRun.id).conversation!;
+      expect(childConversation.messages).toEqual(stopped.details.results[0].messages);
+      expect(childConversation.inputs[0]?.text).toBe("SCENARIO:long_running");
+
       const other = await invoke("subagent_status", { runId: secondId });
       expect(other.content[0].text).toContain("status: running");
       await invoke("subagent_stop", { runId: secondId });

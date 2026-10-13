@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { zhCN } from "../i18n/zh-CN.js";
 import { useId, useState } from "react";
 import type { SessionRecord } from "pi-agent-server/client";
@@ -11,13 +12,16 @@ import { SessionSteps } from "./SessionSteps.js";
 import type { EventLogEntry } from "../types.js";
 import { useFollowBottom } from "../hooks/useFollowBottom.js";
 
-export type InspectorTab = 'steps' | 'systemPrompt' | 'events';
+export type InspectorTab = 'steps' | 'systemPrompt' | 'events' | 'subagents';
 const TABS = [
+  { id: "subagents", label: "子代理" },
   { id: "steps", label: zhCN.trace.title },
   { id: "systemPrompt", label: zhCN.trace.systemPrompt },
   { id: "events", label: zhCN.trace.events },
 ] as const;
 export type InspectorProps = {
+  subagents?: ReactNode;
+  subagentCount?: number;
   session: SessionRecord | null;
   entries: EventLogEntry[];
   onClearEvents: () => void;
@@ -33,7 +37,7 @@ export type InspectorProps = {
   onTabChange?: (tab: InspectorTab) => void;
 };
 
-export function Inspector({ session, entries, onClearEvents, onClose, navigation, steps, stepsLoading, stepsError,
+export function Inspector({ subagents, subagentCount = 0, session, entries, onClearEvents, onClose, navigation, steps, stepsLoading, stepsError,
   systemPrompt, systemPromptLoading, systemPromptError, activeTab: controlledTab, onTabChange }: InspectorProps) {
   const [localTab, setLocalTab] = useState<InspectorTab>('steps');
   const activeTab = controlledTab ?? localTab;
@@ -53,18 +57,19 @@ export function Inspector({ session, entries, onClearEvents, onClose, navigation
         tabIndex={activeTab === tab.id ? 0 : -1} className={activeTab === tab.id ? 'active' : ''}
         onClick={() => select(tab.id)} data-testid={`inspector-tab-${tab.id}`}
         onKeyDown={(event) => {
-          const next = event.key === 'ArrowRight' ? (index + 1) % 3 : event.key === 'ArrowLeft' ? (index + 2) % 3 : event.key === 'Home' ? 0 : event.key === 'End' ? 2 : -1;
+          const next = event.key === 'ArrowRight' ? (index + 1) % TABS.length : event.key === 'ArrowLeft' ? (index + TABS.length - 1) % TABS.length : event.key === 'Home' ? 0 : event.key === 'End' ? TABS.length - 1 : -1;
           if (next < 0) return;
           event.preventDefault(); select(TABS[next].id);
           document.getElementById(`${id}-${TABS[next].id}`)?.focus();
         }}>
-        {tab.label}{tab.id === 'steps' && <span className="tab-badge">{snapshot?.steps.length ?? 0}</span>}
+        {tab.label}{tab.id === "subagents" && subagentCount > 0 && <span className="tab-badge">{subagentCount}</span>}{tab.id === 'steps' && <span className="tab-badge">{snapshot?.steps.length ?? 0}</span>}
       </button>)}
     </div>
     <div className="inspector-body" ref={scroll.ref} onScroll={scroll.onScroll}
       onChangeCapture={scroll.pause}
       onClickCapture={(event) => { if ((event.target as Element).closest('.step-toggle, .step-content')) scroll.pause(); }}
       role="tabpanel" id={`${id}-panel`} aria-labelledby={`${id}-${activeTab}`}>
+      {activeTab === 'subagents' && subagents}
       {activeTab === 'steps' && <SessionSteps key={`${session?.id}:${snapshot?.projectionId}`} sessionSelected={!!session} navigation={navigation} snapshot={snapshot} loading={stepsLoading} error={stepsError} />}
       {activeTab === 'systemPrompt' && <SystemPromptPanel session={session} systemPrompt={systemPrompt} loading={systemPromptLoading} error={systemPromptError} />}
       {activeTab === 'events' && <EventLog key={session?.id} entries={entries} onClear={onClearEvents} showHeader={false} />}

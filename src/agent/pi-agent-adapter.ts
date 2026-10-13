@@ -1,3 +1,4 @@
+import { projectSubagents, type SubagentLive } from "./subagent-transcript.js";
 // PiAgentAdapter：把真实 Pi SDK 的 AgentSession 适配为 AgentAdapter 接口（docs/pi-sdk-api.md §3）。
 // 这是接入真实 SDK 的唯一位置；单元测试用 AgentSessionLike 结构（fake），不碰真实 SDK；
 // 真实 AgentSession 的验证走独立的慢速集成测试（docs/architecture.md §3.2）。
@@ -67,7 +68,7 @@ export type AgentSessionLike = {
   getSessionStats?(): { tokens: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number }; cost: number };
   getContextUsage?(): { tokens: number | null; contextWindow: number; percent: number | null } | undefined;
   /** SDK public session manager gives the active JSONL branch and its stable entry ids. */
-  sessionManager?: Pick<SessionManager, "getBranch"> & Partial<Pick<SessionManager, "getEntries" | "appendCustomEntry">>;
+  sessionManager?: Pick<SessionManager, "getBranch"> & Partial<Pick<SessionManager, "getEntries" | "appendCustomEntry" | "getLeafId">>;
   /** SDK 当前状态；恢复时 transcript 解析后的值在这里可见。 */
   model?: { provider?: string; id?: string };
   thinkingLevel?: string;
@@ -140,6 +141,16 @@ export class PiAgentAdapter implements AgentAdapter {
       }) ?? (() => {});
     }
     this.installFailbackHostTransport();
+    const observeTranscript = failbackLifecycleSource?.on("agent-team:transcript", (data: any) => {
+      if (!data || data.version !== 1 || typeof data.id !== "string") return;
+      if (data.kind === "start") this.subagentLive.active.add(data.id);
+      if (data.kind === "message") this.subagentLive.partials.delete(data.id);
+      if (data.kind === "end") { this.subagentLive.active.delete(data.id); this.subagentLive.partials.delete(data.id); }
+    });
+    const observePartial = failbackLifecycleSource?.on("agent-team:transcript-live", (data: any) => {
+      if (data && this.subagentLive.active.has(data.id)) this.subagentLive.partials.set(data.id, data);
+    });
+    this.unsubscribeTranscript = () => { observeTranscript?.(); observePartial?.(); this.subagentLive.active.clear(); this.subagentLive.partials.clear(); };
     this.unsubscribeHostIdentity = failbackLifecycleSource?.on("agent-team:host-identity", data => {
       if (typeof data === "object" && data !== null && "accept" in data &&
           typeof data.accept === "function") data.accept({ version: 1, host: "pi-agent-server" });
@@ -194,6 +205,8 @@ export class PiAgentAdapter implements AgentAdapter {
   getExecutionSnapshot(): import("../core/usage-snapshot.js").ExecutionSnapshot { return this.executionMetrics.snapshot(); }
   private subagentTransport: SubagentHostTransport | undefined;
   private readonly unsubscribeSubagentTransport: () => void;
+  private subagentLive: SubagentLive = { active: new Set(), partials: new Map() };
+  private unsubscribeTranscript: () => void = () => {};
   private readonly unsubscribeHostIdentity: () => void;
   bindSubagentHostTransport(transport: SubagentHostTransport): () => void {
     this.subagentTransport = transport;
@@ -592,6 +605,7 @@ export class PiAgentAdapter implements AgentAdapter {
     this.subagentTransport = undefined;
     this.unsubscribeSubagentTransport();
     this.unsubscribeHostIdentity();
+    this.unsubscribeTranscript();
     this.requestAbort?.abort();
     this.session.clearQueue?.();
     this.unsubscribeMeasurement();
@@ -758,6 +772,18 @@ export class PiAgentAdapter implements AgentAdapter {
   /** Additive snapshot: legacy messages plus stable, block-ordered tool timeline. */
   getEffectiveSystemPrompt(): string | null {
     return this.session.systemPrompt ?? null;
+  }
+
+  private subagentBranch?: { leaf: string | null; entries: import("@earendil-works/pi-coding-agent").SessionEntry[] };
+  getSubagents(sessionId: string, runId?: string) {
+    const manager = this.session.sessionManager;
+    const leaf = manager?.getLeafId?.();
+    if (leaf === undefined || this.subagentBranch?.leaf !== leaf) {
+      this.subagentBranch = { leaf: leaf ?? null, entries: (manager?.getBranch() ?? []).filter(e =>
+        (e.type === "custom" && e.customType === "agent-team:transcript") ||
+        (e.type === "message" && e.message.role === "toolResult" && ["subagent", "subagent_wait"].includes(e.message.toolName))) };
+    }
+    return projectSubagents(sessionId, this.subagentBranch?.entries ?? [], this.subagentLive, runId);
   }
 
   async exportSession(): Promise<unknown> {

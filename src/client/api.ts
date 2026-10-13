@@ -209,6 +209,10 @@ export class ApiClient {
     return this.request("GET", `/v1/sessions/${encodeURIComponent(id)}/system-prompt`);
   }
 
+  getSubagents(id: string, runId?: string): Promise<import("../shared/subagents.js").SubagentSnapshot> {
+    return this.request("GET", `/v1/sessions/${encodeURIComponent(id)}/subagents${runId ? `?runId=${encodeURIComponent(runId)}` : ""}`);
+  }
+
   getSessionSteps(id: string): Promise<import("../shared/session-steps.js").SessionStepsSnapshot> {
     return this.request("GET", `/v1/sessions/${encodeURIComponent(id)}/steps`);
   }

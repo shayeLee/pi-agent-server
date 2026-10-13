@@ -14,6 +14,7 @@ import { EmptyState } from "./EmptyState.js";
 import type { SubmissionState, SubmitOutcome, UnsentMessage } from "../attachment-state.js";
 
 export type ChatProps = {
+  hidden?: boolean;
   session: SessionRecord | null;
   projects: Project[] | null;
   activeProjectId: string | null;
@@ -65,6 +66,7 @@ export type ChatProps = {
 };
 
 export function Chat({
+  hidden,
   session,
   projects,
   activeProjectId,
@@ -185,7 +187,7 @@ export function Chat({
   const placeholder = zhCN.chat.placeholder;
 
   return (
-    <section className="chat" data-testid="chat">
+    <section className="chat" data-testid="chat" hidden={hidden}>
       {session && (
         <ChatHeader
           session={session}
@@ -299,7 +301,7 @@ export function Chat({
             onRemoveFile={onRemoveFile}
             onRetrySubmit={onRetrySubmit}
             onConfirmCreation={onConfirmCreation}
-            onAbort={onAbort}
+            onAbort={hidden ? undefined : onAbort}
             onFollowUp={onFollowUp}
             onConfigChange={onConfigChange}
           />

@@ -45,7 +45,8 @@
     "dist-reconcile",
     "dist-owner-transfer",
     "dist-drill",
-    "docker/scheduler"
+    "docker/scheduler",
+    "integrations/agent-team"
   ],
   "engines": {
     "node": ">=22.19.0"

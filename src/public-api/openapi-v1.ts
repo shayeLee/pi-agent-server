@@ -35,6 +35,7 @@ export const PUBLIC_API_OPERATIONS = [
   ["/v1/sessions/{id}/config", "patch", "sessions:update-config"],
   ["/v1/sessions/{id}/messages", "post", "sessions:send-message"],
   ["/v1/sessions/{id}/export", "get", "sessions:export"],
+  ["/v1/sessions/{id}/subagents", "get", "sessions:export"],
   ["/v1/sessions/{id}/steps", "get", "sessions:export"],
   ["/v1/sessions/{id}/system-prompt", "get", "sessions:export"],
   ["/v1/sessions/{id}/file-preview", "get", "sessions:file-preview"],
@@ -57,6 +58,7 @@ export const PUBLIC_API_AUTOMATIC_HEAD_OPERATIONS = [
   ["/v1/projects", "head", "projects:list"],
   ["/v1/sessions", "head", "sessions:list"],
   ["/v1/sessions/{id}/export", "head", "sessions:export"],
+  ["/v1/sessions/{id}/subagents", "head", "sessions:export"],
   ["/v1/sessions/{id}/steps", "head", "sessions:export"],
   ["/v1/sessions/{id}/system-prompt", "head", "sessions:export"],
   ["/v1/sessions/{id}/control-queue", "head", "sessions:export"],
@@ -303,6 +305,15 @@ export const openapiV1 = {
         "500": headJson("Session export could not be read; the GET response body is suppressed."),
       }, { parameters: sessionParameters }),
     },
+    "/v1/sessions/{id}/subagents": {
+      get: operation("getSubagents", "sessions:export", {
+        "200": { description: "Session-owned child runs. Optional runId includes the full read-only conversation. Does not create a runtime; unavailable live state is unknown.", ...json(ref("SubagentSnapshot")) },
+        "404": error(404, "Session not found or access revoked."),
+      }, { parameters: [...sessionParameters, { name: "runId", in: "query", required: false, schema: { type: "string" }, description: "Stable child execution ID from runs[].id, not the ephemeral agent-team runId." }] }),
+      head: automaticHeadOperation("getSubagentsHead", "sessions:export", {
+        "200": headJson("Child runs; body suppressed."), "404": headJson("Session not found."),
+      }, { parameters: sessionParameters }),
+    },
     "/v1/sessions/{id}/steps": {
       get: operation("getSessionSteps", "sessions:export", {
         "200": { description: "Complete authoritative steps snapshot, including active unsaved blocks. Recorded history follows selected branch order; observed tool results follow actual completion order. No runtime is created.", ...json(ref("SessionStepsSnapshot")) },
@@ -394,6 +405,21 @@ export const openapiV1 = {
         timestamp: { type: "string" }, sourceEntryId: { type: "string" }, requestId: { type: "string" }, toolName: { type: "string" }, toolCallId: { type: "string" }, parentToolCallId: { type: "string" }, label: { type: "string" }, omission: { type: "string" },
         images: { type: "array", items: { type: "object", additionalProperties: false, required: ["mediaType", "base64"], properties: { mediaType: { type: "string" }, base64: { type: "string" } } } },
       } },
+      SubagentRun: { type: "object", required: ["id", "runId", "agent", "task", "startedAt", "status", "revision"], properties: {
+        id: { type: "string" }, runId: { type: "string" }, agent: { type: "string" }, task: { type: "string" }, startedAt: { type: "number" }, endedAt: { type: "number" },
+        status: { type: "string", enum: ["running", "completed", "failed", "stopped", "unknown"] }, model: { type: "string" }, thinkingLevel: { type: "string" }, revision: { type: "integer" }, streamRevision: { type: "integer" }, legacy: { type: "boolean" },
+      }, additionalProperties: false },
+      SubagentSnapshot: { type: "object", required: ["sessionId", "runs"], properties: {
+        sessionId: { type: "string" }, runs: { type: "array", items: ref("SubagentRun") },
+        conversation: { type: "object", required: ["run", "timeline", "inputs", "messages"], properties: {
+          run: ref("SubagentRun"), timeline: { type: "array", items: { type: "object", description: "Client TimelineItem: message, thinking or tool; sourceLabel records user provenance." } },
+          messages: { type: "array", items: {}, description: "Original SDK messages, without transcript truncation." },
+          inputs: { type: "array", items: { type: "object", required: ["id", "text", "timestamp", "kind", "delivery"], properties: {
+            id: { type: "string" }, text: { type: "string" }, timestamp: { type: "number" }, kind: { type: "string", enum: ["initial", "steer"] },
+            delivery: { type: "string", enum: ["submitted", "delivered", "failed", "unknown"] },
+          }, additionalProperties: false } },
+        }, additionalProperties: false },
+      }, additionalProperties: false },
       SessionStepsSnapshot: { type: "object", additionalProperties: false, required: ["sessionId", "projectionId", "revision", "steps"], properties: { sessionId: { type: "string" }, projectionId: { type: "string" }, revision: { type: "integer", minimum: 0 }, steps: { type: "array", items: ref("SessionStep") } } },
       SessionSystemPrompt: { oneOf: [
         { type: "object", additionalProperties: false, required: ["source", "prompt"], properties: { source: { type: "string", enum: ["live_effective", "creation_snapshot"] }, prompt: { type: "string" } } },

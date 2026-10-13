@@ -1,4 +1,5 @@
 export type { ControlIdentity, ControlQueueItem, ControlQueueSnapshot } from "../shared/control-queue.js";
+export type { SubagentRun, SubagentSnapshot, SubagentConversation, SubagentInput } from "../shared/subagents.js";
 export type { SteeringInput } from "../shared/steering.js";
 export { DEFAULT_PROJECT_ID } from "../shared/project-identity.js";
 export * from "./api.js";
