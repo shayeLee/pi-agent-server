@@ -56,7 +56,7 @@ describeGate("WP3C real PostgreSQL pre-migration backup gate", () => {
     const recipient = path.join(root, "recipient");
     const identity = path.join(root, "identity");
     mkdirSync(path.join(dataDir, "sessions", "s1"), { recursive: true, mode: 0o700 });
-    mkdirSync(path.join(dataDir, ".pi-agent"), { recursive: true, mode: 0o700 });
+    mkdirSync(path.join(dataDir, "agent"), { recursive: true, mode: 0o700 });
     writeFileSync(path.join(dataDir, "sessions", "s1", "history.jsonl"), '{"type":"session","id":"gate"}\n', { mode: 0o600 });
     const generated = spawnSync("age-keygen", ["--output", identity], { encoding: "utf8" });
     expect(generated.status).toBe(0);

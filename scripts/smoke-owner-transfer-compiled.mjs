@@ -52,7 +52,7 @@ try {
     const root = path.join(directory, `fixture-${tag}`);
     const cwd = path.join(root, "app-cwd");
     const dataDir = path.join(root, "data");
-    const agentDir = path.join(dataDir, ".pi-agent");
+    const agentDir = path.join(dataDir, "agent");
     mkdirSync(cwd, { recursive: true, mode: 0o700 });
     mkdirSync(path.join(dataDir, "sessions", "s1"), { recursive: true, mode: 0o700 });
     mkdirSync(agentDir, { recursive: true, mode: 0o700 });
@@ -234,7 +234,7 @@ try {
       const pgRoot = path.join(directory, "pg-fixture");
       const pgCwd = path.join(pgRoot, "app-cwd");
       const pgDataDir = path.join(pgRoot, "data");
-      const pgAgentDir = path.join(pgDataDir, ".pi-agent");
+      const pgAgentDir = path.join(pgDataDir, "agent");
       mkdirSync(pgCwd, { recursive: true, mode: 0o700 });
       mkdirSync(path.join(pgDataDir, "sessions", PG_SESSION_ONE_ID), { recursive: true, mode: 0o700 });
       mkdirSync(pgAgentDir, { recursive: true, mode: 0o700 });

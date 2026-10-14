@@ -210,7 +210,7 @@ export type SessionResourceLoaderOptions = {
    * `<cwd>` 段取会话 cwd，因此稳定本值不会篡改项目提示词。
    */
   readonly extensionCwd: string;
-  /** 服务专用 agentDir（不继承个人 ~/.pi/agent）。 */
+  /** 服务专用 agentDir（默认 DATA_DIR 下与个人 ~/.pi/agent 一致）。 */
   readonly agentDir: string;
   /** 显式扩展路径（主）；为空时不加载任何外部扩展。 */
   readonly extensionPaths?: readonly string[];

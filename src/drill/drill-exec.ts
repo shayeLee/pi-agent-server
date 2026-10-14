@@ -211,7 +211,7 @@ export class LiveDrillExecutor implements DrillExecutor {
     this.fixtures = {
       sqlite: {
         dataDir: path.join(ctx.root, "fixtures", "sqlite", "data"),
-        agentDir: path.join(ctx.root, "fixtures", "sqlite", "data", ".pi-agent"),
+        agentDir: path.join(ctx.root, "fixtures", "sqlite", "data", "agent"),
         dbPath: path.join(ctx.root, "fixtures", "sqlite", "data", "pi-agent-server.db"),
       },
       postgres: { dataDir: path.join(ctx.root, "fixtures", "postgres", "data") },

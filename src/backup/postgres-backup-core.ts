@@ -459,7 +459,7 @@ function within(root: string, candidate: string): boolean {
 }
 
 function validatePaths(paths: PostgresBackupPaths): { dataDir: string; agentDir: string; backupRoot: string; uploadRoot?: string; recipients: readonly string[] } {
-  const agentDirInput = paths.agentDir ?? path.join(paths.dataDir, ".pi-agent");
+  const agentDirInput = paths.agentDir ?? path.join(paths.dataDir, "agent");
   const values = [["data directory", paths.dataDir], ["agent directory", agentDirInput], ["backup root", paths.backupRoot], ["age recipient file", paths.ageRecipientFile]] as const;
   for (const [label, value] of values) if (!path.isAbsolute(value)) fail(`${label} must be an absolute path`);
   const dataDir = canonicalPath(paths.dataDir, "data directory");

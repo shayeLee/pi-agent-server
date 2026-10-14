@@ -109,7 +109,7 @@ PI_DEFAULT_THINKING_LEVEL=medium
 # PI_BACKUP_STAGING_ROOT=/srv/pi-agent-backup-staging
 ```
 
-- `PI_ALLOWED_CLIENT_CIDRS` **必填**（无默认）：必须是严格 canonical CIDR、逗号分隔、无重复、无空白段；缺失/非法/重复即拒绝启动。不能只写 `127.0.0.0/8`——若用户经同机反代访问，必须包含真实用户网段。
+- `PI_ALLOWED_CLIENT_CIDRS` 未设置时默认 `127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16`；显式配置完整替换默认列表：必须是严格 canonical CIDR、逗号分隔、无重复、无空白段；显式空白/非法/重复即拒绝启动。不能只写 `127.0.0.0/8`——若用户经同机反代访问，必须包含真实用户网段。
 - `PI_DEFAULT_MODEL` 可选但强烈建议显式设置：一旦设置，服务启动时用服务的 `ModelRuntime` 解析 `provider/modelId`，并要求该 provider 已配置凭证；解析失败报 `默认模型不可用：...`、无凭证报 `默认模型未配置凭证：...`，均为启动 fail-fast。**不设置**时服务回退到 Pi 的默认模型解析（settings 默认 → 有凭证的 provider 默认模型）；若仍无可解析模型，`GET /v1/models` 的 `defaultModel` 为 `null`、新建会话没有默认模型，因此部署时应填写实际可用且已配置访问凭据的模型标识，不要保留 `<provider>/<modelId>` 占位符。
 - 模型凭证：`PI_AUTH_PATH` 指向服务账号持有的 `auth.json`（0600）；也可用 `PI_MODEL_PROVIDER`/`PI_MODEL_API_KEY` 注入运行时 key。**不要把 key 真实值写进 env 文件、文档或日志**；如需运行时 key，用 root 0600 的 systemd drop-in。
 - 不要用 `source /etc/pi-agent-server/server.env` 之类把 env 文件当 shell 执行；systemd 用 `EnvironmentFile=`，手工命令用 `runuser ... env KEY=...` 显式传参。
@@ -164,7 +164,7 @@ runuser -u agent-server -- env \
 
 - `--bootstrap-baseline --bootstrap-confirm CONFIRMED` 是**唯一**建立 canonical baseline 的写入命令；不可混用 backup/maintenance 参数，也不会创建 pre-backup。它要求目标完全为空；对已有库重跑会 fail-closed。
 - 手工命令**只显式传** `AGENT_CWD`/`DATA_DIR`/`DB_PATH`/`PI_MIGRATION_GATE`，值与 `server.env` 一致；不要 source env 文件。
-- migration CLI 要求 `AGENT_CWD` 为绝对路径；入口是 `dist-migrate/scripts/migrate.js`（`bin.pi-agent-server-migrate`）。从源码运行 `pnpm migrate` 不自动加载 `.env.local`，需显式提供与服务相同的环境；未设置/空白 `DATA_DIR` 同样默认 `~/.pi/agent`。
+- migration CLI 要求 `AGENT_CWD` 为绝对路径；入口是 `dist-migrate/scripts/migrate.js`（`bin.pi-agent-server-migrate`）。从源码运行 `pnpm migrate` 不自动加载 `.env.local`，需显式提供与服务相同的环境；未设置/空白 `DATA_DIR` 同样默认 `~/.pi`。
 - 空库是唯一例外：后续 schema 升级**禁止**再跑 bootstrap，必须走 [backup-restore.md §5.2](backup-restore.md#52-已有-canonical-前缀的增量-apply) 的 pre-backup → `--apply` → `--verify`。
 
 ### 7. systemd unit

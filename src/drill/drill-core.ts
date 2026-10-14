@@ -248,7 +248,7 @@ function secureDrillPath(input: string, label: string): string {
         throw new Error(`${label} contains a symbolic-link ancestor`);
       }
     } catch (error) {
-      // 正式路径的默认值（如 ~/.pi/agent/auth.json、.$AGENT_CWD/.pi-agent）可能因
+      // 正式路径的默认值（如 ~/.pi/agent/auth.json、$DATA_DIR/agent）可能因
       // 权限受限/缺失而不可访问。对 formal 进行 best-effort 重叠比较时，把
       // ENOENT / EACCES / EPERM 视为“无法访问”并停止继续判定（不因默认值泄密/报错）。
       // 演练根本身不可访问仍会在 validateDrillRoot 的 lstat 处 fail-closed。
@@ -339,9 +339,9 @@ function absoluteOrThrow(value: string | undefined, label: string): string {
 export function resolveFormalPaths(env: DrillEnv): FormalDrillPaths {
   const baseCwd = process.cwd();
   const agentCwd = absoluteOrThrow(env.AGENT_CWD, "agentCwd") || baseCwd;
-  const dataDir = absoluteOrThrow(env.DATA_DIR, "dataDir") || agentCwd;
-  const dbPath = absoluteOrThrow(env.DB_PATH, "dbPath") || path.join(dataDir, "pi-agent-server.db");
-  const agentDir = absoluteOrThrow(env.PI_AGENT_DIR, "agentDir") || path.join(dataDir, ".pi-agent");
+  const dataDir = absoluteOrThrow(env.DATA_DIR, "dataDir") || path.join(homedir(), ".pi");
+  const agentDir = absoluteOrThrow(env.PI_AGENT_DIR, "agentDir") || path.join(dataDir, "agent");
+  const dbPath = absoluteOrThrow(env.DB_PATH, "dbPath") || path.join(agentDir, "pi-agent-server.db");
   const authPath = absoluteOrThrow(env.PI_AUTH_PATH, "authPath") || path.join(homedir(), ".pi", "agent", "auth.json");
   return {
     agentCwd: path.resolve(agentCwd),

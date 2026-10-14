@@ -8,25 +8,32 @@ import { resolveServerPaths } from "../../src/server/start.js";
 import { resolveStoragePaths } from "../../src/storage/storage-config.js";
 
 describe("resolveServerPaths 默认路径解析", () => {
-  it("全部未设置：DATA_DIR 默认个人 ~/.pi/agent，cwd identity 保持进程 cwd", () => {
+  it("DB 默认跟随环境 PI_AGENT_DIR，显式 DB_PATH 优先", () => {
+    const environment = { PI_AGENT_DIR: "/env/agent", DATA_DIR: "/env/data" };
+    expect(resolveStoragePaths({}, environment, "/work").dbPath).toBe("/env/agent/pi-agent-server.db");
+    expect(resolveStoragePaths({ agentDir: "/config/agent" }, environment, "/work").dbPath).toBe("/config/agent/pi-agent-server.db");
+    expect(resolveStoragePaths({}, { ...environment, DB_PATH: "/explicit.db" }, "/work").dbPath).toBe("/explicit.db");
+  });
+
+  it("全部未设置：DATA_DIR 默认个人 ~/.pi，cwd identity 保持进程 cwd", () => {
     const cwd = process.cwd();
-    const dataDir = path.join(homedir(), ".pi", "agent");
+    const dataDir = path.join(homedir(), ".pi");
     const paths = resolveServerPaths({});
     expect(paths.cwd).toBe(cwd);
     expect(paths.dataDir).toBe(dataDir);
-    expect(paths.agentDir).toBe(path.join(dataDir, ".pi-agent"));
-    expect(paths.modelsPath).toBe(path.join(dataDir, ".pi-agent", "models.json"));
+    expect(paths.agentDir).toBe(path.join(dataDir, "agent"));
+    expect(paths.modelsPath).toBe(path.join(dataDir, "agent", "models.json"));
     expect(paths.authPath).toBe(path.join(homedir(), ".pi", "agent", "auth.json"));
-    expect(paths.dbPath).toBe(path.join(dataDir, "pi-agent-server.db"));
+    expect(paths.dbPath).toBe(path.join(dataDir, "agent", "pi-agent-server.db"));
   });
 
   it("storage path 优先级：config > env > 默认；相对路径相对 cwd 解析，空白视为 unset", () => {
     const cwd = "/tmp/agent-work";
-    const homeData = path.join(homedir(), ".pi", "agent");
+    const homeData = path.join(homedir(), ".pi");
     expect(resolveStoragePaths({}, {}, cwd)).toEqual({
       cwd,
       dataDir: homeData,
-      dbPath: path.join(homeData, "pi-agent-server.db"),
+      dbPath: path.join(homeData, "agent", "pi-agent-server.db"),
     });
     expect(resolveStoragePaths({}, { DATA_DIR: "relative-env" }, cwd).dataDir).toBe(path.resolve("relative-env"));
     expect(resolveStoragePaths({ dataDir: "relative-config" }, { DATA_DIR: "/env/data" }, cwd).dataDir).toBe(path.resolve("relative-config"));
@@ -38,9 +45,9 @@ describe("resolveServerPaths 默认路径解析", () => {
     const dataDir = "/tmp/srv-data";
     const paths = resolveServerPaths({ dataDir });
     expect(paths.dataDir).toBe(dataDir);
-    expect(paths.agentDir).toBe(path.join(dataDir, ".pi-agent"));
-    expect(paths.modelsPath).toBe(path.join(dataDir, ".pi-agent", "models.json"));
-    expect(paths.dbPath).toBe(path.join(dataDir, "pi-agent-server.db"));
+    expect(paths.agentDir).toBe(path.join(dataDir, "agent"));
+    expect(paths.modelsPath).toBe(path.join(dataDir, "agent", "models.json"));
+    expect(paths.dbPath).toBe(path.join(dataDir, "agent", "pi-agent-server.db"));
     expect(paths.authPath).toBe(path.join(homedir(), ".pi", "agent", "auth.json"));
   });
 
@@ -55,11 +62,11 @@ describe("resolveServerPaths 默认路径解析", () => {
     const paths = resolveServerPaths({ dataDir: "/tmp/srv-data", agentDir });
     expect(paths.agentDir).toBe(agentDir);
     expect(paths.modelsPath).toBe(path.join(agentDir, "models.json"));
-    // dataDir 只影响未显式设置的 agentDir 默认值
-    expect(paths.dbPath).toBe(path.join("/tmp/srv-data", "pi-agent-server.db"));
+    // DB 默认跟随显式 agentDir
+    expect(paths.dbPath).toBe(path.join(agentDir, "pi-agent-server.db"));
   });
 
-  it("显式 dbPath：覆盖默认 dataDir/pi-agent-server.db", () => {
+  it("显式 dbPath：覆盖默认 agentDir/pi-agent-server.db", () => {
     const dbPath = "/opt/data/custom.db";
     const paths = resolveServerPaths({ dbPath });
     expect(paths.dbPath).toBe(dbPath);

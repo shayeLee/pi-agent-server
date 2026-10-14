@@ -43,9 +43,9 @@ function fixture(): { root: string; dataDir: string; backupRoot: string; recipie
   const dataDir = path.join(root, "data");
   const session = path.join(dataDir, "sessions", "session-1", "history.jsonl");
   mkdirSync(path.dirname(session), { recursive: true, mode: 0o700 });
-  mkdirSync(path.join(dataDir, ".pi-agent"), { recursive: true, mode: 0o700 });
+  mkdirSync(path.join(dataDir, "agent"), { recursive: true, mode: 0o700 });
   writeFileSync(session, '{"type":"session","version":3,"id":"header","timestamp":"2024-01-01T00:00:00.000Z","cwd":"/source/project"}\n{"type":"message","id":"entry","parentId":null,"timestamp":"2024-01-01T00:00:00.000Z","message":{"role":"user","content":"entry","timestamp":1}}\n', { mode: 0o600 });
-  writeFileSync(path.join(dataDir, ".pi-agent", "models.json"), '{"models":[]}\n', { mode: 0o600 });
+  writeFileSync(path.join(dataDir, "agent", "models.json"), '{"models":[]}\n', { mode: 0o600 });
   const recipient = path.join(root, "recipient");
   const identity = path.join(root, "identity");
   writeFileSync(recipient, "age1fakerecipient\n", { mode: 0o600 });
@@ -1453,9 +1453,9 @@ describeRealPgBackup("real PostgreSQL pg_dump/pg_restore gate (WP3B2)", () => {
       await sourcePool.query("INSERT INTO projects (id, name, cwd, owner_key, created_at) VALUES ($1,$2,$3,$4,$5)", ["00000000-0000-4000-8000-000000000001", "real", "/tmp/real", "owner", 1]);
       const session = path.join(dataDir, "projects", "00000000-0000-4000-8000-000000000001", "sessions", "00000000-0000-4000-8000-000000000002", "history.jsonl");
       mkdirSync(path.dirname(session), { recursive: true, mode: 0o700 });
-      mkdirSync(path.join(dataDir, ".pi-agent"), { recursive: true, mode: 0o700 });
+      mkdirSync(path.join(dataDir, "agent"), { recursive: true, mode: 0o700 });
       writeFileSync(session, '{"type":"session","version":3,"id":"real-header","timestamp":"2024-01-01T00:00:00.000Z","cwd":"/tmp/real"}\n{"type":"message","id":"real-entry","parentId":null,"timestamp":"2024-01-01T00:00:00.000Z","message":{"role":"user","content":"real","timestamp":1}}\n', { mode: 0o600 });
-      writeFileSync(path.join(dataDir, ".pi-agent", "models.json"), '{"models":[]}\n', { mode: 0o600 });
+      writeFileSync(path.join(dataDir, "agent", "models.json"), '{"models":[]}\n', { mode: 0o600 });
       await sourcePool.query("INSERT INTO sessions (id, owner_key, project_id, title, created_at, updated_at, conversation_ref, capability_versions) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)", ["00000000-0000-4000-8000-000000000002", "owner", "00000000-0000-4000-8000-000000000001", "real", 1, 1, session, "{}"]); await sourcePool.query("INSERT INTO idempotency (session_id, request_id, result, created_at) VALUES ($1,$2,$3,$4)", ["00000000-0000-4000-8000-000000000002", "real-request", "{}", 1]);
       await closeSource();
       const identity = path.join(root, "identity");
@@ -1489,9 +1489,9 @@ describeRealPgBackup("real PostgreSQL pg_dump/pg_restore gate (WP3B2)", () => {
     const recipient = path.join(root, "recipient");
     const sessionFile = path.join(dataDir, "projects", "00000000-0000-4000-8000-000000000031", "sessions", "00000000-0000-4000-8000-000000000032", "history.jsonl");
     mkdirSync(path.dirname(sessionFile), { recursive: true, mode: 0o700 });
-    mkdirSync(path.join(dataDir, ".pi-agent"), { recursive: true, mode: 0o700 });
+    mkdirSync(path.join(dataDir, "agent"), { recursive: true, mode: 0o700 });
     writeFileSync(sessionFile, '{"type":"session","version":3,"id":"real-variant-header","timestamp":"2024-01-01T00:00:00.000Z","cwd":"/tmp/real-variant"}\n{"type":"message","id":"real-variant-entry","parentId":null,"timestamp":"2024-01-01T00:00:00.000Z","message":{"role":"user","content":"variant","timestamp":1}}\n', { mode: 0o600 });
-    writeFileSync(path.join(dataDir, ".pi-agent", "models.json"), '{"models":[]}\n', { mode: 0o600 });
+    writeFileSync(path.join(dataDir, "agent", "models.json"), '{"models":[]}\n', { mode: 0o600 });
     let setupPool: Pool | undefined;
     let setupKysely: Awaited<ReturnType<typeof createPostgresKysely>> | undefined;
     try {

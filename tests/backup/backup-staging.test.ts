@@ -41,13 +41,13 @@ function makeLayout(createBackupRoot = true): { base: string; sources: string; b
 function writeFixture(sources: string): { dataDir: string; dbPath: string; recipient: string } {
   const dataDir = path.join(sources, "data");
   mkdirSync(path.join(dataDir, "sessions", "s1"), { recursive: true, mode: 0o700 });
-  mkdirSync(path.join(dataDir, ".pi-agent"), { recursive: true, mode: 0o700 });
+  mkdirSync(path.join(dataDir, "agent"), { recursive: true, mode: 0o700 });
   const dbPath = path.join(dataDir, "pi-agent-server.db");
   const db = new DatabaseSync(dbPath);
   createCanonicalSqliteHead(db);
   db.close();
   writeFileSync(path.join(dataDir, "sessions", "s1", "history.jsonl"), '{"secret":"payload-secret"}\n', { mode: 0o600 });
-  writeFileSync(path.join(dataDir, ".pi-agent", "models.json"), '{"models":[]}\n', { mode: 0o600 });
+  writeFileSync(path.join(dataDir, "agent", "models.json"), '{"models":[]}\n', { mode: 0o600 });
   const recipient = path.join(sources, "recipient.txt");
   writeFileSync(recipient, "age1testrecipient\n", { mode: 0o600 });
   return { dataDir, dbPath, recipient };

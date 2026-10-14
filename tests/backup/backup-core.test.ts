@@ -19,7 +19,7 @@ function fixture(): { root: string; dataDir: string; dbPath: string; backupRoot:
   const backupRoot = path.join(root, "backups");
   mkdirSync(path.join(dataDir, "sessions", "s1"), { recursive: true, mode: 0o700 });
   mkdirSync(path.join(dataDir, "projects", "p1", "sessions", "s1"), { recursive: true, mode: 0o700 });
-  mkdirSync(path.join(dataDir, ".pi-agent"), { recursive: true, mode: 0o700 });
+  mkdirSync(path.join(dataDir, "agent"), { recursive: true, mode: 0o700 });
   const dbPath = path.join(dataDir, "pi-agent-server.db");
   const db = new DatabaseSync(dbPath);
   createCanonicalSqliteHead(db);
@@ -53,8 +53,8 @@ describe("SQLite online backup core (WP3A)", () => {
     const projectFile = path.join(f.dataDir, "projects", "p1", "sessions", "s1", "project.jsonl");
     writeFileSync(sessionFile, '{"secret":"payload-secret"}\n', { mode: 0o600 });
     writeFileSync(projectFile, '{"project":true}\n', { mode: 0o600 });
-    writeFileSync(path.join(f.dataDir, ".pi-agent", "models.json"), '{"models":[]}\n', { mode: 0o600 });
-    writeFileSync(path.join(f.dataDir, ".pi-agent", "auth.json"), '{"token":"must-not-copy"}\n', { mode: 0o600 });
+    writeFileSync(path.join(f.dataDir, "agent", "models.json"), '{"models":[]}\n', { mode: 0o600 });
+    writeFileSync(path.join(f.dataDir, "agent", "auth.json"), '{"token":"must-not-copy"}\n', { mode: 0o600 });
     writeFileSync(path.join(f.dataDir, "sessions", "auth.json"), '{"token":"must-not-copy"}\n', { mode: 0o600 });
     writeFileSync(path.join(f.dataDir, "not-whitelisted.json"), '{"secret":"must-not-copy"}\n', { mode: 0o600 });
     putSession(f.dbPath, "s1", sessionFile);

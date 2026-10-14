@@ -35,7 +35,7 @@ describe("dev:real:init", () => {
     delete env.DB_PATH;
     const output = execFileSync(process.execPath, [path.resolve("node_modules/tsx/dist/cli.mjs"), "--env-file-if-exists=.env.local", path.resolve("scripts/dev-real-init.ts")], { cwd: root, env, encoding: "utf8" });
     expect(output).toContain("initialized and verified");
-    expect(existsSync(path.join(explicitData, "pi-agent-server.db"))).toBe(true);
+    expect(existsSync(path.join(explicitData, "agent", "pi-agent-server.db"))).toBe(true);
     expect(existsSync(fileData)).toBe(false);
   });
   it("refuses a valid older version and requests explicit migration", async () => {
@@ -44,16 +44,16 @@ describe("dev:real:init", () => {
     try { await runSqliteMigrationsForTest(db, { mode: "apply", assertEmptySchema: true, migrations: migrationDefinitions.slice(0, 1) }); }
     finally { db.close(); }
     const before = sqliteSourceMetadata(target);
-    await expect(initializeDevelopmentDatabase({ DATA_DIR: root }, root)).rejects.toThrow("explicit offline migration");
+    await expect(initializeDevelopmentDatabase({ DATA_DIR: root, DB_PATH: path.join(root, "pi-agent-server.db") }, root)).rejects.toThrow("explicit offline migration");
     expect(sqliteSourceMetadata(target)).toBe(before);
   });
   it("bootstraps a completely empty existing file", async () => {
     const target = path.join(root, "pi-agent-server.db");
     writeFileSync(target, "");
-    expect(await initializeDevelopmentDatabase({ DATA_DIR: root }, root)).toBe("initialized");
+    expect(await initializeDevelopmentDatabase({ DATA_DIR: root, DB_PATH: path.join(root, "pi-agent-server.db") }, root)).toBe("initialized");
   });
   it("verifies a valid existing target without writes", async () => {
-    const env = { DATA_DIR: root };
+    const env = { DATA_DIR: root, DB_PATH: path.join(root, "pi-agent-server.db") };
     await initializeDevelopmentDatabase(env, root);
     const target = path.join(root, "pi-agent-server.db");
     const metadata = sqliteSourceMetadata(target);
@@ -64,7 +64,7 @@ describe("dev:real:init", () => {
   });
   it.each(["no-ledger", "bad-checksum", "corrupt"])("refuses %s without changing it", async (kind) => {
     const target = path.join(root, "pi-agent-server.db");
-    if (kind === "bad-checksum") await initializeDevelopmentDatabase({ DATA_DIR: root }, root);
+    if (kind === "bad-checksum") await initializeDevelopmentDatabase({ DATA_DIR: root, DB_PATH: path.join(root, "pi-agent-server.db") }, root);
     if (kind === "corrupt") writeFileSync(target, "not sqlite");
     else {
       const db = new DatabaseSync(target);
@@ -73,7 +73,7 @@ describe("dev:real:init", () => {
     }
     const before = sqliteSourceMetadata(target);
     const bytes = readFileSync(target);
-    await expect(initializeDevelopmentDatabase({ DATA_DIR: root }, root)).rejects.toThrow();
+    await expect(initializeDevelopmentDatabase({ DATA_DIR: root, DB_PATH: path.join(root, "pi-agent-server.db") }, root)).rejects.toThrow();
     expect(sqliteSourceMetadata(target)).toBe(before);
     expect(readFileSync(target)).toEqual(bytes);
   });

@@ -1,8 +1,8 @@
 // WP5D-1 IP access policy core：环境变量/配置解析（纯函数，不读 process.env）。
 //
 // 冻结契约（docs/ip-rbac-design.md）：
-// - PI_ALLOWED_CLIENT_CIDRS：显式必填（无默认），逗号分隔的严格 canonical CIDR，
-//   不得重复；缺失/空白/非法/非规范一律抛错（failfast）。
+// - PI_ALLOWED_CLIENT_CIDRS：未设置时使用回环和 RFC1918 私网默认值，逗号分隔的严格 canonical CIDR，
+//   不得重复；显式空白/非法/非规范一律抛错（failfast）。
 // - PI_IP_ACCESS_POLICY_FILE：可选；设置时必须为绝对路径。
 
 import { isAbsolute } from "node:path";
@@ -18,14 +18,14 @@ export type IpAccessEnvConfig = {
 };
 
 /**
- * 解析 WP5D IP access 环境变量。任何缺失/非法/非规范配置立即抛错（failfast），
+ * 解析 WP5D IP access 环境变量。任何显式空白/非法/非规范配置立即抛错（failfast），
  * 错误消息不回显配置值（与既有启动门禁风格一致）。
  */
 export function parseIpAccessEnv(env: Readonly<Record<string, string | undefined>>): IpAccessEnvConfig {
-  // PI_ALLOWED_CLIENT_CIDRS：显式必填、无默认
-  const cidrsValue = env.PI_ALLOWED_CLIENT_CIDRS?.trim();
+  // 仅未设置时使用默认网段；显式空值仍拒绝。
+  const cidrsValue = (env.PI_ALLOWED_CLIENT_CIDRS ?? "127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16").trim();
   if (!cidrsValue) {
-    throw new Error("PI_ALLOWED_CLIENT_CIDRS 必须显式设置（无默认值；拒绝 CIDR 外访问）");
+    throw new Error("PI_ALLOWED_CLIENT_CIDRS 不得为空白（拒绝 CIDR 外访问）");
   }
   const texts: string[] = [];
   const cidrs: ParsedCidr[] = [];

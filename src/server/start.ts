@@ -1,6 +1,6 @@
 // 启动入口：把真实 Pi SDK、SQLite 存储、真实鉴权、HTTP 层组装起来（needs.md §4.1/§7）。
 // 服务端安全边界：
-// - 独立 agentDir（不继承个人 ~/.pi/agent），DefaultResourceLoader 禁用项目/全局自动发现；
+// - 可配置 agentDir（默认 DATA_DIR 下与个人 ~/.pi/agent 一致），DefaultResourceLoader 禁用项目/全局自动发现；
 // - 凭证默认指向个人 ~/.pi/agent/auth.json（与 pi CLI 共用；OAuth token 刷新由 SDK 自动回写该文件，
 //   生产部署应通过 PI_AUTH_PATH 指向服务端独立凭证）；服务端默认模型 API key 可从环境变量注入（setRuntimeApiKey，不落盘）。
 
@@ -96,7 +96,7 @@ export type StartConfig = {
    * 未知**非空**值 fail-fast，绝不静默回退。
    */
   storageDialect?: StorageDialect;
-  /** 服务数据库路径（SQLite）；默认 dataDir/pi-agent-server.db（持久化，重启后会话列表/历史可恢复）。 */
+  /** 服务数据库路径（SQLite）；默认 agentDir/pi-agent-server.db（持久化，重启后会话列表/历史可恢复）。 */
   dbPath?: string;
   /**
    * WP5D-2 网络准入配置（严格必填，无默认）：allowedClientCidrs + 可选 policy。
@@ -114,7 +114,7 @@ export type StartConfig = {
   cwd?: string;
   /** 完整工具白名单（包含扩展/插件工具）；undefined 允许全部，[] 禁用全部。 */
   tools?: string[];
-  /** 服务数据目录（JSONL 会话 + 服务专用 agentDir；未配置时默认 $HOME/.pi/agent，凭证默认不落此目录）。 */
+  /** 服务数据目录（JSONL 会话 + 服务专用 agentDir；未配置时默认 $HOME/.pi；凭证路径独立解析）。 */
   dataDir?: string;
   /** Unified CLI/new Web-private JSONL root, independent of dataDir/agentDir; tests must inject a temporary canonical root. */
   nativeSessionSourceDir?: string;
@@ -126,7 +126,7 @@ export type StartConfig = {
   /** Required when uploads are enabled; durable owner/global disk budgets (not file TTL). */
   uploadOwnerQuotaBytes?: number;
   uploadGlobalQuotaBytes?: number;
-  /** 服务专用 agentDir（默认 dataDir/.pi-agent），不继承个人 ~/.pi/agent。 */
+  /** 服务专用 agentDir（默认 dataDir/agent），默认 DATA_DIR 下与个人 ~/.pi/agent 一致。 */
   agentDir?: string;
   /** 凭证文件路径（默认 $HOME/.pi/agent/auth.json，与 pi CLI 共用，OAuth 刷新会回写该文件；PI_AUTH_PATH 可覆盖）。 */
   authPath?: string;
@@ -278,19 +278,19 @@ export type ResolvedServerPaths = {
   cwd: string;
   /** 服务数据目录（JSONL 会话 + 服务专用 agentDir）。 */
   dataDir: string;
-  /** 服务专用 agentDir（默认 dataDir/.pi-agent），不继承个人 ~/.pi/agent。 */
+  /** 服务专用 agentDir（默认 dataDir/agent），默认 DATA_DIR 下与个人 ~/.pi/agent 一致。 */
   agentDir: string;
   /** 服务端 agent 配置里的模型文件（agentDir/models.json）。 */
   modelsPath: string;
   /** 凭证文件（默认 $HOME/.pi/agent/auth.json，与 pi CLI 共用；PI_AUTH_PATH 可覆盖）。 */
   authPath: string;
-  /** 服务数据库路径（默认 dataDir/pi-agent-server.db）。 */
+  /** 服务数据库路径（默认 agentDir/pi-agent-server.db）。 */
   dbPath: string;
 };
 
 /**
  * 解析 startServer 的路径默认值。
- * 约定：dataDir 默认个人 $HOME/.pi/agent；agentDir/modelsPath 落在 dataDir 下（服务端独立配置），
+ * 约定：dataDir 默认个人 $HOME/.pi；agentDir/modelsPath 落在 dataDir 下（服务端独立配置），
  * authPath 默认个人 $HOME/.pi/agent/auth.json（与 pi CLI 共用，OAuth 刷新回写）；
  * 显式传入的配置优先，其余均可用对应环境变量覆盖。
  */
@@ -339,7 +339,7 @@ export async function startServer(config: StartConfig) {
   // 模型运行时：凭证默认读个人 ~/.pi/agent/auth.json（与 pi CLI 共用，OAuth token 临近过期时 SDK 会自动
   // 刷新并回写该文件，同文件带锁并发安全）；生产部署可用 PI_AUTH_PATH 指向服务端独立凭证。
   // 服务端默认 API key 也可用 setRuntimeApiKey 运行时注入（不持久化，needs.md §7）。
-  // 目录关系：dataDir（会话 JSONL）→ agentDir = dataDir/.pi-agent（agent 配置：models.json 等）；
+  // 目录关系：dataDir（会话 JSONL）→ agentDir = dataDir/agent（agent 配置：models.json 等）；
   // authPath 默认 $HOME/.pi/agent/auth.json，三者均可用环境变量覆盖。
   const modelRuntime = await ModelRuntime.create({
     authPath,

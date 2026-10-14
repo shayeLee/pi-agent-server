@@ -41,7 +41,7 @@ function npm(args) {
 
 async function createFixture(runSqliteMigrations) {
   mkdirSync(path.join(dataDir, "projects", "p", "sessions", "s"), { recursive: true, mode: 0o700 });
-  mkdirSync(path.join(dataDir, ".pi-agent"), { recursive: true, mode: 0o700 });
+  mkdirSync(path.join(dataDir, "agent"), { recursive: true, mode: 0o700 });
   const sessionFile = path.join(dataDir, "projects", "p", "sessions", "s", "history.jsonl");
   writeFileSync(sessionFile, '{"type":"session","version":3,"id":"header","timestamp":"2024-01-01T00:00:00.000Z","cwd":"/smoke"}\n{"type":"message","id":"entry","parentId":null,"timestamp":"2024-01-01T00:00:00.000Z","message":{"role":"user","content":"smoke","timestamp":1}}\n', { mode: 0o600 });
   const db = new DatabaseSync(dbPath);

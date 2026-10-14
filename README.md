@@ -61,7 +61,7 @@ pnpm dev:real
 cp .env.example .env.local
 ```
 
-The template explicitly sets the development `DATA_DIR=/tmp/pi-agent-server` (along with `PI_ALLOWED_CLIENT_CIDRS`, `PI_DEFAULT_MODEL`, and `PI_DEFAULT_THINKING_LEVEL`); adjust machine-specific values. If `DATA_DIR` is unset or blank, the server defaults to `~/.pi/agent`. `PI_ALLOWED_CLIENT_CIDRS` is required and applies to all routes.
+The template explicitly sets the development `DATA_DIR=/tmp/pi-agent-server` (along with `PI_ALLOWED_CLIENT_CIDRS`, `PI_DEFAULT_MODEL`, and `PI_DEFAULT_THINKING_LEVEL`); adjust machine-specific values. If `DATA_DIR` is unset or blank, the server defaults to `~/.pi`. `PI_ALLOWED_CLIENT_CIDRS` defaults to `127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16` when unset and applies to all routes.
 
 `dev:real` uses the resolved `DATA_DIR` and `DB_PATH`; the server verifies but never initializes the database. Initialize an empty target before the first run:
 
@@ -69,7 +69,7 @@ The template explicitly sets the development `DATA_DIR=/tmp/pi-agent-server` (al
 pnpm dev:real:init
 ```
 
-`dev:real:init` loads the same optional `.env.local` as `dev:real` (existing process environment wins) and shares its storage resolver: unset/blank `DATA_DIR` defaults to `~/.pi/agent`, and `DB_PATH` overrides the default `<DATA_DIR>/pi-agent-server.db`. The `/tmp` path in the template is an explicit development example, not a hardcoded default. For SQLite, an existing database is first checked with the official read-only schema/ledger verify engine on a temporary DB/WAL/SHM snapshot, cleaned on success or failure. A valid head reports “already initialized” and exits successfully without writes; only absent/completely empty targets are bootstrapped and verified. Non-empty targets without a valid ledger are refused without adoption, deletion or repair; valid older versions require an explicit offline migration, never automatic apply. PostgreSQL requires the explicit offline migration CLI. After initialization, just run `pnpm dev:real`.
+`dev:real:init` loads the same optional `.env.local` as `dev:real` (existing process environment wins) and shares its storage resolver: unset/blank `DATA_DIR` defaults to `~/.pi`, and `DB_PATH` overrides the default `<PI_AGENT_DIR>/pi-agent-server.db`. The `/tmp` path in the template is an explicit development example, not a hardcoded default. For SQLite, an existing database is first checked with the official read-only schema/ledger verify engine on a temporary DB/WAL/SHM snapshot, cleaned on success or failure. A valid head reports “already initialized” and exits successfully without writes; only absent/completely empty targets are bootstrapped and verified. Non-empty targets without a valid ledger are refused without adoption, deletion or repair; valid older versions require an explicit offline migration, never automatic apply. PostgreSQL requires the explicit offline migration CLI. After initialization, just run `pnpm dev:real`.
 
 The default credential source is `~/.pi/agent/auth.json`. For a deployment, point `PI_AUTH_PATH` at a dedicated service credential file. A runtime default API key may instead be injected with `PI_MODEL_PROVIDER` and `PI_MODEL_API_KEY`.
 
@@ -160,7 +160,7 @@ Inspector reads use the same session-export authorization tier and do not create
 
 ## Access control
 
-Startup requires an explicit CIDR allowlist:
+When unset, the CIDR allowlist defaults to `127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16`. Explicit configuration replaces the entire default list; blank or invalid configuration rejects startup. For example:
 
 ```bash
 export PI_ALLOWED_CLIENT_CIDRS=127.0.0.0/8,10.0.0.0/8
@@ -183,13 +183,15 @@ An unregistered IP inside an allowed CIDR receives `role=user` with token disabl
 | --- | --- | --- |
 | `PORT` | `8080` | HTTP port |
 | `HOST` | `127.0.0.1` | Bind address |
-| `DATA_DIR` | `~/.pi/agent` | Service data, legacy JSONL and default SQLite location; does not override the unified session source root |
+| `AGENT_CWD` | Process working directory at startup | Default project tool working directory; other projects use their own cwd; offline migration CLI requires an explicit absolute path |
+| `PI_AGENT_DIR` | `<DATA_DIR>/agent` | Service model resources (such as models.json); does not change default credential or session source paths |
+| `DATA_DIR` | `~/.pi` | Service data, legacy JSONL and default SQLite location; does not override the unified session source root |
 | `PI_SESSION_SOURCE_DIR` | CLI agent directory + `/sessions` | Unified CLI/new Web-private JSONL root; independent of `DATA_DIR`/server `PI_AGENT_DIR`; explicitly override for isolated storage |
 | `PI_SESSION_SHARE_EXCLUDE_CWDS` | unset (share all eligible projects) | Comma split/trim/remove-empty; exact canonical cwd exclusions; invalid directories fail closed; restart after changes |
-| `DB_PATH` | `<DATA_DIR>/pi-agent-server.db` | SQLite file |
+| `DB_PATH` | `<PI_AGENT_DIR>/pi-agent-server.db` | SQLite file |
 | `PI_STORAGE_DIALECT` | `sqlite` | `sqlite` or explicit `postgres` |
 | `PI_DATABASE_URL` | unset | Required with PostgreSQL |
-| `PI_ALLOWED_CLIENT_CIDRS` | **none; required** | Source IP ranges allowed to access the service, for example `127.0.0.0/8` |
+| `PI_ALLOWED_CLIENT_CIDRS` | `127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16` | Source IP ranges allowed to access the service, for example `127.0.0.0/8` |
 | `PI_IP_ACCESS_POLICY_FILE` | unset | Absolute path to an optional policy file that sets roles, disabled status, and token requirements for specific IPs |
 | `PI_AUTH_PATH` | `~/.pi/agent/auth.json` | Use a dedicated service file outside development |
 | `PI_MODEL_PROVIDER` / `PI_MODEL_API_KEY` | unset | Runtime default-provider credential injection |
@@ -203,6 +205,11 @@ An unregistered IP inside an allowed CIDR receives `role=user` with token disabl
 | `PI_EXTENSION_PATHS` | unset | Primary comma-separated list of explicitly loaded Pi SDK extension paths (absolute or `~/…`); no discovery; invalid paths or load failures reject startup. `PI_PROVIDER_EXTENSION_PATHS` is a deprecated compatibility alias: warns before path validation when only it yields a non-empty list; startup rejects when both yield non-empty lists (after trimming and removing empty entries) |
 | `CORS_ORIGINS` | empty | Web page addresses allowed to call this service from a browser; separate multiple addresses with commas, for example `http://127.0.0.1:5173` |
 | `PI_BACKUP_STAGING_ROOT` | per-user private application directory | Temporary working directory for backups or database upgrades; usually does not need to be set |
+
+
+Path relationships: without explicit configuration, `DATA_DIR=~/.pi`, `DB_PATH=~/.pi/agent/pi-agent-server.db`, and `PI_AGENT_DIR=~/.pi/agent`. `PI_AUTH_PATH` remains `~/.pi/agent/auth.json`; session sources remain `PI_CODING_AGENT_DIR/sessions` (otherwise `~/.pi/agent/sessions`). Blank path settings are treated as unset. Service storage paths do not expand literal `~` or `$HOME`; use absolute paths for explicit configuration.
+
+Upgrade note: the previous default data directory was `~/.pi/agent`. The previous default `PI_AGENT_DIR` was `<DATA_DIR>/.pi-agent`; it is now `<DATA_DIR>/agent`. These default changes do not move databases or model configuration. To retain a previous model resource directory, set `PI_AGENT_DIR` explicitly. Deployments with custom previous data locations must explicitly check `DATA_DIR`, `PI_AGENT_DIR`, and `DB_PATH`; retaining `DATA_DIR` alone does not preserve the database path because its default now follows `PI_AGENT_DIR`. Running instances and explicit path settings are unaffected by the source default change.
 
 ## Persistence and operations
 

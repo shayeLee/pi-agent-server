@@ -45,7 +45,7 @@ describeGate("WP5D-4 real-age SQLite owner-transfer gate", () => {
     cleanups.push(root);
     const cwd = path.join(root, "app-cwd");
     const dataDir = path.join(root, "data");
-    const agentDir = path.join(dataDir, ".pi-agent");
+    const agentDir = path.join(dataDir, "agent");
     mkdirSync(cwd, { recursive: true, mode: 0o700 });
     mkdirSync(path.join(dataDir, "sessions", "s1"), { recursive: true, mode: 0o700 });
     mkdirSync(path.join(dataDir, "projects", "p1", "sessions", "s2"), { recursive: true, mode: 0o700 });
@@ -156,7 +156,7 @@ describeGate("WP5D-4 real-age SQLite owner-transfer gate", () => {
     cleanups.push(root);
     const cwd = path.join(root, "app-cwd");
     const dataDir = path.join(root, "data");
-    const agentDir = path.join(dataDir, ".pi-agent");
+    const agentDir = path.join(dataDir, "agent");
     mkdirSync(cwd, { recursive: true, mode: 0o700 });
     mkdirSync(path.join(dataDir, "sessions", "s1"), { recursive: true, mode: 0o700 });
     mkdirSync(agentDir, { recursive: true, mode: 0o700 });

@@ -128,7 +128,7 @@ Factory 创建或恢复具体 Agent Session；Storage 解释引用、导出历�
 
 ### 统一 Pi JSONL 落点与访问策略
 
-生产新建 Web 会话和 CLI 来源共用 `PI_SESSION_SOURCE_DIR`（默认 CLI agent 的 `sessions`，通常为 `~/.pi/agent/sessions`），按 canonical cwd 编码目录和 SDK header timestamp/original ID 命名。`DATA_DIR` 默认 `~/.pi/agent`，覆盖它不覆盖 source root；隔离部署/测试必须显式设置来源根。旧 server-ID 路径仅兼容读取，不移动文件。
+生产新建 Web 会话和 CLI 来源共用 `PI_SESSION_SOURCE_DIR`（默认 CLI agent 的 `sessions`，通常为 `~/.pi/agent/sessions`），按 canonical cwd 编码目录和 SDK header timestamp/original ID 命名。`DATA_DIR` 默认 `~/.pi`，覆盖它不覆盖 source root；隔离部署/测试必须显式设置来源根。旧 server-ID 路径仅兼容读取，不移动文件。
 
 Web 会话保持 private/managed，来源发现保持 shared/native；不新增第三种格式。既有 v2 `native_session_sources.binding` JSON 增加可选 `private` 标记，不改 schema/migration/checksum。source path 与 original ID 的既有唯一约束在排他创建文件前预约，随后写回 dev/ino；失败和删除保留 source 墓碑，扫描不得将私有文件认领为共享。源文件仅逻辑删除，不经 managed outbox 物理 unlink。准备中的 inode 使用 -1 哨兵，不可恢复；完成前中断保持 fail-closed。后续若确需新列，须新增 canonical migration，不重写 frozen v2。
 

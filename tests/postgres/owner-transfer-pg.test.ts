@@ -178,7 +178,7 @@ async function currentPostgresBinding(schema: string): Promise<PublishedBackupVe
 function writeFixture(root: string, ids: Pick<TransferFixtureIds, "projectId" | "defaultSessionId" | "projectSessionId">, includeProjectSession = true): { cwd: string; dataDir: string; agentDir: string; backupRoot: string; recipient: string; identity: string } {
   const cwd = path.join(root, "app-cwd");
   const dataDir = path.join(root, "data");
-  const agentDir = path.join(dataDir, ".pi-agent");
+  const agentDir = path.join(dataDir, "agent");
   mkdirSync(cwd, { recursive: true, mode: 0o700 });
   mkdirSync(path.join(dataDir, "sessions", ids.defaultSessionId), { recursive: true, mode: 0o700 });
   if (includeProjectSession) mkdirSync(path.join(dataDir, "projects", ids.projectId, "sessions", ids.projectSessionId), { recursive: true, mode: 0o700 });

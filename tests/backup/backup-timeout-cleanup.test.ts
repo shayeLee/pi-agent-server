@@ -47,9 +47,9 @@ function baseFixture(prefix: string): {
   cleanups.push(root);
   const dataDir = path.join(root, "data");
   mkdirSync(path.join(dataDir, "sessions", "session-1"), { recursive: true, mode: 0o700 });
-  mkdirSync(path.join(dataDir, ".pi-agent"), { recursive: true, mode: 0o700 });
+  mkdirSync(path.join(dataDir, "agent"), { recursive: true, mode: 0o700 });
   writeFileSync(path.join(dataDir, "sessions", "session-1", "history.jsonl"), '{"secret":"payload-secret"}\n', { mode: 0o600 });
-  writeFileSync(path.join(dataDir, ".pi-agent", "models.json"), '{"models":[]}\n', { mode: 0o600 });
+  writeFileSync(path.join(dataDir, "agent", "models.json"), '{"models":[]}\n', { mode: 0o600 });
   const recipient = path.join(root, "recipient.txt");
   writeFileSync(recipient, "age1testrecipient\n", { mode: 0o600 });
   // The staging root must stay OUTSIDE the backup root AND its parent by

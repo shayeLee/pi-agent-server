@@ -509,8 +509,8 @@ describe("显式 provider 扩展：真实会话打开、恢复与 loader 隔离�
   it("冻结字面量恢复不被 agentDir/APPEND_SYSTEM.md 自动发现污染（文件改前改后均不变）", async () => {
     resetProbe();
     const fixture = await makeFixture("pi-provider-session-append-");
-    // agentDir 由 startServer 固定为 dataDir/.pi-agent；写入 APPEND_SYSTEM.md 作为自动发现诱饵。
-    const agentDir = join(fixture.root, ".pi-agent");
+    // agentDir 由 startServer 固定为 dataDir/agent；写入 APPEND_SYSTEM.md 作为自动发现诱饵。
+    const agentDir = join(fixture.root, "agent");
     mkdirSync(agentDir, { recursive: true });
     const appendPath = join(agentDir, "APPEND_SYSTEM.md");
     writeFileSync(appendPath, "APPEND-BEFORE-MARKER");

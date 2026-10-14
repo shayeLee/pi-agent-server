@@ -3,6 +3,7 @@ import path from "node:path";
 
 /** Environment/config inputs shared by the service composition root and the offline CLI. */
 export interface StoragePathConfigInput {
+  readonly agentDir?: string;
   readonly cwd?: string;
   readonly dataDir?: string;
   readonly dbPath?: string;
@@ -46,7 +47,7 @@ export function resolveAgentDir(
   configuredAgentDir: string | undefined,
   environment: StorageEnvironment = {},
 ): string {
-  return path.resolve(configured(configuredAgentDir, environment.PI_AGENT_DIR) ?? path.join(dataDir, ".pi-agent"));
+  return path.resolve(configured(configuredAgentDir, environment.PI_AGENT_DIR) ?? path.join(dataDir, "agent"));
 }
 
 export function resolveStoragePaths(
@@ -55,9 +56,9 @@ export function resolveStoragePaths(
   baseCwd: string,
 ): { readonly cwd: string; readonly dataDir: string; readonly dbPath: string } {
   const cwd = path.resolve(configured(config.cwd, environment.AGENT_CWD) ?? baseCwd);
-  const dataDir = path.resolve(configured(config.dataDir, environment.DATA_DIR) ?? path.join(homedir(), ".pi", "agent"));
+  const dataDir = path.resolve(configured(config.dataDir, environment.DATA_DIR) ?? path.join(homedir(), ".pi"));
   const dbPath = path.resolve(
-    configured(config.dbPath, environment.DB_PATH) ?? path.join(dataDir, "pi-agent-server.db"),
+    configured(config.dbPath, environment.DB_PATH) ?? path.join(resolveAgentDir(dataDir, config.agentDir, environment), "pi-agent-server.db"),
   );
   return { cwd, dataDir, dbPath };
 }

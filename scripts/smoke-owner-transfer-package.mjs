@@ -51,7 +51,7 @@ try {
   const root = path.join(directory, "fixture");
   const cwd = path.join(root, "app-cwd");
   const dataDir = path.join(root, "data");
-  const agentDir = path.join(dataDir, ".pi-agent");
+  const agentDir = path.join(dataDir, "agent");
   const backupRoot = path.join(root, "backups");
   mkdirSync(cwd, { recursive: true, mode: 0o700 });
   mkdirSync(path.join(dataDir, "sessions", "s1"), { recursive: true, mode: 0o700 });
@@ -109,7 +109,7 @@ try {
   const failFixture = path.join(root, "fail-fixture");
   const failCwd = path.join(failFixture, "app-cwd");
   const failDataDir = path.join(failFixture, "data");
-  const failAgentDir = path.join(failDataDir, ".pi-agent");
+  const failAgentDir = path.join(failDataDir, "agent");
   mkdirSync(failCwd, { recursive: true, mode: 0o700 });
   mkdirSync(path.join(failDataDir, "sessions", "s1"), { recursive: true, mode: 0o700 });
   mkdirSync(failAgentDir, { recursive: true, mode: 0o700 });
@@ -138,7 +138,7 @@ try {
   const missFixture = path.join(root, "miss-fixture");
   const missCwd = path.join(missFixture, "app-cwd");
   const missDataDir = path.join(missFixture, "data");
-  const missAgentDir = path.join(missDataDir, ".pi-agent");
+  const missAgentDir = path.join(missDataDir, "agent");
   mkdirSync(missCwd, { recursive: true, mode: 0o700 });
   mkdirSync(path.join(missDataDir, "sessions", "s1"), { recursive: true, mode: 0o700 });
   mkdirSync(missAgentDir, { recursive: true, mode: 0o700 });
@@ -218,7 +218,7 @@ try {
       const pgRoot = path.join(root, "pg-fixture");
       const pgCwd = path.join(pgRoot, "app-cwd");
       const pgDataDir = path.join(pgRoot, "data");
-      const pgAgentDir = path.join(pgDataDir, ".pi-agent");
+      const pgAgentDir = path.join(pgDataDir, "agent");
       mkdirSync(pgCwd, { recursive: true, mode: 0o700 });
       mkdirSync(path.join(pgDataDir, "sessions", PG_SESSION_ONE_ID), { recursive: true, mode: 0o700 });
       mkdirSync(pgAgentDir, { recursive: true, mode: 0o700 });

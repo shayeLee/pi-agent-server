@@ -458,13 +458,13 @@ function realpathNoSymlink(existing: string): string {
 
 function validateTarget(paths: BackupPaths): { dataDir: string; agentDir: string; dbPath: string; backupRoot: string; uploadRoot?: string; recipients: readonly string[] } {
   for (const [label, value] of [
-    ["data directory", paths.dataDir], ["agent directory", paths.agentDir ?? path.join(paths.dataDir, ".pi-agent")],
+    ["data directory", paths.dataDir], ["agent directory", paths.agentDir ?? path.join(paths.dataDir, "agent")],
     ["source database", paths.dbPath], ["backup root", paths.backupRoot], ["age recipient file", paths.ageRecipientFile],
   ] as const) if (!path.isAbsolute(value)) fail(`${label} must be an absolute path`);
   if (path.resolve(paths.backupRoot) === path.parse(paths.backupRoot).root) fail("backup root must not be the filesystem root");
 
   const dataDir = canonicalForComparison(paths.dataDir);
-  const agentDir = canonicalForComparison(paths.agentDir ?? path.join(paths.dataDir, ".pi-agent"));
+  const agentDir = canonicalForComparison(paths.agentDir ?? path.join(paths.dataDir, "agent"));
   const backupRoot = canonicalForComparison(paths.backupRoot);
   const dbPath = canonicalForComparison(paths.dbPath);
   const uploadRoot = paths.uploadRoot ? canonicalForComparison(paths.uploadRoot) : undefined;
@@ -485,7 +485,7 @@ function validateTarget(paths: BackupPaths): { dataDir: string; agentDir: string
   const authPath = canonicalForComparison(configuredAuthPath ?? path.join(homedir(), ".pi", "agent", "auth.json"));
 
   validateDirectory(paths.dataDir, "data directory", false);
-  validateDirectory(paths.agentDir ?? path.join(paths.dataDir, ".pi-agent"), "agent directory");
+  validateDirectory(paths.agentDir ?? path.join(paths.dataDir, "agent"), "agent directory");
   validateDirectory(paths.backupRoot, "backup root");
   validateRegular(paths.dbPath, "source database");
   for (const sidecar of [`${paths.dbPath}-wal`, `${paths.dbPath}-shm`]) validateRegular(sidecar, "source SQLite DB/WAL/SHM sidecar", false);
@@ -691,7 +691,8 @@ export function collectWhitelistedFiles(dataDir: string, agentDir: string): { fi
   const modelsPath = path.join(agentDir, "models.json");
   if (existsSync(modelsPath)) files.push({
     sourcePath: modelsPath,
-    relativePath: agentDir === path.join(dataDir, ".pi-agent") ? ".pi-agent/models.json" : "agentDir/models.json",
+    // Preserve the existing archive payload name for restore compatibility.
+    relativePath: agentDir === path.join(dataDir, "agent") ? ".pi-agent/models.json" : "agentDir/models.json",
     kind: "config",
   });
   return { files: files.sort((a, b) => a.relativePath.localeCompare(b.relativePath)), excluded };

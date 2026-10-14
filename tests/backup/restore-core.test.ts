@@ -23,7 +23,7 @@ async function fixture(realAge = true, options: { customAgentDir?: boolean; exte
   const root = mkdtempSync(path.join(tmpdir(), "pi-restore-test-"));
   cleanups.push(root);
   const dataDir = path.join(root, "source-data");
-  const agentDir = options.customAgentDir ? path.join(root, "custom-agent") : path.join(dataDir, ".pi-agent");
+  const agentDir = options.customAgentDir ? path.join(root, "custom-agent") : path.join(dataDir, "agent");
   const backupRoot = path.join(root, "source-backups");
   mkdirSync(path.join(dataDir, "projects", "p", "sessions", "db-session"), { recursive: true, mode: 0o700 });
   mkdirSync(path.join(dataDir, "projects"), { recursive: true, mode: 0o700 });
@@ -745,7 +745,7 @@ describe("SQLite restore source-root references", () => {
     symlinkSync(realSource, linkedSource);
     rewriteSourceRoots(packagePath, {
       dataDir: linkedSource,
-      agentDir: path.join(linkedSource, ".pi-agent"),
+      agentDir: path.join(linkedSource, "agent"),
       dbPath: path.join(linkedSource, "pi-agent-server.db"),
     });
     const target = path.join(f.root, "symlink-source-target");

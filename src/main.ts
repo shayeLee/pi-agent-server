@@ -2,7 +2,7 @@
 // 进程入口：从环境变量读取配置，启动 pi-agent-server，处理优雅关闭信号。
 //
 // WP5D-2 网络准入：
-// - PI_ALLOWED_CLIENT_CIDRS 显式必填（无默认），PI_IP_ACCESS_POLICY_FILE 可选（安全加载：
+// - PI_ALLOWED_CLIENT_CIDRS 默认回环和 RFC1918 私网，PI_IP_ACCESS_POLICY_FILE 可选（安全加载：
 //   符号链接/权限/属主/大小/TOCTOU 全程校验）；
 // - 身份 = canonical 客户端 IP：默认直接 socket IP；仅当 TCP 对端为回环（同机反向代理）时
 //   取 X-Forwarded-For 最右条目；CIDR 外 / disabled → 403，/v1 tokenRequired → 401。

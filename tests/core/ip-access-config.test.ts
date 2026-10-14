@@ -18,10 +18,10 @@ describe("parseIpAccessEnv", () => {
     expect(config.policyFile).toBeUndefined();
   });
 
-  it("PI_ALLOWED_CLIENT_CIDRS 显式必填、无默认：缺失/空白抛错", () => {
-    expect(() => parseIpAccessEnv(fullEnv({ PI_ALLOWED_CLIENT_CIDRS: undefined }))).toThrow("必须显式设置");
-    expect(() => parseIpAccessEnv(fullEnv({ PI_ALLOWED_CLIENT_CIDRS: "" }))).toThrow("必须显式设置");
-    expect(() => parseIpAccessEnv(fullEnv({ PI_ALLOWED_CLIENT_CIDRS: "   " }))).toThrow("必须显式设置");
+  it("PI_ALLOWED_CLIENT_CIDRS 未设置使用默认网段，显式空白抛错", () => {
+    expect(parseIpAccessEnv({}).allowedClientCidrTexts).toEqual("127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16".split(","));
+    expect(() => parseIpAccessEnv(fullEnv({ PI_ALLOWED_CLIENT_CIDRS: "" }))).toThrow("不得为空白");
+    expect(() => parseIpAccessEnv(fullEnv({ PI_ALLOWED_CLIENT_CIDRS: "   " }))).toThrow("不得为空白");
   });
 
   it("PI_ALLOWED_CLIENT_CIDRS 非法/非规范/重复抛错", () => {
