@@ -379,6 +379,9 @@ describe("显式 provider 扩展：真实会话打开、恢复与 loader 隔离�
     const session = await createSession(first, "frozen");
     const frozenPrompt = session.systemPrompt;
     await runTurn(first, session.id, "r1", "first");
+    // 新会话同样走冻结字面量 override：第一轮发给模型的提示词也只有一个 cwd 段。
+    expect(probe().systemPrompts.at(-1)).toBe(frozenPrompt);
+    expect(occurrences(probe().systemPrompts.at(-1)!, "<cwd>")).toBe(1);
     // 关闭第一个进程实例（runtime/adapter 全部 dispose）。
     await first.close();
     apps.splice(apps.indexOf(first), 1);
@@ -400,10 +403,10 @@ describe("显式 provider 扩展：真实会话打开、恢复与 loader 隔离�
 
     const restoredPrompt = probe().systemPrompts.at(-1);
     expect(restoredPrompt).toBeDefined();
-    // 恢复后的完整提示词 = 冻结快照字面量 + SDK 在同一轮里追加的 cwd 段：既没有重新解析
-    // （否则片段会再次出现），也没有再次追加能力片段。
-    expect(restoredPrompt!.startsWith(frozenPrompt)).toBe(true);
-    expect(restoredPrompt!.slice(frozenPrompt.length)).toMatch(/^\n\n<cwd>\n/);
+    // 恢复后的完整提示词与冻结快照逐字节一致：既没有重新解析（否则片段会再次出现），
+    // 也没有再次追加能力片段；SDK 补回的 cwd 段替代快照自带的那一个，不会出现两次。
+    expect(restoredPrompt).toBe(frozenPrompt);
+    expect(occurrences(restoredPrompt!, "<cwd>")).toBe(1);
     expect(occurrences(restoredPrompt!, FRAGMENT_MARKER)).toBe(1);
     expect(probe().systemPrompts.length).toBe(beforeRestore + 1);
     // 恢复会话的扩展 hook 同样生效。
@@ -530,11 +533,10 @@ describe("显式 provider 扩展：真实会话打开、恢复与 loader 隔离�
 
     const restoredPrompt = probe().systemPrompts.at(-1);
     expect(restoredPrompt).toBeDefined();
-    expect(restoredPrompt!.startsWith(frozenPrompt)).toBe(true);
+    expect(restoredPrompt).toBe(frozenPrompt);
     expect(restoredPrompt!).not.toContain("APPEND-BEFORE-MARKER");
     expect(restoredPrompt!).not.toContain("APPEND-AFTER-MARKER");
-    // 恢复提示词 = 冻结字面量 + SDK 在同一轮追加的 cwd 段（与既有冻结语义一致）。
-    expect(restoredPrompt!.slice(frozenPrompt.length)).toMatch(/^\n\n<cwd>\n/);
+    expect(occurrences(restoredPrompt!, "<cwd>")).toBe(1);
   });
 
   it("model-failback EventBus 在真实 SDK 会话中锁定用户 abort、end 后解锁，且删除强制取消不被锁挡住", async () => {

@@ -7,6 +7,7 @@
 import { homedir } from "node:os";
 import { resolveHostToolSelection } from "../agent/tool-selection.js";
 import { readAppendSystemPromptFile } from "./system-prompt-file.js";
+import { frozenPromptWithoutCwd } from "./frozen-system-prompt.js";
 import { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
 import { chmodSync, copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
@@ -661,6 +662,7 @@ export async function startServer(config: StartConfig) {
      * dispose 会 invalidate 另一个）。同一 cwd 下扩展模块已缓存，不会重复安装扩展模块级副作用。
      *
      * 有冻结提示词（会话创建时快照）时用字面量 override：既不重新解析，也不追加当前环境原文/能力片段；
+     * 快照结尾自带的 cwd 段先去掉，由 SDK 按会话 cwd 补回，否则恢复后 cwd 出现两次；
      * 未冻结时才重新解析（与 startup 探针同一份 Pi 默认提示词语义）。两者都用同一个稳定扩展
      * 加载 cwd，因此同一扩展模块整进程只求值一次、工厂函数每会话重跑一次。
      */
@@ -669,7 +671,7 @@ export async function startServer(config: StartConfig) {
       const loader = await createSessionResourceLoader({
         ...(frozen === null
           ? unfrozenPromptOptions
-          : { systemPromptOverride: () => frozen }),
+          : { systemPromptOverride: () => frozenPromptWithoutCwd(frozen) }),
       });
       return { loader, failbackLifecycleSource: getProviderExtensionEventBus(loader) };
     };
