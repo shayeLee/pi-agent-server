@@ -124,8 +124,10 @@ export type SseConnectionOptions = {
   initialEpoch?: string;
   /** Called as soon as a stream ends or fails, before reconnect waiting. */
   onDisconnect?: () => void;
-  /** Reconnect delay in milliseconds; defaults to 1000. */
+  /** First reconnect delay in milliseconds; defaults to 1000. Doubles per consecutive failure. */
   reconnectDelay?: number;
+  /** Upper bound for the backed-off reconnect delay; defaults to 30000. */
+  maxReconnectDelay?: number;
   /** Called for HTTP 204; no automatic reconnect is attempted. */
   onNoLiveStream?: () => void;
 };
@@ -138,6 +140,9 @@ export function createSseConnection(options: SseConnectionOptions): { close: () 
   let lastEpoch: string | null = options.initialEpoch ?? null;
 
   const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+  // Exponential backoff while the server stays unreachable; an opened stream starts over.
+  let failures = 0;
+  const backoff = () => Math.min(options.maxReconnectDelay ?? 30_000, (options.reconnectDelay ?? 1000) * 2 ** failures++);
 
   async function loop(): Promise<void> {
     while (!closed) {
@@ -150,7 +155,7 @@ export function createSseConnection(options: SseConnectionOptions): { close: () 
           lastEventId,
           signal: controller.signal,
           clientEpoch: lastEpoch ?? undefined,
-          onOpen: options.onOpen,
+          onOpen: () => { failures = 0; options.onOpen?.(); },
           onEvent: (event, id) => {
             lastEventId = id;
             options.onEvent(event, id);
@@ -176,7 +181,7 @@ export function createSseConnection(options: SseConnectionOptions): { close: () 
       }
       options.onDisconnect?.();
       if (closed) break;
-      await sleep(options.reconnectDelay ?? 1000);
+      await sleep(backoff());
     }
   }
 

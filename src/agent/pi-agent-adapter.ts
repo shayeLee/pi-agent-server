@@ -1,4 +1,4 @@
-import { projectSubagents, type SubagentLive } from "./subagent-transcript.js";
+import { projectSubagents, subagentUsage, type SubagentLive } from "./subagent-transcript.js";
 // PiAgentAdapter：把真实 Pi SDK 的 AgentSession 适配为 AgentAdapter 接口（docs/pi-sdk-api.md §3）。
 // 这是接入真实 SDK 的唯一位置；单元测试用 AgentSessionLike 结构（fake），不碰真实 SDK；
 // 真实 AgentSession 的验证走独立的慢速集成测试（docs/architecture.md §3.2）。
@@ -14,11 +14,27 @@ import type { AgentSdkEvent } from "./events.js";
 import { SUBAGENT_HOST_TRANSPORT_EVENT, isSubagentHostTransportHandshake, type SubagentHostTransport, type ExtensionCustomMessage } from "./subagent-host-transport.js";
 import { notificationFromEntry } from "./subagent-notification.js";
 import { ModelOutputSampler, type ModelOutputProgress } from "./model-output-sampler.js";
-import { cacheHitPercent, nonnegative, responseSpeed, type LastResponseUsage, type UsageSnapshot, type UsageTokens } from "../core/usage-snapshot.js";
+import { EMPTY_USAGE_TOKENS, addUsageTokens, cacheHitPercent, nonnegative, responseSpeed, type LastResponseUsage, type PromptUsage, type UsageSnapshot, type UsageTokens } from "../core/usage-snapshot.js";
 import type { Usage } from "@earendil-works/pi-ai";
 import type { SessionManager } from "@earendil-works/pi-coding-agent";
 import { ExecutionMetrics } from "./execution-metrics.js";
 import { SessionStepsProjector } from "./session-steps-projector.js";
+
+/** Coalescing window for steps_changed / subagents_changed: streamed output would otherwise signal on every delta. */
+export const STEPS_CHANGED_WINDOW_MS = 250;
+
+/**
+ * At most one `emit` per window after a change, always reflecting the latest state (trailing),
+ * so a reader is never left on an intermediate position.
+ */
+function coalesce(subscribe: (onChange: () => void) => () => void, emit: () => void, disposed: () => boolean): () => void {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const unsubscribe = subscribe(() => {
+    if (timer || disposed()) return;
+    timer = setTimeout(() => { timer = undefined; if (!disposed()) emit(); }, STEPS_CHANGED_WINDOW_MS);
+  });
+  return () => { clearTimeout(timer); unsubscribe(); };
+}
 import { projectExportMessages, projectExportSnapshot } from "./session-export.js";
 export { extractText, projectExportMessages, type ExportMessage, type ExportSnapshot, type ExportTimelineItem } from "./session-export.js";
 
@@ -90,9 +106,7 @@ export class PiAgentAdapter implements AgentAdapter {
       getEntries: () => manager.getEntries!(),
       appendCustomEntry: (type, data) => manager.appendCustomEntry!(type, data),
     } : undefined);
-    this.outputSampler = new ModelOutputSampler(monotonicNow, progress => {
-      for (const listener of this.outputListeners) listener(progress);
-    });
+    this.outputSampler = new ModelOutputSampler(monotonicNow, progress => this.publishOutput(progress));
     this.baseStreamFunction = session.agent?.streamFunction;
     const agent = session.agent;
     const enqueue = agent?.steer;
@@ -146,9 +160,10 @@ export class PiAgentAdapter implements AgentAdapter {
       if (data.kind === "start") this.subagentLive.active.add(data.id);
       if (data.kind === "message") this.subagentLive.partials.delete(data.id);
       if (data.kind === "end") { this.subagentLive.active.delete(data.id); this.subagentLive.partials.delete(data.id); }
+      this.subagentsMoved();
     });
     const observePartial = failbackLifecycleSource?.on("agent-team:transcript-live", (data: any) => {
-      if (data && this.subagentLive.active.has(data.id)) this.subagentLive.partials.set(data.id, data);
+      if (data && this.subagentLive.active.has(data.id)) { this.subagentLive.partials.set(data.id, data); this.subagentsMoved(); }
     });
     this.unsubscribeTranscript = () => { observeTranscript?.(); observePartial?.(); this.subagentLive.active.clear(); this.subagentLive.partials.clear(); };
     this.unsubscribeHostIdentity = failbackLifecycleSource?.on("agent-team:host-identity", data => {
@@ -185,10 +200,15 @@ export class PiAgentAdapter implements AgentAdapter {
             }
           }
         }
+        // Legacy agent-team builds record runs only in these tool results (no transcript events).
+        if (event.type === "message_end") {
+          const message = (event as { message?: { role?: string; toolName?: string } }).message;
+          if (message?.role === "toolResult" && (message.toolName === "subagent" || message.toolName === "subagent_wait")) this.subagentsMoved();
+        }
         if (this.executionActive) this.executionMetrics.observe(event);
         this.measureResponse(event);
         const progress = this.outputSampler.sample(event);
-        if (progress) for (const listener of this.outputListeners) listener(progress);
+        if (progress) this.publishOutput(progress);
       }
     });
   }
@@ -238,6 +258,12 @@ export class PiAgentAdapter implements AgentAdapter {
     return () => { this.outputListeners.delete(listener); };
   }
   private lastResponse: LastResponseUsage | null = null;
+  /** Completed model calls of the current host prompt, summed (DESIGN.md §3.1 stats bar). */
+  private promptUsage: PromptUsage | null = null;
+  private publishOutput(progress: ModelOutputProgress): void {
+    const published = { ...progress, promptTokens: this.promptUsage?.totalTokens ?? null };
+    for (const listener of this.outputListeners) listener(published);
+  }
   private responseOrdinal = 0;
   private firstDeltaAt: number | null = null;
   private responseActive = false;
@@ -589,6 +615,23 @@ export class PiAgentAdapter implements AgentAdapter {
 
   private disposed = false;
 
+  /**
+   * Steps move on every streamed delta; listeners get at most one position per window, always
+   * including the last one (trailing), so a reader never misses the final state.
+   */
+  subscribeStepsChanged(listener: (position: { projectionId: string; revision: number }) => void): () => void {
+    return coalesce(onChange => this.stepsProjector.onChange(onChange), () => listener(this.stepsProjector.position()), () => this.disposed);
+  }
+
+  /** Subagent records or live output moved: transcript entries, live partials or legacy collected logs. */
+  private subagentsRevision = 0;
+  private readonly subagentsListeners = new Set<() => void>();
+  private subagentsMoved(): void { this.subagentsRevision++; for (const listener of this.subagentsListeners) listener(); }
+  subscribeSubagentsChanged(listener: (revision: number) => void): () => void {
+    return coalesce(onChange => { this.subagentsListeners.add(onChange); return () => { this.subagentsListeners.delete(onChange); }; },
+      () => listener(this.subagentsRevision), () => this.disposed);
+  }
+
   subscribeNotifications(listener: (event: import("./subagent-notification.js").NotificationEvent) => void): () => void {
     return this.session.subscribe((event) => {
       if (this.disposed) return;
@@ -663,6 +706,7 @@ export class PiAgentAdapter implements AgentAdapter {
   private clearResponseMeasurement(): void {
     this.outputSampler.reset();
     this.lastResponse = null;
+    this.promptUsage = null;
     this.responseOrdinal = 0;
     this.firstDeltaAt = null;
     this.responseActive = false;
@@ -689,6 +733,8 @@ export class PiAgentAdapter implements AgentAdapter {
       const duration = this.responseActive && this.firstDeltaAt !== null
         ? nonnegative(this.monotonicNow() - this.firstDeltaAt) : null;
       this.lastResponse = this.projectResponse(message.usage, this.responseOrdinal || null, duration);
+      const previous = this.promptUsage ?? { ...EMPTY_USAGE_TOKENS, calls: 0 };
+      this.promptUsage = { ...addUsageTokens(previous, this.projectTokens(message.usage)), calls: previous.calls + 1 };
       this.responseActive = false;
       this.firstDeltaAt = null;
     }
@@ -733,7 +779,24 @@ export class PiAgentAdapter implements AgentAdapter {
       const message = this.latestPromptAssistant();
       if (message) lastResponse = this.projectResponse(message.usage, null, null);
     }
-    return { lastResponse, sessionTotals, context, execution: this.getExecutionSnapshot() };
+    let subagentTotals: UsageSnapshot["subagentTotals"] = null;
+    try { subagentTotals = subagentUsage(this.session.sessionManager?.getBranch() ?? []); } catch { /* unknown */ }
+    return { lastResponse, sessionTotals, context, execution: this.getExecutionSnapshot(), currentPrompt: this.currentPromptUsage(), subagentTotals };
+  }
+
+  /** Live accumulation when this process saw the run; otherwise rebuilt from the prompt's messages. */
+  private currentPromptUsage(): PromptUsage | null {
+    if (this.sawAssistantEvent) return this.promptUsage;
+    if (this.usageStart === null) return null;
+    const messages = this.session.messages as Array<{ role?: string; usage?: Usage }>;
+    if (this.usageStart > 0 && messages[this.usageStart - 1] !== this.usageBoundary) return null;
+    let usage: PromptUsage | null = null;
+    for (const message of messages.slice(this.usageStart)) {
+      if (message?.role !== "assistant") continue;
+      const previous: PromptUsage = usage ?? { ...EMPTY_USAGE_TOKENS, calls: 0 };
+      usage = { ...addUsageTokens(previous, this.projectTokens(message.usage)), calls: previous.calls + 1 };
+    }
+    return usage;
   }
 
   private latestPromptAssistant(): { usage?: Usage } | null {

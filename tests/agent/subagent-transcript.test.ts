@@ -107,6 +107,31 @@ describe("subagent transcript durability", () => {
     expect(c.inputs[1]?.delivery).toBe("unknown");
   });
 
+  it("carries each SDK message's recorded time and marks the host's turns by kind", () => {
+    const entries: unknown[] = [];
+    const journal = new TranscriptJournal((customType, data) => entries.push({ type: "custom", customType, data }), () => {});
+    journal.start({ id: "1", agent: "worker", task: "task", startedAt: 1 });
+    const at = (ms: number) => new Date(ms).toISOString();
+    journal.event("1", { type: "message_end", message: { role: "user", content: "task", timestamp: 1_000 } });
+    journal.event("1", { type: "message_end", message: { role: "assistant", timestamp: 2_000,
+      content: [{ type: "thinking", thinking: "plan" }, { type: "toolCall", id: "c", name: "bash", arguments: {} }] } });
+    journal.event("1", { type: "message_end", message: { role: "toolResult", toolCallId: "c", toolName: "bash", content: [], timestamp: 3_000 } });
+    journal.steer("1", "narrow it")(true);
+    journal.event("1", { type: "message_end", message: { role: "user", content: "narrow it", timestamp: 4_000 } });
+    journal.event("1", { type: "message_end", message: { role: "assistant", content: [{ type: "text", text: "done" }] } });
+    const id = projectSubagents("s", entries).runs[0]!.id;
+    const { timeline } = projectSubagents("s", entries, undefined, id).conversation!;
+    expect(timeline.map(item => [item.kind, item.timestamp, item.kind === "message" ? item.hostInput : undefined])).toEqual([
+      ["message", at(1_000), "initial"],
+      ["thinking", at(2_000), undefined],
+      // A tool row is timed by the call, not by its later result.
+      ["tool", at(2_000), undefined],
+      ["message", at(4_000), "steer"],
+      // No recorded time: the row simply has none.
+      ["message", undefined, undefined],
+    ]);
+  });
+
   it("does not publish unsaved entries on a write failure", () => {
     const published: unknown[] = [];
     const journal = new TranscriptJournal(() => { throw new Error("disk full"); }, (_, data) => published.push(data));

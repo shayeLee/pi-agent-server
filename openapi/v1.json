@@ -3866,7 +3866,7 @@
                 "type": "array",
                 "items": {
                   "type": "object",
-                  "description": "Client TimelineItem: message, thinking or tool; sourceLabel records user provenance."
+                  "description": "Client TimelineItem: message, thinking or tool, with the SDK message time as an ISO timestamp when recorded; sourceLabel records user provenance and hostInput (initial | steer) marks the host agent's turns."
                 }
               },
               "messages": {
@@ -4457,6 +4457,26 @@
                 "type": "null"
               }
             ]
+          },
+          "currentPrompt": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/PromptUsage"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "subagentTotals": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SubagentUsage"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "additionalProperties": false
@@ -4625,6 +4645,137 @@
           },
           "scope": {
             "const": "allEntries"
+          }
+        },
+        "additionalProperties": false
+      },
+      "PromptUsage": {
+        "type": "object",
+        "description": "Every model call of the current host prompt, summed; a field is null once any call lacks it. Null when this process did not run the prompt.",
+        "required": [
+          "input",
+          "output",
+          "cacheRead",
+          "cacheWrite",
+          "totalTokens",
+          "costUsdEstimate",
+          "calls"
+        ],
+        "properties": {
+          "input": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "output": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "cacheRead": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "cacheWrite": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "totalTokens": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "costUsdEstimate": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0,
+            "description": "SDK model-price estimate in USD, not an invoice; zero does not establish free service."
+          },
+          "calls": {
+            "type": "integer",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
+      "SubagentUsage": {
+        "type": "object",
+        "description": "Child agent model calls on the current branch (completed assistant messages), summed. Not included in sessionTotals.",
+        "required": [
+          "input",
+          "output",
+          "cacheRead",
+          "cacheWrite",
+          "totalTokens",
+          "costUsdEstimate",
+          "runs",
+          "calls"
+        ],
+        "properties": {
+          "input": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "output": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "cacheRead": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "cacheWrite": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "totalTokens": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "costUsdEstimate": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0,
+            "description": "SDK model-price estimate in USD, not an invoice; zero does not establish free service."
+          },
+          "runs": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "calls": {
+            "type": "integer",
+            "minimum": 0
           }
         },
         "additionalProperties": false
@@ -5413,6 +5564,46 @@
             "type": "object",
             "required": [
               "type",
+              "projectionId",
+              "revision"
+            ],
+            "properties": {
+              "type": {
+                "const": "steps_changed"
+              },
+              "projectionId": {
+                "type": "string"
+              },
+              "revision": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "additionalProperties": false,
+            "description": "The session-steps projection moved, from any source (live events, persisted reconciliation, branch change, idle-time entries). Coalesced to at most one per 250 ms with the final position always sent. Carries no step content: read GET /v1/sessions/{id}/steps; a new projectionId replaces the snapshot. Session-level, never request-owned."
+          },
+          {
+            "type": "object",
+            "required": [
+              "type",
+              "revision"
+            ],
+            "properties": {
+              "type": {
+                "const": "subagents_changed"
+              },
+              "revision": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "additionalProperties": false,
+            "description": "Subagent records or live output moved: a transcript entry (start, message, steer, end), a live partial, or a legacy collected-log tool result. Coalesced to at most one per 250 ms with the final change always sent; also sent while the parent is idle and children run in the background. Carries no run data: read GET /v1/sessions/{id}/subagents. Session-level, never request-owned."
+          },
+          {
+            "type": "object",
+            "required": [
+              "type",
               "version",
               "notificationId",
               "runIds",
@@ -5532,6 +5723,14 @@
               },
               "requestId": {
                 "type": "string"
+              },
+              "promptTokens": {
+                "type": [
+                  "number",
+                  "null"
+                ],
+                "minimum": 0,
+                "description": "Total tokens of this prompt's completed model calls so far."
               }
             },
             "additionalProperties": false
@@ -5718,6 +5917,26 @@
                 "oneOf": [
                   {
                     "$ref": "#/components/schemas/ContextUsage"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "currentPrompt": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/PromptUsage"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "subagentTotals": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/SubagentUsage"
                   },
                   {
                     "type": "null"

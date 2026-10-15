@@ -25,6 +25,8 @@ export type ModelOutputProgress = {
   replay?: boolean;
   /** Age of the last source delta at publication (trailing flush is not new output). */
   activityAgeMs?: number;
+  /** Total tokens of this prompt's completed model calls so far; null before the first completes or when unknown. */
+  promptTokens?: number | null;
 };
 
 export type CompactionReason = "manual" | "threshold" | "overflow";
@@ -45,6 +47,10 @@ export type SseEvent =
   | ({ type: "compaction_start"; reason: CompactionReason; replay?: boolean } & SseRequestId)
   | ({ type: "compaction_end"; reason: CompactionReason; outcome: "succeeded" | "failed" | "aborted"; willRetry: boolean; tokensBefore?: number; tokensAfter?: number; replay?: boolean } & SseRequestId)
   | ({ type: "control_queue" } & import("./control-queue.js").ControlQueueSnapshot)
+  /** The session-steps projection moved (coalesced): read GET /steps. Carries no step content; session-level, never request-owned. */
+  | ({ type: "steps_changed"; projectionId: string; revision: number } & SseRequestId)
+  /** Subagent records or live output moved (coalesced): read GET /subagents. Carries no run data; session-level. */
+  | ({ type: "subagents_changed"; revision: number } & SseRequestId)
   | ({ type: "steering_consumed" } & import("./steering.js").SteeringConsumed)
   | ({ type: "model_output_progress" } & ModelOutputProgress & SseRequestId)
   | ({ type: "text_delta"; text: string } & SseRequestId)

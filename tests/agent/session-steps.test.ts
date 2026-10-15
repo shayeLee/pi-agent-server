@@ -192,3 +192,24 @@ describe("independent session steps", () => {
     } finally { f.adapter.dispose(); await rm(root, { recursive: true, force: true }); }
   });
 });
+
+describe("steps change notifications", () => {
+  it("notifies when the projection moves from any source, and not on a read that changes nothing", () => {
+    const branch: any[] = [];
+    const p = new SessionStepsProjector(() => branch);
+    const changes = vi.fn();
+    p.onChange(changes);
+    p.observe({ type: "message_start", message: assistant([text("hi")]) });
+    expect(changes).toHaveBeenCalledTimes(1);
+    p.snapshot("s");
+    expect(changes).toHaveBeenCalledTimes(1);
+    // An idle-time entry (e.g. a model switch) reaches the projector through entry_appended.
+    branch.push({ type: "model_change", id: "m", parentId: null, timestamp: "2026-01-01T00:00:00Z", provider: "p", modelId: "x" });
+    p.observe({ type: "entry_appended", entry: branch[0] });
+    expect(changes).toHaveBeenCalledTimes(2);
+    const before = p.position();
+    p.reset();
+    expect(changes).toHaveBeenCalledTimes(3);
+    expect(p.position().projectionId).not.toBe(before.projectionId);
+  });
+});

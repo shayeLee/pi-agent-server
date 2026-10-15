@@ -1,6 +1,6 @@
 // Transport and application-state contracts for pi-agent-server clients.
 import type { UsageSnapshot } from "../core/usage-snapshot.js";
-export type { UsageSnapshot, UsageTokens, LastResponseUsage, ExecutionSnapshot } from "../core/usage-snapshot.js";
+export type { UsageSnapshot, UsageTokens, LastResponseUsage, ExecutionSnapshot, PromptUsage, SubagentUsage } from "../core/usage-snapshot.js";
 
 /**
  * turn 关联字段：同一轮对话的所有 SSE 事件都携带产生它们的 `requestId`，
@@ -85,15 +85,19 @@ export type TimelineItem =
       role: "user" | "assistant";
       /** Provenance supplied by a read-only child conversation. */
       sourceLabel?: string;
+      /** In a child conversation: this user turn is the host agent's input of that kind. */
+      hostInput?: "initial" | "steer";
       text: string;
       images?: readonly { mediaType: string; base64: string }[];
       /** 是否仍在流式接收增量（未完成）。 */
       streaming: boolean;
       /** Explicit terminal evidence for an interrupted assistant reply. */
       stopReason?: "aborted";
+      /** Recorded ISO time from exported history or a child transcript; absent for live rows. */
+      timestamp?: string;
     }
-  | { kind: "thinking"; id: string; text: string; streaming: boolean }
-  | { kind: "tool"; id: string; call: ToolCall };
+  | { kind: "thinking"; id: string; text: string; streaming: boolean; timestamp?: string }
+  | { kind: "tool"; id: string; call: ToolCall; timestamp?: string };
 
 /** 调试面板的一条原始事件日志。 */
 export type EventLogEntry = {

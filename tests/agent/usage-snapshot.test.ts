@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { PiAgentAdapter, type AgentSessionLike } from "../../src/agent/pi-agent-adapter.js";
 import type { AgentSdkEvent, SseEvent } from "../../src/agent/events.js";
 import { cacheHitPercent, responseSpeed } from "../../src/core/usage-snapshot.js";
+import { subagentUsage } from "../../src/agent/subagent-transcript.js";
 import { applySseEvent, createChatState } from "../../src/client/chat-state.js";
 import { SessionRuntime } from "../../src/runtime/session-runtime.js";
 import { ConcurrencyController } from "../../src/core/concurrency-control.js";
@@ -28,6 +29,44 @@ function fixture() {
 }
 
 describe("authorized SDK usage snapshots", () => {
+  it("sums every model call of the current prompt, live in progress events and in the snapshot", async () => {
+    const f = fixture();
+    const published: Array<number | null | undefined> = [];
+    f.adapter.subscribeModelOutputProgress(progress => published.push(progress.promptTokens));
+    await f.adapter.prompt("p");
+    f.start(); f.delta(); f.at(100); f.end();
+    f.start(); f.delta(); f.at(200); f.end();
+    const snapshot = await f.adapter.getUsageSnapshot();
+    expect(snapshot.currentPrompt).toEqual({ calls: 2, input: usage.input * 2, output: usage.output * 2, cacheRead: usage.cacheRead * 2,
+      cacheWrite: usage.cacheWrite * 2, totalTokens: usage.totalTokens * 2, costUsdEstimate: usage.cost.total * 2 });
+    // Before the first call completes nothing is known; after each call the running total is published.
+    expect(published[0]).toBeNull();
+    expect(published.at(-1)).toBe(usage.totalTokens * 2);
+    // A call without a measurement makes the sum unknown instead of undercounting.
+    f.start(); f.end({ ...usage, totalTokens: undefined });
+    expect((await f.adapter.getUsageSnapshot()).currentPrompt).toMatchObject({ calls: 3, totalTokens: null, input: usage.input * 3 });
+    await f.adapter.prompt("next");
+    expect((await f.adapter.getUsageSnapshot()).currentPrompt).toBeNull();
+  });
+
+  it("sums child usage from completed assistant transcript messages, once per message", () => {
+    const entry = (id: string, seq: number, kind: string, payload: Record<string, unknown>) =>
+      ({ type: "custom", customType: "agent-team:transcript", data: { version: 1, id, seq, kind, timestamp: seq, payload } });
+    const assistant = (key: string, complete: boolean) => ({ key, complete, message: { role: "assistant", usage } });
+    expect(subagentUsage([])).toBeNull();
+    const totals = subagentUsage([
+      entry("a", 1, "start", { runId: "1", agent: "worker", task: "t", startedAt: 1 }),
+      entry("a", 2, "message", assistant("m1", false)),
+      entry("a", 3, "message", assistant("m1", true)),
+      entry("a", 4, "message", { key: "u", complete: true, message: { role: "user", content: "x" } }),
+      entry("b", 5, "start", { runId: "2", agent: "worker", task: "t", startedAt: 1 }),
+      entry("b", 6, "message", assistant("m1", true)),
+      entry("b", 7, "message", assistant("m2", false)),
+    ]);
+    expect(totals).toEqual({ runs: 2, calls: 2, input: usage.input * 2, output: usage.output * 2, cacheRead: usage.cacheRead * 2,
+      cacheWrite: usage.cacheWrite * 2, totalTokens: usage.totalTokens * 2, costUsdEstimate: usage.cost.total * 2 });
+  });
+
   it("uses SDK cache/cost/totals and final response timing, excluding tool waiting and other assistant responses", async () => {
     const f = fixture();
     await f.adapter.prompt("p");

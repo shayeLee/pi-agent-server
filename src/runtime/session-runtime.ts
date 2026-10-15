@@ -165,6 +165,8 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
   }
   private readonly unsubscribeNotifications: () => void;
   private readonly unsubscribeOutputProgress: () => void;
+  private readonly unsubscribeStepsChanged: () => void;
+  private readonly unsubscribeSubagentsChanged: () => void;
   private readonly unsubscribeFailbackLifecycle: () => void;
   private disposed = false;
   private readonly unbindSubagentTransport: () => void;
@@ -252,6 +254,14 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
     this.unsubscribeNotifications = this.adapter.subscribeNotifications?.((event) => {
       if (!this.disposed) this.emitEvent(event);
     }) ?? (() => {});
+    // Session-level, independent of any request: idle-time changes (model switch, rename) count too.
+    this.unsubscribeStepsChanged = this.adapter.subscribeStepsChanged?.((position) => {
+      if (!this.disposed) this.emitEvent({ type: "steps_changed", ...position });
+    }) ?? (() => {});
+    // Children may keep running after the parent turn ends; this is session-level too.
+    this.unsubscribeSubagentsChanged = this.adapter.subscribeSubagentsChanged?.((revision) => {
+      if (!this.disposed) this.emitEvent({ type: "subagents_changed", revision });
+    }) ?? (() => {});
     this.unsubscribeOutputProgress = this.adapter.subscribeModelOutputProgress?.((progress) => {
       if (!this.disposed && this.taskState === "streaming" && !this.aborting && this.currentRequestId) {
         this.emitEvent({ type: "model_output_progress", ...progress, requestId: this.currentRequestId });
@@ -274,6 +284,8 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
     this.unsubscribeRequestError();
     this.unsubscribeNotifications();
     this.unsubscribeOutputProgress();
+    this.unsubscribeStepsChanged();
+    this.unsubscribeSubagentsChanged();
     this.unsubscribeFailbackLifecycle();
     this.failbackAttemptId = null;
     // 清除本 turn 的墙钟 deadline timer，绝不泄漏。
@@ -1302,6 +1314,8 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
             ...(usage?.sessionTotals !== undefined ? { sessionTotals: usage.sessionTotals } : {}),
             ...(usage?.context !== undefined ? { context: usage.context } : {}),
             ...(usage?.execution !== undefined ? { execution: usage.execution } : {}),
+            ...(usage?.currentPrompt !== undefined ? { currentPrompt: usage.currentPrompt } : {}),
+            ...(usage?.subagentTotals !== undefined ? { subagentTotals: usage.subagentTotals } : {}),
             promptTokens: usage?.promptTokens ?? null,
             completionTokens: usage?.completionTokens ?? null,
             totalTokens: usage?.totalTokens ?? null,

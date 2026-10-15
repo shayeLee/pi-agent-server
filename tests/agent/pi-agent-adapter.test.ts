@@ -1,6 +1,7 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import {
   PiAgentAdapter,
+  STEPS_CHANGED_WINDOW_MS,
   type AgentSessionLike,
   type SdkImageContent,
 } from "../../src/agent/pi-agent-adapter.js";
@@ -187,3 +188,69 @@ describe("PiAgentAdapter（接入真实 AgentSession 的适配层）", () => {
     expect(session.agent.streamFunction("m", [], {})).toBe("base:false");
   });
 });
+
+describe("steps_changed coalescing", () => {
+  it("signals at most once per window and always delivers the final position", async () => {
+    vi.useFakeTimers();
+    try {
+      const session = new FakeSession();
+      const adapter = new PiAgentAdapter(session);
+      const positions: { projectionId: string; revision: number }[] = [];
+      adapter.subscribeStepsChanged(position => positions.push(position));
+      const message = (text: string) => ({ role: "assistant", content: [{ type: "text", text }], stopReason: "stop" });
+      session.emit({ type: "message_start", message: message("a") } as AgentSdkEvent);
+      const update = (text: string) => ({ type: "message_update", message: message(text), assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: text.slice(-1) } }) as unknown as AgentSdkEvent;
+      for (const text of ["ab", "abc", "abcd"]) session.emit(update(text));
+      expect(positions).toHaveLength(0);
+      await vi.advanceTimersByTimeAsync(STEPS_CHANGED_WINDOW_MS);
+      expect(positions).toHaveLength(1);
+      expect(positions[0]!.revision).toBe(adapter.getSessionSteps("s").revision);
+      session.emit(update("abcde"));
+      await vi.advanceTimersByTimeAsync(STEPS_CHANGED_WINDOW_MS);
+      expect(positions).toHaveLength(2);
+      expect(positions[1]!.revision).toBeGreaterThan(positions[0]!.revision);
+      // Nothing moved: nothing more is signalled.
+      await vi.advanceTimersByTimeAsync(STEPS_CHANGED_WINDOW_MS * 4);
+      expect(positions).toHaveLength(2);
+      adapter.dispose();
+    } finally { vi.useRealTimers(); }
+  });
+});
+
+describe("subagents_changed coalescing", () => {
+  it("signals transcript, live-output and legacy result changes at most once per window, final change included", async () => {
+    vi.useFakeTimers();
+    try {
+      const handlers = new Map<string, (data: unknown) => void>();
+      const bus = { on: (channel: string, handler: (data: unknown) => void) => { handlers.set(channel, handler); return () => { handlers.delete(channel); }; } };
+      const session = new FakeSession();
+      const adapter = new PiAgentAdapter(session, undefined, bus);
+      const revisions: number[] = [];
+      adapter.subscribeSubagentsChanged(revision => revisions.push(revision));
+      const transcript = handlers.get("agent-team:transcript")!;
+      const live = handlers.get("agent-team:transcript-live")!;
+      transcript({ version: 1, id: "r1", kind: "start" });
+      live({ id: "r1", revision: 1 });
+      live({ id: "r1", revision: 2 });
+      expect(revisions).toHaveLength(0);
+      await vi.advanceTimersByTimeAsync(STEPS_CHANGED_WINDOW_MS);
+      expect(revisions).toHaveLength(1);
+      // Live output for an unknown run is not this session's child.
+      live({ id: "other", revision: 1 });
+      await vi.advanceTimersByTimeAsync(STEPS_CHANGED_WINDOW_MS);
+      expect(revisions).toHaveLength(1);
+      transcript({ version: 1, id: "r1", kind: "end" });
+      await vi.advanceTimersByTimeAsync(STEPS_CHANGED_WINDOW_MS);
+      expect(revisions).toHaveLength(2);
+      expect(revisions[1]!).toBeGreaterThan(revisions[0]!);
+      // A legacy build records the run only in the collected tool result.
+      session.emit({ type: "message_end", message: { role: "toolResult", toolName: "subagent_wait", content: [] } } as unknown as AgentSdkEvent);
+      await vi.advanceTimersByTimeAsync(STEPS_CHANGED_WINDOW_MS);
+      expect(revisions).toHaveLength(3);
+      await vi.advanceTimersByTimeAsync(STEPS_CHANGED_WINDOW_MS * 4);
+      expect(revisions).toHaveLength(3);
+      adapter.dispose();
+    } finally { vi.useRealTimers(); }
+  });
+});
+

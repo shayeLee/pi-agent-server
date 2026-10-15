@@ -1,5 +1,6 @@
 import type { TimelineItem, ToolCall } from "../client/types.js";
 import { SUBAGENT_TRANSCRIPT, type SubagentConversation, type SubagentInput, type SubagentRun, type SubagentSnapshot } from "../shared/subagents.js";
+import { EMPTY_USAGE_TOKENS, addUsageTokens, usageTokensOf, type SubagentUsage } from "../core/usage-snapshot.js";
 
 type RecordValue = Record<string, any>;
 const object = (value: unknown): value is RecordValue => !!value && typeof value === "object" && !Array.isArray(value);
@@ -78,9 +79,14 @@ export function projectSubagents(sessionId: string, entries: readonly unknown[],
   return { sessionId, runs: [...runs.values()].map(s => s.run), ...(state ? { conversation: conversation(state) } : {}) };
 }
 
+/** ISO time recorded on an SDK message, if any; rows without it simply show no time. */
+function messageTime(m: RecordValue): { timestamp?: string } {
+  return typeof m.timestamp === "number" && Number.isFinite(m.timestamp) && m.timestamp > 0 ? { timestamp: new Date(m.timestamp).toISOString() } : {};
+}
+
 function conversation(state: RunState): SubagentConversation {
   const rows: Array<{ order: number; item: TimelineItem }> = [];
-  const tools = new Map(state.tools);
+  const tools = new Map<string, { call: ToolCall; order: number; timestamp?: string }>(state.tools);
   let userCount = 0;
   for (const [key, { message: m, complete, order }] of state.messages) {
     const content = typeof m.content === "string" ? [{ type: "text", text: m.content }] : Array.isArray(m.content) ? m.content : [];
@@ -88,36 +94,61 @@ function conversation(state: RunState): SubagentConversation {
     if (m.role === "user") {
       const input = userCount++ === 0 ? state.inputs[0] : state.inputs.find(i => i.kind === "steer" && i.delivery === "submitted" && (i.order ?? -1) < order && i.text === text);
       if (input) input.delivery = "delivered";
-      rows.push({ order, item: { kind: "message", id: `child:${key}`, role: "user", text, streaming: false,
+      rows.push({ order, item: { kind: "message", id: `child:${key}`, role: "user", text, streaming: false, ...messageTime(m),
         images: content.filter((p: any) => p.type === "image" && typeof p.data === "string").map((p: any) => ({ mediaType: p.mimeType, base64: p.data })),
+        ...(input ? { hostInput: input.kind } : {}),
         sourceLabel: input ? `主代理 · ${input.kind === "initial" ? "初始任务" : "steer"} · 已送达` : "用户消息" } });
     } else if (m.role === "assistant") {
       content.forEach((p: any, index: number) => {
         const id = `child:${key}:${index}`, position = order + index / (content.length + 1);
         if (p.type === "text" || p.type === "thinking") rows.push({ order: position, item: p.type === "text"
-          ? { kind: "message", id, role: "assistant", text: String(p.text ?? ""), streaming: !complete && state.run.status === "running" }
-          : { kind: "thinking", id, text: String(p.thinking ?? ""), streaming: !complete && state.run.status === "running" } });
+          ? { kind: "message", id, role: "assistant", text: String(p.text ?? ""), streaming: !complete && state.run.status === "running", ...messageTime(m) }
+          : { kind: "thinking", id, text: String(p.thinking ?? ""), streaming: !complete && state.run.status === "running", ...messageTime(m) } });
         if (p.type === "toolCall" && typeof p.id === "string") {
           const existing = tools.get(p.id);
-          tools.set(p.id, { order: position, call: { toolCallId: p.id, toolName: String(p.name), args: p.arguments,
+          tools.set(p.id, { order: position, ...messageTime(m), call: { toolCallId: p.id, toolName: String(p.name), args: p.arguments,
             partialResult: null, result: null, done: false, isError: false, ...existing?.call } });
         }
       });
       if (typeof m.model === "string") state.run.model = m.provider ? `${m.provider}/${m.model}` : m.model;
     } else if (m.role === "toolResult" && typeof m.toolCallId === "string") {
       const old = tools.get(m.toolCallId);
-      tools.set(m.toolCallId, { order: old?.order ?? order, call: { toolCallId: m.toolCallId, toolName: m.toolName ?? old?.call.toolName ?? "tool",
+      tools.set(m.toolCallId, { order: old?.order ?? order, ...(old?.timestamp ? { timestamp: old.timestamp } : messageTime(m)), call: { toolCallId: m.toolCallId, toolName: m.toolName ?? old?.call.toolName ?? "tool",
         args: old?.call.args ?? {}, partialResult: null, result: m, done: true, isError: !!m.isError } });
     }
   }
-  for (const [id, { order, call }] of tools) {
+  for (const [id, { order, call, timestamp }] of tools) {
     if (!call.done && state.run.status !== "running") {
       call.result = { content: [{ type: "text", text: "工具结果未记录；任务已结束或运行状态未知。" }] };
       call.done = true; call.isError = true;
     }
-    rows.push({ order, item: { kind: "tool", id: `child-tool:${id}`, call } });
+    rows.push({ order, item: { kind: "tool", id: `child-tool:${id}`, call, ...(timestamp ? { timestamp } : {}) } });
   }
   for (const input of state.inputs) if (input.delivery === "submitted" && state.run.status !== "running") input.delivery = "unknown";
   return { run: state.run, timeline: rows.sort((a, b) => a.order - b.order).map(r => r.item), inputs: state.inputs,
     messages: [...state.messages.values()].map(m => m.message) };
+}
+
+/**
+ * Child model usage on a branch: each completed assistant message counts once (its last stored
+ * version). Child runs are separate sessions, so none of this is in the parent's session totals.
+ */
+export function subagentUsage(entries: readonly unknown[]): SubagentUsage | null {
+  const runs = new Set<string>();
+  const messages = new Map<string, unknown>();
+  for (const raw of entries) {
+    if (!object(raw) || raw.type !== "custom" || raw.customType !== SUBAGENT_TRANSCRIPT || !object(raw.data)) continue;
+    const e = raw.data;
+    if (e.version !== 1 || typeof e.id !== "string" || !object(e.payload)) continue;
+    if (e.kind === "start") runs.add(e.id);
+    else if (e.kind === "message" && object(e.payload.message)) {
+      const key = `${e.id}\u0000${String(e.payload.key)}`;
+      if (e.payload.complete === true && e.payload.message.role === "assistant") messages.set(key, e.payload.message.usage);
+      else messages.delete(key);
+    }
+  }
+  if (!runs.size) return null;
+  let tokens = EMPTY_USAGE_TOKENS;
+  for (const usage of messages.values()) tokens = addUsageTokens(tokens, usageTokensOf(usage));
+  return { ...tokens, runs: runs.size, calls: messages.size };
 }

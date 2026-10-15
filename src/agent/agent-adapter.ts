@@ -39,6 +39,10 @@ export interface AgentAdapter {
   /** 流式生成中插入指令（POST /v1/sessions/:id/steer）。 */
   steer(text: string, input?: import("../shared/steering.js").SteeringInput): Promise<void>;
   subscribeSteeringConsumed?(listener: (identity: import("../shared/steering.js").SteeringConsumed) => void): () => void;
+  /** Coalesced session-steps position changes; the listener then reads the snapshot. */
+  subscribeStepsChanged?(listener: (position: { projectionId: string; revision: number }) => void): () => void;
+  /** Coalesced subagent record / live-output changes; the listener then reads GET /subagents. */
+  subscribeSubagentsChanged?(listener: (revision: number) => void): () => void;
   /** Deferred request-owned adapter failures; must never be routed to a later request. */
   subscribeRequestError?(listener: (error: Error, requestId: string) => void): () => void;
 

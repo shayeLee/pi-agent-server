@@ -126,18 +126,27 @@ export class SessionStepsProjector {
   private currentCalls = new Map<string, string>();
   private observedAt = new Map<string, string>();
   private disposed = false;
-  dispose(): void { this.disposed = true; this.pending.clear(); }
+  private readonly listeners = new Set<() => void>();
+  dispose(): void { this.disposed = true; this.pending.clear(); this.listeners.clear(); }
+  /** Called whenever the revision or projection identity moves, from any source (event, reconcile or reset). */
+  onChange(listener: () => void): () => void { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; }
+  private notify(): void { for (const listener of this.listeners) listener(); }
+  /** Current position without copying the steps. */
+  position(): { projectionId: string; revision: number } { return { projectionId: this.projectionId, revision: this.revision }; }
 
   constructor(private readonly getBranch: () => readonly unknown[]) { this.reconcile(); }
   private change(next: SessionStep[]): void {
     if (next.length !== this.steps.length || next.some((step, index) =>
       step !== this.steps[index] && JSON.stringify(step) !== JSON.stringify(this.steps[index]))) {
       this.steps = next; this.revision++;
+      this.notify();
     }
   }
   reset(): void {
     this.projectionId = randomUUID(); this.steps = []; this.branchIds = []; this.entries.clear(); this.pending.clear(); this.calls.clear(); this.currentCalls.clear(); this.observedAt.clear(); this.active = undefined; this.ordinal = 0; this.revision = 0;
     this.reconcile();
+    // An empty branch projects nothing, so reconcile did not signal the new projection identity.
+    if (this.revision === 0) this.notify();
   }
   reconcile(): void {
     if (this.disposed) return;

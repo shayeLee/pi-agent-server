@@ -21,6 +21,8 @@ export type ChatState = {
   stats: UsageStats | null;
   /** Ephemeral receipt clock; never restored from history. */
   modelOutput?: (import("./types.js").ModelOutputProgress & { receivedAt: number }) | null;
+  /** Current prompt so far: the model call in progress (1-based) and tokens of completed calls. Live only. */
+  runProgress?: { calls: number; promptTokens: number | null } | null;
   /** Only observed tool_start lifecycle for the active request, not historical timeline cards. */
   activeToolCallIds?: string[];
   compaction?: import("../shared/events.js").CompactionState | null;
@@ -47,6 +49,7 @@ export function addUserMessage(state: ChatState, text: string, messageId?: strin
     retiredRequestIds: retireRequest(state, requestId),
     compaction: null,
     modelOutput: null,
+    runProgress: null,
     activeToolCallIds: [],
     error: null,
   };
@@ -116,8 +119,9 @@ export function applySseEvent(state: ChatState, event: SseEvent, now: () => numb
         ...(validTokenCount(event.tokensBefore) ? { tokensBefore: event.tokensBefore } : {}),
         ...(validTokenCount(event.tokensAfter) ? { tokensAfter: event.tokensAfter } : {}) } };
     case "model_output_progress":
-      return { ...state, modelOutput: !event.replay && event.phase === "delta"
-        ? { ...event, receivedAt: now() - Math.max(0, event.activityAgeMs ?? 0) } : null };
+      return { ...state, runProgress: { calls: event.ordinal, promptTokens: event.promptTokens ?? null },
+        modelOutput: !event.replay && event.phase === "delta"
+          ? { ...event, receivedAt: now() - Math.max(0, event.activityAgeMs ?? 0) } : null };
     case "text_delta":
       return appendAssistantText(state, event.text);
     case "thinking_delta":
@@ -145,7 +149,8 @@ export function applySseEvent(state: ChatState, event: SseEvent, now: () => numb
       });
     case "status": {
       const stats = event.phase === "agent_start" && state.stats ? { ...state.stats, lastResponse: null, context: null } : state.stats;
-      return { ...state, activeToolCallIds: event.phase === "agent_start" ? [] : state.activeToolCallIds, modelOutput: event.phase === "agent_start" ? null : state.modelOutput, phase: "streaming", stats: event.execution === undefined ? stats : {
+      return { ...state, activeToolCallIds: event.phase === "agent_start" ? [] : state.activeToolCallIds, modelOutput: event.phase === "agent_start" ? null : state.modelOutput,
+        ...(event.phase === "agent_start" ? { runProgress: null } : {}), phase: "streaming", stats: event.execution === undefined ? stats : {
         durationMs: NaN, ttftMs: NaN, promptTokens: null, completionTokens: null, totalTokens: null,
         ...stats, execution: mergeExecution(stats?.execution, event.execution),
       } };
@@ -164,6 +169,8 @@ export function applySseEvent(state: ChatState, event: SseEvent, now: () => numb
           ...(event.lastResponse !== undefined ? { lastResponse: event.lastResponse } : {}),
           ...(event.sessionTotals !== undefined ? { sessionTotals: event.sessionTotals } : {}),
           ...(event.context !== undefined ? { context: event.context } : {}),
+          ...(event.currentPrompt !== undefined ? { currentPrompt: event.currentPrompt } : {}),
+          ...(event.subagentTotals !== undefined ? { subagentTotals: event.subagentTotals } : {}),
           ...(event.execution !== undefined || state.stats?.execution !== undefined ? { execution: mergeExecution(state.stats?.execution, event.execution) } : {}),
         },
       };

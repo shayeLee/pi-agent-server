@@ -1740,3 +1740,37 @@ describe("SessionRuntime（needs.md §4.2 会话任务编排）", () => {
     });
   });
 });
+describe("SessionRuntime steps_changed", () => {
+  it("forwards session-level steps positions even while idle, and stops after dispose", () => {
+    const adapter = new MockAgentAdapter();
+    let signal: ((position: { projectionId: string; revision: number }) => void) | undefined;
+    (adapter as MockAgentAdapter & { subscribeStepsChanged: unknown }).subscribeStepsChanged = (listener: typeof signal) => {
+      signal = listener;
+      return () => { signal = undefined; };
+    };
+    const { runtime, events } = makeRuntime({ adapter });
+    // No request is running: a model switch or rename still moves the steps.
+    signal!({ projectionId: "p1", revision: 3 });
+    expect(events).toEqual([{ type: "steps_changed", projectionId: "p1", revision: 3 }]);
+    runtime.dispose();
+    expect(signal).toBeUndefined();
+  });
+});
+
+describe("SessionRuntime subagents_changed", () => {
+  it("forwards subagent changes while the parent is idle, and stops after dispose", () => {
+    const adapter = new MockAgentAdapter();
+    let signal: ((revision: number) => void) | undefined;
+    (adapter as MockAgentAdapter & { subscribeSubagentsChanged: unknown }).subscribeSubagentsChanged = (listener: typeof signal) => {
+      signal = listener;
+      return () => { signal = undefined; };
+    };
+    const { runtime, events } = makeRuntime({ adapter });
+    // Children can run on in the background after the parent turn ends.
+    signal!(5);
+    expect(events).toEqual([{ type: "subagents_changed", revision: 5 }]);
+    runtime.dispose();
+    expect(signal).toBeUndefined();
+  });
+});
+

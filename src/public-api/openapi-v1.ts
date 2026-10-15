@@ -14,6 +14,8 @@ const snapshotProperties = {
   lastResponse: { oneOf: [{ $ref: "#/components/schemas/LastResponseUsage" }, { type: "null" }] },
   sessionTotals: { oneOf: [{ $ref: "#/components/schemas/SessionUsageTotals" }, { type: "null" }] },
   context: { oneOf: [{ $ref: "#/components/schemas/ContextUsage" }, { type: "null" }] },
+  currentPrompt: { oneOf: [{ $ref: "#/components/schemas/PromptUsage" }, { type: "null" }] },
+  subagentTotals: { oneOf: [{ $ref: "#/components/schemas/SubagentUsage" }, { type: "null" }] },
 } as const;
 
 // Explicit application operations registered by the host. Fastify exposes the GET
@@ -412,7 +414,7 @@ export const openapiV1 = {
       SubagentSnapshot: { type: "object", required: ["sessionId", "runs"], properties: {
         sessionId: { type: "string" }, runs: { type: "array", items: ref("SubagentRun") },
         conversation: { type: "object", required: ["run", "timeline", "inputs", "messages"], properties: {
-          run: ref("SubagentRun"), timeline: { type: "array", items: { type: "object", description: "Client TimelineItem: message, thinking or tool; sourceLabel records user provenance." } },
+          run: ref("SubagentRun"), timeline: { type: "array", items: { type: "object", description: "Client TimelineItem: message, thinking or tool, with the SDK message time as an ISO timestamp when recorded; sourceLabel records user provenance and hostInput (initial | steer) marks the host agent's turns." } },
           messages: { type: "array", items: {}, description: "Original SDK messages, without transcript truncation." },
           inputs: { type: "array", items: { type: "object", required: ["id", "text", "timestamp", "kind", "delivery"], properties: {
             id: { type: "string" }, text: { type: "string" }, timestamp: { type: "number" }, kind: { type: "string", enum: ["initial", "steer"] },
@@ -450,6 +452,8 @@ export const openapiV1 = {
         }, additionalProperties: false },
       }, additionalProperties: false },
       SessionUsageTotals: { type: "object", required: [...Object.keys(usageTokenProperties), "scope"], properties: { ...usageTokenProperties, scope: { const: "allEntries" } }, additionalProperties: false },
+      PromptUsage: { type: "object", description: "Every model call of the current host prompt, summed; a field is null once any call lacks it. Null when this process did not run the prompt.", required: [...Object.keys(usageTokenProperties), "calls"], properties: { ...usageTokenProperties, calls: { type: "integer", minimum: 0 } }, additionalProperties: false },
+      SubagentUsage: { type: "object", description: "Child agent model calls on the current branch (completed assistant messages), summed. Not included in sessionTotals.", required: [...Object.keys(usageTokenProperties), "runs", "calls"], properties: { ...usageTokenProperties, runs: { type: "integer", minimum: 1 }, calls: { type: "integer", minimum: 0 } }, additionalProperties: false },
       ContextUsage: { type: "object", required: ["tokens", "window", "percent", "estimate"], properties: { tokens: measurementNumber, window: { type: ["number", "null"], exclusiveMinimum: 0 }, percent: measurementNumber, estimate: { const: true } }, additionalProperties: false },
       Export: { type: "object", required: ["messages", "timeline", "lastEventId"], properties: { messages: { type: "array", items: ref("ExportMessage"), description: "Legacy message projection. Pi transcripts include sourceId; no text-based timeline association is permitted." }, timeline: { type: "array", items: ref("TimelineItem"), description: "Current-branch, block-ordered history. Thinking content is preserved verbatim; tool text/JSON is not host-truncated." }, lastEventId: { type: "integer", minimum: 0 }, usageSnapshot: ref("UsageSnapshot"), compaction: ref("CompactionState") }, additionalProperties: false },
       CompactionState: { type: "object", required: ["status", "reason"], properties: {
@@ -478,6 +482,10 @@ export const openapiV1 = {
         { type: "object", required: ["type", "reason", "outcome", "willRetry"], properties: { type: { const: "compaction_end" }, reason: { enum: ["manual", "threshold", "overflow"] }, outcome: { enum: ["succeeded", "failed", "aborted"] }, willRetry: { type: "boolean" }, tokensBefore: { type: "number", minimum: 0 }, tokensAfter: { type: "number", minimum: 0 }, requestId: { type: "string" }, replay: { type: "boolean" } }, additionalProperties: false },
         ref("SteeringConsumed"),
         ref("ControlQueueEvent"),
+        { type: "object", required: ["type", "projectionId", "revision"], properties: { type: { const: "steps_changed" }, projectionId: { type: "string" }, revision: { type: "integer", minimum: 0 } }, additionalProperties: false,
+          description: "The session-steps projection moved, from any source (live events, persisted reconciliation, branch change, idle-time entries). Coalesced to at most one per 250 ms with the final position always sent. Carries no step content: read GET /v1/sessions/{id}/steps; a new projectionId replaces the snapshot. Session-level, never request-owned." },
+        { type: "object", required: ["type", "revision"], properties: { type: { const: "subagents_changed" }, revision: { type: "integer", minimum: 0 } }, additionalProperties: false,
+          description: "Subagent records or live output moved: a transcript entry (start, message, steer, end), a live partial, or a legacy collected-log tool result. Coalesced to at most one per 250 ms with the final change always sent; also sent while the parent is idle and children run in the background. Carries no run data: read GET /v1/sessions/{id}/subagents. Session-level, never request-owned." },
         { type: "object", required: ["type", "version", "notificationId", "runIds", "text", "entryId", "timestamp"], properties: { type: { const: "notification" }, version: { const: 1 }, notificationId: { type: "string", format: "uuid" }, runIds: { type: "array", minItems: 1, items: { type: "string", minLength: 1 } }, text: { type: "string" }, entryId: { type: "string" }, timestamp: { type: "string" } }, additionalProperties: false },
         { type: "object", required: ["type", "text"], properties: { type: { const: "text_delta" }, text: { type: "string" }, requestId: { type: "string" } }, additionalProperties: false },
         { type: "object", required: ["type", "text"], properties: { type: { const: "thinking_delta" }, text: { type: "string" }, requestId: { type: "string" } }, additionalProperties: false },
@@ -485,6 +493,7 @@ export const openapiV1 = {
           type: { const: "model_output_progress" }, ordinal: { type: "integer", minimum: 1 },
           phase: { enum: ["start", "delta", "end"] }, tokensPerSecondEstimate: { type: ["number", "null"], minimum: 0 },
           includesThinking: { type: "boolean" }, activityAgeMs: { type: "number", minimum: 0 }, replay: { type: "boolean" }, requestId: { type: "string" },
+          promptTokens: { type: ["number", "null"], minimum: 0, description: "Total tokens of this prompt's completed model calls so far." },
         }, additionalProperties: false },
         { type: "object", required: ["type", "toolCallId", "toolName", "args"], properties: { type: { const: "tool_start" }, toolCallId: { type: "string" }, toolName: { type: "string" }, args: {}, requestId: { type: "string" } }, additionalProperties: false },
         { type: "object", required: ["type", "toolCallId", "toolName", "partialResult"], properties: { type: { const: "tool_update" }, toolCallId: { type: "string" }, toolName: { type: "string" }, partialResult: {}, requestId: { type: "string" } }, additionalProperties: false },
