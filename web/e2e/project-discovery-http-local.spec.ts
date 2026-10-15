@@ -31,7 +31,7 @@ test("two unregistered Pi workspaces switch histories; zero/excluded hidden; exp
   const extension = path.join(root, "offline.ts"); writeFileSync(extension, providerFixture);
   const dbPath = path.join(root, "fixture.sqlite");
   const db = new DatabaseSync(dbPath); try { await runSqliteMigrations(db); } finally { db.close(); }
-  const config = { host: "127.0.0.1", port: 5258, cwd, dbPath,
+  const config = { host: "127.0.0.1", port: 5262, cwd, dbPath,
     dataDir: path.join(root, "data"), agentDir: path.join(root, "agent"), authPath: path.join(root, "auth.json"),
     nativeSessionSourceDir: source, sessionShareExcludeCwds: [excluded],
     uploadStorageRoot: path.join(root, "uploads"), uploadAgentRoot: path.join(root, "uploads"),
@@ -52,19 +52,19 @@ test("two unregistered Pi workspaces switch histories; zero/excluded hidden; exp
   let app: Awaited<ReturnType<typeof startServer>> | undefined;
   try {
   app = await startServer({ ...config, cwd: cwdA });
-    const apiProjects = await (await fetch("http://127.0.0.1:5258/v1/projects")).json();
+    const apiProjects = await (await fetch("http://127.0.0.1:5262/v1/projects")).json();
     expect(apiProjects.map((p: any) => p.name).sort()).toEqual(["workspace-b", "默认项目"]);
     expect(apiProjects.find((p: any) => p.isDefault).cwd).toBe(cwdA);
-    const originalA = await (await fetch(`http://127.0.0.1:5258/v1/sessions?projectId=${apiProjects.find((p: any) => p.isDefault).id}`)).json();
+    const originalA = await (await fetch(`http://127.0.0.1:5262/v1/sessions?projectId=${apiProjects.find((p: any) => p.isDefault).id}`)).json();
     console.log(JSON.stringify({ preClose: Date.now(), phase: "restart", abortSSE: "no browser connected yet" }));
     await app.close();
     app = await startServer({ ...config, cwd: cwdB });
-    const afterRestart = await (await fetch("http://127.0.0.1:5258/v1/projects")).json();
+    const afterRestart = await (await fetch("http://127.0.0.1:5262/v1/projects")).json();
     expect(afterRestart).toHaveLength(2);
     expect(afterRestart.find((p: any) => p.isDefault).cwd).toBe(cwdB);
     const projectA = afterRestart.find((p: any) => p.cwd === cwdA);
     expect(projectA.isDefault).toBe(false);
-    const historicalA = await (await fetch(`http://127.0.0.1:5258/v1/sessions?projectId=${projectA.id}`)).json();
+    const historicalA = await (await fetch(`http://127.0.0.1:5262/v1/sessions?projectId=${projectA.id}`)).json();
     expect(historicalA[0].id).toBe(originalA[0].id);
     await page.setViewportSize({ width: 1280, height: 900 }); await page.goto("/");
     await expect(page.getByTestId("project-select")).toBeVisible();
@@ -95,7 +95,7 @@ test("two unregistered Pi workspaces switch histories; zero/excluded hidden; exp
     await page.getByTestId("composer-input").fill("shared project private first send");
     await page.getByTestId("send-button").click();
     await expect(page.locator(".message-assistant").last()).toContainText("离线模型继续完成");
-    const actorSessions = await (await fetch(`http://127.0.0.1:5258/v1/sessions?projectId=${projectA.id}`)).json();
+    const actorSessions = await (await fetch(`http://127.0.0.1:5262/v1/sessions?projectId=${projectA.id}`)).json();
     const privateSession = actorSessions.find((s: any) => s.ownerKey === "ip:127.0.0.1");
     expect(privateSession).toBeTruthy();
     const bCreate = await app.inject({ method: "POST", url: "/v1/sessions", remoteAddress: "127.0.0.2", payload: { projectId: projectA.id } });

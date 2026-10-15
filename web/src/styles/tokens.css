@@ -1,20 +1,31 @@
-/* Shared application theme. Loaded by styles.css independently of opt-in UI utilities. */
+/* Shared application theme — Ledger (DESIGN.md §2). Loaded by styles.css independently
+   of opt-in UI utilities. New code uses the Ledger tokens; the legacy names below are
+   aliases kept so existing components adopt the palette until they are migrated. */
 :root {
-  /* Seven-level typography scale; session title is the dedicated 18px exception. */
-  --font-xs: 10px;
-  --font-sm: 11px;
-  --font-base-sm: 12px;
-  --font-md: 13px;
-  --font-base: 14px;
-  --font-lg: 16px;
-  --font-xl: 20px;
-  --font-session-title: 18px;
-  --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC",
-    "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
-  --font-mono: SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  /* ---------- Typography (DESIGN.md §2.3) ---------- */
+  --fs-tag: 11px;
+  --fs-meta: 12px;
+  --fs-step: 13px;
+  --fs-ui: 14px;
+  --fs-body: 16px;
+  --fs-h2: 18px;
+  --fs-title: 20px;
+  --lh-body: 1.75;
+  --font-sans: "IBM Plex Sans", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei",
+    "Noto Sans CJK SC", sans-serif;
+  --font-mono: "IBM Plex Mono", "SF Mono", Menlo, Consolas, "PingFang SC", monospace;
   /* Inline code scales with its surrounding prose. */
   --font-inline-code: 0.875em;
-  /* Compatibility aliases, never independent scales. */
+
+  /* Legacy seven-level scale mapped onto the Ledger scale. */
+  --font-xs: var(--fs-tag);
+  --font-sm: var(--fs-meta);
+  --font-base-sm: var(--fs-step);
+  --font-md: var(--fs-ui);
+  --font-base: var(--fs-body);
+  --font-lg: var(--fs-h2);
+  --font-xl: var(--fs-title);
+  --font-session-title: var(--fs-title);
   --font-micro: var(--font-xs);
   --font-small: var(--font-sm);
   --font-body: var(--font-base);
@@ -25,51 +36,81 @@
   --font-h3: var(--font-base);
   --font-mono-body: var(--font-base-sm);
   --font-metric: var(--font-xs);
-  --bg-page: #FFFFFF;
-  --bg-surface: #FFFFFF;
-  --bg-raised: #F5F6F8;
-  --bg-sidebar: #F6F7F9;
-  --bg-hover: #ECEFF5;
-  --text-primary: #111629;
-  --text-secondary: #626B82;
-  --text-tertiary: #626C82;
-  --line: #E0E5EE;
-  --accent: #006BF0;
-  --accent-hover: #23489F;
-  --accent-solid-bg: #006BF0;
-  --accent-solid-fg: #FFFFFF;
-  --accent-soft: #E7EFFF;
-  --navigation-highlight: #FFF4D6;
-  --success: #2E7D57;
-  --warning: #8A6212;
-  --danger: #B3392F;
-  --thinking: #4A5A7A;
-  --backdrop: rgba(30, 28, 25, 0.45);
-  --shadow-md: 0 6px 18px rgba(30, 28, 25, 0.14), 0 0 0 1px rgba(30, 28, 25, 0.05);
-  --shadow-lg: 0 12px 32px rgba(30, 28, 25, 0.18);
+
+  /* ---------- Shape (DESIGN.md §2.4): small radii on controls and floating layers only ---------- */
+  --radius-item: 3px;
+  --radius-control: 4px;
+  --radius-code: 4px;
+  --radius-float: 6px;
+  /* Dots, scrollbar thumbs and 2px bars: fully rounded ends. */
+  --radius-pill: 999px;
+
+  /* ---------- Color: light (DESIGN.md §2.1) ---------- */
+  --bg: #FAFAF8;
+  --card: #FFFFFF;
+  --hl: #EFEEE9;
+  --ink: #1B1B19;
+  --body2: #55554F;
+  --dim: #686862;
+  --faint: #9A9A94;
+  --dash: #D6D5CF;
+  --acc: #2547D0;
+  --acc-soft: #EEF1FC;
+  --err: #B3261E;
+  --warn: #8A5A00;
+  --line: #E4E3DE;
+  /* Diff lines only (DESIGN.md §2.1): content color, never a status or accent. */
+  --diff-add: #276B37;
+  --diff-add-bg: #276B3712;
+  --diff-del: #A62646;
+  --diff-del-bg: #A6264612;
 }
 
 [data-theme="dark"] {
-  --bg-page: #17191E;
-  --bg-surface: #1D2027;
-  --bg-raised: #252933;
-  --bg-sidebar: #1D2027;
-  --bg-hover: #303541;
-  --text-primary: #ECEDF2;
-  --text-secondary: #B1B9CB;
-  --text-tertiary: #949EB4;
-  --line: #353B49;
-  --accent: #8FB0FF;
-  --accent-hover: #A9C3FF;
-  --accent-solid-bg: #8FB0FF;
-  --accent-solid-fg: #141311;
-  --accent-soft: #232C3B;
-  --navigation-highlight: #3B3323;
-  --success: #7BC9A0;
-  --warning: #E0B25C;
-  --danger: #F09A90;
-  --thinking: #9FA8BC;
-  --backdrop: rgba(8, 8, 7, 0.6);
-  --shadow-md: 0 8px 22px rgba(0, 0, 0, 0.5), 0 0 0 1px rgba(0, 0, 0, 0.3);
-  --shadow-lg: 0 16px 36px rgba(0, 0, 0, 0.55);
+  --bg: #131416;
+  --card: #1A1B1E;
+  --hl: #1E1F23;
+  --ink: #E6E6E1;
+  --body2: #B4B4AE;
+  --dim: #92928B;
+  --faint: #6B6B66;
+  --dash: #34353A;
+  --acc: #8AA4FF;
+  --acc-soft: #1B2238;
+  --err: #F2827A;
+  --warn: #E0B25C;
+  --line: #26272B;
+  --diff-add: #A4D69C;
+  --diff-add-bg: #A4D69C12;
+  --diff-del: #FF91AD;
+  --diff-del-bg: #FF91AD12;
+}
+
+/* Legacy semantic aliases. Declared on both selectors so they resolve against the
+   palette of the element that carries data-theme. */
+:root,
+[data-theme="dark"] {
+  --invert: var(--bg);
+  --bg-page: var(--bg);
+  --bg-surface: var(--bg);
+  --bg-sidebar: var(--bg);
+  --bg-raised: var(--hl);
+  --bg-hover: var(--hl);
+  --text-primary: var(--ink);
+  --text-secondary: var(--body2);
+  --text-tertiary: var(--dim);
+  --accent: var(--acc);
+  --accent-hover: var(--acc);
+  --accent-solid-bg: var(--ink);
+  --accent-solid-fg: var(--invert);
+  --accent-soft: var(--acc-soft);
+  --navigation-highlight: var(--acc-soft);
+  --success: var(--ink);
+  --warning: var(--warn);
+  --danger: var(--err);
+  --thinking: var(--dim);
+  --backdrop: color-mix(in srgb, var(--ink) 35%, transparent);
+  /* Ledger uses no shadows; floating layers rely on --card plus a --line border. */
+  --shadow-md: 0 0 0 1px var(--line);
+  --shadow-lg: 0 0 0 1px var(--line);
 }

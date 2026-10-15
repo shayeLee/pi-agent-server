@@ -58,7 +58,7 @@ test("actual SSE: collapsed bash/wait snapshots, child semantics, previews, pref
   }
   for (const theme of ["dark", "light"]) for (const width of [1280, 390]) {
     await page.setViewportSize({ width: 1280, height: 900 });
-    if (await page.getByTestId("app").getAttribute("data-theme") !== theme) await page.getByTestId("theme-toggle").click();
+    await page.emulateMedia({ colorScheme: theme as 'light' | 'dark' });
     await page.setViewportSize({ width, height: 844 });
     await page.keyboard.press("Escape");
     await expect(page.getByTestId("app")).not.toHaveClass(/mobile-sidebar-open/);
@@ -74,7 +74,7 @@ test("actual SSE: collapsed bash/wait snapshots, child semantics, previews, pref
       await thinkingHeader.click();
       await expect(header.locator(".tool-summary-preview")).toHaveText(preview!);
       await expect(thinkingHeader.locator(".thinking-summary")).toHaveCount(0);
-      await expect(thinkingHeader.locator(".thinking-label")).toHaveText("Thought"); // A subsequent tool_start settles thinking.
+      await expect(thinkingHeader.locator(".thinking-label")).toHaveText("思考"); // A subsequent tool_start settles thinking.
       const after = await header.boundingBox();
       const thinkingAfter = await thinkingHeader.boundingBox();
       expect(after!.width).toBe(before!.width);
@@ -123,8 +123,8 @@ test("actual SSE: collapsed bash/wait snapshots, child semantics, previews, pref
   await expect(card("launch").locator(".tool-summary-preview")).not.toContainText("completed");
   await expect(card("launch").getByRole("img", { name: "已完成" })).toBeVisible();
   start("wait", "subagent_wait", { runIds: ["r1", "r2"] });
-  await expect(card("wait").locator(".tool-call-header")).toHaveAttribute("aria-expanded", "true");
-  await card("wait").locator(".tool-call-header").click();
+  // A running subagent_wait starts closed: the live subagent panel shows its progress.
+  await expect(card("wait").locator(".tool-call-header")).toHaveAttribute("aria-expanded", "false");
   for (const text of ["0/2 settled after 1s\nrun r1 (scout): reading\nrun r2 (worker): starting", "1/2 settled after 2s\nrun r2 (worker): testing"]) {
     update("wait", "subagent_wait", text);
     await expect(card("wait").locator(".tool-summary-preview")).toContainText(text.startsWith("0/") ? "0/2 settled after 1s" : "1/2 settled after 2s");
@@ -148,6 +148,7 @@ test("actual SSE: collapsed bash/wait snapshots, child semantics, previews, pref
     ["edit", "edit", { path: "a.ts", edits: [{ oldText: "x=0", newText: "x=1" }] }, "edited a.ts", "1 项修改"],
     ["unknown", "custom", { flag: false, count: 0 }, "snapshot", "flag: false · count: 0"],
   ] as const;
+  let rowHeight: number | undefined;
   for (const [id, name, args, text, preview] of snapshots) {
     start(id, name, args); end(id, name, text);
     await expect(card(id).locator(".tool-summary-preview")).toContainText(preview);
@@ -159,7 +160,9 @@ test("actual SSE: collapsed bash/wait snapshots, child semantics, previews, pref
       return { height: el.getBoundingClientRect().height, whiteSpace: style?.whiteSpace, overflow: style?.textOverflow,
         overflowX: document.documentElement.scrollWidth > document.documentElement.clientWidth };
     });
-    expect(layout.height).toBe(44);
+    // Every collapsed step stays a single line, whatever its tool or summary length.
+    rowHeight ??= layout.height;
+    expect(layout.height).toBe(rowHeight);
     expect(layout.whiteSpace).toBe("nowrap");
     expect(layout.overflow).toBe("ellipsis");
     expect(layout.overflowX).toBe(false);
@@ -169,7 +172,7 @@ test("actual SSE: collapsed bash/wait snapshots, child semantics, previews, pref
   emit({ type: "completed" });
   for (const theme of ["dark", "light"]) for (const width of [1280, 390]) {
     await page.setViewportSize({ width: 1280, height: 900 });
-    if (await page.getByTestId("app").getAttribute("data-theme") !== theme) await page.getByTestId("theme-toggle").click();
+    await page.emulateMedia({ colorScheme: theme as 'light' | 'dark' });
     await page.setViewportSize({ width, height: 900 });
     if (width === 390) await page.keyboard.press("Escape");
     await expect(page.getByTestId("app")).not.toHaveClass(/mobile-sidebar-open/);
@@ -178,6 +181,8 @@ test("actual SSE: collapsed bash/wait snapshots, child semantics, previews, pref
     await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1)).toBe(true);
     await page.screenshot({ path: `/tmp/tool-collapsed-single-line/${theme}-${width}.png`, fullPage: true });
   }
+  // The turn completed, so its work block folded; open it to reach the step.
+  for (const block of await page.locator('.work-header[aria-expanded="false"]').all()) await block.click();
   await card("launch").locator(".tool-call-header").click();
   await expect(card("launch").locator(".tool-subagent-agent")).toHaveText(["scout", "worker"]);
   await expect(card("launch").locator(".tool-subagent-task").nth(1)).toContainText("long ".repeat(60).trim());

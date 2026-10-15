@@ -21,7 +21,7 @@ test.beforeAll(async () => {
     if (path.endsWith('/messages')) { req.resume(); return json({ status: 'accepted' }, 202); }
     return json({ error: path }, 404);
   });
-  await new Promise<void>(resolve => server.listen(8097, '127.0.0.1', resolve));
+  await new Promise<void>(resolve => server.listen(8123, '127.0.0.1', resolve));
 });
 test.afterAll(async () => { stream?.end(); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); });
 const longName = 'worker-with-a-very-long-agent-name-'.repeat(5);
@@ -40,7 +40,7 @@ for (const { theme, width } of [{ theme: 'light', width: 1280 }, { theme: 'dark'
   const page = await context.newPage();
   await page.setViewportSize({ width: 1280, height: 1000 });
   await page.goto('/');
-  if (await page.getByTestId('app').getAttribute('data-theme') !== theme) await page.getByTestId('theme-toggle').click();
+  await page.emulateMedia({ colorScheme: theme as 'light' | 'dark' });
   await page.setViewportSize({ width, height: 1000 });
   await page.getByTestId('composer-input').fill('检查并行代理');
   await page.getByTestId('send-button').click();

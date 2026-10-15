@@ -2,21 +2,6 @@ import { test, expect } from "@playwright/test";
 import { mkdir, writeFile } from "node:fs/promises";
 
 const evidenceDir = "/tmp/rich-arrow-regression-fix";
-async function recordArrowState(header: import("@playwright/test").Locator, name: string) {
-  const state = await header.evaluate((element) => ({
-    activeElement: document.activeElement?.className, focused: element === document.activeElement,
-    focusVisible: element.matches(":focus-visible"), hovered: element.matches(":hover"),
-    fineHover: matchMedia("(hover: hover) and (pointer: fine)").matches,
-    coarse: matchMedia("(pointer: coarse)").matches, noHover: matchMedia("(hover: none)").matches,
-    opacity: getComputedStyle(element.querySelector(".thinking-chevron")!).opacity,
-    transition: getComputedStyle(element.querySelector(".thinking-chevron")!).transition,
-  }));
-  await mkdir(evidenceDir, { recursive: true });
-  await writeFile(`${evidenceDir}/${name}.json`, JSON.stringify(state, null, 2));
-  console.log("thinking-arrow-state", name, JSON.stringify(state));
-  return state;
-}
-
 // Run separately with MOCK_SCENARIO=rich; never points at an existing production service.
 test.skip(process.env.MOCK_SCENARIO !== "rich", "Requires the isolated rich mock scenario");
 
@@ -44,46 +29,30 @@ async function expectFullyReadableInTranscript(page: import("@playwright/test").
 }
 
 async function expectToolHeaderContentVerticallyCentered(card: import("@playwright/test").Locator) {
-  const centers = await card.locator(".tool-call-header, .tool-name, .tool-status-icon, .tool-toggle").evaluateAll((elements) =>
+  const centers = await card.locator(".tool-call-header, .tool-name, .tool-status-icon").evaluateAll((elements) =>
     elements.map((element) => {
       const rect = element.getBoundingClientRect();
       return rect.top + rect.height / 2;
     }),
   );
-  expect(centers).toHaveLength(4); // header, name, SVG status, chevron
+  expect(centers).toHaveLength(3); // header, name, status glyph (step rows carry no chevron)
   for (const centerY of centers.slice(1)) {
-    expect(Math.abs(centerY - centers[0]), "工具名称、SVG 状态与展开控件应和 header 垂直居中").toBeLessThanOrEqual(0.75);
+    expect(Math.abs(centerY - centers[0]), `工具名称与状态标记应和步骤行垂直居中 ${JSON.stringify(centers)}`).toBeLessThanOrEqual(0.75);
   }
 }
 
 async function expectThinkingContentVerticallyCentered(thinking: import("@playwright/test").Locator, includePreview: boolean) {
-  const geometry = await thinking.locator(".thinking-header").evaluate((header) => {
-    const arrow = header.querySelector<SVGElement>(".thinking-chevron")!.getBoundingClientRect();
-    const label = header.querySelector<HTMLElement>(".thinking-label")!.getBoundingClientRect();
-    const preview = header.querySelector<HTMLElement>(".thinking-summary");
-    const previewRect = preview?.getBoundingClientRect();
-    const original = preview?.textContent;
-    if (preview) preview.textContent = "短";
-    const shortArrow = header.querySelector<SVGElement>(".thinking-chevron")!.getBoundingClientRect();
-    const shortPreviewRight = header.querySelector<HTMLElement>(".thinking-summary")?.getBoundingClientRect().right ?? label.right;
-    if (preview && original !== undefined) preview.textContent = original;
-    return {
-      centers: [arrow, label, ...(previewRect ? [previewRect] : [])].map((rect) => rect.top + rect.height / 2),
-      arrowLeft: arrow.left,
-      contentRight: previewRect?.right ?? label.right,
-      shortArrowLeft: shortArrow.left,
-      shortContentRight: shortPreviewRight,
-      headerRight: header.getBoundingClientRect().right,
-    };
-  });
-  expect(geometry.centers).toHaveLength(includePreview ? 3 : 2);
-  for (const centerY of geometry.centers.slice(1)) {
-    expect(Math.abs(centerY - geometry.centers[0]), "实际 SVG box、思考标签与预览应垂直同轴").toBeLessThanOrEqual(0.75);
-  }
-  expect(geometry.arrowLeft, "箭头应紧跟预览或思考标签").toBeGreaterThanOrEqual(geometry.contentRight - 0.5);
-  if (includePreview) {
-    expect(geometry.shortArrowLeft, "短预览时箭头应紧跟文本而非贴聊天区右缘").toBeGreaterThanOrEqual(geometry.shortContentRight - 0.5);
-    expect(geometry.headerRight - geometry.shortArrowLeft, "短预览时箭头不应被推到整行最右侧").toBeGreaterThan(24);
+  // A thinking step reads as one line: glyph, label and (when folded) preview share a vertical center.
+  const centers = await thinking.locator(".thinking-header").evaluate((header) =>
+    [".thinking-glyph", ".thinking-label", ".thinking-preview"].flatMap((selector) => {
+      const element = header.querySelector<HTMLElement>(selector);
+      if (!element) return [];
+      const rect = element.getBoundingClientRect();
+      return [rect.top + rect.height / 2];
+    }));
+  expect(centers).toHaveLength(includePreview ? 3 : 2);
+  for (const centerY of centers.slice(1)) {
+    expect(Math.abs(centerY - centers[0]), "思考步骤的标记、标签与预览应同一行居中").toBeLessThanOrEqual(0.75);
   }
 }
 
@@ -110,23 +79,22 @@ for (const width of [1280, 390]) {
       const timeline = page.getByTestId("message-list");
       await expect(page.getByTestId("tool-call-card")).toHaveCount(2);
       await expect(timeline).toContainText("已定位问题");
-      const orderedKinds = await timeline.locator(":scope > *").evaluateAll((elements) => elements.map((element) => {
-        if (element.classList.contains("row-user")) return "user";
-        if (element.classList.contains("thinking-row")) return "thinking";
-        if (element.classList.contains("tool-call")) return element.getAttribute("data-tool-call-id");
-        if (element.classList.contains("row-assistant")) return "assistant";
-        return "unknown";
+      // Every item keeps a navigation anchor in original order, whatever the ledger grouping.
+      const orderedKinds = await timeline.locator("[data-timeline-id]").evaluateAll((elements) => elements.map((element) => {
+        const kind = (element as HTMLElement).dataset.timelineKind;
+        if (kind === "tool_call") return (element as HTMLElement).dataset.anchorToolCallId;
+        return kind === "assistant_text" ? "assistant" : kind;
       }));
       expect(orderedKinds).toEqual(["user", "thinking", "visual-read", "visual-test", "assistant"]);
 
-      const userMessage = timeline.locator(":scope > .row-user");
-      const answer = timeline.locator(":scope > .row-assistant").last();
+      const userMessage = timeline.locator(".row-user");
+      const answer = timeline.locator(".row-assistant").last();
       const thinking = page.locator('[data-testid^="thinking-"]').first();
       const successfulTool = page.getByTestId("tool-call-card").first();
       const failedTool = page.getByTestId("tool-call-card").nth(1);
       // The legacy rich mock returns { stderr }, not standard content.text.
       // Structured envelopes remain readable in the expanded body.
-      const failedResult = failedTool.getByRole("dialog").locator("pre");
+      const failedResult = failedTool.getByRole("region", { name: "结果", exact: true }).locator("pre").first();
       await expect(userMessage).toContainText("请分析错误路径并运行测试");
       // Reading-first：固定来源槽及其标签已废除，消息行不携带槽位文本。
       await expect(timeline.locator(".band-source")).toHaveCount(0);
@@ -138,9 +106,11 @@ for (const width of [1280, 390]) {
         element.scrollWidth <= element.clientWidth + 1 ||
         /(auto|scroll)/.test(getComputedStyle(element).overflowX))),
         "窄屏代码正文必须可读：要么完整容纳，要么在代码块内部横向滚动，不得裁切丢失").toBe(true);
+      // The finished turn folds its work block; open it to read the steps.
+      for (const block of await page.locator('.work-header[aria-expanded="false"]').all()) await block.click();
       await expect(thinking.getByRole("button")).toHaveAttribute("aria-expanded", "false");
       await expect(thinking.locator(".thinking-label")).toHaveCSS("white-space", "nowrap");
-      await expectThinkingContentVerticallyCentered(thinking, false);
+      await expectThinkingContentVerticallyCentered(thinking, true); // Folded: the preview sits on the label line.
       await thinking.scrollIntoViewIfNeeded();
       await thinking.screenshot({ path: `${evidenceDir}/collapsed-${theme}-${width}.png`, animations: "disabled" });
       await expect(thinking.locator(".thinking-summary")).toHaveCount(0);
@@ -181,7 +151,7 @@ for (const width of [1280, 390]) {
       // Expanded-state proof is separate from the default answer view: thinking and
       // successful tool raw input/output are available without any summary substitution.
       await thinking.getByRole("button").click();
-      await expectThinkingContentVerticallyCentered(thinking, false); // Expanded header retains the label, without the retired preview.
+      await expectThinkingContentVerticallyCentered(thinking, false); // Expanded header retains the label, the preview gives way to the body.
       await thinking.scrollIntoViewIfNeeded();
       await thinking.screenshot({ path: `${evidenceDir}/expanded-${theme}-${width}.png`, animations: "disabled" });
       const thinkingBody = thinking.getByTestId(/thinking-body-/);
@@ -209,49 +179,28 @@ for (const width of [1280, 390]) {
       });
       if (scrollable) {
         await transcript.focus();
+        // DESIGN §9.2: keyboard focus is visible; the reading surface shows a left rule, never a frame.
         const focusStyle = await transcript.evaluate((element) => {
           const style = getComputedStyle(element);
-          return { outlineStyle: style.outlineStyle, outlineWidth: style.outlineWidth, boxShadow: style.boxShadow };
+          return { visible: element.matches(":focus-visible"), outlineStyle: style.outlineStyle, boxShadow: style.boxShadow };
         });
-        expect(focusStyle).toEqual({ outlineStyle: "none", outlineWidth: "0px", boxShadow: "none" });
+        if (focusStyle.visible) {
+          expect(focusStyle.outlineStyle).toBe("none");
+          expect(focusStyle.boxShadow).toMatch(/inset 2px 0px 0px/);
+        }
 
-        await page.keyboard.press("Tab");
-        const thinkingHeader = thinking.locator(".thinking-header");
-        await expect(thinkingHeader).toBeFocused();
-        await expect.poll(() => thinkingHeader.evaluate(element => element.matches(":focus-visible"))).toBe(true);
-        await recordArrowState(thinkingHeader, `tab-start-${theme}-${width}`);
-        // Real keyboard focus starts an opacity transition. Wait for the CSS state,
-        // not a fixed delay, before retaining the full computed-style assertion.
-        await expect(thinkingHeader.locator(".thinking-chevron")).toHaveCSS("opacity", "1");
-        await recordArrowState(thinkingHeader, `tab-settled-${theme}-${width}`);
-        const thinkingFocusStyle = await page.evaluate(() => {
-          const element = document.activeElement;
-          if (!(element instanceof HTMLButtonElement) || !element.classList.contains("thinking-header")) return null;
+        // DESIGN §9.2 Tab order: the ledger's expandable controls in reading order, each with visible focus.
+        const focusIndicator = () => page.evaluate(() => {
+          const element = document.activeElement as HTMLElement;
           const style = getComputedStyle(element);
-          return { outlineStyle: style.outlineStyle, boxShadow: style.boxShadow, color: style.color,
-            arrowOpacity: getComputedStyle(element.querySelector(".thinking-chevron")!).opacity };
-        });
-        expect(thinkingFocusStyle).toEqual({
-          outlineStyle: "none", boxShadow: "none",
-          color: await page.locator(".thinking-header").first().evaluate((element) => getComputedStyle(element).getPropertyValue("--thinking").trim())
-            .then((thinkingColor) => page.evaluate((value) => {
-              const probe = document.createElement("span");
-              probe.style.color = value;
-              document.body.append(probe);
-              const color = getComputedStyle(probe).color;
-              probe.remove();
-              return color;
-            }, thinkingColor)),
-          arrowOpacity: "1",
+          return { focusVisible: element.matches(":focus-visible"), shown: style.outlineStyle !== "none" || style.boxShadow !== "none" };
         });
         await page.keyboard.press("Tab");
-        const toolHeaderFocusStyle = await page.evaluate(() => {
-          const element = document.activeElement;
-          if (!(element instanceof HTMLButtonElement) || !element.classList.contains("tool-call-header")) return null;
-          const style = getComputedStyle(element);
-          return { outlineStyle: style.outlineStyle, boxShadow: style.boxShadow };
-        });
-        expect(toolHeaderFocusStyle).toEqual({ outlineStyle: "none", boxShadow: "none" });
+        await expect(page.locator(".work-header").first()).toBeFocused();
+        expect(await focusIndicator()).toEqual({ focusVisible: true, shown: true });
+        await page.keyboard.press("Tab");
+        await expect(thinking.locator(".thinking-header")).toBeFocused();
+        expect(await focusIndicator()).toEqual({ focusVisible: true, shown: true });
 
         await transcript.evaluate((element) => { element.scrollTop = 0; });
         await transcript.focus();
@@ -264,92 +213,10 @@ for (const width of [1280, 390]) {
       await page.getByTestId("model-thinking-trigger").click();
       await page.getByTestId("trace-tab").click();
       await expect(page.getByTestId("inspector")).toBeVisible();
+      await page.getByTestId("inspector-tab-events").click();
       await expect(page.getByTestId("event-log")).toContainText("tool_end");
       await page.screenshot({ path: testInfo.outputPath(`app-rich-inspector-${theme}-${width}.png`), animations: "disabled" });
     });
   }
 }
 
-test("思考箭头：桌面 hover/focus 显示，触屏始终可见且不改变布局", async ({ browser }) => {
-  const desktop = await browser.newPage({ viewport: { width: 1280, height: 900 } });
-  const mobile = await browser.newPage({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true });
-  try {
-    for (const page of [desktop, mobile]) {
-      await page.route("**/v1/models", (route) => route.fulfill({ contentType: "application/json", body: JSON.stringify({
-        models: [{ provider: "fixture", id: "fixture/model", name: "Local visual model" }],
-        defaultModel: { provider: "fixture", id: "fixture/model", name: "Local visual model" },
-        thinkingLevels: ["off", "medium"], defaultThinkingLevel: "medium",
-      }) }));
-      await page.goto("/");
-      if (page === mobile) await page.getByRole("button", { name: "打开工作区导航" }).click();
-      await page.getByTestId("new-session").click();
-      await page.getByTestId("composer-input").fill("检查箭头显示状态");
-      await page.getByTestId("send-button").click();
-      await expect(page.locator(".thinking-header")).toBeVisible();
-    }
-
-    const header = desktop.locator(".thinking-header").first();
-    const arrow = header.locator(".thinking-chevron");
-    await header.scrollIntoViewIfNeeded();
-    await expect.poll(() => desktop.evaluate(() => matchMedia("(hover: hover) and (pointer: fine)").matches)).toBe(true);
-    const before = await header.evaluate((element) => {
-      const headerRect = element.getBoundingClientRect();
-      const svgRect = element.querySelector(".thinking-chevron")!.getBoundingClientRect();
-      const labelRect = element.querySelector(".thinking-label")!.getBoundingClientRect();
-      const summaryRect = element.querySelector(".thinking-summary")?.getBoundingClientRect();
-      return { header: [headerRect.x, headerRect.y, headerRect.width, headerRect.height],
-        svg: [svgRect.x, svgRect.y, svgRect.width, svgRect.height],
-        contentRight: summaryRect?.right ?? labelRect.right };
-    });
-    expect(before.svg.slice(2)).toEqual([12, 12]);
-    expect(before.svg[0]).toBeGreaterThanOrEqual(before.contentRight - 0.5);
-    await expect(arrow).toHaveCSS("opacity", "0");
-    await recordArrowState(header, "desktop-default");
-    await desktop.screenshot({ path: `${evidenceDir}/desktop-default.png` });
-    await header.hover();
-    await expect(arrow).toHaveCSS("opacity", "1");
-    const hovered = await header.evaluate((element) => {
-      const r = element.getBoundingClientRect();
-      const a = element.querySelector(".thinking-chevron")!.getBoundingClientRect();
-      return { header: [r.x, r.y, r.width, r.height], svg: [a.x, a.y, a.width, a.height] };
-    });
-    expect(hovered.header).toEqual(before.header);
-    expect(hovered.svg).toEqual(before.svg);
-    await desktop.screenshot({ path: `${evidenceDir}/desktop-hover.png` });
-    await recordArrowState(header, "desktop-hover");
-    await header.click();
-    await desktop.mouse.move(0, 0);
-    await expect(header).toBeFocused();
-    await expect.poll(() => header.evaluate(element => element.matches(":focus-visible"))).toBe(false);
-    await expect(arrow).toHaveCSS("opacity", "0");
-    await recordArrowState(header, "desktop-click-away");
-    // Anchor the tab sequence at the transcript; only a real Tab focuses the button.
-    await desktop.getByTestId("chat-body").focus();
-    await desktop.keyboard.press("Tab");
-    await expect(header).toBeFocused();
-    await expect.poll(() => header.evaluate(element => element.matches(":focus-visible"))).toBe(true);
-    await expect(arrow).toHaveCSS("opacity", "1");
-    await expect(header).toHaveCSS("outline-style", "none");
-    await expect(header).toHaveCSS("box-shadow", "none");
-    await recordArrowState(header, "desktop-real-tab");
-    await desktop.screenshot({ path: `${evidenceDir}/desktop-focus.png` });
-
-    const mobileHeader = mobile.locator(".thinking-header").first();
-    const mobileArrow = mobileHeader.locator(".thinking-chevron");
-    await expect.poll(() => mobile.evaluate(() => matchMedia("(pointer: coarse)").matches && !matchMedia("(hover: hover)").matches)).toBe(true);
-    await expect(mobileArrow).toHaveCSS("opacity", "1");
-    await recordArrowState(mobileHeader, "mobile-touch-default");
-    await mobile.screenshot({ path: `${evidenceDir}/mobile-touch.png` });
-    await mobileHeader.click();
-    await expect(mobileHeader).toHaveAttribute("aria-expanded", "true");
-    await mobileHeader.click();
-    await expect(mobileHeader).toHaveAttribute("aria-expanded", "false");
-    await mobile.mouse.move(0, 0);
-    await expect(mobileArrow).toHaveCSS("opacity", "1");
-    await expect(mobileHeader).toHaveCSS("outline-style", "none");
-    await recordArrowState(mobileHeader, "mobile-touch-click-away");
-  } finally {
-    await desktop.close();
-    await mobile.close();
-  }
-});

@@ -15,7 +15,7 @@ for (const theme of ["light", "dark"]) {
     });
     await page.setViewportSize({ width: 1000, height: 1100 });
     await page.goto(`/visual-fixtures/message-cursor.html?theme=${theme}`);
-    const cursor = ".ui-icon.streaming-cursor";
+    const cursor = ".streaming-cursor";
     for (const streaming of [true, false]) {
       for (const index of [0, 1]) {
         await expect(page.getByTestId(`case-${streaming}-${index}`).locator(cursor)).toHaveCount(streaming ? 1 : 0);
@@ -34,7 +34,7 @@ for (const theme of ["light", "dark"]) {
     await expect(page.getByTestId("message-cancel-empty").locator(".assistant-content")).toBeEmpty();
     await expect(page.getByTestId("message-cancel-text")).toHaveText("取消后保留这段文本。");
     await expect(page.getByTestId("thinking-body-cancel-thinking")).toBeVisible();
-    await expect(region.getByRole("button", { name: "思考过程" })).toHaveText("Thought");
+    await expect(region.getByRole("button", { name: "思考过程" })).toHaveText("思考");
     await page.screenshot({ path: testInfo.outputPath(`cursor-${theme}-cancelled.png`), fullPage: true });
     await page.setViewportSize({ width: 390, height: 844 });
     await page.screenshot({ path: testInfo.outputPath(`cursor-${theme}-mobile-cancelled.png`), fullPage: true });

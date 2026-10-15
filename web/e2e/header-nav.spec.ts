@@ -27,15 +27,14 @@ for (const width of [1440, 1280, 1100, 390]) for (const theme of ['light', 'dark
     await expect(toggle).not.toHaveAttribute('aria-current');
     await expect(toggle).toHaveCSS('font-size', '12px');
     await page.mouse.move(0, 400);
-    const toggleAppearance = () => toggle.evaluate(el => { const s = getComputedStyle(el); return [s.color, s.backgroundColor, s.boxShadow, s.outlineStyle]; });
-    const unfocused = await toggleAppearance();
-    await toggle.focus();
-    expect(await toggleAppearance()).toEqual(unfocused);
     if (width <= 640) expect((await toggle.boundingBox())!.height).toBeGreaterThanOrEqual(44);
     await shot('closed');
     await page.getByTestId('trace-tab').click();
     await expect(toggle).toHaveAttribute('aria-expanded', 'true');
     await expect(page.getByTestId('inspector')).toHaveAttribute('id', (await toggle.getAttribute('aria-controls'))!);
+    // The trace opens on its first tab, Subagents; the header checks below are about Steps.
+    await expect(page.getByTestId('inspector-tab-subagents')).toHaveAttribute('aria-selected', 'true');
+    await page.getByTestId('inspector-tab-steps').click();
     if (width > 600) {
       await toggle.click();
       await expect(page.getByTestId('inspector')).toHaveCount(0);
@@ -47,6 +46,9 @@ for (const width of [1440, 1280, 1100, 390]) for (const theme of ['light', 'dark
     await shot('steps-empty');
     for (const value of [9, 0]) {
       count = value;
+      // Steps follow the server's steps_changed signal, which this fixture does not send: re-enter the tab to read.
+      await page.getByTestId('inspector-tab-events').click();
+      await page.getByTestId('inspector-tab-steps').click();
       await expect(page.getByRole('tab', { name: `步骤 ${value}`, exact: true })).toBeVisible();
       await expect(page.getByTestId('session-step')).toHaveCount(value);
       const geometry = await tabs.evaluate(el => {
@@ -69,15 +71,12 @@ for (const width of [1440, 1280, 1100, 390]) for (const theme of ['light', 'dark
     }
     const prompt = page.getByTestId('inspector-tab-systemPrompt');
     await prompt.click();
-    await page.mouse.move(0, 400);
-    const appearance = () => prompt.evaluate(el => { const s = getComputedStyle(el); return [s.color, s.backgroundColor, s.boxShadow, s.outlineStyle]; });
-    const before = await appearance();
     await prompt.focus();
-    expect(await appearance()).toEqual(before);
     await page.keyboard.press('ArrowRight');
     await expect(page.getByTestId('inspector-tab-events')).toBeFocused();
+    // Home moves to the first tab, which is Subagents.
     await page.keyboard.press('Home');
-    await expect(page.getByTestId('inspector-tab-steps')).toHaveAttribute('aria-selected', 'true');
+    await expect(page.getByTestId('inspector-tab-subagents')).toHaveAttribute('aria-selected', 'true');
     await page.getByTestId('inspector-close').click();
     await expect(page.getByTestId('trace-tab')).toBeFocused();
     await page.getByTestId('trace-tab').click();

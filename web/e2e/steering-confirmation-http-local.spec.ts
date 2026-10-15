@@ -232,7 +232,7 @@ test("consumed SDK steering is visible exactly once before assistant, including 
     await expect(page.getByTestId("composer-attachment")).toContainText("new-draft.png");
     // B's real SDK turn_start (not a synthetic status) makes the observer streaming.
     await expect.poll(async () => (await events("observer")).some(e => e.type === "status" && e.phase === "turn_start")).toBe(true);
-    await expect(observer.getByTestId("abort-button")).toHaveCount(0);
+    await expect(observer.getByTestId("abort-button")).toBeVisible();
     await expect(observer.locator('.composer-runtime-controls')).toHaveCount(0);
     await observer.screenshot({ path: join(artifact, "same-owner-browser-visible.png"), fullPage: true });
     // Detach and return: cached timeline plus retained SSE replay must not repeat users.

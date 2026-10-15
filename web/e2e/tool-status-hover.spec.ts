@@ -33,7 +33,8 @@ for (const touch of [false, true]) for (const theme of ["light", "dark"]) {
       const before = await geometry();
       expect(before.width).toBe("18px");
       expect(before.height).toBe("18px");
-      await expect(header).toHaveAttribute("aria-expanded", String(id === "unfinished"));
+      // Every fixture row is a subagent_wait, which never opens on its own (the live panel shows its progress).
+      await expect(header).toHaveAttribute("aria-expanded", "false");
       await expect(icon).toHaveCSS("opacity", "1");
       await expect(icon.locator("title")).toHaveText(id === "unfinished" ? "进行中" : id === "error" ? "失败" : "已完成");
       if (!touch) {
@@ -48,7 +49,6 @@ for (const touch of [false, true]) for (const theme of ["light", "dark"]) {
         expect(await header.evaluate(el => el.matches(":focus-visible"))).toBe(false);
         await expect(icon).toHaveCSS("opacity", "1");
         expect(await geometry()).toEqual(expandedGeometry);
-        await expect(header).toHaveCSS("outline-style", "none");
         await page.screenshot({ path: `${prefix}-${id}-mouse-out.png`, fullPage: true });
         await page.locator("#start").click();
         for (let tabs = 0; tabs < 30; tabs++) {

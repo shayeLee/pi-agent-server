@@ -13,7 +13,7 @@ function fixture(): Parameters<typeof useSessionStream>[0] {
     newlyCreatedIdsRef: { current: new Set() }, historyReadySessionIdsRef: { current: new Set() },
     emptyHistoryIdsRef: { current: new Set() }, eventCursorsRef: { current: new Map() }, usageRevisionRef: { current: new Map() },
     setHistoryReadySessionIds: vi.fn(), setUsageSnapshots: vi.fn(), setInvalidContexts: vi.fn(),
-    onInvalidSession: vi.fn(), setConnected: vi.fn(), onLoad: vi.fn(), rememberFirstPrompt: vi.fn(), onEvent: vi.fn(),
+    onInvalidSession: vi.fn(), setConnection: vi.fn(), onLoad: vi.fn(), rememberFirstPrompt: vi.fn(), onEvent: vi.fn(),
   };
 }
 beforeEach(() => {

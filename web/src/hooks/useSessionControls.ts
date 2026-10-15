@@ -64,6 +64,8 @@ export function useSessionControls({ api, activeSessionId, navigationGeneration,
   }
 
   function acceptQueue(sessionId: string, snapshot: ControlQueueSnapshot): void {
+    // A malformed body (proxy error page, older server) must not blank the chat.
+    if (!snapshot || !Array.isArray(snapshot.items) || typeof snapshot.revision !== "number") return;
     const previous = queuesRef.current.get(sessionId);
     if (previous && snapshot.revision < previous.revision) return;
     queuesRef.current.set(sessionId, snapshot);

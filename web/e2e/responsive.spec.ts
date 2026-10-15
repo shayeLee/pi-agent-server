@@ -18,8 +18,20 @@ test("桌面侧栏折叠后缩窄视口，移动抽屉仍保留项目与会话�
   await page.getByRole("button", { name: "搜索会话" }).click();
   await expect(page.getByTestId("session-search")).toBeVisible();
   await page.locator(".session-item").first().getByRole("button").first().focus();
-  await expect(page.locator('[data-testid^="delete-"]').first()).toBeVisible();
+  await expect(page.locator('[data-testid^="session-menu-"]').first()).toBeVisible();
   await page.screenshot({ path: testInfo.outputPath("collapsed-to-mobile-drawer.png"), animations: "disabled" });
   await page.keyboard.press("Escape");
   await expect(page.getByTestId("sidebar")).toBeHidden();
 });
+
+for (const size of [{ width: 390, height: 844 }, { width: 390, height: 420 }]) {
+  test(`${size.width}x${size.height}：发送按钮留在输入框内`, async ({ page }) => {
+    await page.setViewportSize(size);
+    await page.goto("/");
+    const composer = await page.locator(".composer").boundingBox();
+    const send = await page.getByTestId("send-button").boundingBox();
+    expect(send!.x).toBeGreaterThanOrEqual(composer!.x);
+    expect(send!.x + send!.width).toBeLessThanOrEqual(composer!.x + composer!.width);
+    expect(send!.y + send!.height).toBeLessThanOrEqual(composer!.y + composer!.height);
+  });
+}

@@ -32,14 +32,12 @@ test("端到端：会话列表展示与删除", async ({ page }) => {
   await page.reload();
   await expect(page.getByTestId("new-session")).toBeVisible();
 
-  // 删除操作仅在会话项悬停或获得焦点时显示。
-  await page.locator(".session-item").first().hover();
-  const deleteButtons = page.locator('[data-testid^="delete-"]');
-  await expect(deleteButtons.first()).toBeVisible();
-  const before = await deleteButtons.count();
+  // 删除在会话行尾的 ⋯ 菜单中（DESIGN.md §7）。
+  const rows = page.locator(".session-item");
+  const before = await rows.count();
   expect(before).toBeGreaterThan(0);
-
-  // 删除第一个会话 → 删除按钮数量减一
-  await deleteButtons.first().click();
-  await expect(deleteButtons).toHaveCount(before - 1);
+  await rows.first().hover();
+  await rows.first().locator('[data-testid^="session-menu-"]').click();
+  await page.locator('[data-testid^="delete-"]').click();
+  await expect(rows).toHaveCount(before - 1);
 });

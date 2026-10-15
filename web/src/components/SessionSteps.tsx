@@ -3,16 +3,16 @@ import { useState, useEffect, useLayoutEffect, useRef, useMemo, type CSSProperti
 import { stepSummary, stepTitles } from './step-summary.js';
 import { ToolStatusIcon } from './ToolStatusIcon.js';
 import type { SessionStep, SessionStepsSnapshot } from '../../../src/shared/session-steps.js';
-import { Icon, type IconName } from './Icon.js';
 import { imageDataUrl, readMessageImages } from '../message-images.js';
 
 import { Modal } from './Modal.js';
-import { stepTarget, highlightTimelineTarget, type TraceNavigation } from './step-navigation.js';
+import { stepTarget, highlightTimelineTarget, scrollIntoViewAccurately, type TraceNavigation } from './step-navigation.js';
 
-const TYPES: Record<SessionStep['kind'], [string, IconName]> = {
-  user: [zhCN.steps.user, 'user'], thinking: [zhCN.steps.thinking, 'sparkles'], assistant_text: [zhCN.steps.assistant, 'markdown'],
-  tool_call: [zhCN.steps.toolCall, 'terminal'], tool_result: [zhCN.steps.toolResult, 'file'], notification: [zhCN.steps.notification, 'activity'],
-  system_event: [zhCN.steps.systemEvent, 'context'], error: [zhCN.steps.error, 'close'], compaction: [zhCN.steps.compaction, 'context'], custom: [zhCN.steps.custom, 'file'],
+/** Kind words; the Ledger reads steps by text, not by icon tiles (DESIGN.md §4). */
+const TYPES: Record<SessionStep['kind'], [string]> = {
+  user: [zhCN.steps.user], thinking: [zhCN.steps.thinking], assistant_text: [zhCN.steps.assistant],
+  tool_call: [zhCN.steps.toolCall], tool_result: [zhCN.steps.toolResult], notification: [zhCN.steps.notification],
+  system_event: [zhCN.steps.systemEvent], error: [zhCN.steps.error], compaction: [zhCN.steps.compaction], custom: [zhCN.steps.custom],
 };
 function contentText(content: unknown): string {
   if (content === undefined) return zhCN.steps.missingContent;
@@ -48,7 +48,7 @@ function readableContent(content: unknown): { full: string; preview: string } {
 function Step({ step, index, navigate }: { step: SessionStep; index: number; navigate: (step: SessionStep) => boolean }) {
   const [detailsOpen, setDetailsOpen] = useState(false);
   const preview = useRef<HTMLPreElement>(null);
-  const [title, icon]: [string, IconName] = Object.hasOwn(TYPES, step.kind) ? TYPES[step.kind] : [String(step.kind), 'file'];
+  const title = Object.hasOwn(TYPES, step.kind) ? TYPES[step.kind][0] : String(step.kind);
   const content = step.kind === 'tool_call'
     ? { full: JSON.stringify(step.content, null, 2) ?? contentText(step.content), preview: JSON.stringify(step.content, null, 2) ?? contentText(step.content) }
     : ['user', 'tool_result', 'custom'].includes(step.kind)
@@ -63,14 +63,13 @@ function Step({ step, index, navigate }: { step: SessionStep; index: number; nav
   const semanticTitle = step.kind === 'system_event' && Object.hasOwn(stepTitles, step.label ?? '') ? stepTitles[step.label!] : undefined;
   return <li className={`session-step session-step-${step.kind}`} data-testid="session-step" data-step-id={step.id} data-status={step.status}>
     <span className="step-number">{index + 1}</span>
-    <span className="step-icon"><Icon name={icon} size={18} /></span>
     <div className="step-main">
       <button type="button" className="step-toggle" onClick={activate}>
         <span className="step-heading"><strong>{semanticTitle ?? title}</strong>{step.toolName !== undefined && <span className="step-tool-name">{step.toolName}</span>}{step.label !== undefined && !semanticTitle && <span className="step-label">{step.label}</span>}</span>
         {step.timestamp && <time dateTime={step.timestamp} title={`${step.source === 'recorded' ? zhCN.steps.recordedTime : zhCN.steps.observedTime}：${step.timestamp}`}>{/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d/.test(step.timestamp) ? step.timestamp.slice(11, 19) : step.timestamp}</time>}
       </button>
       <div className="step-content collapsed" onClick={activate}>
-        {step.kind === 'tool_result' && (step.status === 'completed' || step.status === 'error' || step.status === 'streaming') && <ToolStatusIcon done={step.status !== 'streaming'} isError={step.status === 'error'} />}
+        {step.kind === 'tool_result' && (step.status === 'completed' || step.status === 'error' || step.status === 'streaming') && <ToolStatusIcon done={step.status !== 'streaming'} isError={step.status === 'error'} glyph />}
         <pre ref={preview}>{text}</pre>
       </div>
       <Modal open={detailsOpen} onClose={() => setDetailsOpen(false)} title={zhCN.steps.detailTitle(index + 1, semanticTitle ?? title)}>
@@ -109,7 +108,7 @@ export function SessionSteps({ sessionSelected, snapshot, loading, error, naviga
     handledNavigation.current = navigation;
     clearTraceHighlight.current?.();
     row.classList.add('trace-step-highlight');
-    row.scrollIntoView({behavior:'smooth', block:'center'});
+    scrollIntoViewAccurately(row, '.steps-list', 'steps-navigating');
     const clear = () => { clearTimeout(timer); row.classList.remove('trace-step-highlight'); };
     const timer = setTimeout(clear, 5000);
     clearTraceHighlight.current = clear;

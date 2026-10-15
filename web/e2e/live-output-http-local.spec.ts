@@ -34,7 +34,7 @@ for (const { theme, width } of [{ theme: "light", width: 1280 }, { theme: "dark"
   const registry = new RuntimeRegistry({ concurrency, createAdapter });
   const app = buildApp({ sessions: storage.sessions, projects: storage.projects, defaultProjectCwd: "/tmp/live-output-speed", ipAccess: makeTestIpAccess(), createAdapter, registry, concurrency });
   try {
-    await app.listen({ host: "127.0.0.1", port: 8096 });
+    await app.listen({ host: "127.0.0.1", port: 8121 });
     await page.setViewportSize({ width, height: 844 }); await page.emulateMedia({ colorScheme: theme }); await page.goto("/");
     const select = async (id: string) => {
       if (width === 390) await page.getByRole("button", { name: "打开工作区导航" }).click();
@@ -48,47 +48,47 @@ for (const { theme, width } of [{ theme: "light", width: 1280 }, { theme: "dark"
     await page.getByTestId("composer-input").fill("隔离测试，不调用真实模型");
     await page.getByTestId("composer-input").press("Enter");
     await expect.poll(() => started).toBe(1);
-    await expect(page.getByTestId("stat-live-speed")).toHaveCount(0);
+    await expect(page.getByTestId("stat-summary-live-speed")).toHaveCount(0);
     delta("thinking_delta", "想".repeat(100)); clock = 500; delta("thinking_delta", "想".repeat(100));
-    await expect(page.getByTestId("stat-live-speed")).toHaveText("~100 tok/s");
+    await expect(page.getByTestId("stat-summary-live-speed")).toHaveText("~100 tok/s");
     await expect.poll(() => page.getByTestId("stats-bar").evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
     await page.screenshot({ path: `/tmp/stats-single-line/${theme}-${width}-active.png` });
-    await expect(page.getByTestId("stat-live-speed")).toHaveCount(0, { timeout: 4000 });
-    await expect(page.getByTestId("stat-live-speed")).toHaveCount(0);
+    await expect(page.getByTestId("stat-summary-live-speed")).toHaveCount(0, { timeout: 4000 });
+    await expect(page.getByTestId("stat-summary-live-speed")).toHaveCount(0);
     await page.screenshot({ path: `/tmp/stats-single-line/${theme}-${width}-pause.png` });
     end(); emit({ type: "tool_execution_start", toolCallId: "t", toolName: "bash", args: { command: "fixture only" } });
     emit({ type: "tool_execution_update", toolCallId: "t", toolName: "bash", args: {}, partialResult: { content: [{ type: "text", text: "tool result must not count" }] } });
     await expect(page.getByTestId("stats-bar")).not.toContainText("工具执行中");
-    await expect(page.getByTestId("stat-live-speed")).toHaveCount(0);
+    await expect(page.getByTestId("stat-summary-live-speed")).toHaveCount(0);
     await page.screenshot({ path: `/tmp/stats-single-line/${theme}-${width}-tool.png` });
     clock = 10000; start(); delta("toolcall_delta", "x".repeat(100)); clock = 10500; delta("text_delta", "继续输出".repeat(25));
     // Actual model delta takes precedence even while tool lifecycle is still open.
-    await expect(page.getByTestId("stat-live-speed")).toContainText("~100 tok/s");
+    await expect(page.getByTestId("stat-summary-live-speed")).toContainText("~100 tok/s");
     await page.screenshot({ path: `/tmp/stats-single-line/${theme}-${width}-resumed.png` });
     const reconnected = page.waitForResponse(response => response.url().includes('/events'));
     registry.get("live-model")!.events.closeAll();
-    await expect(page.getByTestId("stat-live-speed")).toHaveCount(0);
-    await expect(page.getByTestId("stat-live-speed")).toHaveCount(0);
+    await expect(page.getByTestId("stat-summary-live-speed")).toHaveCount(0);
+    await expect(page.getByTestId("stat-summary-live-speed")).toHaveCount(0);
     // A delta produced while disconnected is delivered as replay, not fresh activity.
     // It also gives the Vite proxy a body chunk (headers alone can remain buffered).
     clock = 10625; delta("text_delta", "补发数据");
     await reconnected;
-    await expect(page.getByTestId("stat-live-speed")).toHaveCount(0);
+    await expect(page.getByTestId("stat-summary-live-speed")).toHaveCount(0);
     clock = 10875; delta("text_delta", "收到新数据".repeat(20));
-    await expect(page.getByTestId("stat-live-speed")).toContainText("~");
+    await expect(page.getByTestId("stat-summary-live-speed")).toContainText("~");
     emit({ type: "tool_execution_end", toolCallId: "t", toolName: "bash", result: "done", isError: false });
     clock = 11000; end(); finish();
-    await expect(page.getByTestId("stat-live")).toHaveCount(0);
-    await expect(page.getByTestId("stat-summary-speed")).toHaveText("42 tok/s");
+    await expect(page.getByTestId("stat-summary-live-speed")).toHaveCount(0);
+    await page.getByRole("button", { name: "查看统计详情" }).click(); await expect(page.getByTestId("stat-last-speed")).toContainText("42 tok/s"); await page.getByRole("button", { name: "关闭对话框" }).click();
     await page.screenshot({ path: `/tmp/stats-single-line/${theme}-${width}-final.png` });
     await page.getByTestId("composer-input").fill("abort fixture"); await page.getByTestId("composer-input").press("Enter");
     await expect.poll(() => started).toBe(2); delta("text_delta", "before abort"); clock += 500; delta("text_delta", "after delay");
-    await expect(page.getByTestId("stat-live-speed")).toBeVisible();
-    await expect(page.getByTestId('abort-button')).toHaveCount(0);
+    await expect(page.getByTestId("stat-summary-live-speed")).toBeVisible();
+    await expect(page.getByTestId('abort-button')).toBeVisible();
     await page.evaluate(async () => { await fetch('/v1/sessions/live-model/abort', {method:'POST'}); });
-    await expect(page.getByTestId("stat-live-speed")).toHaveCount(0);
-    await select("other-model"); await expect(page.getByTestId("stat-live")).toHaveCount(0);
-    await select("live-model"); await expect(page.getByTestId("stat-live-speed")).toHaveCount(0);
+    await expect(page.getByTestId("stat-summary-live-speed")).toHaveCount(0);
+    await select("other-model"); await expect(page.getByTestId("stat-summary-live-speed")).toHaveCount(0);
+    await select("live-model"); await expect(page.getByTestId("stat-summary-live-speed")).toHaveCount(0);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   } finally { finish(); await app.close(); await storage.close(); }
 });

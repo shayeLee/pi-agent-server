@@ -30,15 +30,20 @@ describe("ThinkingRow", () => {
   });
   it.each([
     [true, "正在思考"],
-    [false, "思考过程"],
-  ])("shows only the %s status title and keeps the full body", (streaming, title) => {
+    [false, "思考"],
+  ])("shows the %s status title, a collapsed-only preview, and keeps the full body", (streaming, title) => {
     const text = "第一行\n" + "思考内容".repeat(30);
     const { container } = render(<ThinkingRow thinking={{ kind: "thinking", id: "no-preview", text, streaming }} />);
     const toggle = screen.getByRole("button", { name: "思考过程" });
     expect(toggle).toHaveTextContent(title);
     expect(toggle).toHaveAttribute("title", streaming ? "收起思考过程" : "展开思考过程");
     expect(container.querySelector(".thinking-summary")).toBeNull();
+    // Ledger (DESIGN.md §4.4): collapsed rows show a whitespace-normalised 60-char preview.
+    const preview = container.querySelector(".thinking-preview");
+    if (streaming) expect(preview).toBeNull();
+    else expect(preview?.textContent).toBe(`第一行 ${"思考内容".repeat(30)}`.slice(0, 60) + "…");
     if (!streaming) fireEvent.click(toggle);
+    expect(container.querySelector(".thinking-preview")).toBeNull();
     expect(toggle).toHaveAttribute("title", "收起思考过程");
     expect(screen.getByTestId("thinking-body-no-preview").textContent).toBe(text);
   });

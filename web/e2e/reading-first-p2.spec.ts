@@ -222,9 +222,11 @@ for (const viewport of MOBILE_ATTACHMENT_CASES) test(`手机多附件失败重�
   await expect(body).toBeVisible();
   expect(await body.evaluate(el => el.scrollHeight > el.clientHeight)).toBe(true);
   await body.hover();
-  await page.mouse.wheel(0, -2000);
+  // Scroll by the real content height, not a fixed distance: typography changes it.
+  const distance = await body.evaluate(el => el.scrollHeight);
+  await page.mouse.wheel(0, -distance);
   await expect.poll(() => body.evaluate(el => el.scrollTop)).toBe(0);
-  await page.mouse.wheel(0, 2000);
+  await page.mouse.wheel(0, distance);
   await expect.poll(() => body.evaluate(el => el.scrollTop)).toBeGreaterThan(0);
   expect(submissions).toEqual({ creates: [], messages: [] });
   await saveEvidence(page, `mobile-attachments-session-${height}`, await body.boundingBox());
@@ -344,7 +346,8 @@ test("手机导航、详情、思考与工具按钮均可操作，长标题不�
   const selectors = [
     '[aria-label="打开工作区导航"]',
     '[data-testid="model-thinking-trigger"]',
-    ".tool-call-header",
+    // Tool steps start folded inside a work block; its header is the visible tool control.
+    ".work-header",
   ];
   const targets = await page.evaluate((items) => items.map((selector) => {
     const button = document.querySelector<HTMLElement>(selector)!;
@@ -385,7 +388,10 @@ test("手机导航、详情、思考与工具按钮均可操作，长标题不�
   await page.getByTestId("model-thinking-trigger").click();
   await expect(page.getByRole("dialog", { name: "模型与思考深度" })).toBeVisible();
   await page.keyboard.press("Escape");
-  const toolHeader = page.locator(".tool-call-header");
+  const workHeader = page.locator(".work-header").first();
+  if (await workHeader.getAttribute("aria-expanded") === "false") await workHeader.click();
+  const toolHeader = page.locator(".tool-call-header").first();
+  await expectUsableControl(toolHeader);
   const initialExpanded = await toolHeader.getAttribute("aria-expanded");
   await toolHeader.click();
   await expect(toolHeader).toHaveAttribute("aria-expanded", initialExpanded === "true" ? "false" : "true");

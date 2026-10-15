@@ -126,7 +126,7 @@ for (const editDuringAdmission of [false, true]) test(`new session slow admissio
   }
   if (admissionMode === 'sse-first') {
     await page.evaluate(id => (window as any).__admissionEmit({type:'status',phase:'agent_start',requestId:id}), requestId);
-    await expect(page.getByTestId('send-button')).toBeDisabled();
+    await expect(page.getByTestId('abort-button')).toBeVisible();
     await expect(input).toHaveValue(editDuringAdmission ? '准入期间的新草稿' : 'Hi');
     await input.press('Enter');
     expect(posts.filter(path => /messages|steer|follow-ups/.test(path))).toEqual(['/v1/sessions/slow-new/messages']);
@@ -150,18 +150,17 @@ for (const editDuringAdmission of [false, true]) test(`new session slow admissio
   await expect.poll(() => page.evaluate(() => typeof (window as any).__admissionEmit)).toBe('function');
   await page.evaluate(id => (window as any).__admissionEmit({type:'status',phase:'agent_start',requestId:id}), requestId);
   await expect(page.getByRole('group',{name:'运行时发送模式'})).toHaveCount(0);
-  await expect(page.getByTestId('abort-button')).toHaveCount(0);
+  await expect(page.getByTestId('abort-button')).toBeVisible();
   await expect(page.locator('.composer-runtime-controls')).toHaveCount(0);
   await expect(page.getByTestId('control-queue')).toHaveCount(0);
   await expect(page.getByText('正在同步队列…',{exact:true})).toHaveCount(0);
   await expect(input).toHaveValue(editDuringAdmission ? '准入期间的新草稿' : '准入后的新草稿');
-  await expect(page.getByTestId('send-button')).toBeEnabled();
+  await expect(page.getByTestId('abort-button')).toBeVisible();
   expect(await page.getByTestId('chat-body').evaluate(el => el.clientHeight)).toBe(queuedViewport);
   for (const viewport of [{width:1440,height:1000},{width:390,height:844},{width:740,height:420}]) {
     await page.setViewportSize(viewport);
     await expect(page.getByTestId('composer-input')).toBeInViewport();
-    await expect(page.getByTestId('send-button')).toBeInViewport();
-    await expect(page.getByTestId('abort-button')).toHaveCount(0);
+    await expect(page.getByTestId('abort-button')).toBeInViewport();
     await page.screenshot({animations:'disabled',path:info.outputPath(`new-running-${viewport.width}.png`)});
   }
   expect(unexpected).toEqual([]);
@@ -217,7 +216,7 @@ test('full App uses authoritative queue, CRUD identity, drain removal and accept
   await page.goto('/');
   await page.getByTestId('session-fixture-0').click();
   await expect(page.getByTestId('control-queue-item')).toHaveCount(2);
-  await expect(page.getByTestId('abort-button')).toHaveCount(0);
+  await expect(page.getByTestId('abort-button')).toBeVisible();
   await expect(page.locator('.composer-runtime-controls')).toHaveCount(0);
   await page.screenshot({path:info.outputPath('app-reference-desktop-light.png')});
   await page.getByTestId('theme-toggle').click();
@@ -225,8 +224,8 @@ test('full App uses authoritative queue, CRUD identity, drain removal and accept
   await page.screenshot({path:info.outputPath('app-reference-desktop-dark.png')});
   await page.setViewportSize({width:390,height:844});
   await page.waitForTimeout(250); // finish responsive drawer/layout transition before visual capture
-  await expect(page.getByTestId('abort-button')).toHaveCount(0);
-  expect((await page.getByTestId('send-button').boundingBox())!.y + 44).toBeLessThanOrEqual(844);
+  await expect(page.getByTestId('abort-button')).toBeVisible();
+  await expect(page.getByTestId('abort-button')).toBeInViewport({ ratio: 1 });
   await page.screenshot({animations:'disabled',path:info.outputPath('app-reference-mobile-dark.png')});
   await page.getByRole('button',{name:'打开工作区导航'}).click();
   await page.getByTestId('theme-toggle').click();
@@ -248,7 +247,8 @@ test('full App uses authoritative queue, CRUD identity, drain removal and accept
   await expect(page.getByTestId('control-queue')).toHaveCount(0);
   await expect(page.getByRole('group',{name:'运行时发送模式'})).toHaveCount(0);
   await page.getByTestId('composer-input').fill('准入后清除追加草稿');
-  await page.getByTestId('send-button').click();
+  // While running, Enter queues a follow-up; the primary button is the stop button.
+  await page.getByTestId('composer-input').press('Enter');
   await expect(page.getByTestId('composer-input')).toHaveValue('');
   await expect(page.getByTestId('control-queue-item')).toHaveCount(1);
   expect(admissions[0]).toMatchObject({text:'准入后清除追加草稿',requestId:'run'});
@@ -274,7 +274,11 @@ test('full App uses authoritative queue, CRUD identity, drain removal and accept
   mutationFailure = 500;
   await page.getByRole('button',{name:'删除：准入后清除追加草稿',exact:true}).click();
   await expect(page.getByText('结果未知，请刷新确认；不会自动重试')).toBeVisible();
-  await expect(page.getByTestId('send-button')).toBeDisabled();
+  // While a control result is unknown, Enter must not submit another control.
+  const admissionsBefore = admissions.length;
+  await page.getByTestId('composer-input').press('Enter');
+  await expect(page.getByTestId('composer-input')).toHaveValue('出队不能清掉的新草稿');
+  expect(admissions).toHaveLength(admissionsBefore);
   await page.screenshot({animations:'disabled',path:info.outputPath('app-operation-unknown.png')});
   const mutationCount = mutations.length;
   items = []; revision++;

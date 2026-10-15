@@ -6,6 +6,10 @@ import type { ModelInfo, Project, SessionRecord } from "pi-agent-server/client";
 import { EMPTY_MESSAGE, type SubmissionState, type SubmitOutcome, type UnsentMessage } from "../attachment-state.js";
 import type { DraftSource } from "../draft-store.js";
 import { ModelThinkingPicker } from "./ModelThinkingPicker.js";
+import { hasVisibleOverlay } from "../lib/overlays.js";
+
+/** Window for the second Esc press (DESIGN.md §5.4). */
+export const ABORT_CONFIRM_MS = 1500;
 
 export type ComposerProps = {
   session: SessionRecord | null;
@@ -38,6 +42,8 @@ export type ComposerProps = {
   onRetrySubmit?: () => Promise<SubmitOutcome>;
   onConfirmCreation?: () => Promise<SubmitOutcome>;
   onAbort?: () => void;
+  /** Reports the first-Esc "press again to abort" window (DESIGN.md §5.4). */
+  onAbortArmedChange?: (armed: boolean) => void;
   onFollowUp: (text: string) => void | Promise<boolean>;
   onConfigChange: (config: { modelProvider?: string; modelId?: string; thinkingLevel?: string }) => void;
 };
@@ -47,7 +53,7 @@ export function Composer({
   models, thinkingLevels, defaultModel, defaultThinkingLevel,
   streaming, queued, primaryAwaitingStart = false, historyLoading = false, controlsBlocked = false, placeholder, onSend,
   draft: suppliedDraft, draftSource, draftScope = "", submission, pendingControls, onDraftText, onDraftSettings, onAddFile, onRetryFile, onRemoveFile, onRetrySubmit, onConfirmCreation,
-  onAbort, onFollowUp, onConfigChange,
+  onAbort, onAbortArmedChange, onFollowUp, onConfigChange,
 }: ComposerProps) {
   const subscribeDraft = useCallback((listener: () => void) =>
     draftSource?.subscribe(draftScope, listener) ?? (() => {}), [draftSource, draftScope]);
@@ -68,27 +74,39 @@ export function Composer({
   const primaryPending = primaryAwaitingStart || submitting || submission?.phase === "unknown";
   const runtimeControls = streaming && !queued && !primaryPending;
   const canAbort = Boolean(onAbort && session && canWrite && streaming && !queued && !historyLoading);
+  const [abortArmed, setAbortArmed] = useState(false);
+  const armedChange = useRef(onAbortArmedChange);
+  armedChange.current = onAbortArmedChange;
+  useEffect(() => { armedChange.current?.(abortArmed); }, [abortArmed]);
   useEffect(() => {
-    if (!canAbort) return;
+    if (!canAbort) { setAbortArmed(false); return; }
+    let armed = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const disarm = () => { clearTimeout(timer); if (armed) { armed = false; setAbortArmed(false); } };
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Escape" || event.defaultPrevented || event.repeat || event.isComposing || event.keyCode === 229) return;
-      const overlays = document.querySelectorAll('dialog[open], [role="dialog"], [role="alertdialog"], [role="menu"], .app-shell:not(.details-collapsed) [data-testid="inspector"], .mobile-sidebar-open [data-testid="sidebar"], .select-menu[data-open="true"], .model-thinking-picker[data-open="true"]');
-      const visibleOverlay = Array.from(overlays).some(element => {
-        // Modal keeps its native dialog mounted while closed. Only visible
-        // overlays own Escape; their mere presence must not block abort.
-        if (element.closest('dialog:not([open]), [hidden], [aria-hidden="true"]')) return false;
-        for (let current: Element | null = element; current; current = current.parentElement) {
-          const style = getComputedStyle(current);
-          if (style.display === "none" || style.visibility === "hidden") return false;
-        }
-        return true;
-      });
-      if (visibleOverlay) return;
+      if (event.isComposing || event.keyCode === 229) return;
+      // Any other key cancels the pending confirmation.
+      if (event.key !== "Escape") { disarm(); return; }
+      if (event.defaultPrevented || event.repeat) return;
+      // Inspector and the mobile drawer also own Escape (they close on it).
+      const visibleOverlay = hasVisibleOverlay('dialog[open], [role="dialog"], [role="alertdialog"], [role="menu"], .app-shell:not(.details-collapsed) [data-testid="inspector"], .mobile-sidebar-open [data-testid="sidebar"], .select-menu[data-open="true"], .model-thinking-picker[data-open="true"]');
+      // Overlays own Escape and do not count towards the abort sequence.
+      if (visibleOverlay) { disarm(); return; }
       event.preventDefault();
-      onAbort?.();
+      if (armed) { disarm(); onAbort?.(); return; }
+      armed = true;
+      setAbortArmed(true);
+      clearTimeout(timer);
+      timer = setTimeout(disarm, ABORT_CONFIRM_MS);
     };
     document.addEventListener("keydown", onKeyDown);
-    return () => document.removeEventListener("keydown", onKeyDown);
+    window.addEventListener("blur", disarm);
+    return () => {
+      clearTimeout(timer);
+      document.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("blur", disarm);
+      setAbortArmed(false);
+    };
   }, [canAbort, onAbort]);
   const blockedByAttachment = attachments.some((item) => item.status !== "ready");
   const hasContent = Boolean(text.trim()) || attachments.some((item) => item.status === "ready");
@@ -216,7 +234,7 @@ export function Composer({
           )}
         </div>
       )}
-      <textarea ref={textareaRef} data-testid="composer-input" rows={1} placeholder={placeholder}
+      <textarea ref={textareaRef} data-testid="composer-input" rows={1} placeholder={runtimeControls ? zhCN.run.runningPlaceholder : placeholder}
         aria-label={zhCN.composer.message} title={canAbort ? zhCN.composer.queueKeyboardHint : zhCN.composer.sendKeyboardHint} value={text}
         onChange={(event) => setText(event.target.value)} onKeyDown={handleKeyDown} onPaste={handlePaste}
         disabled={!canWrite || historyLoading} />
@@ -236,14 +254,15 @@ export function Composer({
             modelId={session ? session.modelId : draft?.settings.modelId ?? null}
             thinkingLevel={session ? session.thinkingLevel : draft?.settings.thinkingLevel ?? null}
             onConfigChange={session ? onConfigChange : (config) => onDraftSettings?.(config)} />
+          <span className={`composer-hint${abortArmed ? " is-armed" : ""}`} data-testid="composer-hint" aria-hidden="true">
+            {abortArmed ? zhCN.run.pressEscAgain : canAbort ? `${zhCN.run.appendHint} · ${zhCN.run.abortKeyHint}` : zhCN.run.newlineHint}
+          </span>
           {canAbort ? <button type="button" className="send-button" data-testid="abort-button"
             onClick={onAbort} aria-label={zhCN.composer.abort} title={zhCN.composer.abortHint}>
-            <span className="send-button-visual"><Icon name="stop" /></span>
+            <span className="send-button-visual">{zhCN.run.abortLabel}</span>
           </button> : <button type="button" className="send-button" data-testid="send-button" onClick={() => void handleSubmit()}
             disabled={!canSubmit} aria-label={zhCN.composer.send} title={runtimeControls ? zhCN.composer.queue : zhCN.composer.send}>
-            <span className="send-button-visual">
-              <Icon name="send" />
-            </span>
+            <span className="send-button-visual">{zhCN.run.sendLabel}</span>
           </button>}
         </div>
       </div>

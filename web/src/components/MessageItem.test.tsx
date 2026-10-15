@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { MessageItem } from "./MessageItem.js";
 
-const cursor = ".ui-icon.streaming-cursor";
+const cursor = ".streaming-cursor";
 
 describe("MessageItem streaming cursor", () => {
   it.each([true, false].flatMap(streaming => ["", "已收到的文本"].map(text => ({ streaming, text }))))(
@@ -42,7 +42,7 @@ describe("MessageItem streaming cursor", () => {
     expect(container.querySelectorAll(cursor)).toHaveLength(1);
     rerender(<MessageItem item={{ ...item, streaming: false }} />);
     expect(container.querySelectorAll(cursor)).toHaveLength(0);
-    expect(screen.getByRole("button")).toHaveTextContent("思考过程");
+    expect(screen.getByRole("button")).toHaveTextContent("思考");
     expect(screen.getByTestId("thinking-body-cancelled-thinking")).toHaveTextContent(item.text);
   });
 });

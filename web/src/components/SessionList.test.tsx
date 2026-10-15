@@ -89,16 +89,23 @@ describe("SessionList（会话列表）", () => {
     const select = screen.getByRole("button", { name: title });
     expect(select).toHaveAttribute("aria-current", "true");
     expect(screen.queryByTestId("rename-s1")).not.toBeInTheDocument();
+    // Full title lives on the row; details and actions live in the row menu (DESIGN.md §7).
+    expect(select.querySelector(".session-title")).toHaveAttribute("title", title);
     fireEvent.contextMenu(select);
-    expect(screen.getByRole("dialog", { name: "会话详情" })).toHaveTextContent(title);
+    const menu = screen.getByRole("menu", { name: `会话操作：${title}` });
+    expect(menu).toHaveTextContent("共享会话");
     const meta = screen.getByTestId("session-time-s1").parentElement!;
-    expect(meta).toContainElement(screen.getByLabelText("共享会话"));
-    expect(select).toHaveAttribute("aria-describedby", meta.id);
+    // The shared badge follows the title (the time column stays flush right) and still describes the row.
+    const badge = screen.getByLabelText("共享会话");
+    expect(select.querySelector(".session-title")!.nextElementSibling).toBe(badge);
+    expect(meta).not.toContainElement(badge);
+    expect(select).toHaveAttribute("aria-describedby", `${meta.id} ${badge.id}`);
     for (const action of ["rename", "export", "delete"]) {
-      const button = screen.getByTestId(`${action}-s1`);
-      expect(select).not.toContainElement(button);
-      expect(button.tabIndex).toBe(0);
+      const item = screen.getByTestId(`${action}-s1`);
+      expect(select).not.toContainElement(item);
+      expect(item).toHaveAttribute("role", "menuitem");
     }
+    fireEvent.keyDown(menu, { key: "Escape" });
     vi.spyOn(window, "prompt").mockReturnValue("新标题");
     fireEvent.contextMenu(screen.getByTestId("session-s1"));
     fireEvent.click(screen.getByTestId("rename-s1"));

@@ -23,7 +23,7 @@ test.beforeAll(async () => {
     if (path.endsWith("/messages")) { req.resume(); return json({ status: "accepted" }, 202); }
     json({ error: path }, 404);
   });
-  await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(8098, "127.0.0.1", resolve); });
+  await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(8125, "127.0.0.1", resolve); });
 });
 test.afterAll(async () => { stream?.end(); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); });
 
@@ -35,7 +35,7 @@ for (const { theme, width } of [{ theme: "light", width: 1280 }, { theme: "dark"
   page.on("request", req => { if (req.url().includes("tracker.png")) unexpectedLoads++; });
   await page.setViewportSize({ width: 1280, height: 1000 });
   await page.goto("/");
-  if (await page.getByTestId("app").getAttribute("data-theme") !== theme) await page.getByTestId("theme-toggle").click();
+  await page.emulateMedia({ colorScheme: theme as 'light' | 'dark' });
   await page.setViewportSize({ width, height: 1000 });
   await page.getByTestId("composer-input").fill("检查并行与等待 Markdown");
   await page.getByTestId("send-button").click();
@@ -45,8 +45,9 @@ for (const { theme, width } of [{ theme: "light", width: 1280 }, { theme: "dark"
     emit({ type: "tool_start", toolCallId: toolName, toolName, args });
     const card = page.locator(`[data-tool-call-id="${toolName}"]`);
     const header = card.locator(".tool-call-header");
-    await expect(header).toHaveAttribute("aria-expanded", "true");
-    await header.click(); await header.click();
+    // A running subagent_wait starts closed: the live subagent panel shows its progress.
+    if (toolName === "subagent_wait") { await expect(header).toHaveAttribute("aria-expanded", "false"); await header.click(); }
+    else { await expect(header).toHaveAttribute("aria-expanded", "true"); await header.click(); await header.click(); }
     emit({ type: "tool_update", toolCallId: toolName, toolName, partialResult: result("## 正在检查") });
     await expect(card.getByRole("heading", { name: "正在检查" })).toBeVisible();
     await card.scrollIntoViewIfNeeded();

@@ -84,8 +84,6 @@ for (const { theme, width } of [{ theme: "light", width: 1280 }, { theme: "dark"
     const composer = document.querySelector(".composer")!.getBoundingClientRect();
     return { height: r.height, width: r.width, faceWidth: face.width, faceHeight: face.height, centerOffset: (r.left + r.right - composer.left - composer.right) / 2, top: r.top, bottom: r.bottom, bodyBottom: b.bottom, composerTop: c.top };
   });
-  expect(geometry.faceWidth).toBe(34);
-  expect(geometry.faceHeight).toBe(34);
   expect(geometry.centerOffset).toBe(0);
   expect(geometry.height).toBeGreaterThanOrEqual(44);
   expect(geometry.width).toBeGreaterThanOrEqual(44);

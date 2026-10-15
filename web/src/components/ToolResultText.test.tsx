@@ -8,6 +8,8 @@ describe("tool presentation modes", () => {
   it.each(["subagent", "subagent_wait"])("%s defaults weak prose to Markdown and preserves manual plain across partial/final", toolName => {
     const base = { toolCallId: "agent", toolName, args: {}, done: false, isError: false, result: undefined, partialResult: "## Only heading" };
     const { container, rerender } = render(<ToolCallCard call={base} />);
+    // A running wait starts closed; its live progress is shown by the subagent panel.
+    if (toolName === "subagent_wait") fireEvent.click(screen.getByRole("button", { name: /工具调用/ }));
     expect(screen.getByRole("heading", { name: "Only heading" })).toBeInTheDocument();
     // Keep expansion through completion, independently of the display preference.
     fireEvent.click(screen.getByRole("button", { name: /工具调用/ }));
@@ -27,6 +29,7 @@ describe("tool presentation modes", () => {
     const base = { toolCallId: "agent", toolName, args: {}, done: false, isError: false, result: undefined };
     const raw = '- only list\n\n<script>alert(1)</script>\n<img src=x onerror=alert(1)>\n\n![remote](https://example.invalid/tracker.png)';
     const { container, rerender } = render(<ToolCallCard call={{ ...base, partialResult: { content: [{ type: "text", text: raw }], details: { hidden: "## Not prose" } } }} />);
+    if (toolName === "subagent_wait") fireEvent.click(screen.getByRole("button", { name: /工具调用/ }));
     expect(container.querySelectorAll("li")).toHaveLength(1);
     expect(container.querySelector("script, img")).toBeNull();
     expect(screen.queryByText("Not prose")).toBeNull();

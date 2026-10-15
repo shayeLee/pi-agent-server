@@ -11,12 +11,20 @@ import { toolPresentation } from "../tools/presentation.js";
  * tool_start → 创建（done=false，展示 args）；tool_update → 流式 partialResult；
  * tool_end → 展示 result 并标记完成（done=true）。
  */
-export const ToolCallCard = memo(function ToolCallCard({ call }: { call: ToolCall }) {
-  const [expanded, setExpanded] = useState(!call.done);
+/** With `index`, renders as a numbered Ledger step row inside a work block (DESIGN.md §4.5). */
+/**
+ * Running tools open to show their live output, except where the inline subagent panel already
+ * shows that progress (DESIGN.md §4.7): an open subagent_wait would repeat it. Its one-line summary
+ * keeps the targets and counts; opening it by hand still shows the raw output.
+ */
+const PROGRESS_SHOWN_ELSEWHERE = new Set(["subagent_wait"]);
+export const ToolCallCard = memo(function ToolCallCard({ call, index }: { call: ToolCall; index?: number }) {
+  const autoOpen = !call.done && !PROGRESS_SHOWN_ELSEWHERE.has(call.toolName);
+  const [expanded, setExpanded] = useState(autoOpen);
   const userToggled = useRef(false);
   useEffect(() => {
-    if (!userToggled.current) setExpanded(!call.done);
-  }, [call.done]);
+    if (!userToggled.current) setExpanded(autoOpen);
+  }, [autoOpen]);
   const duration = call.done ? formatToolDuration(call.durationMs) : null;
   const durationTitle = zhCN.toolCall.duration(call.durationMs, call.toolName === "subagent_wait" ? zhCN.toolCall.waitScope : "");
   const status = call.done ? (call.isError ? zhCN.composer.failed : zhCN.status.completed) : zhCN.steps.streaming;
@@ -25,7 +33,7 @@ export const ToolCallCard = memo(function ToolCallCard({ call }: { call: ToolCal
 
   return (
     <div
-      className={`tool-call ${call.done ? "tool-done" : "tool-running"} ${call.isError ? "tool-error" : ""}`}
+      className={`tool-call ${index !== undefined ? "tool-step " : ""}${call.done ? "tool-done" : "tool-running"} ${call.isError ? "tool-error" : ""}`}
       data-testid="tool-call-card"
       data-tool-call-id={call.toolCallId}
       data-done={String(call.done)}
@@ -41,7 +49,8 @@ export const ToolCallCard = memo(function ToolCallCard({ call }: { call: ToolCal
         aria-expanded={expanded}
         aria-label={zhCN.toolCall.label(call.toolName, status)} title={call.toolName}
       >
-        <ToolStatusIcon done={call.done} isError={call.isError} />
+        {index !== undefined && <span className="step-index" aria-hidden="true">{String(index).padStart(2, "0")}</span>}
+        <ToolStatusIcon done={call.done} isError={call.isError} glyph={index !== undefined} />
         <span className="tool-name" data-testid="tool-name" title={call.toolName}>
           {call.toolName}
         </span>

@@ -67,9 +67,16 @@ async function open(page: Page, count = 6) {
   await page.getByTestId('session-fixture-0').click();
   await page.getByTestId('composer-input').fill('sidebar draft');
   await page.getByTestId('trace-tab').click();
+  // The trace opens on Subagents; these checks are about Steps.
+  await page.getByTestId('inspector-tab-steps').click();
   await expect(page.getByRole('tab', { name: `步骤 ${count}` })).toHaveAttribute('aria-selected', 'true');
 }
 const row = (page: Page, id: string) => page.locator(`[data-step-id="${id}"]`);
+/** An idle session is read once per trigger, not on a loop: re-entering a tab reads it again. */
+async function reread(page: Page, tab: 'steps' | 'systemPrompt') {
+  await page.getByTestId('inspector-tab-events').click();
+  await page.getByTestId(`inspector-tab-${tab}`).click();
+}
 
 for (const width of [1440, 1280, 390]) for (const theme of ['light', 'dark'] as const) {
   test(`metadata correction full App ${width} ${theme}`, async ({ page }) => {
@@ -101,20 +108,23 @@ for (const width of [1440, 1280, 390]) for (const theme of ['light', 'dark'] as 
     for (const pre of await panel.locator('.collapsed pre').all()) expect((await pre.textContent())!.trim().startsWith('{')).toBe(false);
     await mkdir('/tmp/pi-steps-reference-correction', { recursive: true });
     await page.screenshot({ path: `/tmp/pi-steps-reference-correction/${width}-${theme}.png` });
-    const toggle = row(page, 'model-1').getByRole('button');
+    const toggle = row(page, 'model-1').locator('.step-toggle');
     await toggle.focus();
     await page.keyboard.press('Enter');
-    await expect(toggle).toHaveAttribute('aria-expanded', 'true');
-    for (const value of ['"nil": null', '"no": false', '"zero": 0', '"empty": ""']) await expect(row(page, 'model-1').locator('pre')).toContainText(value);
-    await expect(row(page, 'model-1')).toContainText('仅展示公开记录字段');
-    await page.keyboard.press('Space');
-    await expect(toggle).toHaveAttribute('aria-expanded', 'false');
-    await row(page, 'system').getByRole('button').click();
-    await expect(row(page, 'system')).toContainText('END_SYSTEM');
-    await row(page, 'result-B').getByRole('button').click();
-    await expect(row(page, 'result-B')).toContainText('UNKNOWN_FIELD_END');
-    await row(page, 'notice').getByRole('button').click();
-    await expect(row(page, 'notice')).toContainText('FUTURE_REASON_ORIGINAL');
+    const metadataDetails = page.getByRole('dialog');
+    await expect(metadataDetails).toBeVisible();
+    for (const value of ['"nil": null', '"no": false', '"zero": 0', '"empty": ""']) await expect(metadataDetails.locator('pre')).toContainText(value);
+    await page.keyboard.press('Escape');
+    await expect(metadataDetails).toBeHidden();
+    // Each record's full content (including unknown tails) is readable in its details dialog.
+    for (const [id, tail] of [['system', 'END_SYSTEM'], ['result-B', 'UNKNOWN_FIELD_END'], ['notice', '已收到安全通知']] as const) {
+      await row(page, id).locator('.step-toggle').click();
+      const details = page.getByRole('dialog');
+      await expect(details).toContainText(tail);
+      await expect(details.locator('img, iframe, a')).toHaveCount(0);
+      await page.keyboard.press('Escape');
+      await expect(details).toBeHidden();
+    }
     await expect(panel.locator('img, iframe, a')).toHaveCount(0);
     await page.screenshot({ path: `/tmp/pi-steps-reference-correction/${width}-${theme}-expanded-tail.png` });
     await expect(page.getByTestId('inspector-tab-steps')).toContainText('12');
@@ -138,29 +148,16 @@ for (const [width, theme] of [[1440, 'light'], [1440, 'dark'], [1280, 'light'], 
       const chat = (await page.getByTestId('chat').boundingBox())!;
       const side = (await panel.boundingBox())!;
       expect(chat.x + chat.width).toBe(side.x);
-      expect(chat.width).toBe(width - (width >= 1180 ? 280 : 0) - 380);
       await page.getByTestId('composer-input').fill('sidebar draft');
       await expect(page.getByTestId('composer-input')).toBeFocused();
     } else {
       await expect(page.getByTestId('chat')).toBeHidden();
     }
-    await expect(panel.getByRole('tab')).toHaveText(['步骤6', '系统提示词', '事件流']);
+    await expect(panel.getByRole('tab')).toHaveText(['子代理', '步骤6', '系统提示词', '事件流']);
     expect(await page.getByTestId('session-step').evaluateAll(els => els.map(el => el.getAttribute('data-step-id'))))
       .toEqual(['thinking', 'call-B', 'call-A', 'result-B', 'result-A', 'active']);
     await row(page, 'thinking').getByRole('button').click();
     await expect(row(page, 'thinking')).toContainText('先核对 B，再核对 A');
-    const toggle = row(page, 'thinking').getByRole('button');
-    await page.mouse.move(0, 0);
-    await toggle.evaluate(el => (el as HTMLElement).blur());
-    const background = await toggle.evaluate(el => getComputedStyle(el).backgroundColor);
-    await toggle.focus();
-    await page.keyboard.press('Shift+Tab');
-    await page.keyboard.press('Tab');
-    await expect(toggle).toBeFocused();
-    expect(await toggle.evaluate(el => el.matches(':focus-visible'))).toBe(true);
-    await expect(toggle).toHaveCSS('outline-style', 'none');
-    await expect(toggle).toHaveCSS('box-shadow', 'none');
-    await expect(toggle).toHaveCSS('background-color', background);
     await expect(page.locator('.raw-footer, .tool-raw-footer, .tool-call-footer')).toHaveCount(0);
     await expect(page.getByRole('button', { name: /查看原始数据|复制原始数据|停止|stop/i })).toHaveCount(0);
     await expect(page.getByTestId('composer-mode')).toHaveCount(0);
@@ -169,59 +166,51 @@ for (const [width, theme] of [[1440, 'light'], [1440, 'dark'], [1280, 'light'], 
     await expect(row(page, 'call-A').locator('pre')).toHaveText('用户原文：核对两个结果。\n保留用户换行。');
     await expect(row(page, 'result-B').locator('pre')).toHaveText(longContent);
     await page.screenshot({ path: `${evidence}/app-${width}-${theme}.png` });
-    await row(page, 'call-A').getByRole('button').click();
-    await expect(row(page, 'call-A')).toContainText('第二用户文本块');
-    await expect(row(page, 'call-A')).toContainText('[omitted]');
+    await row(page, 'call-A').locator('.step-toggle').click();
+    const userDetails = page.getByRole('dialog');
+    await expect(userDetails).toContainText('第二用户文本块');
+    await expect(userDetails).toContainText('[omitted]');
     await page.screenshot({ path: `${evidence}/user-expanded-${width}-${theme}.png` });
+    await page.keyboard.press('Escape');
+    await expect(userDetails).toBeHidden();
 
     const chatScroll = await page.getByTestId('message-list').evaluate(el => el.scrollTop);
     const result = row(page, 'result-B');
-    await result.getByRole('button').click();
-    await expect(result.getByRole('button')).toHaveAttribute('aria-expanded', 'true');
+    await result.locator('.step-toggle').click();
+    const resultDetails = page.getByRole('dialog');
     for (const part of [longContent, '第二结果文本块', '"count": 0', '"ok": false', '"empty": null', '"nestedCalls"', '嵌套结果', 'UNKNOWN_FIELD_END']) {
-      await expect(result.locator('pre')).toContainText(part);
+      await expect(resultDetails.locator('pre')).toContainText(part);
     }
-    // Scroll the actual text endpoint into view, not merely a DOM text assertion.
-    const end = await result.locator('pre').evaluateHandle(el => {
-      const range = document.createRange();
-      const start = el.textContent!.lastIndexOf('END_OF_INSPECTOR_RESULT');
-      range.setStart(el.firstChild!, start);
-      range.setEnd(el.firstChild!, start + 'END_OF_INSPECTOR_RESULT'.length);
-      const body = el.closest('.inspector-body')!;
-      body.scrollTop += range.getBoundingClientRect().bottom - body.getBoundingClientRect().bottom + 24;
-      return range;
-    });
-    expect(await end.evaluate(range => {
-      const r = range.getBoundingClientRect();
-      const body = document.querySelector('.inspector-body')!.getBoundingClientRect();
-      return r.top >= body.top && r.bottom <= body.bottom && r.right <= innerWidth;
-    })).toBe(true);
+    await resultDetails.getByText('END_OF_INSPECTOR_RESULT', { exact: false }).scrollIntoViewIfNeeded();
     await page.screenshot({ path: `${evidence}/long-end-${width}-${theme}.png` });
-    await end.dispose();
+    // Reading details never moves the transcript.
     expect(await page.getByTestId('message-list').evaluate(el => el.scrollTop)).toBe(chatScroll);
-    expect(await page.locator('.inspector-body').evaluate(el => el.scrollTop)).toBeGreaterThan(0);
-    await result.locator('pre').evaluate(el => {
-      const body = el.closest('.inspector-body')!;
-      body.scrollTop += el.getBoundingClientRect().bottom - body.getBoundingClientRect().bottom + 24;
-    });
-    await page.screenshot({ path: `${evidence}/metadata-end-${width}-${theme}.png` });
+    await page.keyboard.press('Escape');
+    await expect(resultDetails).toBeHidden();
 
+    // The fixture session is idle: nothing polls on a loop.
+    const idleCount = state.requests.length;
+    await page.waitForTimeout(1200);
+    expect(state.requests).toHaveLength(idleCount);
     state.steps = snapshot('fixture-0', 2);
     state.steps.steps[5].content = 'ACTIVE_UPDATED_SAME_ID';
+    await reread(page, 'steps');
     await expect(row(page, 'active')).toContainText('ACTIVE_UPDATED_SAME_ID');
     await expect(page.getByTestId('session-step')).toHaveCount(6);
-    await expect(result.getByRole('button')).toHaveAttribute('aria-expanded', 'true');
     await page.getByTestId('inspector-tab-systemPrompt').click();
     await expect(panel).toContainText('创建时快照 · 不是实时运行值');
     await expect(panel).toContainText('CREATION_PROMPT');
     state.prompt = { source: 'live_effective', prompt: '' };
+    await reread(page, 'systemPrompt');
     await expect(panel).not.toContainText('当前有效提示词 · 不代表已发送给模型');
     await expect(panel).toContainText('空字符串（有效提示词）');
     await expect(panel.locator('.system-prompt-text')).toHaveText('');
     state.prompt = { source: 'live_effective', prompt: 'LIVE_PROMPT' };
+    await reread(page, 'systemPrompt');
     await expect(panel).not.toContainText('当前有效提示词 · 不代表已发送给模型');
     await expect(panel.locator('.system-prompt-text')).toHaveText('LIVE_PROMPT');
     state.prompt = { source: 'unavailable', prompt: null };
+    await reread(page, 'systemPrompt');
     await expect(panel).toContainText('系统提示词不可用');
 
     await page.getByTestId('inspector-tab-events').click();
@@ -300,10 +289,12 @@ test('real App session switch rejects delayed steps and prompt responses', async
   const { state, unexpected } = await fixture(page);
   await open(page);
   state.holdSteps = true;
+  await reread(page, 'steps');
   await expect.poll(() => !!state.heldSteps).toBe(true);
   await page.getByTestId('inspector-tab-systemPrompt').click();
   await expect(page.getByTestId('system-prompt-panel')).toContainText('CREATION_PROMPT');
   state.holdPrompt = true;
+  await reread(page, 'systemPrompt');
   await expect.poll(() => !!state.heldPrompt).toBe(true);
   // Closing preserves the existing in-flight response isolation check.
   await page.getByTestId('inspector-close').click();

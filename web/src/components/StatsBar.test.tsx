@@ -1,109 +1,164 @@
-import { render, screen, cleanup, fireEvent } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
-import type { UsageStats } from "pi-agent-server/client";
-import { StatsBar } from "./StatsBar.js";
-import { formatDuration, formatTokens } from "../stats-format.js";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { ChatState, TimelineItem, UsageStats, UsageTokens } from "pi-agent-server/client";
+import { CONTEXT_WARN_PERCENT, SUMMARY_DROP_ORDER, StatsBar } from "./StatsBar.js";
+import { cacheShare } from "../stats-format.js";
+import { formatCompact, formatDuration, formatPercent, formatUsd } from "../i18n/format.js";
 
-afterEach(cleanup);
-const full: UsageStats = { promptTokens: 123456, completionTokens: 2345, totalTokens: 125801, durationMs: 12500, ttftMs: 345 };
-const show = (stats: Partial<UsageStats> | null, pending = false) => { const view = render(<StatsBar stats={stats as UsageStats | null} pending={pending} connected={false} timeline={[
-  { kind: "message", id: "u", role: "user", text: "hi", streaming: false },
-  { kind: "tool", id: "t", call: { toolCallId: "t", toolName: "bash", args: {}, result: "ok", partialResult: undefined, done: true, isError: false } },
-]} />); fireEvent.click(screen.getByRole("button", { name: "查看统计详情" })); return view; };
+afterEach(() => { cleanup(); vi.useRealTimers(); vi.restoreAllMocks(); });
 
-describe("StatsBar", () => {
-  it("shows source-labelled complete metrics and exact tooltips, never speed/cost", () => {
-    show(full);
-    expect(screen.queryByTestId("stat-turns")).toBeNull();
-    expect(screen.queryByTestId("stat-model-turns")).toBeNull();
-    expect(screen.getByText("用户消息 1 条")).toBeVisible();
-    expect(screen.getByTestId("stat-steps")).toHaveTextContent("工具 1 次");
-    expect(screen.getByTestId("stat-input")).toHaveTextContent("输入 12.3万");
-    expect(screen.getByTestId("stat-input").title).toContain("123,456 tokens");
-    expect(screen.getByTestId("stat-output")).toHaveTextContent("输出 2345");
-    expect(screen.getByTestId("stat-tokens").title).toContain("125,801");
-    expect(screen.getByTestId("stat-duration")).toHaveTextContent("请求耗时 12.5 秒");
-    expect(screen.getByTestId("stat-duration").title).toContain("12,500 毫秒");
-    expect(screen.getByTestId("stat-ttft")).toHaveTextContent("首段延迟 345 毫秒");
-    expect(screen.getByTestId("stat-scope").title).toContain("非请求或会话累计");
-    expect(screen.getByTestId("stats-bar")).not.toHaveTextContent(/tok\/s|cost|cache|context|LLM/);
+const tokens = (total: number, cost: number): UsageTokens => ({ input: total / 4, output: total / 4, cacheRead: total / 2, cacheWrite: 0, totalTokens: total, costUsdEstimate: cost });
+const tool = (id: string, toolName: string, extra: Partial<Extract<TimelineItem, { kind: "tool" }>["call"]> = {}): TimelineItem =>
+  ({ kind: "tool", id, call: { toolCallId: id, toolName, args: {}, partialResult: null, result: null, isError: false, done: true, ...extra } });
+const user = (id: string): TimelineItem => ({ kind: "message", id, role: "user", text: id, streaming: false });
+const timeline: TimelineItem[] = [user("u1"), tool("t1", "bash", { durationMs: 1500 }), user("u2"), tool("t2", "read"), tool("t3", "bash", { isError: true, durationMs: 500 })];
+const stats: UsageStats = {
+  durationMs: 3100, ttftMs: 2400, promptTokens: null, completionTokens: null, totalTokens: null,
+  execution: { scope: "allEntries", coverage: "complete", totalLoops: 2, totalTurns: 3, recordedLoops: 2, recordedTurns: 3 },
+  lastResponse: { ...tokens(4400, 0.001), ordinal: 2, cacheHitPercent: 50, speed: { outputTokens: 1100, generationDurationMs: 1000, tokensPerSecond: 124 } },
+  sessionTotals: { ...tokens(13000, 0.004), scope: "allEntries" },
+  currentPrompt: { ...tokens(5200, 0.002), calls: 2 },
+  context: { tokens: 4400, window: 1_000_000, percent: 0.44, estimate: true },
+};
+const summary = () => screen.getByTestId("stats-bar");
+const openDetails = () => fireEvent.click(screen.getByRole("button", { name: "查看统计详情" }));
+
+describe("summary bar while idle", () => {
+  it("shows session work, session usage and context against its window", () => {
+    render(<StatsBar stats={stats} timeline={timeline} />);
+    expect(screen.getByTestId("stat-summary-tasks")).toHaveTextContent("2 次任务");
+    expect(screen.getByTestId("stat-summary-calls")).toHaveTextContent("3 次调用");
+    expect(screen.getByTestId("stat-summary-tools")).toHaveTextContent("工具 3 次");
+    expect(screen.getByTestId("stat-summary-session-tokens")).toHaveTextContent(`会话 ${formatCompact(13000)} tok`);
+    expect(screen.getByTestId("stat-summary-session-cache")).toHaveTextContent(`缓存 ${formatPercent(cacheShare(3250, 6500, 0)!)}`);
+    expect(screen.getByTestId("stat-summary-session-cost")).toHaveTextContent(formatUsd(0.004));
+    expect(screen.getByTestId("stat-summary-context")).toHaveTextContent(`上下文 ${formatCompact(4400)} / ${formatCompact(1_000_000)}`);
+    // The last call alone is a detail, never the headline number.
+    expect(summary()).not.toHaveTextContent(formatCompact(4400) + " tok");
+    expect(summary()).not.toHaveTextContent("turn");
   });
-  it.each(["complete", "recorded"] as const)("uses authoritative independent counts (%s), explains scope in modal", (coverage) => {
-    show({ ...full, execution: { scope: "allEntries", coverage, totalLoops: coverage === "complete" ? 1 : null, totalTurns: coverage === "complete" ? 3 : null, recordedLoops: 1, recordedTurns: 3 } });
-    expect(screen.getByTestId("stat-turns")).toHaveTextContent("1 轮");
-    expect(screen.getByTestId("stat-model-turns")).toHaveTextContent("3 turn");
-    expect(screen.getByTestId("stat-steps")).toHaveTextContent("工具 1 次");
-    expect(screen.getByTestId("stat-turns").title).toContain("非用户消息数");
-    expect(screen.getByTestId("stats-bar")).not.toHaveTextContent("已记录");
-    if (coverage === "recorded") expect(screen.getByText(/已记录范围/)).toBeVisible();
+
+  it("names subagent usage beside the session and adds its cost", () => {
+    render(<StatsBar stats={{ ...stats, subagentTotals: { ...tokens(8000, 0.003), runs: 2, calls: 5 } }} timeline={timeline} />);
+    expect(screen.getByTestId("stat-summary-session-tokens")).toHaveTextContent(`（子代理 ${formatCompact(8000)}）`);
+    expect(screen.getByTestId("stat-summary-session-cost")).toHaveTextContent(formatUsd(0.004 + 0.003));
   });
-  it("hides the activity cluster for unknown counts and zero tools while keeping details", () => {
-    const view = render(<StatsBar stats={null} timeline={[]} connected={false} />);
-    expect(screen.queryByTestId("stat-turns")).toBeNull();
-    expect(screen.queryByTestId("stat-model-turns")).toBeNull();
-    expect(screen.queryByTestId("stat-steps")).toBeNull();
+
+  it("hides the cost of an unpriced model instead of showing zero", () => {
+    render(<StatsBar stats={{ ...stats, sessionTotals: { ...tokens(13000, 0), scope: "allEntries" } }} timeline={timeline} />);
+    expect(screen.queryByTestId("stat-summary-session-cost")).toBeNull();
+    openDetails();
+    expect(screen.getByTestId("stat-session-cost")).toHaveTextContent("未计价");
+  });
+
+  it("warns once the context nears its window", () => {
+    const view = render(<StatsBar stats={stats} timeline={timeline} />);
+    expect(screen.getByTestId("stat-summary-context").parentElement).not.toHaveAttribute("data-warn");
+    view.rerender(<StatsBar stats={{ ...stats, context: { tokens: 900_000, window: 1_000_000, percent: CONTEXT_WARN_PERCENT, estimate: true } }} timeline={timeline} />);
+    expect(screen.getByTestId("stat-summary-context").parentElement).toHaveAttribute("data-warn", "true");
+  });
+
+  it("omits what is unknown rather than inventing zero", () => {
+    const view = render(<StatsBar stats={null} timeline={[]} />);
     expect(view.container.querySelector(".stats-cluster")).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "查看统计详情" }));
-    expect(screen.getByText(/未知 轮 · 未知 turn/)).toBeVisible();
-    expect(screen.getByText("0 次工具调用")).toBeVisible();
+    view.rerender(<StatsBar stats={{ ...stats, execution: null, sessionTotals: null, context: { tokens: null, window: null, percent: 3, estimate: true } }} timeline={[]} />);
+    expect(screen.queryByTestId("stat-summary-tasks")).toBeNull();
+    expect(screen.queryByTestId("stat-summary-session-tokens")).toBeNull();
+    expect(screen.getByTestId("stat-summary-context")).toHaveTextContent(`上下文 ${formatPercent(3)}`);
   });
-  it("shows known loops independently when turns are missing", () => {
-    render(<StatsBar stats={{ ...full, execution: { scope: "allEntries", coverage: "recorded", totalLoops: null, totalTurns: null, recordedLoops: 2, recordedTurns: null } }} timeline={[]} connected={false} />);
-    expect(screen.getByTestId("stat-turns")).toHaveTextContent("2 轮");
-    expect(screen.queryByTestId("stat-model-turns")).toBeNull();
-    expect(screen.queryByTestId("stat-steps")).toBeNull();
+});
+
+describe("summary bar fitting one line", () => {
+  /** Each shown item takes this much room; the bar holds `capacity` of them. */
+  const ITEM_WIDTH = 50;
+  function layout(capacity: number) {
+    const scroll = vi.spyOn(HTMLElement.prototype, "scrollWidth", "get").mockImplementation(function (this: HTMLElement) {
+      return this.classList.contains("stats-summary") ? this.querySelectorAll(".stats-item:not([data-dropped])").length * ITEM_WIDTH : 0;
+    });
+    const client = vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockImplementation(function (this: HTMLElement) {
+      return this.classList.contains("stats-summary") ? capacity * ITEM_WIDTH : 0;
+    });
+    return () => { scroll.mockRestore(); client.mockRestore(); };
+  }
+  const shown = () => [...document.querySelectorAll(".stats-item:not([data-dropped]) [data-testid]")].map(el => el.getAttribute("data-testid")!.replace("stat-summary-", ""));
+
+  it("drops low-priority items in order until the line fits, keeping usage and context", () => {
+    const restore = layout(3);
+    render(<StatsBar stats={stats} timeline={timeline} />);
+    const all = ["tasks", "calls", "tools", "session-tokens", "session-cache", "session-cost"];
+    const dropped = SUMMARY_DROP_ORDER.filter(id => all.includes(id)).slice(0, all.length - 3);
+    expect(shown()).toEqual(all.filter(id => !dropped.includes(id)));
+    expect(screen.getByTestId("stat-summary-context")).toBeVisible();
+    restore();
   });
-  it("shows only explicit positive tool counts without guessing", () => {
-    show(full);
-    expect(screen.getByTestId("stat-steps")).toHaveTextContent("工具 1 次");
+
+  it("hides a cluster whose items all dropped", () => {
+    const restore = layout(1);
+    const view = render(<StatsBar stats={{ ...stats, sessionTotals: { ...tokens(13000, 0), scope: "allEntries" } }} timeline={timeline} />);
+    expect(shown()).toEqual(["session-tokens"]);
+    expect(view.container.querySelector(".stats-activity")).toHaveAttribute("data-dropped");
+    restore();
   });
-  it("shows speed alone without leading or repeated separators", () => {
-    render(<StatsBar stats={{ ...full, lastResponse: { input: null, output: 1, cacheRead: null, cacheWrite: null, totalTokens: null, costUsdEstimate: null, ordinal: 1, cacheHitPercent: null, speed: { outputTokens: 1, generationDurationMs: 10, tokensPerSecond: 42 } } }} timeline={[]} connected />);
-    expect(screen.getByTestId("stat-summary-speed")).toHaveTextContent("42 tok/s");
-    expect(screen.queryByTestId("stat-turns")).toBeNull();
-    const cluster = screen.getByTestId("stat-summary-speed").closest(".stats-cluster");
-    expect(cluster).toHaveTextContent("42 tok/s");
-    expect(cluster).not.toHaveTextContent(/^ ·|· ·/);
+});
+
+describe("summary bar while a task runs", () => {
+  const progress: ChatState["modelOutput"] = { ordinal: 4, phase: "delta", tokensPerSecondEstimate: 124, includesThinking: false, receivedAt: 100 };
+
+  it("follows the task: its call number, its tools, live speed and its tokens so far", () => {
+    vi.useFakeTimers();
+    let clock = 100; vi.spyOn(performance, "now").mockImplementation(() => clock);
+    render(<StatsBar stats={stats} pending timeline={timeline} modelOutput={progress} runProgress={{ calls: 4, promptTokens: 5200 }} />);
+    expect(screen.getByTestId("stat-summary-current-call")).toHaveTextContent("本次 第 4 次调用");
+    expect(screen.getByTestId("stat-summary-task-tools")).toHaveTextContent("工具 2 次");
+    expect(screen.getByTestId("stat-summary-live-speed")).toHaveTextContent("~124 tok/s");
+    expect(screen.getByTestId("stat-summary-task-tokens")).toHaveTextContent(`本次 ${formatCompact(5200)} tok`);
+    // Speed is shown only while output keeps arriving.
+    clock = 2101; act(() => vi.advanceTimersByTime(2001));
+    expect(screen.queryByTestId("stat-summary-live-speed")).toBeNull();
   });
-  it("shows genuine current-session zero counts", () => {
-    show({ ...full, execution: { scope: "allEntries", coverage: "complete", totalLoops: 0, totalTurns: 0, recordedLoops: 0, recordedTurns: 0 } });
-    expect(screen.getByTestId("stat-turns")).toHaveTextContent("0 轮");
-    expect(screen.getByTestId("stat-model-turns")).toHaveTextContent("0 turn");
+
+  it("keeps the session usage until the task's first call completes, and drops speed on a lost stream", () => {
+    render(<StatsBar stats={stats} pending streamLost timeline={timeline} modelOutput={{ ...progress, receivedAt: performance.now() }} runProgress={{ calls: 1, promptTokens: null }} />);
+    expect(screen.getByTestId("stat-summary-session-tokens")).toBeInTheDocument();
+    expect(screen.queryByTestId("stat-summary-live-speed")).toBeNull();
   });
-  it("shows measured token zeros as zero", () => {
-    show({ promptTokens: 0, completionTokens: 0, totalTokens: 0, durationMs: 0, ttftMs: 0 });
-    expect(screen.getByTestId("stat-output")).toHaveTextContent("输出 0");
-    expect(screen.getByTestId("stat-duration")).toHaveTextContent("0 毫秒");
-    expect(screen.queryByTestId("stat-ttft")).toBeNull();
-    expect(screen.getByTestId("stat-scope").title).toContain("已测零显示 0");
+});
+
+describe("details", () => {
+  it("groups each scope as label / value rows", () => {
+    render(<StatsBar stats={{ ...stats, subagentTotals: { ...tokens(8000, 0.003), runs: 2, calls: 5 } }} timeline={timeline} />);
+    openDetails();
+    const task = within(screen.getByTestId("stats-section-task"));
+    expect(task.getByTestId("stat-task-calls")).toHaveTextContent("模型调用2 次");
+    expect(task.getByTestId("stat-task-tools")).toHaveTextContent("工具调用2 次");
+    expect(task.getByTestId("stat-task-tokens")).toHaveTextContent(`用量${formatCompact(5200)} tok`);
+    expect(task.getByTestId("stat-task-duration")).toHaveTextContent(formatDuration(3100));
+    expect(task.getByTestId("stat-task-ttft")).toHaveTextContent(formatDuration(2400));
+    expect(within(screen.getByTestId("stats-section-last")).getByTestId("stat-last-speed")).toHaveTextContent("124 tok/s");
+    const session = within(screen.getByTestId("stats-section-session"));
+    expect(session.getByTestId("stat-session-tasks")).toHaveTextContent("2 次");
+    expect(session.getByTestId("stat-session-messages")).toHaveTextContent("2 条");
+    expect(session.getByTestId("stat-session-breakdown")).toHaveTextContent(`缓存读 ${formatCompact(6500)}`);
+    expect(within(screen.getByTestId("stats-section-subagents")).getByTestId("stat-subagent-runs")).toHaveTextContent("2 个");
+    const tools = within(screen.getByTestId("stats-section-tools"));
+    expect(tools.getByTestId("stat-tool-failures")).toHaveTextContent("1 次");
+    expect(tools.getByTestId("stat-tool-time")).toHaveTextContent(formatDuration(2000));
+    expect(tools.getByTestId("stat-tool-distribution")).toHaveTextContent("bash 2 · read 1");
+    expect(within(screen.getByTestId("stats-section-context")).getByTestId("stat-context-percent")).toHaveTextContent(formatPercent(0.44));
   });
-  it.each([null, {}, { promptTokens: null, completionTokens: undefined, totalTokens: NaN, durationMs: Infinity, ttftMs: -1 }])("omits unavailable/invalid values: %j", (stats) => {
-    show(stats as Partial<UsageStats> | null);
-    expect(screen.queryByTestId("stat-scope")).toBeNull();
-    expect(screen.getByTestId("stat-steps")).toBeVisible();
+
+  it("explains each scope behind a hint instead of in running text", () => {
+    render(<StatsBar stats={stats} timeline={timeline} />);
+    openDetails();
+    expect(screen.getByRole("img", { name: /不含子代理/ })).toBeInTheDocument();
+    expect(screen.getByRole("dialog")).not.toHaveTextContent(/turn_start|allEntries/);
   });
-  it("shows partial data independently", () => {
-    show({ completionTokens: 42, durationMs: 900 });
-    expect(screen.getByTestId("stat-output")).toHaveTextContent("42");
-    expect(screen.queryByTestId("stat-input")).toBeNull();
-    expect(screen.queryByTestId("stat-tokens")).toBeNull();
-  });
-  it("labels retained stats non-realtime while queued/streaming; never invents usage", () => {
-    const view = show(full, true);
-    expect(screen.getByTestId("stat-scope")).toHaveTextContent("上次·非实时");
-    view.rerender(<StatsBar stats={null} pending connected timeline={[]} />);
-    expect(screen.queryByTestId("stat-scope")).toBeNull();
-  });
-  it("omits ambiguous no-delta timing", () => {
-    show({ durationMs: 900, ttftMs: 900 });
-    expect(screen.queryByTestId("stat-ttft")).toBeNull();
-  });
-  it("formats compact tokens and subsecond/second durations in Chinese", () => {
-    expect(formatTokens(0)).toBe("0");
-    expect(formatTokens(10000)).toBe("1万");
-    expect(formatDuration(0)).toBe("0 毫秒");
-    expect(formatDuration(999)).toBe("999 毫秒");
-    expect(formatDuration(1000)).toBe("1 秒");
-    expect(formatDuration(1234)).toBe("1.2 秒");
+
+  it("marks partial history and the previous task's last call while running", () => {
+    render(<StatsBar stats={{ ...stats, execution: { ...stats.execution!, coverage: "recorded" } }} pending timeline={timeline} runProgress={{ calls: 1, promptTokens: null }} />);
+    openDetails();
+    expect(screen.getByTestId("stat-session-tasks")).toHaveTextContent("仅含开始记录之后");
+    expect(screen.getByTestId("stats-section-last")).toHaveTextContent("（上次任务）");
+    expect(screen.getByTestId("stat-task-state")).toHaveTextContent("等待模型输出");
   });
 });

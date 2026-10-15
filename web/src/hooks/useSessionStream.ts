@@ -3,6 +3,13 @@ import { ApiError, createSseConnection, firstUserPrompt, type ApiClient, type Ch
 import { projectExportTimeline, projectLegacyHistory } from "./history-projection.js";
 
 type Setter<T> = Dispatch<SetStateAction<T>>;
+/**
+ * The selected session's event stream, as the UI may describe it. "connecting" is not a
+ * failure: a new session's runtime is created on first request and takes a moment.
+ * "reconnecting" means an open stream dropped (or a connect failed) and is being retried;
+ * "no-live" is the server's normal 204 for a viewer of a session with nothing running.
+ */
+export type SessionConnection = "idle" | "connecting" | "open" | "reconnecting" | "no-live";
 type SessionStreamOptions = {
   api: ApiClient;
   activeSessionId: string | null;
@@ -18,7 +25,7 @@ type SessionStreamOptions = {
   setUsageSnapshots: Setter<Record<string, UsageSnapshot | undefined>>;
   setInvalidContexts: Setter<ReadonlySet<string>>;
   onInvalidSession: (sessionId: string) => void;
-  setConnected: Setter<boolean>;
+  setConnection: Setter<SessionConnection>;
   onLoad: () => void;
   onOpen?: () => void;
   onEpochReset?: () => void;
@@ -33,7 +40,7 @@ type SessionStreamOptions = {
 export function useSessionStream({
   api, activeSessionId, navigationGeneration, isCurrent, chatStore, newlyCreatedIdsRef, historyReadySessionIdsRef,
   emptyHistoryIdsRef, eventCursorsRef, usageRevisionRef, setHistoryReadySessionIds,
-  setUsageSnapshots, setInvalidContexts, onInvalidSession, setConnected,
+  setUsageSnapshots, setInvalidContexts, onInvalidSession, setConnection,
   onLoad, onOpen, onEpochReset, rememberFirstPrompt, onEvent,
 }: SessionStreamOptions): void {
   const serverEpochRef = useRef<string | null>(null);
@@ -46,6 +53,7 @@ export function useSessionStream({
     const stateAtLoadStart = store.getState();
     const usageRevision = usageRevisionRef.current.get(sessionId) ?? 0;
     onLoad();
+    setConnection("connecting");
     let cancelled = false;
     const ownsStream = () => !cancelled && isCurrent();
     let connection: { close: () => void } | null = null;
@@ -116,7 +124,7 @@ export function useSessionStream({
         initialEpoch: serverEpochRef.current ?? undefined,
         onOpen: () => {
           if (ownsStream()) {
-            setConnected(true);
+            setConnection("open");
             onOpen?.();
           }
         },
@@ -130,17 +138,17 @@ export function useSessionStream({
         onError: () => {
           if (!ownsStream()) return;
           store.markDisconnected();
-          setConnected(false);
+          setConnection("reconnecting");
         },
         onDisconnect: () => {
           if (!ownsStream()) return;
           store.markDisconnected();
-          setConnected(false);
+          setConnection("reconnecting");
         },
         onNoLiveStream: () => {
           if (!ownsStream()) return;
           store.markDisconnected();
-          setConnected(false);
+          setConnection("no-live");
         },
         onEvent: (event, lastEventId) => {
           if (!ownsStream()) return;
@@ -155,7 +163,7 @@ export function useSessionStream({
       cancelled = true;
       connection?.close();
       store.markDisconnected();
-      setConnected(false);
+      setConnection("idle");
     };
   }, [api, activeSessionId, chatStore, navigationGeneration]);
 }

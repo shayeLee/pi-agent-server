@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent, waitFor, act, within } from "@testing-library/react";
-import App from "./App.js";
+import App, { TRACE_DEFAULT_MIN_WIDTH } from "./App.js";
 import { themePreferenceKey } from "./theme-preference.js";
 import { DEFAULT_PROJECT_ID } from "pi-agent-server/client";
 import type { Project, SseEvent, SessionRecord } from "pi-agent-server/client";
@@ -101,6 +101,8 @@ const mocks = vi.hoisted(() => {
     baseUrl: string;
     token: string;
     tokenProvided: boolean;
+    // Route resolution reads authorized metadata across projects.
+    listSessions = vi.fn(() => Promise.resolve([...sessionList]));
     listSessionsByProject = vi.fn((projectId: string) => {
       if (projectId === deferredSessionsProject) {
         return new Promise<SessionRecord[]>((resolve) => {
@@ -416,13 +418,11 @@ describe("App（顶层流程）", () => {
       expect(screen.getByRole("menuitemradio", { name: "跟随系统" })).toHaveAttribute("aria-checked", "true");
       fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
       expect(screen.queryByText("已跟随系统")).not.toBeInTheDocument();
-      const brand = document.querySelector("img.brand-mark");
-      expect(brand).toHaveAttribute("aria-hidden", "true");
-      expect(brand).toHaveAttribute("alt", "");
-      expect(brand).toHaveAttribute("src", (await import('./icons/svg/brand-pi.svg')).default);
-      expect(brand).toHaveAttribute("width", "26");
-      expect(brand).toHaveAttribute("height", "26");
-      expect(document.querySelector("svg.brand-mark")).toBeNull();
+      // Ledger brand is a mono wordmark with an accessible product name (DESIGN.md §7).
+      const brand = document.querySelector(".ledger-brand");
+      expect(brand).toHaveAttribute("aria-label", "pi-agent-server");
+      expect(brand).toHaveTextContent("pi/agent");
+      expect(document.querySelector(".brand-mark")).toBeNull();
       expect(app).toHaveAttribute("data-theme", "dark");
       await waitFor(() => expect(document.documentElement).toHaveAttribute("data-theme", "dark"));
 
@@ -537,7 +537,10 @@ describe("App（顶层流程）", () => {
     expect(screen.getByTestId("inspector")).toBeInTheDocument();
     expect(screen.getByTestId("trace-tab")).toHaveAttribute("aria-expanded", "true");
     expect(screen.getByTestId("inspector")).toHaveAttribute("id", screen.getByTestId("trace-tab").getAttribute("aria-controls"));
-    expect(screen.getByTestId("inspector-tab-steps")).toHaveAttribute("aria-selected", "true");
+    // The trace opens on its first tab, subagents; steps load only when their tab is chosen.
+    expect(screen.getByTestId("inspector-tab-subagents")).toHaveAttribute("aria-selected", "true");
+    expect(mocks.instances[0].getSessionSteps).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByTestId("inspector-tab-steps"));
     await waitFor(() => expect(mocks.instances[0].getSessionSteps).toHaveBeenCalled());
     expect(mocks.instances[0].getSystemPrompt).not.toHaveBeenCalled();
     fireEvent.click(screen.getByTestId("inspector-tab-systemPrompt"));
@@ -549,6 +552,44 @@ describe("App（顶层流程）", () => {
     fireEvent.click(screen.getByTestId("trace-tab"));
     expect(screen.getByTestId("trace-tab")).toHaveAttribute("aria-expanded", "false");
     expect(screen.queryByTestId("inspector")).not.toBeInTheDocument();
+  });
+
+  it("打开会话地址时首帧就为轨迹留位，会话就绪后原位填入；会话不可用时撤掉留位", async () => {
+    const wide = vi.fn((query: string) => ({ matches: query === `(min-width: ${TRACE_DEFAULT_MIN_WIDTH}px)`, media: query, addEventListener: vi.fn(), removeEventListener: vi.fn(),
+      addListener: vi.fn(), removeListener: vi.fn(), onchange: null, dispatchEvent: vi.fn() }));
+    vi.stubGlobal("matchMedia", wide);
+    try {
+      mocks.setSessions(sessions);
+      window.history.replaceState(null, "", `/p/${encodeURIComponent(mocks.DEFAULT_PROJECT_ID)}/s/s1`);
+      const first = render(<App />);
+      // Before the session list loads, the trace column is already reserved: nothing shifts later.
+      expect(screen.getByTestId("inspector-placeholder")).toBeInTheDocument();
+      await waitFor(() => expect(screen.getByTestId("inspector")).toBeInTheDocument());
+      expect(screen.queryByTestId("inspector-placeholder")).toBeNull();
+      first.unmount();
+      window.history.replaceState(null, "", `/p/${encodeURIComponent(mocks.DEFAULT_PROJECT_ID)}/s/missing`);
+      render(<App />);
+      expect(screen.getByTestId("inspector-placeholder")).toBeInTheDocument();
+      await waitFor(() => expect(screen.queryByTestId("inspector-placeholder")).toBeNull());
+      expect(screen.queryByTestId("inspector")).toBeNull();
+    } finally { vi.unstubAllGlobals(); window.history.replaceState(null, "", "/"); }
+  });
+
+  it("对话能保持完整宽度时默认打开轨迹并停在子代理；手动关闭后切换会话保持关闭", async () => {
+    const wide = vi.fn((query: string) => ({ matches: query === `(min-width: ${TRACE_DEFAULT_MIN_WIDTH}px)`, media: query, addEventListener: vi.fn(), removeEventListener: vi.fn(),
+      addListener: vi.fn(), removeListener: vi.fn(), onchange: null, dispatchEvent: vi.fn() }));
+    vi.stubGlobal("matchMedia", wide);
+    try {
+      await enterChat();
+      expect(screen.getByTestId("inspector")).toBeInTheDocument();
+      expect(screen.getByTestId("trace-tab")).toHaveAttribute("aria-expanded", "true");
+      expect(screen.getByTestId("inspector-tab-subagents")).toHaveAttribute("aria-selected", "true");
+      fireEvent.click(screen.getByTestId("trace-tab"));
+      expect(screen.queryByTestId("inspector")).not.toBeInTheDocument();
+      fireEvent.click(screen.getByTestId("session-s2"));
+      await waitFor(() => expect(screen.getByTestId("trace-tab")).toHaveAttribute("aria-expanded", "false"));
+      expect(screen.queryByTestId("inspector")).not.toBeInTheDocument();
+    } finally { vi.unstubAllGlobals(); }
   });
 
   it("Inspector 无遮罩、不捕获 Tab；Esc 关闭回焦并保留草稿", async () => {
@@ -573,6 +614,7 @@ describe("App（顶层流程）", () => {
     await enterChat();
     act(() => mocks.sse.onEvent?.({ type: "text_delta", text: "event fixture" }));
     fireEvent.click(screen.getByTestId("trace-tab"));
+    fireEvent.click(screen.getByTestId("inspector-tab-steps"));
     await waitFor(() => expect(mocks.instances[0].getSessionSteps).toHaveBeenCalledTimes(1));
     fireEvent.click(screen.getByTestId("inspector-tab-events"));
     const events = screen.getByTestId("event-log").textContent;
@@ -676,7 +718,7 @@ describe("App（顶层流程）", () => {
       mocks.sse.onEvent?.({ type: "status", phase: "agent_start", requestId: request.requestId });
       mocks.sse.onEvent?.({ type: "text_delta", text: "owned answer", requestId: request.requestId });
     });
-    await waitFor(() => expect(screen.getByTestId("abort-button")).toHaveAttribute("title", "中止（Esc）"));
+    await waitFor(() => expect(screen.getByTestId("abort-button")).toHaveAttribute("title", "中止（连按两次 Esc）"));
     act(() => {
       mocks.sse.onEvent?.({ type: "error", message: "pending notification rejected", requestId: "notification-race" });
       mocks.sse.onEvent?.({ type: "completed", requestId: "old" });
@@ -684,7 +726,7 @@ describe("App（顶层流程）", () => {
       mocks.sse.onEvent?.({ type: "status", phase: "agent_start", requestId: "old" });
       mocks.sse.onEvent?.({ type: "text_delta", text: " foreign text", requestId: "old" });
     });
-    expect(screen.getByTestId("abort-button")).toHaveAttribute("title", "中止（Esc）");
+    expect(screen.getByTestId("abort-button")).toHaveAttribute("title", "中止（连按两次 Esc）");
     expect(screen.queryByTestId("phase-queued")).not.toBeInTheDocument();
     expect(screen.queryByText(/foreign text/)).not.toBeInTheDocument();
     act(() => mocks.sse.onEvent?.({ type: "text_delta", text: " continues", requestId: request.requestId }));
@@ -854,7 +896,7 @@ describe("App（顶层流程）", () => {
     const run = { id: "child-uuid", runId: "1", agent: "worker", task: "检查任务", startedAt: 1, endedAt: 2, status: "completed" as const, revision: 10 };
     inst.getSubagents.mockImplementation(async (sessionId: string, runId?: string) => ({ sessionId, runs: [run], ...(runId ? { conversation: {
       run, messages: [], inputs: [], timeline: [
-        { kind: "message" as const, id: "u", role: "user" as const, text: "完整 steer 内容", streaming: false, sourceLabel: "主代理 · steer · 已送达" },
+        { kind: "message" as const, id: "u", role: "user" as const, text: "完整 steer 内容", streaming: false, hostInput: "steer" as const, sourceLabel: "主代理 · steer · 已送达" },
         { kind: "message" as const, id: "a", role: "assistant" as const, text: "子代理完整回复", streaming: false },
         { kind: "tool" as const, id: "t", call: { toolCallId: "t", toolName: "bash", args: { command: "echo proof" }, partialResult: null, result: { content: [{ type: "text", text: "工具结果末行" }] }, done: true, isError: false } },
       ],
@@ -867,8 +909,14 @@ describe("App（顶层流程）", () => {
     fireEvent.click(await screen.findByRole("button", { name: /worker #1/ }));
     const child = await screen.findByTestId("subagent-chat");
     await waitFor(() => expect(within(child).getByText("完整 steer 内容")).toBeVisible());
-    expect(within(child).getByText("主代理 · steer · 已送达")).toBeVisible();
+    // The host's turn is tagged 主代理 with its kind in the gutter; delivery is implied by being in the transcript.
+    const hostTurn = within(child).getByText("完整 steer 内容").closest(".ledger-entry")!;
+    expect(hostTurn.querySelector(".ledger-tag")).toHaveTextContent("主代理");
+    expect(hostTurn.querySelector(".ledger-note")).toHaveTextContent("引导");
+    expect(within(child).queryByText(/已送达/)).toBeNull();
     expect(within(child).getByText("子代理完整回复")).toBeVisible();
+    // Finished child history keeps its steps inside a collapsed work block.
+    fireEvent.click(within(child).getByRole("button", { name: /展开工作块/ }));
     fireEvent.click(within(child).getByRole("button", { name: /工具调用/ }));
     expect(child.querySelector(".tool-call-body")).toHaveTextContent("工具结果末行");
     expect(screen.getByTestId("sidebar")).toBeVisible();
@@ -1197,7 +1245,7 @@ describe("App（顶层流程）", () => {
       // A's delayed terminal cannot end B.
       mocks.sse.onEvent?.({ type: "completed", requestId: "A" }, 126);
     });
-    expect(screen.getByTestId("abort-button")).toHaveAttribute("title", "中止（Esc）");
+    expect(screen.getByTestId("abort-button")).toHaveAttribute("title", "中止（连按两次 Esc）");
     expect(screen.getAllByText("answer A")).toHaveLength(1);
     expect(screen.getAllByText("answer B")).toHaveLength(1);
     expect(screen.getAllByText("history row 119")).toHaveLength(1);
@@ -1225,6 +1273,7 @@ describe("App（顶层流程）", () => {
     act(() => { mocks.sse.onOpen?.(); mocks.sse.onEvent?.({ type: "compaction_start", reason: "threshold", requestId: "r1" }); });
     expect(screen.getByTestId("compaction-banner")).toHaveAttribute("data-status", "running");
     expect(screen.getByTestId("abort-button")).toBeEnabled();
+    fireEvent.keyDown(document, { key: "Escape" });
     fireEvent.keyDown(document, { key: "Escape" });
     await waitFor(() => expect(inst.abort).toHaveBeenCalledWith("s1"));
     expect(screen.getByTestId("compaction-banner")).toHaveAttribute("data-status", "running");
@@ -1288,6 +1337,7 @@ describe("App（顶层流程）", () => {
   it("删除当前会话后退出聊天并关闭连接", async () => {
     const inst = await enterChat();
 
+    fireEvent.contextMenu(screen.getByTestId("session-s1"));
     fireEvent.click(screen.getByTestId("delete-s1"));
     await waitFor(() => expect(mocks.sse.close).toHaveBeenCalled());
     expect(inst.deleteSession).toHaveBeenCalledWith("s1");
@@ -1523,6 +1573,7 @@ describe("会话显示标题兜底", () => {
     let finishRename!: (row: SessionRecord) => void;
     api.renameSession.mockImplementationOnce(() => new Promise<SessionRecord>((resolve) => { finishRename = resolve; }));
     vi.spyOn(window, "prompt").mockReturnValueOnce("旧项目标题");
+    fireEvent.contextMenu(screen.getByTestId("session-s1"));
     fireEvent.click(screen.getByTestId("rename-s1"));
     await waitFor(() => expect(api.renameSession).toHaveBeenCalled());
     mocks.deferSessionsFor("p1");
@@ -1569,6 +1620,7 @@ describe("会话显示标题兜底", () => {
     send("首条提示词");
     api.renameSession.mockResolvedValueOnce({ ...sessions[0]!, title: "未命名会话" });
     vi.spyOn(window, "prompt").mockReturnValueOnce("未命名会话");
+    fireEvent.contextMenu(screen.getByTestId("session-s1"));
     fireEvent.click(screen.getByTestId("rename-s1"));
     await waitFor(() => expect(api.renameSession).toHaveBeenCalled());
     await act(async () => { accept(undefined); });
@@ -1588,16 +1640,16 @@ describe("rich usage export hydration", () => {
     api.exportSession.mockResolvedValue({ messages: [{ role: "user", text: "usage fixture" }], usageSnapshot });
     fireEvent.click(screen.getByTestId("session-s1"));
     fireEvent.click(await screen.findByRole("button", { name: "查看统计详情" }));
-    await waitFor(() => expect(screen.getByTestId("stat-cache-hit")).toHaveTextContent("100 %"));
-    expect(screen.getByTestId("stat-input")).toHaveTextContent("输入 0");
-    expect(screen.getByTestId("stat-speed")).toHaveTextContent("200 tok/s");
-    expect(screen.queryByTestId("stat-duration")).toBeNull();
+    await waitFor(() => expect(screen.getByTestId("stat-last-cache-hit")).toHaveTextContent("100%"));
+    expect(screen.getByTestId("stat-last-breakdown")).toHaveTextContent("输入 0");
+    expect(screen.getByTestId("stat-last-speed")).toHaveTextContent("200 tok/s");
+    expect(screen.queryByTestId("stat-task-duration")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "关闭对话框" }));
     fireEvent.click(screen.getByTestId("session-s2"));
     api.exportSession.mockResolvedValue({ messages: [] });
     fireEvent.click(screen.getByTestId("session-s1"));
     await waitFor(() => expect(api.exportSession).toHaveBeenCalledTimes(3));
-    expect(screen.queryByTestId("stat-context-tokens")).toBeNull();
+    expect(screen.queryByTestId("stat-context-used")).toBeNull();
   });
   it("clears context immediately when changing model", async () => {
     const api = await enterIntranet();

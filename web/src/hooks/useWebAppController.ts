@@ -1,4 +1,5 @@
 import { zhCN } from "../i18n/zh-CN.js";
+import { formatTime } from "../i18n/format.js";
 import {
   useCallback,
   useEffect,
@@ -12,7 +13,7 @@ import type { AccessCapabilities, ChatStore, ModelInfo, Project, SessionRecord, 
 import type { EventLogEntry } from "../types.js";
 import { EMPTY_MESSAGE, type SubmissionState, type SubmitOutcome, type SubmitSnapshot, type UnsentMessage } from "../attachment-state.js";
 
-import { useSessionStream } from "./useSessionStream.js";
+import { useSessionStream, type SessionConnection } from "./useSessionStream.js";
 import { useSessionControls } from "./useSessionControls.js";
 import { createDraftAttachmentActions } from "./draft-attachments.js";
 import { createDraftStore } from "../draft-store.js";
@@ -37,8 +38,13 @@ export function useWebAppController() {
   const [navigationRetryAvailable, setNavigationRetryAvailable] = useState(false);
   const [projectsError, setProjectsError] = useState<string | null>(null);
   const [eventLog, setEventLog] = useState<EventLogEntry[]>([]);
-  const [connected, setConnected] = useState(false);
+  const [connection, setConnection] = useState<SessionConnection>("idle");
+  const connected = connection === "open";
   const [inspectionRefreshKey, setInspectionRefreshKey] = useState(0);
+  /** Latest steps position pushed by the server (steps_changed); the Steps tab reads on change. */
+  const [stepsPosition, setStepsPosition] = useState<string | null>(null);
+  /** Latest subagents_changed position pushed by the server; the subagent feed reads on change. */
+  const [subagentsPosition, setSubagentsPosition] = useState<string | null>(null);
   const [historyNotice, setHistoryNotice] = useState<string | null>(null);
   const [historyReadySessionIds, setHistoryReadySessionIds] = useState<ReadonlySet<string>>(
     () => new Set(),
@@ -171,31 +177,9 @@ export function useWebAppController() {
   const activeSessionIdRef = useRef<string | null>(null);
   const activeProjectIdRef = useRef<string | null>(null);
   useEffect(() => { activeProjectIdRef.current = activeProjectId; }, [activeProjectId]);
-  const prevSessionIdRef = useRef<string | null>(null);
   useEffect(() => {
-    const prev = prevSessionIdRef.current;
-    if (prev && prev !== activeSessionId) {
-      cancelRetries(prev);
-    }
-    prevSessionIdRef.current = activeSessionId;
     activeSessionIdRef.current = activeSessionId;
   }, [activeSessionId]);
-
-  const retryTimersRef = useRef(new Map<ReturnType<typeof setTimeout>, string>());
-  function cancelRetries(sessionId: string): void {
-    for (const [timer, owner] of retryTimersRef.current) {
-      if (owner !== sessionId) continue;
-      clearTimeout(timer);
-      retryTimersRef.current.delete(timer);
-    }
-  }
-  useEffect(() => {
-    const timers = retryTimersRef.current;
-    return () => {
-      for (const timer of timers.keys()) clearTimeout(timer);
-      timers.clear();
-    };
-  }, []);
 
   // Receipts live only as long as their HTTP send, independently of navigation/cursors.
   // A pending promise already owns this receipt; no historical confirmation cache is needed.
@@ -455,7 +439,7 @@ export function useWebAppController() {
       ...prev,
       {
         seq,
-        time: new Date().toLocaleTimeString("zh-CN", { hour12: false }),
+        time: formatTime(Date.now()),
         type,
         data,
       },
@@ -483,7 +467,7 @@ export function useWebAppController() {
     isCurrent: () => streamNavigationGeneration === navigationGenerationRef.current && activeSessionIdRef.current === activeSessionId,
     chatStore, newlyCreatedIdsRef, historyReadySessionIdsRef,
     emptyHistoryIdsRef, eventCursorsRef, usageRevisionRef, setHistoryReadySessionIds,
-    setUsageSnapshots, setInvalidContexts, setConnected,
+    setUsageSnapshots, setInvalidContexts, setConnection,
     onInvalidSession: (sessionId) => {
       if (streamNavigationGeneration !== navigationGenerationRef.current || activeSessionIdRef.current !== sessionId) return;
       advanceNavigation();
@@ -500,6 +484,8 @@ export function useWebAppController() {
     onOpen: () => { refreshControlQueue(); setInspectionRefreshKey(key => key + 1); },
     onEpochReset: () => { resetControlQueueAuthority(); setInspectionRefreshKey(key => key + 1); },
     onEvent: (sessionId, store, event) => {
+      if (event.type === "steps_changed") setStepsPosition(`${sessionId}:${event.projectionId}:${event.revision}`);
+      if (event.type === "subagents_changed") setSubagentsPosition(`${sessionId}:${event.revision}`);
       if (ownsSseEvent(store.getState(), event) && (event.type === "queued" || event.type === "status" || event.type === "compaction_start") && event.requestId) {
         // Input ownership can remain in new:<project> after navigation during creation.
         // Match transport identity, never editor text or the currently selected scope.
@@ -566,7 +552,6 @@ export function useWebAppController() {
     if (!api) return;
     const deletionGeneration = navigationGenerationRef.current;
     await api.deleteSession(id);
-    cancelRetries(id);
     chatStoresRef.current.delete(id);
     eventCursorsRef.current.delete(id);
     historyReadySessionIdsRef.current.delete(id);
@@ -834,7 +819,7 @@ export function useWebAppController() {
   }
 
   return {
-    api, inspectionRefreshKey,
+    api, inspectionRefreshKey, stepsPosition, subagentsPosition,
     sessions,
     canWrite: access?.canWrite === true,
     projectAllowsCreation,
@@ -873,6 +858,7 @@ export function useWebAppController() {
     projectsError,
     eventLog,
     connected,
+    connection,
     historyNotice,
     retryProjects,
     retryNavigation,

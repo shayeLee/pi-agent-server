@@ -219,12 +219,12 @@ export function SelectMenu({
               >
                 {checkPosition === "left" && (
                   <span className="select-menu-check-slot" aria-hidden="true">
-                    {option.value === value ? <Icon name="check" className="select-menu-check" /> : null}
+                    {option.value === value ? <span className="select-menu-check">✓</span> : null}
                   </span>
                 )}
                 <span className="select-menu-label-text">{option.label}</span>
                 {checkPosition !== "left" && option.value === value && (
-                  <Icon name="check" className="select-menu-check" />
+                  <span className="select-menu-check" aria-hidden="true">✓</span>
                 )}
               </div>
             ))}

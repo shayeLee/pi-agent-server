@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
-import { CodeBlock, MAX_HIGHLIGHT_LENGTH } from "./CodeBlock.js";
+import { CodeBlock, MAX_HIGHLIGHT_LENGTH, isDiff } from "./CodeBlock.js";
 import { Markdown } from "./Markdown.js";
 import { ToolCallCard } from "./ToolCallCard.js";
 import type { ToolCall } from "pi-agent-server/client";
@@ -76,5 +76,37 @@ describe("tool code language and snapshots", () => {
     expect(container.querySelector(".tool-parameters .code-block")?.getAttribute("data-language")).toBe("bash");
     expect(container.querySelector(".tool-result-text .code-block")?.getAttribute("data-language")).toBe("bash");
     expect(container.querySelector(".tool-result-text pre")?.textContent).toBe('const true log\n');
+  });
+});
+
+describe("diff blocks", () => {
+  const unified = "- html.error-viewport {\n-   font-size: 1vw !important;\n+ @media screen and (min-width: 431px) {\n+   html { font-size: 1vw; }\n  }";
+
+  it("recognises labelled diffs and unlabelled blocks made only of diff lines with both sides", () => {
+    expect(isDiff("anything", "diff")).toBe(true);
+    expect(isDiff("anything", "patch")).toBe(true);
+    expect(isDiff(unified)).toBe(true);
+    expect(isDiff(unified, "plain")).toBe(true);
+    expect(isDiff("@@ -1,2 +1,2 @@\n-a\n+b\n c")).toBe(true);
+  });
+
+  it("leaves ordinary text and other languages alone", () => {
+    // A Markdown-ish list, additions only, a prose line, or a real language label.
+    expect(isDiff("- one\n- two\n- three")).toBe(false);
+    expect(isDiff("+ added\n+ added too")).toBe(false);
+    expect(isDiff("- removed\n+ added\nplain prose line")).toBe(false);
+    expect(isDiff(unified, "css")).toBe(false);
+    expect(isDiff("-x")).toBe(false);
+  });
+
+  it("colours additions, deletions and hunks per line, labels the block diff, and copies the original", () => {
+    const { container } = render(<CodeBlock code={"@@ -1 +1 @@\n" + unified} />);
+    const block = container.querySelector(".code-block")!;
+    expect(block).toHaveAttribute("data-language", "diff");
+    expect(block.querySelector(".code-block-toolbar span")).toHaveTextContent("diff");
+    expect(container.querySelectorAll(".diff-add")).toHaveLength(2);
+    expect(container.querySelectorAll(".diff-delete")).toHaveLength(2);
+    expect(container.querySelectorAll(".diff-hunk")).toHaveLength(1);
+    expect(container.querySelectorAll(".diff-line")).toHaveLength(6);
   });
 });

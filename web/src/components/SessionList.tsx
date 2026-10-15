@@ -1,6 +1,7 @@
 import { zhCN } from "../i18n/zh-CN.js";
+import { formatDateTime } from "../i18n/format.js";
 import { Fragment, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
-import { InteractiveTooltip } from "./ui/interactive-tooltip.js";
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "./ui/dropdown-menu.js";
 import { Icon } from "./Icon.js";
 import { resolveSessionDisplayTitle, type SessionRecord } from "pi-agent-server/client";
 
@@ -42,7 +43,7 @@ export function formatSessionTime(updatedAt: number, now: number = Date.now()): 
   if (isSameYear) {
     return zhCN.sessionList.date(month, day);
   }
-  return `${date.getFullYear()}/${month}/${day}`;
+  return zhCN.sessionList.fullDate(date.getFullYear(), month, day);
 }
 
 /** Calendar boundaries use local dates, not elapsed 24-hour guesses. */
@@ -64,7 +65,7 @@ export function formatFullSessionTime(updatedAt: number): string {
     return "";
   }
   const d = new Date(updatedAt);
-  return Number.isNaN(d.getTime()) ? "" : d.toLocaleString("zh-CN", { hour12: false });
+  return Number.isNaN(d.getTime()) ? "" : formatDateTime(d);
 }
 
 /** Literal matching only; React escapes every text fragment, including markup. */
@@ -93,6 +94,10 @@ export type SessionListProps = {
   onDelete: (id: string) => void;
   onRename: (id: string, title: string) => void;
   onExport: (id: string) => void;
+  /** Session whose primary request this page sees running (DESIGN.md §5.2). */
+  runningId?: string | null;
+  /** Bumped by the "/" shortcut to open and focus the search field. */
+  searchRequest?: number;
 };
 
 /** 会话列表：搜索 + 标题 + 更新时间，支持选中/删除/重命名/导出。 */
@@ -105,8 +110,12 @@ export function SessionList({
   onDelete,
   onRename,
   onExport,
+  runningId = null,
+  searchRequest = 0,
 }: SessionListProps) {
   const [query, setQuery] = useState("");
+  /** Row whose action menu is open; right-click opens the same menu as ⋯. */
+  const [menuFor, setMenuFor] = useState<string | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
   const searchId = useId();
   const inputRef = useRef<HTMLInputElement>(null);
@@ -120,6 +129,12 @@ export function SessionList({
       restoreFocus.current = false;
     }
   }, [searchOpen]);
+  useLayoutEffect(() => {
+    if (!searchRequest) return;
+    if (searchOpen) inputRef.current?.focus();
+    else setSearchOpen(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchRequest]);
   function clearSearch() {
     setQuery("");
     inputRef.current?.focus();
@@ -177,54 +192,26 @@ export function SessionList({
           <Fragment key={s.id}>
           {(index === 0 || sessionDateGroup(filtered[index - 1]!.updatedAt, now) !== sessionDateGroup(s.updatedAt, now)) &&
             <li className="session-date-group">{sessionDateGroup(s.updatedAt, now)}</li>}
-          <li className={`session-item ${s.id === activeId ? "active" : ""}`}>
-            <InteractiveTooltip delayDuration={2000} label="会话详情" content={<>
-              <div className="session-details-title">{resolveSessionDisplayTitle(s)}</div>
-              <div className="session-details-time">创建时间：{formatFullSessionTime(s.createdAt) || zhCN.sessionList.unknownDate}</div>
-              <div className="session-details-time">更新时间：{formatFullSessionTime(s.updatedAt) || zhCN.sessionList.unknownDate}</div>
-              <div className="session-details-time">{s.origin === "native" ? zhCN.sessionList.nativeShared : s.visibility === "shared" ? zhCN.sessionList.shared : "私有会话"}</div>
-            <div className="session-actions">
-              <button
-                data-testid={`rename-${s.id}`}
-                title={zhCN.sessionList.rename}
-                aria-label={zhCN.sessionList.rename}
-                onClick={() => {
-                  const title = window.prompt(zhCN.sessionList.newTitle, s.title);
-                  if (title && title.trim()) onRename(s.id, title.trim());
-                }}
-              >
-                <Icon name="edit" />
-              </button>
-              <button
-                data-testid={`export-${s.id}`}
-                title={zhCN.sessionList.export}
-                aria-label={zhCN.sessionList.export}
-                onClick={() => onExport(s.id)}
-              >
-                <Icon name="download" />
-              </button>
-              <button
-                data-testid={`delete-${s.id}`}
-                title={s.origin === "native" ? zhCN.sessionList.removeShared : zhCN.sessionList.delete}
-                aria-label={zhCN.sessionList.delete}
-                onClick={() => onDelete(s.id)}
-              >
-                <Icon name="trash" />
-              </button>
-            </div>
-            </>}>
+          <li className={`session-item ${s.id === activeId ? "active" : ""}${s.id === runningId ? " running" : ""}`}>
             <button
               type="button"
               className="session-select"
               aria-label={resolveSessionDisplayTitle(s)}
               aria-current={s.id === activeId ? "true" : undefined}
-              aria-describedby={`session-meta-${s.id}`}
+              aria-describedby={s.visibility === "shared" || s.origin === "native" ? `session-meta-${s.id} session-shared-${s.id}` : `session-meta-${s.id}`}
               data-testid={`session-${s.id}`}
               onClick={() => onSelect(s.id)}
+              onContextMenu={(event) => { event.preventDefault(); setMenuFor(s.id); }}
             >
-              <span className="session-title">{highlightSessionTitle(resolveSessionDisplayTitle(s), query)}</span>
+              <span className="session-glyph" aria-hidden="true">{s.id === runningId ? "▶" : "·"}</span>
+              <span className="session-title" title={resolveSessionDisplayTitle(s)}>{highlightSessionTitle(resolveSessionDisplayTitle(s), query)}</span>
+              {(s.visibility === "shared" || s.origin === "native") && (
+                <span className="session-shared-badge" id={`session-shared-${s.id}`} title={s.origin === "native" ? zhCN.sessionList.nativeShared : zhCN.sessionList.shared} aria-label={s.origin === "native" ? zhCN.sessionList.nativeShared : zhCN.sessionList.shared}>
+                  <Icon name="shared" size={14} />
+                </span>
+              )}
             <span className="session-meta" id={`session-meta-${s.id}`}>
-              <time
+              {s.id === runningId ? <span className="session-running">{zhCN.run.running}</span> : <time
                 className="session-time"
                 data-testid={`session-time-${s.id}`}
                 dateTime={Number.isFinite(s.updatedAt) && s.updatedAt > 0 && !Number.isNaN(new Date(s.updatedAt).getTime())
@@ -233,15 +220,33 @@ export function SessionList({
                 title={formatFullSessionTime(s.updatedAt)}
               >
                 {formatSessionTime(s.updatedAt, now)}
-              </time>
-              {(s.visibility === "shared" || s.origin === "native") && (
-                <span className="session-shared-badge" title={s.origin === "native" ? zhCN.sessionList.nativeShared : zhCN.sessionList.shared} aria-label={s.origin === "native" ? zhCN.sessionList.nativeShared : zhCN.sessionList.shared}>
-                  <Icon name="shared" size={14} />
-                </span>
-              )}
+              </time>}
             </span>
             </button>
-            </InteractiveTooltip>
+            {/* Row actions live in a menu (DESIGN.md §7): selecting a row never opens a popover. */}
+            <DropdownMenu open={menuFor === s.id} onOpenChange={(open) => setMenuFor(open ? s.id : null)}>
+              <DropdownMenuTrigger asChild>
+                <button type="button" className="session-menu" data-testid={`session-menu-${s.id}`}
+                  aria-label={zhCN.sessionList.actions(resolveSessionDisplayTitle(s))} title={zhCN.sessionList.actionsHint}>⋯</button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="session-menu-content" aria-label={zhCN.sessionList.actions(resolveSessionDisplayTitle(s))}>
+                <DropdownMenuLabel className="session-details">
+                  <span className="session-details-time">{zhCN.sessionList.createdAt(formatFullSessionTime(s.createdAt) || zhCN.sessionList.unknownDate)}</span>
+                  <span className="session-details-time">{zhCN.sessionList.updatedAt(formatFullSessionTime(s.updatedAt) || zhCN.sessionList.unknownDate)}</span>
+                  <span className="session-details-time">{s.origin === "native" ? zhCN.sessionList.nativeShared : s.visibility === "shared" ? zhCN.sessionList.shared : zhCN.sessionList.private}</span>
+                </DropdownMenuLabel>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem data-testid={`rename-${s.id}`} onSelect={() => {
+                  const title = window.prompt(zhCN.sessionList.newTitle, s.title);
+                  if (title && title.trim()) onRename(s.id, title.trim());
+                }}>{zhCN.sessionList.rename}</DropdownMenuItem>
+                <DropdownMenuItem data-testid={`export-${s.id}`} onSelect={() => onExport(s.id)}>{zhCN.sessionList.export}</DropdownMenuItem>
+                <DropdownMenuItem data-testid={`delete-${s.id}`} className="session-menu-danger" onSelect={() => onDelete(s.id)}
+                  title={s.origin === "native" ? zhCN.sessionList.removeShared : zhCN.sessionList.delete}>
+                  {s.origin === "native" ? zhCN.sessionList.removeShared : zhCN.sessionList.delete}
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </li>
           </Fragment>
         ))}

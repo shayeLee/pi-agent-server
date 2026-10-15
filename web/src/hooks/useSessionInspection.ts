@@ -6,8 +6,12 @@ import type { InspectorTab } from "../components/Inspector.js";
 type Result<T> = { sessionId: string | null; data: T | null; loading: boolean; error: string | null };
 
 /** Read-only authority, separate from the chat store and its bounded event log. */
-function useInspectionSnapshot<T>({ api, sessionId, enabled, refreshKey, interval, read, accept }: {
-  api: ApiClient; sessionId: string | null; enabled: boolean; refreshKey: unknown; interval: number;
+function useInspectionSnapshot<T>({ api, sessionId, enabled, refreshKey, retryMs, read, accept }: {
+  api: ApiClient; sessionId: string | null; enabled: boolean;
+  /** Each change reads once; there is no polling. */
+  refreshKey: unknown;
+  /** A failed read is retried after this delay. */
+  retryMs: number;
   read: (api: ApiClient, id: string) => Promise<T>;
   accept: (next: T, previous: T | null, id: string) => T;
 }) {
@@ -28,6 +32,7 @@ function useInspectionSnapshot<T>({ api, sessionId, enabled, refreshKey, interva
       if (inFlight.current) await inFlight.current;
       if (!valid(generation)) return;
       if (!authority.current.data) setResult(previous => ({ ...previous, loading: true }));
+      let failed = false;
       const request = (async () => {
         try {
           const snapshot = await read(api, sessionId);
@@ -37,6 +42,7 @@ function useInspectionSnapshot<T>({ api, sessionId, enabled, refreshKey, interva
           setResult(previous => previous.data === data && !previous.error && !previous.loading ? previous
             : { sessionId, data, error: null, loading: false });
         } catch (error) {
+          failed = true;
           if (valid(generation)) setResult(previous => ({ ...previous, loading: false,
             error: error instanceof Error ? error.message : String(error) }));
         }
@@ -44,7 +50,7 @@ function useInspectionSnapshot<T>({ api, sessionId, enabled, refreshKey, interva
       inFlight.current = request;
       await request;
       if (inFlight.current === request) inFlight.current = null;
-      if (valid(generation)) timer = setTimeout(() => void run(generation), interval);
+      if (failed && valid(generation)) timer = setTimeout(() => void run(generation), retryMs);
     };
     const onVisibility = () => {
       ++visibilityGeneration;
@@ -61,7 +67,7 @@ function useInspectionSnapshot<T>({ api, sessionId, enabled, refreshKey, interva
       clearTimeout(timer);
       document.removeEventListener("visibilitychange", onVisibility);
     };
-  }, [api, sessionId, enabled, refreshKey, interval, read, accept]);
+  }, [api, sessionId, enabled, refreshKey, retryMs, read, accept]);
   return result.sessionId === sessionId ? result : { sessionId, data: null, loading: false, error: null };
 }
 
@@ -75,13 +81,21 @@ const readPrompt = (api: ApiClient, id: string) => api.getSystemPrompt(id);
 const acceptPrompt = (next: SessionSystemPrompt, previous: SessionSystemPrompt | null) =>
   previous?.source === next.source && previous.prompt === next.prompt ? previous : next;
 
-export function useSessionInspection({ api, sessionId, visible, activeTab, refreshKey }: {
+/**
+ * Both read once when their tab opens (or the session, visibility or stream changes), then follow
+ * the server's steps_changed signal (coalesced, final position always sent) and never poll.
+ * A system prompt change is itself recorded as a step, so the same signal covers it.
+ */
+export function useSessionInspection({ api, sessionId, visible, activeTab, refreshKey, stepsPosition }: {
   api: ApiClient; sessionId: string | null; visible: boolean; activeTab: InspectorTab; refreshKey?: unknown;
+  /** Latest steps_changed position for this session. */
+  stepsPosition?: string | null;
 }) {
+  const trigger = [refreshKey, stepsPosition ?? ""].join(":");
   const steps = useInspectionSnapshot({ api, sessionId, enabled: visible && activeTab === "steps",
-    refreshKey, interval: 500, read: readSteps, accept: acceptSteps });
+    refreshKey: trigger, retryMs: 500, read: readSteps, accept: acceptSteps });
   const prompt = useInspectionSnapshot({ api, sessionId, enabled: visible && activeTab === "systemPrompt",
-    refreshKey, interval: 1000, read: readPrompt, accept: acceptPrompt });
+    refreshKey: trigger, retryMs: 1000, read: readPrompt, accept: acceptPrompt });
   return { steps: steps.data, stepsLoading: steps.loading, stepsError: steps.error,
     systemPrompt: prompt.data, systemPromptLoading: prompt.loading, systemPromptError: prompt.error };
 }

@@ -43,6 +43,7 @@ describe("ToolCallCard（工具调用流式卡片）", () => {
   it("简单数组紧凑一行，保留参数/进度区域且无额外 footer", () => {
     const args = { runIds: ["1", "2"], timeoutMs: 600000, flags: [0, false, null] };
     const { container } = render(<ToolCallCard call={card({ toolName: "subagent_wait", args, partialResult: "0/2 settled\nworker: reading" })} />);
+    fireEvent.click(screen.getByRole("button", { name: /工具调用/ }));
     const parameters = screen.getByRole("region", { name: "参数" });
     const output = screen.getByRole("region", { name: "部分结果" });
     expect(parameters.querySelector("ol")).toBeNull();
@@ -56,7 +57,7 @@ describe("ToolCallCard（工具调用流式卡片）", () => {
     expect(screen.queryByRole('button', { name: '复制原始数据' })).toBeNull();
   });
   it.each([false, true])("未手动选择时流式展开、完成收起（isError=%s），重新展开可读最终原文", (isError) => {
-    const base = card({ toolName: "subagent_wait", args: { runIds: ["r1"] } });
+    const base = card({ toolName: "watch_logs", args: { target: "build" } });
     const { rerender } = render(<ToolCallCard call={base} />);
     const header = screen.getByRole("button", { name: /工具调用/ });
     expect(header).toHaveAttribute("aria-expanded", "true");
@@ -70,7 +71,6 @@ describe("ToolCallCard（工具调用流式卡片）", () => {
     rerender(<ToolCallCard call={final} />);
     expect(screen.getByRole("img", { name: isError ? "失败" : "已完成" })).toBeInTheDocument();
     expect(header).toHaveAttribute("aria-expanded", "false");
-    expect(header.querySelector(".tool-summary-preview")?.textContent).toContain("still running");
     expect(screen.queryByTestId("tool-result-text")).toBeNull();
     rerender(<ToolCallCard call={{ ...final }} />);
     expect(header).toHaveAttribute("aria-expanded", "false");
@@ -130,7 +130,8 @@ describe("ToolCallCard（工具调用流式卡片）", () => {
     const icon = screen.getByRole("img", { name: label });
     expect(icon).toHaveClass(`tool-status-${state}`);
     expect(icon.querySelector("title")).toHaveTextContent(label);
-    expect(screen.getByRole("button", { name: `工具调用 subagent_wait，状态：${label}` })).toHaveAttribute("aria-expanded", String(!done));
+    // A wait never opens on its own: the live subagent panel shows its progress.
+    expect(screen.getByRole("button", { name: `工具调用 subagent_wait，状态：${label}` })).toHaveAttribute("aria-expanded", "false");
     expect(document.querySelector(".tool-status-pending,.tool-status-waiting")).toBeNull();
   });
   it.each([undefined, null, {}, []])("空参数 %j 隐藏整个区域", (args) => {
@@ -277,8 +278,7 @@ describe("ToolCallCard（工具调用流式卡片）", () => {
   it("wait 快照更新与成功完成保持默认可读，手动折叠在错误更新后仍保留", () => {
     const base = { toolName: "subagent_wait", args: { runIds: ["r1", "r2"] } };
     const { rerender } = render(<ToolCallCard call={card({ ...base, partialResult: "0/2 settled" })} />);
-    // Explicitly reopen while running so the user preference survives completion.
-    fireEvent.click(screen.getByRole("button", { name: /工具调用/ }));
+    // Explicitly open while running so the user preference survives completion.
     fireEvent.click(screen.getByRole("button", { name: /工具调用/ }));
     rerender(<ToolCallCard call={card({ ...base, partialResult: "1/2 settled" })} />);
     expect(screen.getByTestId("tool-result-text").textContent).toBe("1/2 settled");
@@ -439,5 +439,21 @@ describe("ToolCallCard（工具调用流式卡片）", () => {
     expect(screen.getByRole("button", { name: /工具调用 search.*失败/ })).toHaveAttribute("aria-expanded", "true");
     expect(screen.getByText("rate limit", { selector: ".tool-readable-value" })).toBeVisible();
     expect(screen.getByTestId("tool-call-card").dataset.done).toBe("true");
+  });
+
+  it("a running subagent_wait stays one line (the live panel shows its progress) and opens only by hand", () => {
+    const base = card({ toolName: "subagent_wait", args: { runIds: ["7"] }, partialResult: "0/1 settled after 18s\nlite: finished bash" });
+    const { container, rerender } = render(<ToolCallCard call={base} />);
+    const header = screen.getByRole("button", { name: /工具调用/ });
+    expect(header).toHaveAttribute("aria-expanded", "false");
+    expect(container.querySelector(".tool-call-body")).toBeNull();
+    // The summary line keeps the targets.
+    expect(header).toHaveTextContent('["7"]');
+    rerender(<ToolCallCard call={{ ...base, done: true, result: "Waited 2s: 0/1 finished, 1 still running." }} />);
+    expect(header).toHaveAttribute("aria-expanded", "false");
+    // Its summary follows the latest real wait text.
+    expect(header.querySelector(".tool-summary-preview")?.textContent).toContain("still running");
+    fireEvent.click(header);
+    expect(screen.getByTestId("tool-result-text")).toHaveTextContent("still running");
   });
 });

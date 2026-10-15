@@ -209,3 +209,28 @@ describe("createSseConnection", () => {
     connection.close();
   });
 });
+
+describe("reconnect backoff", () => {
+  it("doubles the delay while the server stays unreachable, caps it, and starts over once a stream opens", async () => {
+    vi.useFakeTimers();
+    let up = false;
+    const attempts: number[] = [];
+    const fetchMock = vi.fn(async () => {
+      attempts.push(Date.now());
+      if (!up) throw new Error("ECONNREFUSED");
+      return sseResponse([]);
+    });
+    const connection = createSseConnection({ url: "http://x/events", onEvent: vi.fn(), fetch: fetchMock as unknown as typeof fetch,
+      reconnectDelay: 1000, maxReconnectDelay: 8000 });
+    await vi.advanceTimersByTimeAsync(1000 + 2000 + 4000 + 8000 + 8000);
+    const gaps = attempts.slice(1).map((at, i) => at - attempts[i]!);
+    expect(gaps).toEqual([1000, 2000, 4000, 8000, 8000]);
+    // The server is back: the next stream opens (and ends), so the delay starts over.
+    up = true;
+    await vi.advanceTimersByTimeAsync(8000);
+    const opened = attempts.length;
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(attempts.length).toBe(opened + 1);
+    connection.close();
+  });
+});

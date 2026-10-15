@@ -1,9 +1,13 @@
 import { zhCN } from "../i18n/zh-CN.js";
 import { iconSource } from './icon-sources.js';
 
-export function ToolStatusIcon({ done, isError }: { done: boolean; isError: boolean }) {
+export function ToolStatusIcon({ done, isError, glyph = false }: { done: boolean; isError: boolean; glyph?: boolean }) {
   const state = !done ? "running" : isError ? "error" : "success";
   const label = !done ? zhCN.steps.streaming : isError ? zhCN.composer.failed : zhCN.status.completed;
+  // Ledger step rows use text glyphs (DESIGN.md §5.1); other surfaces keep the icon library.
+  if (glyph) return <span className={`tool-status-icon tool-status-${state} tool-status-glyph`} role="img" aria-label={label} title={label}>
+    {state === "running" ? "◐" : state === "error" ? "✗" : "✓"}
+  </span>;
   if (done) return <svg className={`tool-status-icon tool-status-${state}`} data-icon={isError ? 'error-circle' : 'check-circle'} width="14" height="14" viewBox="0 0 24 24" fill="none" role="img" aria-label={label} focusable="false">
     <title>{label}</title><g dangerouslySetInnerHTML={iconSource(isError ? 'error-circle' : 'check-circle')} />
   </svg>;

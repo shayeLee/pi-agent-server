@@ -23,6 +23,38 @@ export function codeLanguage(language?: string): string | undefined {
   return highlighter.registered(resolved) ? resolved : undefined;
 }
 
+const DIFF_LANGUAGES = new Set(["diff", "patch", "udiff"]);
+const DIFF_HEADER = /^(diff |index |--- |\+\+\+ |@@)/;
+/**
+ * A diff by label, or an unlabelled block every non-empty line of which is a diff line
+ * (+, -, space context, @@ hunk, "\ No newline", file headers) with both additions and
+ * deletions present. Strict on purpose: ordinary text must never turn red and green.
+ */
+export function isDiff(code: string, language?: string): boolean {
+  const name = language?.trim().toLowerCase();
+  if (name && DIFF_LANGUAGES.has(name)) return true;
+  if (name && name !== "plain" && name !== "plaintext" && name !== "text") return false;
+  const lines = code.split("\n").filter(line => line.trim());
+  if (lines.length < 2) return false;
+  let adds = 0, dels = 0;
+  for (const line of lines) {
+    if (DIFF_HEADER.test(line) || line.startsWith("\\")) continue;
+    if (line.startsWith("+")) adds++;
+    else if (line.startsWith("-")) dels++;
+    else if (!line.startsWith(" ")) return false;
+  }
+  return adds > 0 && dels > 0;
+}
+
+function diffLines(code: string): ReactNode {
+  return code.split("\n").map((line, index) => {
+    const kind = line.startsWith("+++ ") || line.startsWith("--- ") || line.startsWith("@@") || line.startsWith("diff ") || line.startsWith("index ") ? "diff-hunk"
+      : line.startsWith("+") ? "diff-add" : line.startsWith("-") ? "diff-delete" : "";
+    // Each line is its own block row; an empty line keeps one space so it keeps its height.
+    return <span key={index} className={`diff-line${kind ? ` ${kind}` : ""}`}>{line || " "}</span>;
+  });
+}
+
 export function fileCodeLanguage(path?: string): string | undefined {
   return codeLanguage(path?.split(/[\\/]/).pop()?.split(".").slice(1).pop());
 }
@@ -58,12 +90,13 @@ function highlighted(code: string, language?: string): ReactNode {
 
 export type CodeBlockProps = { code: string; language?: string; copyLabel?: string };
 export function CodeBlock({ code, language, copyLabel = zhCN.code.copy }: CodeBlockProps) {
-  const resolved = codeLanguage(language);
-  const content = useMemo(() => highlighted(code, resolved), [code, resolved]);
+  const diff = useMemo(() => isDiff(code, language), [code, language]);
+  const resolved = diff ? undefined : codeLanguage(language);
+  const content = useMemo(() => diff ? diffLines(code) : highlighted(code, resolved), [code, resolved, diff]);
   // Tie feedback to the exact snapshot, not an obsolete streamed value.
   const [copy, setCopy] = useState<{ code: string; message: string } | null>(null);
-  return <div className="code-block" data-language={resolved ?? "plain"}>
-    <div className="code-block-toolbar"><span>{resolved ?? (language === "plaintext" ? "plaintext" : "plain")}</span>
+  return <div className="code-block" data-language={diff ? "diff" : resolved ?? "plain"}>
+    <div className="code-block-toolbar"><span>{diff ? "diff" : resolved ?? (language === "plaintext" ? "plaintext" : "plain")}</span>
       <button type="button" aria-label={copyLabel} onClick={async () => {
         try { await navigator.clipboard.writeText(code); setCopy({ code, message: zhCN.code.copied }); }
         catch { setCopy({ code, message: zhCN.code.copyFailed }); }

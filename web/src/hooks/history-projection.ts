@@ -15,19 +15,20 @@ export function projectExportTimeline(raw: readonly unknown[], messages: readonl
   for (const value of raw) {
     if (!value || typeof value !== "object") continue;
     const row = value as Record<string, unknown>;
+    const recorded = typeof row.timestamp === "string" && row.timestamp ? { timestamp: row.timestamp } : {};
     if (row.type === "notification" && row.version === 1 && typeof row.notificationId === "string" && typeof row.entryId === "string" && typeof row.text === "string" && Array.isArray(row.runIds) && row.runIds.every(id => typeof id === "string")) {
       const id = `notification:${row.notificationId}`;
       if (!items.some(item => item.id === id)) items.push({ kind: "notification", id, version: 1, notificationId: row.notificationId, entryId: row.entryId, text: row.text, runIds: row.runIds as string[], timestamp: String(row.timestamp ?? "") });
     } else if (row.type === "message" && (row.role === "user" || row.role === "assistant") && typeof row.text === "string") {
       items.push({ kind: "message", id: row.role === "user" && typeof row.messageId === "string" ? `history-message:${row.messageId}` : `history-${String(row.id ?? items.length)}`,
-        role: row.role, text: row.text, streaming: false,
+        role: row.role, text: row.text, streaming: false, ...recorded,
         ...(row.role === "assistant" && row.stopReason === "aborted" ? { stopReason: "aborted" as const } : {}),
         ...(row.role === "user" && typeof row.messageId === "string" ? { images: imagesBySource.get(row.messageId) } : {}) });
     } else if (row.type === "thinking" && typeof row.text === "string") {
       items.push({ kind: "thinking", id: `history-${String(row.id ?? items.length)}`,
-        text: row.text, streaming: false });
+        text: row.text, streaming: false, ...recorded });
     } else if (row.type === "tool_call" && typeof row.toolCallId === "string" && typeof row.toolName === "string") {
-      items.push({ kind: "tool", id: `history-${String(row.id ?? items.length)}`, call: {
+      items.push({ kind: "tool", id: `history-${String(row.id ?? items.length)}`, ...recorded, call: {
         toolCallId: row.toolCallId, toolName: row.toolName, args: row.args,
         partialResult: undefined, result: undefined, isError: row.status === "error", done: false,
       } });

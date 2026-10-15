@@ -44,16 +44,17 @@ for (const { theme, width } of [{ theme: "light", width: 1280 }, { theme: "dark"
   await page.setViewportSize({ width, height: 844 }); await page.emulateMedia({ colorScheme: theme }); await page.goto("/");
   if (width === 390) await page.getByRole("button", { name: "打开工作区导航" }).click();
   await page.getByTestId(`session-${session.id}`).click();
-  await expect(page.getByTestId("stat-steps")).toHaveText("工具 11 次");
+  if (width > 640) await expect(page.getByTestId("stat-summary-tools")).toHaveText("工具 11 次");
   await expect.poll(() => streams.size).toBeGreaterThan(0);
   if (width === 390) await expect.poll(async () => { const box = await page.getByTestId("sidebar").boundingBox(); return box ? box.x + box.width : 0; }).toBeLessThanOrEqual(0);
   const bar = page.getByTestId("stats-bar");
   const trigger = page.getByRole("button", { name: "查看统计详情" });
-  await expect(page.getByTestId("stat-summary-speed")).toHaveText("469 tok/s");
-  await expect(page.getByTestId("stat-summary-tokens")).toHaveText("208K tok");
-  await expect(page.getByTestId("stat-input")).toHaveCount(0);
+  // The headline is the whole session; the last call stays in the details.
+  await expect(page.getByTestId("stat-summary-session-tokens")).toHaveText("会话 235万 tok");
+  await expect(page.getByTestId("stat-summary-context")).toHaveText("上下文 4.27万 / 20万");
+  await expect(page.getByTestId("stat-last-tokens")).toHaveCount(0);
   const geometry = await bar.evaluate(el => ({ height: el.getBoundingClientRect().height, width: el.clientWidth, scrollWidth: el.scrollWidth,
-    groups: Array.from(el.querySelectorAll('.stats-cluster')).map(g => ({ y: g.getBoundingClientRect().y, height: g.getBoundingClientRect().height })), font: getComputedStyle(el.querySelector('button')!).fontSize }));
+    groups: Array.from(el.querySelectorAll('.stats-cluster')).filter(g => g.getClientRects().length > 0).map(g => ({ y: g.getBoundingClientRect().y, height: g.getBoundingClientRect().height })), font: getComputedStyle(el.querySelector('button')!).fontSize }));
   expect(geometry.height).toBeLessThanOrEqual(36); expect(geometry.scrollWidth).toBeLessThanOrEqual(geometry.width);
   expect(new Set(geometry.groups.map(g => g.y)).size).toBe(1);
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
@@ -63,12 +64,16 @@ for (const { theme, width } of [{ theme: "light", width: 1280 }, { theme: "dark"
   const picker = await page.locator('.model-thinking-picker').boundingBox();
   await trigger.click();
   await expect(page.getByRole('dialog')).toBeVisible();
-  await expect(page.getByTestId('stat-input')).toHaveAttribute('title', /123,456 tokens/);
-  await expect(page.getByTestId('stat-session-tokens')).toHaveAttribute('title', /2,345,678/);
-  await expect(page.getByTestId('stat-cache-write')).toHaveAttribute('title', /2,000/);
+  // The dialog renders inside the chat footer but is top-layer: footer column rules must not move it.
+  const box = await page.getByRole('dialog').evaluate(el => { const r = el.getBoundingClientRect(); return { left: r.left, right: innerWidth - r.right, top: r.top, bottom: innerHeight - r.bottom }; });
+  expect(Math.abs(box.left - box.right)).toBeLessThanOrEqual(1);
+  expect(Math.abs(box.top - box.bottom)).toBeLessThanOrEqual(1);
+  await expect(page.getByTestId('stat-last-tokens').locator('dd')).toHaveAttribute('title', /207,801 tokens/);
+  await expect(page.getByTestId('stat-session-tokens').locator('dd')).toHaveAttribute('title', /2,345,678/);
+  await expect(page.getByTestId('stat-last-breakdown')).toContainText('缓存写 2000');
   emit({ type: "usage", ...usageSnapshot, promptTokens: tokens.input, completionTokens: tokens.output, totalTokens: tokens.totalTokens, durationMs: 12500, ttftMs: 345 });
-  await expect(page.getByTestId('stat-duration')).toContainText('12.5 秒');
-  await expect(page.getByTestId('stat-ttft')).toContainText('345');
+  await expect(page.getByTestId('stat-task-duration')).toContainText('12.5 秒');
+  await expect(page.getByTestId('stat-task-ttft')).toContainText('345');
   await page.screenshot({ path: `/tmp/stats-single-line/${theme}-${width}-details.png` });
   await page.keyboard.press('Escape'); await expect(trigger).toBeFocused();
   expect(await page.locator('.model-thinking-picker').boundingBox()).toEqual(picker);
@@ -79,17 +84,18 @@ for (const { theme, width } of [{ theme: "light", width: 1280 }, { theme: "dark"
   await expect(bar).toBeHidden(); // Existing short-height policy remains unchanged.
   await page.setViewportSize({ width, height: 844 });
   emit({ type: 'status', phase: 'agent_start' });
-  await expect(page.getByTestId('stat-summary-speed')).toHaveCount(0);
+  await expect(page.getByTestId('stat-summary-tasks')).toHaveCount(0);
   emit({ type: 'usage', ...usageSnapshot, promptTokens: tokens.input, completionTokens: tokens.output, totalTokens: tokens.totalTokens, durationMs: 12500, ttftMs: 345 });
   emit({ type: 'model_output_progress', ordinal: 3, phase: 'delta', tokensPerSecondEstimate: 100, includesThinking: true });
-  await expect(page.getByTestId('stat-live-speed')).toHaveText('~100 tok/s');
-  await expect(page.getByTestId('stat-summary-tokens')).toHaveText('208K tok');
+  await expect(page.getByTestId('stat-summary-current-call')).toHaveText('本次 第 3 次调用');
+  if (width > 640) await expect(page.getByTestId('stat-summary-live-speed')).toHaveText('~100 tok/s');
+  await expect(page.getByTestId('stat-summary-session-tokens')).toHaveText('会话 235万 tok');
   expect(await bar.evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
   await page.screenshot({ path: `/tmp/stats-single-line/${theme}-${width}-rich-active.png` });
   emit({ type: 'usage', promptTokens: 0, completionTokens: 0, totalTokens: 0, durationMs: 0, ttftMs: 0 }); emit({ type: 'aborted' });
-  await trigger.click(); await expect(page.getByTestId('stat-output')).toHaveText('输出 0'); await expect(page.getByTestId('stat-ttft')).toHaveCount(0);
+  await trigger.click(); await expect(page.getByTestId('stat-last-tokens')).toContainText('0 tok'); await expect(page.getByTestId('stat-task-ttft')).toHaveCount(0);
   emit({ type: 'usage', promptTokens: null, completionTokens: null, totalTokens: null, durationMs: 100, ttftMs: 100 });
-  await expect(page.getByTestId('stat-output')).toHaveCount(0); await page.keyboard.press('Escape');
+  await expect(page.getByTestId('stat-last-tokens')).toHaveCount(0); await page.keyboard.press('Escape');
   await page.reload(); if (width === 390) await page.getByRole('button', { name: '打开工作区导航' }).click();
-  await page.getByTestId(`session-${session.id}`).click(); await expect(page.getByTestId('stat-summary-tokens')).toHaveText('208K tok');
+  await page.getByTestId(`session-${session.id}`).click(); await expect(page.getByTestId('stat-summary-session-tokens')).toHaveText('会话 235万 tok');
 });

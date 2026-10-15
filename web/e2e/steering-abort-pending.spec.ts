@@ -40,6 +40,7 @@ async function fixture(page: Page, options: { delayed202?: boolean; abortFails?:
         modelProvider: null, modelId: null, thinkingLevel: null, systemPrompt: null }]);
       if (path === `/v1/sessions/${sessionId}/export`) return json({ messages: [], timeline: [], lastEventId: 0 });
       if (path === `/v1/sessions/${sessionId}/control-queue`) return json(queue());
+      if (path === `/v1/sessions/${sessionId}/subagents`) return json({ sessionId, runs: [] });
       if (path === `/v1/sessions/${sessionId}/events`) { stream = route; await flush(); return; }
     }
     if (req.method() === "POST" && path === `/v1/sessions/${sessionId}/follow-ups`) {
@@ -70,7 +71,7 @@ async function fixture(page: Page, options: { delayed202?: boolean; abortFails?:
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.goto("/");
   await page.getByTestId(`session-${sessionId}`).click();
-  await expect(page.getByTestId("abort-button")).toHaveCount(0);
+  await expect(page.getByTestId("abort-button")).toBeVisible();
   await expect(page.locator('.composer-runtime-controls')).toHaveCount(0);
   const input = page.getByTestId("composer-input");
   const pending = page.getByRole("region", { name: "引导队列", exact: true }).getByTestId("control-queue-item");
@@ -113,7 +114,7 @@ async function fixture(page: Page, options: { delayed202?: boolean; abortFails?:
   };
 }
 
-for (const editDraft of [false, true]) test(`no stop UI; confirmed API abort clears pending and preserves ${editDraft ? "newer" : "unconsumed"} draft`, async ({ page }, info) => {
+for (const editDraft of [false, true]) test(`confirmed API abort clears pending and preserves ${editDraft ? "newer" : "unconsumed"} draft`, async ({ page }, info) => {
   const f = await fixture(page);
   if (editDraft) await f.input.fill(newer);
   await page.screenshot({ path: info.outputPath("before-abort.png"), fullPage: true });
@@ -121,7 +122,7 @@ for (const editDraft of [false, true]) test(`no stop UI; confirmed API abort cle
   // HTTP success is admission, not proof of terminal cancellation.
   await expect(f.pending).toContainText(waiting);
   await f.emit({ type: "aborted", requestId: "foreign-request" });
-  await expect(page.getByTestId("abort-button")).toHaveCount(0);
+  await expect(page.getByTestId("abort-button")).toBeVisible();
   await expect(f.pending).toContainText(waiting);
   await f.emit({ type: "aborted", requestId });
   await expect(page.getByTestId("abort-button")).toHaveCount(0);
@@ -173,10 +174,8 @@ for (const terminal of ["aborted", "completed", "error"] as const) test(`${termi
   // Only the user removes the attachment. Identical text is eligible for a new control.
   await page.getByRole("button", { name: "移除附件 retained.png", exact: true }).click();
   await f.emit({ type: "status", phase: "agent_start", requestId: "next-request" });
-  await expect(page.getByTestId("abort-button")).toHaveCount(0);
-  await expect(page.getByTestId('send-button')).toHaveAttribute('title', '追加到队列');
+  await expect(page.getByTestId("abort-button")).toBeVisible();
   await f.input.fill(original);
-  await expect(page.getByTestId('send-button')).toBeEnabled();
   await f.input.press("Enter");
   await expect.poll(() => f.controls.length).toBe(2);
   expect(f.controls[1]).toMatchObject({ text: original, requestId: "next-request" });
@@ -186,11 +185,11 @@ for (const terminal of ["aborted", "completed", "error"] as const) test(`${termi
   expect(f.unexpected).toEqual([]);
 });
 
-test("no stop UI; failed API abort HTTP keeps pending consumption and draft", async ({ page }, info) => {
+test("failed API abort HTTP keeps pending consumption and draft", async ({ page }, info) => {
   const f = await fixture(page, { abortFails: true });
   await page.screenshot({ path: info.outputPath("before-abort.png"), fullPage: true });
   await f.abort();
-  await expect(page.getByTestId("abort-button")).toHaveCount(0);
+  await expect(page.getByTestId("abort-button")).toBeVisible();
   await expect(f.pending).toContainText(waiting);
   await expect(f.input).toHaveValue(original);
   await page.screenshot({ path: info.outputPath("after-failed-abort.png"), fullPage: true });

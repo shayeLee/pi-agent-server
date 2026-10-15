@@ -23,6 +23,7 @@ export async function installFoundationFixture(page: Page, history: boolean) {
         { type: "message", id: "foundation-assistant", role: "assistant", text: "## 回归检查\n\n保留 **消息排版**、侧栏和输入框。\n\n- 桌面和移动端\n- 亮色和暗色主题" },
       ] });
       if (pathname === `/v1/sessions/${sessionId}/control-queue`) return json({ requestId: null, revision: 0, items: [] });
+      if (pathname === `/v1/sessions/${sessionId}/subagents`) return json({ sessionId, runs: [] });
       if (pathname === `/v1/sessions/${sessionId}/events`) return route.fulfill({ status: 204, body: "" });
     }
     unexpected.push(`${route.request().method()} ${pathname}`);

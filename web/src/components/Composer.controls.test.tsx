@@ -1,4 +1,5 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act } from 'react';
 import { describe, expect, it, vi } from 'vitest';
 import type { SessionRecord } from 'pi-agent-server/client';
 import { Composer, type ComposerProps } from './Composer.js';
@@ -84,11 +85,13 @@ describe('runtime abort controls', () => {
     render(<><Composer {...props} /><Modal open={false} onClose={() => {}} title="隐藏对话框">内容</Modal></>);
     expect(document.querySelector('dialog[role="dialog"]')).not.toHaveAttribute('open');
     fireEvent.keyDown(screen.getByTestId('composer-input'), { key: 'Escape' });
+    fireEvent.keyDown(screen.getByTestId('composer-input'), { key: 'Escape' });
     expect(props.onAbort).toHaveBeenCalledOnce();
   });
   it('ignores a custom overlay inside a hidden ancestor', () => {
     const props = { ...base(), onAbort: vi.fn() };
     render(<><Composer {...props} /><div style={{display:'none'}}><div role="dialog" /></div></>);
+    fireEvent.keyDown(document, { key: 'Escape' });
     fireEvent.keyDown(document, { key: 'Escape' });
     expect(props.onAbort).toHaveBeenCalledOnce();
   });
@@ -98,12 +101,14 @@ describe('runtime abort controls', () => {
     expect(screen.queryByTestId('send-button')).not.toBeInTheDocument();
     fireEvent.click(screen.getByTestId('abort-button'));
     fireEvent.keyDown(screen.getByTestId('composer-input'), { key: 'Escape' });
+    fireEvent.keyDown(screen.getByTestId('composer-input'), { key: 'Escape' });
     expect(props.onAbort).toHaveBeenCalledTimes(2);
     expect(props.onDraftText).not.toHaveBeenCalled();
     fireEvent.keyDown(screen.getByTestId('composer-input'), { key: 'Enter' });
     await waitFor(() => expect(props.onFollowUp).toHaveBeenCalledWith('draft'));
     view.rerender(<Composer {...props} streaming={false} />);
     expect(screen.getByTestId('send-button')).toBeEnabled();
+    fireEvent.keyDown(document, { key: 'Escape' });
     fireEvent.keyDown(document, { key: 'Escape' });
     expect(props.onAbort).toHaveBeenCalledTimes(2);
   });
@@ -112,6 +117,7 @@ describe('runtime abort controls', () => {
     render(<Composer {...props} />);
     expect(screen.getByTestId('abort-button')).toBeEnabled();
     fireEvent.keyDown(document, { key: 'Escape' });
+    fireEvent.keyDown(document, { key: 'Escape' });
     expect(props.onAbort).toHaveBeenCalledOnce();
   });
   it.each([{ queued: true }, { canWrite: false }, { historyLoading: true }, { session: null }])('does not abort unavailable targets %j', overrides => {
@@ -119,15 +125,53 @@ describe('runtime abort controls', () => {
     render(<Composer {...props} />);
     expect(screen.queryByTestId('abort-button')).not.toBeInTheDocument();
     fireEvent.keyDown(document, { key: 'Escape' });
+    fireEvent.keyDown(document, { key: 'Escape' });
     expect(props.onAbort).not.toHaveBeenCalled();
   });
   it('leaves Escape to dialogs and ignores IME and repeated keydowns', () => {
     const props = { ...base(), onAbort: vi.fn() };
     const view = render(<><Composer {...props} /><div role="dialog" /></>);
     fireEvent.keyDown(document, { key: 'Escape' });
+    fireEvent.keyDown(document, { key: 'Escape' });
     view.rerender(<Composer {...props} />);
     fireEvent.keyDown(document, { key: 'Escape', isComposing: true });
     fireEvent.keyDown(document, { key: 'Escape', repeat: true });
+    expect(props.onAbort).not.toHaveBeenCalled();
+  });
+  it('arms on the first Escape and aborts only on a second press within the window (DESIGN.md §5.4)', () => {
+    vi.useFakeTimers();
+    try {
+      const onAbortArmedChange = vi.fn();
+      const props = { ...base(), onAbort: vi.fn(), onAbortArmedChange };
+      render(<Composer {...props} />);
+      fireEvent.keyDown(document, { key: 'Escape' });
+      expect(props.onAbort).not.toHaveBeenCalled();
+      expect(screen.getByTestId('composer-hint')).toHaveTextContent('再按 Esc 中止');
+      expect(onAbortArmedChange).toHaveBeenLastCalledWith(true);
+      // The window expires: the next Escape only arms again.
+      act(() => { vi.advanceTimersByTime(1500); });
+      expect(screen.getByTestId('composer-hint')).not.toHaveTextContent('再按 Esc 中止');
+      expect(onAbortArmedChange).toHaveBeenLastCalledWith(false);
+      fireEvent.keyDown(document, { key: 'Escape' });
+      expect(props.onAbort).not.toHaveBeenCalled();
+      // Any other key cancels the confirmation.
+      fireEvent.keyDown(document, { key: 'a' });
+      fireEvent.keyDown(document, { key: 'Escape' });
+      expect(props.onAbort).not.toHaveBeenCalled();
+      fireEvent.keyDown(document, { key: 'Escape' });
+      expect(props.onAbort).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it('lets a visible overlay consume Escape without counting towards the sequence', () => {
+    const props = { ...base(), onAbort: vi.fn() };
+    const view = render(<Composer {...props} />);
+    fireEvent.keyDown(document, { key: 'Escape' });
+    view.rerender(<><Composer {...props} /><div role="dialog" /></>);
+    fireEvent.keyDown(document, { key: 'Escape' });
+    view.rerender(<Composer {...props} />);
+    fireEvent.keyDown(document, { key: 'Escape' });
     expect(props.onAbort).not.toHaveBeenCalled();
   });
 });

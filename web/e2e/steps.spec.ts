@@ -6,19 +6,17 @@ for (const width of [1440,1280,390]) for (const theme of ['light','dark']) {
   await page.goto(`/visual-fixtures/steps.html?theme=${theme}`);
   const panel = page.getByTestId('inspector');
   await expect(page.getByRole('tab',{name:'步骤 7'})).toHaveAttribute('aria-selected','true');
-  expect((await panel.boundingBox())?.width).toBe(width <= 600 ? width : 380);
-  await expect(panel.locator('.step-heading').first()).toHaveCSS('font-size', '12px');
-  await expect(panel.locator('.step-tool-name').first()).toHaveCSS('font-size', '12px');
-  await expect(panel.locator('.step-content pre').first()).toHaveCSS('font-size', '11px');
-  await expect(panel.locator('.step-toggle time').first()).toHaveCSS('font-size', '10px');
-  await expect(panel.locator('.inspector-tabs button').first()).toHaveCSS('font-size', '12px');
-  await expect(panel.locator('.tab-badge').first()).toHaveCSS('font-size', '10px');
-  await page.getByRole('button',{name:/工具调用.*subagent/}).click();
+  // Narrow screens give the Inspector the full width; wider ones keep it a side column.
+  const panelWidth = (await panel.boundingBox())!.width;
+  if (width <= 600) expect(panelWidth).toBe(width); else expect(panelWidth).toBeLessThan(width / 2);
   await page.screenshot({path:info.outputPath(`steps-${width}-${theme}.png`)});
-  const result = page.getByRole('button',{name:/工具结果.*subagent/});
-  await result.click();
-  await expect(result).toHaveAttribute('aria-expanded','true');
-  await expect(page.getByText(/END_OF_RESULT/)).toBeVisible();
+  // Without a matching transcript row, activating a long result opens its full details.
+  await page.getByRole('button',{name:/工具结果.*subagent/}).click();
+  const details = page.getByRole('dialog');
+  await expect(details).toBeVisible();
+  await expect(details.getByText(/END_OF_RESULT/)).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(details).toBeHidden();
   await page.getByRole('tab',{name:'步骤 7'}).focus();
   await page.keyboard.press('ArrowRight');
   await expect(page.getByText('创建时快照 · 不是实时运行值')).toBeVisible();

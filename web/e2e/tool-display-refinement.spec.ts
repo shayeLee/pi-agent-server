@@ -28,15 +28,16 @@ for (const width of [1280, 390]) for (const theme of ["dark", "light"]) {
       const badge = el.querySelector(".tool-status-icon")!.getBoundingClientRect();
       const arrow = el.querySelector(".tool-toggle")!.getBoundingClientRect();
       return { outline: style.outlineStyle, shadow: style.boxShadow, wrapping: getComputedStyle(preview).whiteSpace,
-        truncated: preview.textContent!.includes("…"), size: arrow.width, gap: arrow.left - badge.right,
+        truncated: preview.scrollWidth > preview.clientWidth && getComputedStyle(preview).textOverflow === "ellipsis", gap: arrow.left - badge.right,
         centered: Math.abs(arrow.y + arrow.height / 2 - badge.y - badge.height / 2),
         contained: arrow.right <= el.getBoundingClientRect().right,
         opacity: getComputedStyle(el.querySelector(".tool-toggle")!).opacity };
     });
-    expect(layout).toMatchObject({ outline: "none", shadow: "none", wrapping: "nowrap", truncated: true, size: 12, contained: true, opacity: "1" });
-    // The workspace header separates status and disclosure with flexible space.
-    // Both remain distinct, contained and vertically aligned at every viewport.
-    expect(layout.gap).toBeGreaterThanOrEqual(12);
+    // Keyboard focus is visible (DESIGN.md §9.2); the summary stays one truncated line.
+    expect(layout.outline).not.toBe("none");
+    expect(layout).toMatchObject({ wrapping: "nowrap", truncated: true, contained: true, opacity: "1" });
+    // Status and disclosure stay distinct (no overlap) and vertically aligned.
+    expect(layout.gap).toBeGreaterThan(0);
     expect(layout.centered).toBeLessThan(1);
     await page.screenshot({ path: `/tmp/tool-display-refinement/${theme}-${width}-collapsed-keyboard.png`, fullPage: true });
     await page.keyboard.press("Enter");

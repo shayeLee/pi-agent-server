@@ -21,8 +21,9 @@ describe("SDK tool duration", () => {
     const { rerender, container } = render(<ToolCallCard call={{ ...base, done: false, durationMs: 12 }} />);
     const header = screen.getByRole("button", { name: /工具调用/ });
     expect(container.querySelector(".tool-duration")).toBeNull();
+    // A running wait starts closed (the live panel shows its progress): open by hand, then maybe close.
     fireEvent.click(header);
-    if (expanded) fireEvent.click(header);
+    if (!expanded) fireEvent.click(header);
     rerender(<ToolCallCard call={{ ...base, durationMs: 61500, isError: true }} />);
     expect(header).toHaveAttribute("aria-expanded", String(expanded));
     expect(container.querySelector('.tool-call-body') !== null).toBe(expanded);

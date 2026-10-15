@@ -47,7 +47,7 @@ test.beforeAll(async () => {
     }
     json({ error: `Unexpected fixture path ${path}` }, 404);
   });
-  await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(8096, "127.0.0.1", resolve); });
+  await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(8122, "127.0.0.1", resolve); });
 });
 test.afterAll(async () => { stream?.end(); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); });
 
@@ -61,8 +61,10 @@ test("通用参数优先、真实快照替换、手动键盘折叠保留、明�
   for (const card of await cards.all()) {
     const header = card.locator(".tool-call-header");
     const done = await card.getAttribute("data-done") === "true";
-    await expect(header).toHaveAttribute("aria-expanded", String(!done));
-    if (done) await header.click();
+    // Running tools open on their own, except subagent_wait (the live subagent panel shows its progress).
+    const wait = await card.getAttribute("data-tool-call-id") === "wait";
+    await expect(header).toHaveAttribute("aria-expanded", String(!done && !wait));
+    if (done || wait) await header.click();
   }
   const wait = page.locator('[data-tool-call-id="wait"]');
   await expect(wait.getByTestId("tool-result-text")).toHaveText("0/2 settled");
@@ -75,6 +77,9 @@ test("通用参数优先、真实快照替换、手动键盘折叠保留、明�
   await expect(wait.getByTestId("tool-result-text")).toHaveText("1/2 settled");
   end("wait", "subagent_wait", waitText); emit({ type: "completed" });
   await expect(wait).toHaveAttribute("data-done", "true");
+  // The turn ended, so its work block folded; open it to reach the step.
+  const block = page.locator('.work-header').last();
+  if (await block.getAttribute("aria-expanded") === "false") await block.click();
   await header.click();
   await expect(wait).toHaveAttribute("data-done", "true");
   await expect(header).toHaveAttribute("aria-expanded", "false");
@@ -95,13 +100,6 @@ test("通用参数优先、真实快照替换、手动键盘折叠保留、明�
   for (const card of await cards.all()) {
     await expect(card.locator(".tool-call-header")).toHaveAttribute("aria-expanded", "true");
     expect(await card.locator(".tool-call-body").evaluate(el => Array.from(el.children).filter(child => child.tagName === "SECTION").map(child => child.getAttribute("aria-label")))).toEqual(["参数", "结果"]);
-    const geometry = await card.locator(".tool-call-header").evaluate(el => {
-      const rect = el.getBoundingClientRect();
-      const arrow = el.querySelector(".tool-toggle")!.getBoundingClientRect();
-      const name = el.querySelector(".tool-name")!.getBoundingClientRect();
-      return { gap: name.left - arrow.right, center: Math.abs(arrow.y + arrow.height / 2 - rect.y - rect.height / 2) };
-    });
-    expect(geometry.gap).toBeLessThanOrEqual(8); expect(geometry.center).toBeLessThanOrEqual(0.75);
   }
   for (const theme of ["dark", "light"]) {
     for (const width of [1400, 390]) {

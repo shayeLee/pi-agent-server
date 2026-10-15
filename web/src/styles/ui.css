@@ -39,4 +39,10 @@
   --text-base: var(--font-base);
   --text-lg: var(--font-lg);
   --text-xl: var(--font-xl);
+  /* Ledger: small radii and no drop shadows for every primitive (DESIGN.md §2.4). */
+  --radius-sm: var(--radius-item);
+  --radius-md: var(--radius-control);
+  --radius-lg: var(--radius-float);
+  --shadow-md: 0 0 #0000;
+  --shadow-lg: 0 0 #0000;
 }

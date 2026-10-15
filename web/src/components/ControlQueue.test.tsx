@@ -11,15 +11,12 @@ it('counts only authoritative rows, promotes only followUp and waits for a new s
   view.rerender(<ControlQueue {...props} items={[]} />); expect(screen.queryByTestId('control-queue-item')).toBeNull();
   expect(screen.queryByTestId('control-queue')).toBeNull();
 });
-it('uses a dedicated paper plane for steering and preserves the follow-up clock', () => {
+it('renders Ledger text actions without decorative icons (DESIGN.md §5.5)', () => {
   render(<ControlQueue items={[{id:'a',kind:'steer',text:'A'},{id:'b',kind:'followUp',text:'B'}]} onDelete={vi.fn()} onPromote={vi.fn()} />);
-  const steer = screen.getByRole('region', {name:'引导队列'});
-  const followUp = screen.getByRole('region', {name:'追加队列'});
-  expect(steer.querySelector('header svg')).toHaveAttribute('data-icon', 'paper-plane');
-  expect(steer.querySelector('header svg')).toHaveAttribute('width', '20');
-  expect(steer.querySelector('[data-icon="send"]')).toBeNull();
-  expect(followUp.querySelector('header svg')).toHaveAttribute('data-icon', 'clock');
-  expect(followUp.querySelector('header svg')).toHaveAttribute('width', '16');
+  expect(screen.getByTestId('control-queue').querySelector('svg')).toBeNull();
+  expect(screen.getByRole('button',{name:'引导：B'})).toHaveTextContent('↑ 改为引导');
+  expect(screen.getByRole('button',{name:'删除：A'})).toHaveTextContent('删除');
+  expect(screen.getByLabelText('第 1 条')).toHaveTextContent('01');
 });
 it('unknown is refresh-only, failure stays actionable', () => {
   const refresh = vi.fn(); const props = {items:[{id:'a',kind:'followUp' as const,text:'A'}],onDelete:vi.fn(),onPromote:vi.fn(),onRefresh:refresh};

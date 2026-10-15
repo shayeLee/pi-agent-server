@@ -67,6 +67,14 @@ it("restores server-resident items from GET without local submissions", async ()
   expect(hook.result.current.controlQueue?.items[0]?.id).toBe("remote");
 });
 
+it("ignores a malformed control-queue body instead of crashing", async () => {
+  vi.mocked(ApiClient.prototype.getControlQueue).mockResolvedValue({ error: "not found" } as unknown as ControlQueueSnapshot);
+  const hook = setup();
+  await waitFor(() => expect(ApiClient.prototype.getControlQueue).toHaveBeenCalled());
+  expect(hook.result.current.controlQueue ?? null).toBeNull();
+  expect(hook.result.current.pendingControls).toEqual([]);
+});
+
 it("rejects stale GET and SSE revisions, and ignores a previous selection's late GET", async () => {
   const pending = deferred<ControlQueueSnapshot>();
   vi.mocked(ApiClient.prototype.getControlQueue).mockReturnValueOnce(pending.promise);

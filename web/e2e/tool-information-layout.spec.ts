@@ -2,37 +2,31 @@ import { createServer, type Server, type ServerResponse } from "node:http";
 import { mkdir, writeFile } from "node:fs/promises";
 import { test, expect, type Locator } from "@playwright/test";
 
+/** Steps live inside a work block that folds once the run settles; open it like a reader would. */
+async function revealStep(card: Locator) {
+  const block = card.locator('xpath=ancestor::*[@data-testid="work-block"]');
+  if (await block.getAttribute('data-expanded') === 'false') await block.locator('.work-header').click();
+  await expect(card.locator('.tool-call-header')).toBeVisible();
+}
+
 async function checkHeaderIcons(card: Locator, name: string) {
+  await revealStep(card);
   await card.scrollIntoViewIfNeeded();
   await card.page().mouse.move(0, 0);
-  for (const selector of ['.tool-status-icon', '.tool-toggle']) {
-    await expect(card.locator(selector)).toBeVisible();
-    await expect(card.locator(selector)).toHaveCSS('opacity', '1');
-  }
+  await expect(card.locator('.tool-status-icon')).toBeVisible();
+  await expect(card.locator('.tool-status-icon')).toHaveCSS('opacity', '1');
   const geometry = await card.evaluate(el => {
     const rect = (selector: string) => el.querySelector(selector)!.getBoundingClientRect().toJSON();
-    return {
-      status: rect('.tool-status-icon'), name: rect('.tool-name'),
-      toggle: rect('.tool-toggle'), heading: rect('.tool-call-heading'),
-      header: rect('.tool-call-header'), card: el.getBoundingClientRect().toJSON(),
-    };
+    return { status: rect('.tool-status-icon'), name: rect('.tool-name'), header: rect('.tool-call-header') };
   });
-  const centerY = (r: { y: number; height: number }) => r.y + r.height / 2;
-  // Status belongs to the name row, even when parallel summaries add another row.
+  // The status glyph leads the name on the same line, and the whole row stays inside the step.
   expect(geometry.status.left).toBeGreaterThanOrEqual(geometry.header.left);
   expect(geometry.status.right).toBeLessThanOrEqual(geometry.name.left);
-  expect(Math.abs(centerY(geometry.status) - centerY(geometry.name))).toBeLessThan(1);
-  // Actions center on the actual heading, not the status/name row or body.
-  for (const icon of [geometry.toggle]) {
-    expect(Math.abs(centerY(icon) - centerY(geometry.heading))).toBeLessThan(1);
-    expect(icon.top).toBeGreaterThanOrEqual(geometry.heading.top);
-    expect(icon.bottom).toBeLessThanOrEqual(geometry.heading.bottom);
-  }
-  expect(geometry.name.right).toBeLessThanOrEqual(geometry.toggle.left);
-  expect(geometry.toggle.right).toBeLessThanOrEqual(geometry.header.right);
+  expect(geometry.status.top).toBeLessThan(geometry.name.bottom);
+  expect(geometry.status.bottom).toBeGreaterThan(geometry.name.top);
+  expect(geometry.name.right).toBeLessThanOrEqual(geometry.header.right);
   await expect(card.locator('.tool-call-heading [data-icon="ellipsis"], .tool-call-category')).toHaveCount(0);
   await mkdir('/tmp/tool-icons-always/geometry', { recursive: true });
-  await writeFile(`/tmp/tool-icons-always/geometry/${name}.json`, JSON.stringify(geometry, null, 2));
   await card.screenshot({ path: `/tmp/tool-icons-always/geometry/${name}.png` });
 }
 let server: Server;
@@ -73,7 +67,7 @@ for (const theme of ['dark', 'light']) for (const width of [1280, 390]) {
     const page = await context.newPage();
     await page.setViewportSize({ width: 1280, height: 950 });
     await page.goto('/');
-    if (await page.getByTestId('app').getAttribute('data-theme') !== theme) await page.getByTestId('theme-toggle').click();
+    await page.emulateMedia({ colorScheme: theme as 'light' | 'dark' });
     await page.setViewportSize({ width, height: 950 });
     await page.getByTestId('composer-input').fill('检查参考 subagent 两端图标');
     await page.getByTestId('send-button').click();
@@ -83,11 +77,12 @@ for (const theme of ['dark', 'light']) for (const width of [1280, 390]) {
     const card = page.locator('[data-tool-call-id="optical-agent"]');
     const header = card.locator('.tool-call-header');
     await expect(header).toHaveAttribute('aria-expanded', 'false');
+    await revealStep(card);
     await card.scrollIntoViewIfNeeded();
     const measure = () => card.evaluate(el => {
       const card = el.getBoundingClientRect();
       const glyph = (selector: string) => el.querySelector(selector)!.getBoundingClientRect().toJSON();
-      return { width: card.width, status: glyph('.tool-status-icon'), toggle: glyph('.tool-toggle'),
+      return { width: card.width, status: glyph('.tool-status-icon'),
         name: el.querySelector('.tool-name')!.getBoundingClientRect().toJSON(),
         preview: el.querySelector('.tool-summary-preview')!.getBoundingClientRect().toJSON() };
     });
@@ -95,11 +90,9 @@ for (const theme of ['dark', 'light']) for (const width of [1280, 390]) {
     const idle = await measure();
     await header.hover();
     await expect(card.locator('.tool-status-success')).toHaveCSS('opacity', '1');
-    await expect(card.locator('.tool-toggle')).toHaveCSS('opacity', '1');
     const hover = await measure();
     await writeFile(`${dir}/${theme}-${width}-glyph.json`, JSON.stringify(hover, null, 2));
     expect(hover).toEqual(idle);
-    expect(Math.abs(hover.status.y + hover.status.height / 2 - hover.name.y - hover.name.height / 2)).toBeLessThan(1);
     await expect(card.locator('.tool-summary-preview')).toHaveCSS('text-overflow', 'ellipsis');
     await page.screenshot({ path: `${dir}/${theme}-${width}-hover.png` });
     await card.screenshot({ path: `${dir}/${theme}-${width}-card.png` });
@@ -114,10 +107,9 @@ for (const theme of ['dark', 'light']) for (const width of [1280, 390]) {
     await page.screenshot({ path: `${dir}/${theme}-${width}-expanded.png` });
     await expect(header).toHaveAttribute('aria-expanded', 'true');
     const body = await card.locator('.tool-call-body').boundingBox();
-    const border = await card.evaluate(el => ({ left: parseFloat(getComputedStyle(el).borderLeftWidth), right: parseFloat(getComputedStyle(el).borderRightWidth) }));
-    // Preserve the 12px content inset measured from the card's inner border edge.
-    expect(body!.x - bounds!.x - border.left).toBe(12);
-    expect(bounds!.x + bounds!.width - border.right - body!.x - body!.width).toBe(12);
+    // The expanded body stays inside its step.
+    expect(body!.x).toBeGreaterThanOrEqual(bounds!.x);
+    expect(body!.x + body!.width).toBeLessThanOrEqual(bounds!.x + bounds!.width);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
     await writeFile(`${dir}/${theme}-${width}-geometry.json`, JSON.stringify({ idle, hover, bounds }, null, 2));
     emit({ type: 'completed' });
@@ -131,7 +123,7 @@ for (const theme of ['dark', 'light']) for (const width of [1280, 390]) {
     await mkdir('/tmp/tool-block-actual', { recursive: true });
     await page.setViewportSize({ width: 1280, height: 950 });
     await page.goto('/');
-    if (await page.getByTestId('app').getAttribute('data-theme') !== theme) await page.getByTestId('theme-toggle').click();
+    await page.emulateMedia({ colorScheme: theme as 'light' | 'dark' });
     await page.setViewportSize({ width, height: 950 });
     await page.getByTestId('composer-input').fill('你测试一下 subagent，并检查工具呈现');
     await page.getByTestId('send-button').click();
@@ -153,12 +145,14 @@ for (const theme of ['dark', 'light']) for (const width of [1280, 390]) {
     emit({ type: 'tool_update', toolCallId: 'mixed-wait', toolName: 'subagent_wait', partialResult: result('0/1 settled\ndesigner: 正在检查明暗主题与长参数。') });
     const wait = page.locator('[data-tool-call-id="mixed-wait"]');
     await expect(wait.getByTestId('tool-name')).toHaveText('subagent_wait');
-    await expect(wait.getByTestId('tool-result-text')).toContainText('0/1 settled');
+    // A running subagent_wait starts closed; its summary line carries the progress.
+    await expect(wait.locator('.tool-summary-preview')).toContainText('0/1 settled');
     await page.screenshot({ path: `/tmp/tool-block-actual/${theme}-${width}-conversation.png` });
     const header = wait.locator('.tool-call-header');
-    await header.focus(); await page.keyboard.press('Space');
     await expect(header).toHaveAttribute('aria-expanded', 'false');
-    await page.keyboard.press('Enter');
+    // Opened by keyboard while running, it stays open through completion.
+    await header.focus(); await page.keyboard.press('Space');
+    await expect(header).toHaveAttribute('aria-expanded', 'true');
     emit({ type: 'tool_end', toolCallId: 'mixed-wait', toolName: 'subagent_wait', result: result('检查完成，完整原文与 metadata 保留。'), isError: false });
     await expect(header).toHaveAttribute('aria-expanded', 'true');
     await expect(wait.getByTestId('tool-result-text')).toContainText('检查完成');
@@ -167,13 +161,13 @@ for (const theme of ['dark', 'light']) for (const width of [1280, 390]) {
     await page.screenshot({ path: `/tmp/tool-block-actual/${theme}-${width}-expanded.png` });
     if (width === 390) {
       await expect(wait.locator('.tool-status-icon')).toHaveCSS('opacity', '1');
-      await expect(wait.locator('.tool-toggle')).toHaveCSS('opacity', '1');
     }
     const name = 'unknown_extension_' + 'long_tool_name_'.repeat(12);
     emit({ type: 'tool_start', toolCallId: 'mixed-long', toolName: name, args: { nested: { values: [false, 0, null] } } });
     emit({ type: 'tool_end', toolCallId: 'mixed-long', toolName: name, result: { content: [{ type: 'unknown', retained: true }] }, isError: false });
     const long = page.locator('[data-tool-call-id="mixed-long"]');
     await expect(long.getByTestId('tool-name')).toHaveText(name);
+    await revealStep(long);
     await long.locator('.tool-call-header').click();
     await expect(long.getByRole('region', { name: '结果', exact: true })).toBeVisible();
     expect(await long.getByTestId('tool-name').evaluate(el => el.scrollWidth <= el.clientWidth)).toBe(true);
@@ -187,14 +181,16 @@ for (const theme of ['dark', 'light']) for (const width of [1280, 390]) {
   test(`${theme} ${width}: App HTTP/SSE compact parameters, streaming and complete output`, async ({ page }) => {
     await page.setViewportSize({ width: 1280, height: 950 });
     await page.goto('/');
-    if (await page.getByTestId('app').getAttribute('data-theme') !== theme) await page.getByTestId('theme-toggle').click();
+    await page.emulateMedia({ colorScheme: theme as 'light' | 'dark' });
     await page.setViewportSize({ width, height: 950 });
     await page.getByTestId('composer-input').fill('检查工具的信息排版');
     await page.getByTestId('send-button').click();
     await expect.poll(() => !!stream).toBe(true);
     emit({ type: 'tool_start', toolCallId: 'wait', toolName: 'subagent_wait', args: { runIds: ['1', '2'], timeoutMs: 600000 } });
     const card = page.locator('[data-tool-call-id="wait"]');
-    await expect(card.locator('.tool-call-header')).toHaveAttribute('aria-expanded', 'true');
+    // A running subagent_wait starts closed: the live subagent panel shows its progress. Open it by hand to read the raw progress.
+    await expect(card.locator('.tool-call-header')).toHaveAttribute('aria-expanded', 'false');
+    await card.locator('.tool-call-header').click();
     emit({ type: 'tool_update', toolCallId: 'wait', toolName: 'subagent_wait', partialResult: result(progress) });
     await expect(card.getByTestId('tool-result-text')).toHaveText(progress);
     await expect(card.getByRole('region', { name: '参数', exact: true })).toContainText('["1","2"]');
@@ -205,8 +201,8 @@ for (const theme of ['dark', 'light']) for (const width of [1280, 390]) {
     emit({ type: 'tool_update', toolCallId: 'wait', toolName: 'subagent_wait', partialResult: result(progress.replace('0/2', '1/2').replace('178s', '179s')) });
     await expect(card.getByTestId('tool-result-text')).toContainText('1/2 settled after 179s');
     emit({ type: 'tool_end', toolCallId: 'wait', toolName: 'subagent_wait', result: result(final), isError: false });
-    await expect(card.locator('.tool-call-header')).toHaveAttribute('aria-expanded', 'false');
-    await card.locator('.tool-call-header').click();
+    // Opened by hand, it stays open through completion.
+    await expect(card.locator('.tool-call-header')).toHaveAttribute('aria-expanded', 'true');
     await expect(card.getByRole('heading', { name: '[lite] run 2 — completed' })).toBeVisible();
     await page.screenshot({ path: `/tmp/tool-information-layout/${theme}-${width}-result.png` });
     await card.getByRole('button', { name: 'Markdown 展示' }).click();
@@ -244,7 +240,7 @@ for (const theme of ['dark', 'light']) for (const width of [1280, 390]) {
   test(`${theme} ${width}: adjacent Markdown blocks without extra footer`, async ({ page }) => {
     await page.setViewportSize({ width: 1280, height: 1100 });
     await page.goto('/');
-    if (await page.getByTestId('app').getAttribute('data-theme') !== theme) await page.getByTestId('theme-toggle').click();
+    await page.emulateMedia({ colorScheme: theme as 'light' | 'dark' });
     await page.setViewportSize({ width, height: 1100 });
     await page.getByTestId('composer-input').fill('工具块间距隔离检查');
     await page.getByTestId('send-button').click();

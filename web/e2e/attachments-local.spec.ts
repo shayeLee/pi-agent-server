@@ -85,6 +85,8 @@ test("Reading-first local fixture: file upload, explicit first send, theme and p
   await page.getByTestId("composer-input").fill("阅读这个文件");
   await page.getByTestId("send-button").click();
   await expect(page.getByTestId("chat-header")).toBeVisible();
+  // Create and send are separate requests: the header can render before the send reaches the fixture.
+  await expect.poll(() => messages.length).toBe(1);
   expect(created).toBe(1);
   expect(uploads).toBe(1);
   expect(messages).toEqual([expect.objectContaining({ prompt: "阅读这个文件", fileIds: [fileId] })]);

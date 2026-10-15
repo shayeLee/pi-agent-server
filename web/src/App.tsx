@@ -1,4 +1,6 @@
 import { SubagentChat, SubagentList } from "./components/Subagents.js";
+import { readRoute } from "./routing.js";
+import { readRecentSelection } from "./recent-selection.js";
 import { useSubagents } from "./hooks/useSubagents.js";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { readThemeMode, resolveTheme, writeThemeMode, type ThemeMode } from "./theme-preference.js";
@@ -11,12 +13,19 @@ import { Chat } from "./components/Chat.js";
 import { Inspector, type InspectorTab } from "./components/Inspector.js";
 import { useSessionInspection } from "./hooks/useSessionInspection.js";
 import { zhCN } from "./i18n/zh-CN.js";
-import brandImage from "./icons/svg/brand-pi.svg";
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuRadioGroup, DropdownMenuRadioItem } from "./components/ui/dropdown-menu.js";
+import { CommandPalette, ShortcutHelp, type Command } from "./components/CommandPalette.js";
+import { useGlobalShortcuts } from "./hooks/useGlobalShortcuts.js";
 
-const SIDEBAR_DEFAULT = 280;
-const SIDEBAR_MIN = 180;
-const SIDEBAR_MAX = 400;
+const SIDEBAR_DEFAULT = 272;
+/**
+ * From this window width the trace opens with a session: sidebar 272 + trace 380 leave the
+ * conversation ~850px, a ~650px content column, still above the compact ledger (640px container).
+ * Narrower laptops start with it closed.
+ */
+export const TRACE_DEFAULT_MIN_WIDTH = 1500;
+const SIDEBAR_MIN = 200;
+const SIDEBAR_MAX = 360;
 const SIDEBAR_RAIL = 56;
 const DETAILS_DEFAULT = 380;
 
@@ -30,10 +39,21 @@ export default function App() {
   );
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const mobileMenuRef = useRef<HTMLButtonElement>(null);
-  const [detailsCollapsed, setDetailsCollapsed] = useState(true);
+  // The trace opens by default where the conversation still reads comfortably beside it.
+  // A manual open/close holds for this page.
+  const traceFits = () => window.matchMedia?.(`(min-width: ${TRACE_DEFAULT_MIN_WIDTH}px)`).matches ?? false;
+  const traceWanted = useRef(true);
+  // A session is about to open (session URL, or the root restoring the last selection): reserve the
+  // trace column from the first frame, so it does not appear later and shift the centred column.
+  // Route resolution rewrites the URL / clears the selection when that session is not available.
+  const sessionExpected = () => {
+    const route = readRoute();
+    return route === "root" ? !!readRecentSelection()?.sessionId : typeof route === "object" && route.sessionId !== null;
+  };
+  const [detailsCollapsed, setDetailsCollapsed] = useState(() => !(traceFits() && sessionExpected()));
   const shellRef = useRef<HTMLElement>(null);
   const [traceNavigation, setTraceNavigation] = useState<TraceNavigation | null>(null);
-  const [inspectorTab, setInspectorTab] = useState<InspectorTab>("steps");
+  const [inspectorTab, setInspectorTab] = useState<InspectorTab>("subagents");
   useEffect(() => { setTraceNavigation(null); }, [detailsCollapsed, inspectorTab, controller.activeSessionId]);
   const [themeMode, setThemeMode] = useState<ThemeMode>(readThemeMode);
   const [theme, setTheme] = useState<"dark" | "light">(() => resolveTheme(themeMode));
@@ -93,7 +113,12 @@ export default function App() {
 
   const activeSession =
     controller.sessions?.find((session) => session.id === controller.activeSessionId) ?? null;
-  useEffect(() => { if (!activeSession) setDetailsCollapsed(true); }, [activeSession?.id]);
+  // Chosen but not loaded yet (id set, list pending), or still being resolved from the URL / last selection.
+  // A load error (e.g. a transient failure that keeps the URL for retry) ends the wait: no blank column.
+  const sessionPending = !activeSession && !controller.loadError && (controller.activeSessionId !== null || sessionExpected());
+  useEffect(() => {
+    setDetailsCollapsed(!(activeSession || sessionPending) || !traceWanted.current || !traceFits());
+  }, [activeSession?.id, sessionPending]);
   const [childSelection, setChildSelection] = useState<{ sessionId: string; runId: string } | null>(() => {
     try {
       const saved = JSON.parse(sessionStorage.getItem("pi:selected-subagent") ?? "null");
@@ -102,10 +127,13 @@ export default function App() {
   });
   useEffect(() => { try { sessionStorage.setItem("pi:selected-subagent", JSON.stringify(childSelection)); } catch { /* Storage is optional. */ } }, [childSelection]);
   const selectedChild = childSelection?.sessionId === activeSession?.id ? childSelection?.runId ?? null : null;
-  const subagents = useSubagents(controller.api, activeSession?.id ?? null, selectedChild, !detailsCollapsed && inspectorTab === "subagents");
+  // A live parent request may start children, so the list keeps polling until it settles.
+  const subagents = useSubagents(controller.api, activeSession?.id ?? null, { runId: selectedChild,
+    visible: !detailsCollapsed && inspectorTab === "subagents", live: controller.chatState.phase === "streaming", signal: controller.subagentsPosition });
+  const liveSubagents = subagents.live;
   const inspection = useSessionInspection({ api: controller.api, sessionId: activeSession?.id ?? null,
     visible: !detailsCollapsed && !mobileSidebarOpen, activeTab: inspectorTab,
-    refreshKey: controller.inspectionRefreshKey });
+    refreshKey: controller.inspectionRefreshKey, stepsPosition: controller.stepsPosition });
   // The nested chat/inspector columns cannot share a CSS grid row. Measure only
   // the natural chat header (including its border); never feed this height back
   // into the chat, so wrapping and resize can also shrink it without a loop.
@@ -143,11 +171,64 @@ export default function App() {
   };
 
   const toggleInspector = () => {
-    if (detailsCollapsed) { setMobileSidebarOpen(false); setDetailsCollapsed(false); }
+    if (detailsCollapsed) { traceWanted.current = true; setMobileSidebarOpen(false); setDetailsCollapsed(false); }
     else closeInspector();
   };
 
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
+  const [searchRequest, setSearchRequest] = useState(0);
+  const toggleSidebar = () => {
+    if (window.matchMedia?.("(max-width: 1179px)").matches) setMobileSidebarOpen(open => !open);
+    else setSidebarCollapsed(value => !value);
+  };
+  const applyThemeMode = (mode: ThemeMode) => {
+    setThemeMode(mode);
+    setTheme(resolveTheme(mode));
+    writeThemeMode(mode);
+  };
+  const newSession = () => { if (canCreateSession) { closeMobileSidebar(); controller.createSession(); } };
+  const openSearch = () => {
+    if (window.matchMedia?.("(max-width: 1179px)").matches) setMobileSidebarOpen(true);
+    else setSidebarCollapsed(false);
+    setSearchRequest(value => value + 1);
+  };
+  const visibleChat = () => document.querySelector<HTMLElement>('.chat:not([hidden])');
+  const shortcutHandlers = {
+    palette: () => setPaletteOpen(true),
+    help: () => setHelpOpen(true),
+    newSession,
+    search: openSearch,
+    toggleTrace: () => { if (activeSession) toggleInspector(); },
+    toggleSidebar,
+    focusComposer: () => visibleChat()?.querySelector<HTMLTextAreaElement>('[data-testid="composer-input"]')?.focus(),
+    toggleWork: () => Array.from(visibleChat()?.querySelectorAll<HTMLButtonElement>(".work-header") ?? []).at(-1)?.click(),
+    latest: () => {
+      const chat = visibleChat();
+      const latest = chat?.querySelector<HTMLButtonElement>(".chat-latest");
+      if (latest) latest.click();
+      else { const body = chat?.querySelector<HTMLElement>(".chat-body"); if (body) body.scrollTop = body.scrollHeight; }
+    },
+  };
+  useGlobalShortcuts(shortcutHandlers);
+  const themeLabels: Record<ThemeMode, string> = { light: zhCN.sidebar.lightMode, dark: zhCN.sidebar.darkMode, system: zhCN.sidebar.followSystem };
+  const commands: Command[] = [
+    ...(canCreateSession ? [{ id: "new", group: zhCN.palette.groupActions, label: zhCN.sidebar.newSession, hint: "N", run: newSession }] : []),
+    { id: "search", group: zhCN.palette.groupActions, label: zhCN.palette.searchSessions, hint: "/", run: openSearch },
+    ...(activeSession ? [{ id: "trace", group: zhCN.palette.groupView, label: detailsCollapsed ? zhCN.header.openTrace : zhCN.header.closeTrace, hint: "⌘I", run: toggleInspector }] : []),
+    { id: "sidebar", group: zhCN.palette.groupView, label: zhCN.palette.toggleSidebar, hint: "⌘B", run: toggleSidebar },
+    ...(["light", "dark", "system"] as ThemeMode[]).map(mode => ({ id: `theme-${mode}`, group: zhCN.palette.groupTheme,
+      label: `${zhCN.sidebar.themeMenu}：${themeLabels[mode]}${mode === themeMode ? " ✓" : ""}`, run: () => applyThemeMode(mode) })),
+    ...(activeSession ? [{ id: "copy-id", group: zhCN.palette.groupActions, label: zhCN.palette.copySessionId, run: () => { void navigator.clipboard?.writeText(activeSession.id); } }] : []),
+    ...(controller.projects ?? []).map(project => ({ id: `project-${project.id}`, group: zhCN.palette.groupProjects,
+      label: `${project.name}${project.id === controller.activeProjectId ? " ✓" : ""}`, run: () => controller.selectProject(project.id) })),
+    ...(controller.sessions ?? []).slice(0, 50).map(session => ({ id: `session-${session.id}`, group: zhCN.palette.groupSessions,
+      label: session.title || session.firstPrompt || zhCN.palette.untitled, run: () => controller.selectSession(session.id) })),
+    { id: "help", group: zhCN.palette.groupHelp, label: zhCN.palette.shortcuts, hint: "?", run: () => setHelpOpen(true) },
+  ];
+
   const closeInspector = () => {
+    traceWanted.current = false;
     setDetailsCollapsed(true);
     window.setTimeout(() => document.querySelector<HTMLButtonElement>('[data-testid="child-subagents-toggle"], .chat:not([hidden]) [data-testid="trace-tab"]')?.focus(), 0);
   };
@@ -211,8 +292,7 @@ export default function App() {
       <aside className="sidebar workbench-sidebar" data-testid="sidebar">
         <div className="sidebar-header workbench-sidebar-header">
           <div className="brand workbench-brand">
-            <img className="brand-mark workbench-brand-mark" src={brandImage} width="26" height="26" alt="" aria-hidden="true" />
-            <span className="brand-text workbench-brand-title">pi-agent-server</span>
+            <span className="brand-text workbench-brand-title ledger-brand" aria-label="pi-agent-server">pi<span aria-hidden="true">/</span>agent</span>
           </div>
           <button
             className="btn-ghost btn-icon workbench-sidebar-toggle"
@@ -230,16 +310,11 @@ export default function App() {
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <button type="button" className="theme-toggle" data-testid="theme-toggle" aria-label={zhCN.sidebar.themeMenu}>
-              <Icon name={theme === "dark" ? "moon" : "sun"} /><span>{zhCN.sidebar.themeMenu}</span>
+              <Icon name={theme === "dark" ? "moon" : "sun"} /><span>{zhCN.sidebar.themeMenu}：{themeLabels[themeMode]}</span>
             </button>
           </DropdownMenuTrigger>
           <DropdownMenuContent side="top" align="start" aria-label={zhCN.sidebar.themeMenu}>
-            <DropdownMenuRadioGroup value={themeMode} onValueChange={(value) => {
-              const mode = value as typeof themeMode;
-              setThemeMode(mode);
-              setTheme(resolveTheme(mode));
-              writeThemeMode(mode);
-            }}>
+            <DropdownMenuRadioGroup value={themeMode} onValueChange={(value) => applyThemeMode(value as ThemeMode)}>
               <DropdownMenuRadioItem value="light">{zhCN.sidebar.lightMode}</DropdownMenuRadioItem>
               <DropdownMenuRadioItem value="dark">{zhCN.sidebar.darkMode}</DropdownMenuRadioItem>
               <DropdownMenuRadioItem value="system">{zhCN.sidebar.followSystem}</DropdownMenuRadioItem>
@@ -276,6 +351,7 @@ export default function App() {
               >
                 <Icon name="plus" className="new-session-icon" />
                 <span className="new-session-label">{zhCN.sidebar.newSession}</span>
+                <kbd className="new-session-kbd" aria-hidden="true">N</kbd>
               </button>
             )}
             {controller.creationNotice && <small id="project-creation-notice" role="status">{controller.creationNotice}</small>}
@@ -296,7 +372,10 @@ export default function App() {
                   onDelete={controller.deleteSession}
                   onRename={controller.renameSession}
                   onExport={controller.exportSession}
+                  runningId={streaming ? controller.activeSessionId : null}
+                  searchRequest={searchRequest}
                 />
+              <p className="sidebar-hints" aria-hidden="true">{zhCN.palette.sidebarHints}</p>
             </div>
           </>
         )}
@@ -330,16 +409,21 @@ export default function App() {
         historyNotice={controller.historyNotice}
         streaming={streaming}
         queued={queued}
+        phase={controller.chatState.phase}
+        liveSubagents={liveSubagents}
+        onOpenSubagent={runId => { if (activeSession) setChildSelection({ sessionId: activeSession.id, runId }); }}
+        runFailed={Boolean(controller.chatState.error)}
         primaryAwaitingStart={controller.chatState.phase === "submitting"}
         loadError={controller.loadError}
         models={controller.models}
         thinkingLevels={controller.thinkingLevels}
         defaultModel={controller.defaultModel}
         defaultThinkingLevel={controller.defaultThinkingLevel}
-        connected={controller.connected}
+        connection={controller.connection}
         stats={controller.chatState.stats}
         compaction={controller.chatState.compaction}
         modelOutput={controller.chatState.modelOutput}
+        runProgress={controller.chatState.runProgress}
         activeTools={!!controller.chatState.activeToolCallIds?.length}
         draftSource={controller.draftSource}
         draftScope={controller.draftScope}
@@ -375,6 +459,8 @@ export default function App() {
       />
 
       {/* 右侧 Inspector */}
+      {/* Reserved while the session loads: same frame as the trace, so nothing shifts when it fills in. */}
+      {!activeSession && !detailsCollapsed && <aside className="inspector inspector-placeholder" data-testid="inspector-placeholder" aria-hidden="true" />}
       {activeSession && !detailsCollapsed && (
         <Inspector
           subagentCount={subagents.runs.length}
@@ -402,6 +488,8 @@ export default function App() {
           onPointerUp={handlePointerUp}
         />
       )}
+      <CommandPalette open={paletteOpen} onOpenChange={setPaletteOpen} commands={commands} />
+      <ShortcutHelp open={helpOpen} onOpenChange={setHelpOpen} />
     </main>
   );
 }

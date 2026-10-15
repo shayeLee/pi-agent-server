@@ -36,6 +36,9 @@ for (const count of [1, 2]) test(`accepted ${count} image(s): composer clears, t
     if (path === "/v1/sessions" && request.method() === "GET") return json([...(created ? [session] : []), { ...session, id: otherId, title: "另一个会话" }]);
     if (path === "/v1/sessions" && request.method() === "POST") { created = true; return json(session, 201); }
     if (path.endsWith("/events")) return route.fulfill({ status: 204, body: "" });
+    // Running sessions read the resident queue and poll live subagents; this fixture has neither.
+    if (path.endsWith("/control-queue")) return json({ requestId: null, revision: 0, items: [] });
+    if (path.endsWith("/subagents")) return json({ sessionId: path.split("/")[3], runs: [] });
     if (path.endsWith("/export")) return json({ lastEventId: 0,
       messages: accepted && path.includes(sessionId) ? [{ sourceId: "fixture-user", role: "user", text: accepted.prompt, images: accepted.images }] : [],
       timeline: accepted && path.includes(sessionId) ? [{ id: "message:fixture-user", messageId: "fixture-user", type: "message", role: "user", text: accepted.prompt, order: 0 }] : [] });
@@ -89,6 +92,7 @@ for (const count of [1, 2]) test(`accepted ${count} image(s): composer clears, t
   await page.keyboard.press("Escape");
   await page.getByTestId(`session-${sessionId}`).hover();
   const dialog = page.waitForEvent("dialog");
+  await page.getByTestId(`session-menu-${sessionId}`).click();
   const renameClick = page.getByTestId(`rename-${sessionId}`).click();
   const prompt = await dialog;
   expect(prompt.type()).toBe("prompt");

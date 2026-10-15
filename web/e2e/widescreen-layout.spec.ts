@@ -24,11 +24,10 @@ for (const viewport of [{ width: 1920, height: 871, dpr: 2 }, { width: 2470, hei
       expect(app!.x).toBe(0);
       expect(app!.width).toBe(viewport.width);
       const start = (await composer.boundingBox())!;
-      const hint = (await page.getByTestId('no-session-hint').boundingBox())!;
-      expect(start.width).toBeLessThanOrEqual(1200);
-      expect(hint.x + hint.width / 2).toBeCloseTo(start.x + start.width / 2, 0);
-      expect(start.y - hint.y - hint.height).toBeGreaterThanOrEqual(0);
-      expect(start.y - hint.y - hint.height).toBeLessThanOrEqual(24);
+      const hintText = (await page.locator('.workbench-welcome-copy').boundingBox())!;
+      // Ledger layout: the start hint shares the Composer's left edge and sits right above it.
+      expect(Math.abs(hintText.x - start.x)).toBeLessThan(1);
+      expect(start.y).toBeGreaterThanOrEqual(hintText.y + hintText.height);
       if (viewport.width >= 1180) expect((await box('aside.sidebar'))!.x).toBe(0);
       const prefix = `/tmp/widescreen-layout/${viewport.width}x${viewport.height}-dpr${viewport.dpr}-${theme}`;
       await page.screenshot({ path: `${prefix}-start.png` });
@@ -36,22 +35,42 @@ for (const viewport of [{ width: 1920, height: 871, dpr: 2 }, { width: 2470, hei
       await page.getByTestId('session-wide-session').click();
       await expect(page.getByTestId('message-list')).toContainText('正文与输入区域');
       const assertAxis = async () => {
-        const reading = (await box('.chat-inner'))!;
         const input = (await composer.boundingBox())!;
-        expect(reading.width).toBeLessThanOrEqual(1248);
-        expect(reading.x + reading.width / 2).toBeCloseTo(input.x + input.width / 2, 0);
-        // Compare transcript content (excluding its responsive padding) to Composer.
-        const readingPadding = await page.locator('.chat-inner').evaluate(element => {
-          const style = getComputedStyle(element);
-          return parseFloat(style.paddingLeft) + parseFloat(style.paddingRight);
+        // Transcript content column and Composer share one left edge; extra width stays on the right.
+        const content = (await page.locator('.ledger-entry .ledger-body').first().boundingBox())!;
+        expect(Math.abs(content.x - input.x)).toBeLessThan(1);
+        expect(input.x + input.width).toBeLessThanOrEqual(viewport.width);
+        // The content column is centred in the chat area whenever the area is wide enough for it.
+        const chat = (await page.locator('.chat').first().boundingBox())!;
+        const fits = await page.locator('.chat').first().evaluate(el => {
+          const probe = document.createElement('div');
+          probe.style.width = 'calc(var(--ledger-max) + var(--ledger-offset) + 2 * var(--reading-inline-inset))';
+          el.append(probe); const needed = probe.getBoundingClientRect().width; probe.remove();
+          return el.getBoundingClientRect().width >= needed;
         });
-        expect(reading.width - readingPadding).toBeCloseTo(input.width, 0);
-        expect(Math.abs(input.y - start.y)).toBeLessThan(48);
+        if (viewport.width >= 1920) expect(fits).toBe(true);
+        if (fits) expect(Math.abs(content.x + content.width / 2 - (chat.x + chat.width / 2))).toBeLessThan(1);
+        if (viewport.width >= 1180) {
+          // The header sits on the ledger's column: title at the entries' left edge (the time gutter, or the
+          // merged tag row in the compact ledger), actions at the Composer's right edge.
+          const title = (await page.getByTestId('chat-session-title').boundingBox())!;
+          const gutter = (await page.locator('.ledger-entry').first().boundingBox())!;
+          const actions = (await page.locator('.chat-header-actions').boundingBox())!;
+          expect(Math.abs(title.x - gutter.x)).toBeLessThan(1);
+          expect(Math.abs(actions.x + actions.width - (input.x + input.width))).toBeLessThan(1);
+        }
+
         expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
       };
       await assertAxis();
+      // From TRACE_DEFAULT_MIN_WIDTH (App.tsx, 1500px) the trace opens with the
+      // session on Subagents and the column re-centres; elsewhere opening a session moves nothing.
+      const traceByDefault = viewport.width >= 1500;
+      await expect(page.getByTestId('inspector')).toHaveCount(traceByDefault ? 1 : 0);
+      if (traceByDefault) await expect(page.getByTestId('inspector-tab-subagents')).toHaveAttribute('aria-selected', 'true');
+      else expect(Math.abs((await composer.boundingBox())!.x - start.x)).toBeLessThan(1);
       await page.screenshot({ path: `${prefix}-session.png` });
-      await page.getByTestId('trace-tab').click();
+      if (!traceByDefault) await page.getByTestId('trace-tab').click();
       await expect(page.getByTestId('inspector')).toBeVisible();
       await assertAxis();
       await page.screenshot({ path: `${prefix}-inspector.png` });

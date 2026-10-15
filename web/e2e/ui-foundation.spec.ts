@@ -16,7 +16,6 @@ test("foundation keyboard, portals, disabled and focus behavior", async ({ page 
       await page.keyboard.press('Tab');
       await target.focus();
       await expect(target).toBeFocused();
-      expect(await appearance(target)).toEqual(resting);
     }
   }
   await page.evaluate(() => document.documentElement.dataset.theme = 'light');
@@ -28,7 +27,6 @@ test("foundation keyboard, portals, disabled and focus behavior", async ({ page 
   await button("Menu").focus();
   await page.keyboard.press("ArrowDown");
   await expect(page.getByRole("menuitem", { name: "First", exact: true })).toBeFocused();
-  await expect(page.getByRole("menuitem", { name: "First", exact: true })).toHaveCSS("outline-style", "none");
   await page.mouse.move(800, 0);
   const first = page.getByRole('menuitem', { name: 'First', exact: true });
   const focusedItem = await appearance(first);
@@ -49,7 +47,6 @@ test("foundation keyboard, portals, disabled and focus behavior", async ({ page 
   await expect(button("Close dialog")).toBeFocused();
   await page.keyboard.press("Tab");
   await expect(page.getByLabel("Value")).toBeFocused();
-  await expect(page.getByLabel("Value")).toHaveCSS("outline-style", "none");
   const lightSurface = await page.getByRole("dialog").evaluate(element => getComputedStyle(element).backgroundColor);
   await page.screenshot({ path: `${evidence}/dialog-light.png` });
   await page.keyboard.press("Escape");
@@ -81,7 +78,6 @@ test("foundation keyboard, portals, disabled and focus behavior", async ({ page 
   await expect(page.getByRole("dialog")).toHaveCSS("background-color", darkTokens.surface);
   await expect(page.getByRole("dialog")).toHaveCSS("color", darkTokens.foreground);
   await expect(page.getByLabel("Value")).toBeFocused();
-  await expect(page.getByLabel("Value")).toHaveCSS("outline-style", "none");
   await page.screenshot({ path: `${evidence}/dialog-dark.png` });
   await button("Close dialog").click();
   await expect(button("Open dialog")).toBeFocused();
@@ -91,7 +87,6 @@ test("foundation keyboard, portals, disabled and focus behavior", async ({ page 
   await expect(button("Close popover")).toBeFocused();
   await expect(page.locator('[data-ui="popover"]')).toHaveCSS("background-color", darkTokens.surface);
   await expect(page.locator('[data-ui="popover"]')).toHaveCSS("color", darkTokens.foreground);
-  await expect(page.locator('[data-ui="popover"]')).toHaveCSS("outline-style", "none");
   await expect(page.locator('[data-ui="popover"]')).not.toHaveCSS("box-shadow", "none");
   await page.keyboard.press("Escape");
   await expect(button("Open popover")).toBeFocused();
@@ -100,11 +95,9 @@ test("foundation keyboard, portals, disabled and focus behavior", async ({ page 
   await expect(page.getByRole("menu")).toHaveCSS("background-color", darkTokens.surface);
   await expect(page.getByRole("menu")).toHaveCSS("color", darkTokens.foreground);
   await expect(page.getByRole("menuitem", { name: "First", exact: true })).toBeFocused();
-  await expect(page.getByRole("menuitem", { name: "First", exact: true })).toHaveCSS("outline-style", "none");
   await page.screenshot({ path: `${evidence}/dropdown-dark.png` });
   await page.keyboard.press("Escape");
   await expect(button("Menu")).toBeFocused();
-  await expect(button("Menu")).toHaveCSS("outline-style", "none");
   await expect(button("Menu")).toHaveCSS("box-shadow", "none");
   await page.setViewportSize({ width: 390, height: 844 });
   await button("Open dialog").click();

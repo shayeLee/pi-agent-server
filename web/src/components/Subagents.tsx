@@ -1,35 +1,36 @@
 import type { SubagentConversation, SubagentRun } from "pi-agent-server/client";
-import { ToolStatusIcon } from "./ToolStatusIcon.js";
-import { Icon } from "./Icon.js";
+import { zhCN } from "../i18n/zh-CN.js";
 import { Timeline } from "./Timeline.js";
+import { formatClock } from "./ledger.js";
+import { formatSpan } from "../i18n/format.js";
 import { InspectorToggle } from "./ChatHeader.js";
 import { useFollowBottom } from "../hooks/useFollowBottom.js";
 
-const labels = { running: "运行中", completed: "已完成", failed: "失败", stopped: "已停止", unknown: "状态未知" };
+/** The Ledger's step glyphs (DESIGN.md §5.1), so subagents read like the steps that started them. */
+const glyphs = { running: "◐", completed: "✓", failed: "✗", stopped: "⊘", unknown: "·" };
 function SubagentStatusIcon({ status }: { status: SubagentRun["status"] }) {
-  return <span className="subagent-status-icon" role="img" aria-label={labels[status]} title={labels[status]}>
-    <span aria-hidden="true">{status === "unknown"
-      ? <Icon name="hourglass" size={14} />
-      : <ToolStatusIcon done={status !== "running"} isError={status === "failed" || status === "stopped"} />}</span>
+  const label = zhCN.subagents.status[status];
+  return <span className={`subagent-glyph is-${status}`} role="img" aria-label={label} title={label}>
+    <span aria-hidden="true">{glyphs[status]}</span>
   </span>;
 }
 
-function duration(run: SubagentRun) {
-  const seconds = Math.max(0, Math.floor(((run.endedAt ?? (run.status === "running" ? Date.now() : run.startedAt)) - run.startedAt) / 1000));
-  if (run.status === "unknown" && !run.endedAt) return "历史记录";
-  return seconds < 60 ? `${seconds}秒` : `${Math.floor(seconds / 60)}分${seconds % 60}秒`;
+/** Compact, monospace and right-aligned (10s, 2m16s), like step durations; null when nothing honest to show. */
+function duration(run: SubagentRun): string | null {
+  if (run.status === "unknown" && !run.endedAt) return null;
+  return formatSpan(Math.max(0, (run.endedAt ?? (run.status === "running" ? Date.now() : run.startedAt)) - run.startedAt));
 }
 export function SubagentList({ runs, selected, onSelect, loading, error }: {
   runs: SubagentRun[]; selected: string | null; onSelect: (id: string) => void; loading: boolean; error: string | null;
 }) {
   return <div className="subagent-list" data-testid="subagent-list">
-    <div className="subagent-list-summary">当前会话 · {runs.length} 个任务 · {runs.filter(r => r.status === "running").length} 个运行中</div>
+    <div className="subagent-list-summary">{zhCN.subagents.summary(runs.length, runs.filter(r => r.status === "running").length)}</div>
     {error && <div role="alert" className="subagent-notice">{error}</div>}
-    {loading && !runs.length && <p role="status">正在读取子代理记录…</p>}
-    {!loading && !error && !runs.length && <p className="subagent-notice">暂无子代理记录。旧版扩展未保存的过程无法恢复。</p>}
+    {loading && !runs.length && <p role="status">{zhCN.subagents.loadingList}</p>}
+    {!loading && !error && !runs.length && <p className="subagent-notice">{zhCN.subagents.emptyList}</p>}
     {runs.map(run => <button type="button" key={run.id} className={`subagent-list-row${selected === run.id ? " selected" : ""}`}
       aria-pressed={selected === run.id} onClick={() => onSelect(run.id)}>
-      <span className="subagent-list-heading"><strong>{run.agent} #{run.runId}</strong><span className="subagent-list-time subagent-duration-status"><SubagentStatusIcon status={run.status} /><span>{duration(run)}</span></span></span>
+      <span className="subagent-list-heading"><SubagentStatusIcon status={run.status} /><strong>{run.agent} #{run.runId}</strong><span className="subagent-duration">{duration(run)}</span></span>
       <span className="subagent-list-task">{run.task}</span>
     </button>)}
   </div>;
@@ -43,24 +44,35 @@ export function SubagentChat({ conversation, loading, error, title, inspectorOpe
   const run = conversation?.run;
   return <section className="chat subagent-chat" data-testid="subagent-chat">
     <header className="chat-header workbench-chat-header" data-testid="child-chat-header">
-      <div className="subagent-topbar"><button type="button" className="subagent-back" onClick={onBack}>← 返回主会话</button>
+      <div className="subagent-topbar"><button type="button" className="subagent-back" onClick={onBack}>{zhCN.subagents.back}</button>
         <span className="subagent-breadcrumb" title={title}>{title}{run && ` / ${run.agent} #${run.runId}`}</span>
         <InspectorToggle open={inspectorOpen} onToggle={onToggleInspector} testId="child-subagents-toggle" />
       </div>
     </header>
-    {run && <div className="subagent-meta"><strong>{run.agent} #{run.runId}</strong><span className="subagent-meta-task" title={run.task}>{run.task}</span><span className="subagent-meta-details">{(run.model || run.thinkingLevel) && <span>{[run.model, run.thinkingLevel].filter(Boolean).join(" ")}</span>}<span className="subagent-duration-status"><SubagentStatusIcon status={run.status} /><span>{duration(run)}</span></span></span></div>}
+    {/* The task is the first turn of the conversation below; the strip only says who, how and how long. */}
+    {run && <div className="subagent-meta"><SubagentStatusIcon status={run.status} /><strong>{run.agent} #{run.runId}</strong><span className="subagent-meta-details">{(run.model || run.thinkingLevel) && <span>{[run.model, run.thinkingLevel].filter(Boolean).join(" ")}</span>}<span className="subagent-duration">{duration(run)}</span></span></div>}
     <div className="chat-body" ref={scroll.ref} onScroll={scroll.onScroll}>
       <div className="chat-inner">
         {error && <div role="alert" className="subagent-notice">{error}</div>}
-        {loading && !conversation && <p role="status">正在读取会话…</p>}
-        {!loading && !error && !conversation && <p>该子代理记录不可用，请返回列表重新选择。</p>}
+        {loading && !conversation && <p role="status">{zhCN.subagents.loadingConversation}</p>}
+        {!loading && !error && !conversation && <p>{zhCN.subagents.unavailable}</p>}
         {conversation && <>
-          {run?.status === "unknown" && <p className="subagent-notice">没有可确认的运行状态，以下为已保存记录。</p>}
+          {run?.status === "unknown" && <p className="subagent-notice">{zhCN.subagents.unknownStatus}</p>}
           <Timeline timeline={conversation.timeline} />
-          {conversation.inputs.filter(i => i.delivery !== "delivered").map(input => <div key={input.id} className="subagent-pending-input">
-            <div className="subagent-message-source">主代理 · {input.kind === "initial" ? "初始任务" : "steer"} · {input.delivery === "failed" ? "发送失败" : input.delivery === "unknown" ? "送达未确认" : "已提交，等待送达"}</div>
-            <div>{input.text}</div>
-          </div>)}
+          {/* Inputs not yet in the transcript: the same ledger row, with the delivery state in the gutter. */}
+          {conversation.inputs.some(i => i.delivery !== "delivered") && <div className="ledger subagent-pending-inputs">
+            {conversation.inputs.filter(i => i.delivery !== "delivered").map(input => {
+              const kind = zhCN.subagents.inputKind[input.kind];
+              const clock = input.timestamp > 0 ? formatClock(new Date(input.timestamp).toISOString()) : null;
+              return <div key={input.id} className="ledger-entry subagent-pending-input" data-role="user">
+                <div className="ledger-time">{clock && <time dateTime={new Date(input.timestamp).toISOString()} title={clock.title}>{clock.text}</time>}
+                  <span className="ledger-note">{kind}</span>
+                  <span className="ledger-note">{zhCN.subagents.delivery[input.delivery === "delivered" ? "submitted" : input.delivery]}</span></div>
+                <div className="ledger-tag" aria-label={zhCN.ledger.hostLabel(kind)}>{zhCN.ledger.host}</div>
+                <div className="ledger-body"><div className="message-user"><div className="user-bubble"><div>{input.text}</div></div></div></div>
+              </div>;
+            })}
+          </div>}
         </>}
       </div>
     </div>

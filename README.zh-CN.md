@@ -17,14 +17,14 @@ pi-agent-server 是基于 Pi Agent Runtime 构建的长期运行、会话式 HTT
 - **支持本机加密备份：** 备份与恢复工具已经提供，异地容灾仍在规划中。中断运行不自动续传：停止 writer，核验并仅清理本次产物后重做；原生恢复绝不覆盖已有文件。详见[备份与恢复](docs/backup-restore.md)。
 - **首次部署需要初始化数据库：** 先按[运维文档](docs/operations.md)初始化数据库，再启动服务；如果新版本发布说明要求更新数据库结构，也要先按运维文档升级数据库，再启动新版本服务。
 
-Pi SDK 与 pi-ai 固定为 **1.1.0**；本次 SDK 升级无需数据库迁移（下方既有原生会话 v2 要求不变）。SSE `tool_end` 与 export `tool_result` 的可选 `durationMs` 是 SDK 实测工具执行时间，不是子 agent 运行时间或模型吞吐；旧记录缺失仍表示未知。轮/turn 计数仍表示实际执行。见 [SDK 边界](docs/pi-sdk-api.md)与[统计契约](docs/usage-measurement.md)。
+Pi SDK 与 pi-ai 固定为 **1.1.0**；本次 SDK 升级无需数据库迁移（下方既有原生会话 v2 要求不变）。SSE `tool_end` 与 export `tool_result` 的可选 `durationMs` 是 SDK 实测工具执行时间，不是子 agent 运行时间或模型吞吐；旧记录缺失仍表示未知。轮/turn 计数仍表示实际执行。usage 快照另含可选的 `currentPrompt`（本次任务每次模型调用之和）与 `subagentTotals`（当前分支子代理模型调用之和，不含在 `sessionTotals` 内）。见 [SDK 边界](docs/pi-sdk-api.md)与[统计契约](docs/usage-measurement.md)。
 
 ## 特性
 
 - 以多用户支持为首要能力。
 - 项目与会话管理作为组织工作与对话的配套能力。
 - HTTP/JSON API 与 Server-Sent Events。
-- 空闲或新会话时，发送/Enter 启动 primary 任务；运行中默认提交 `follow-up` 进入追加队列，没有发送模式选择栏。通过追加条目的「引导」按钮提升为 `steer`。Composer 不提供停止按钮；后台 abort 与程序 API/hooks 能力保留。Web UI 展示服务端权威驻留队列项，支持单条删除，提交通知与队列行分开显示。追加支持文字与图片（不支持文件附件）；准入仅清除提交的快照，保留新草稿/附件。结果未知时绝不自动重发。
+- 空闲或新会话时，发送/Enter 启动 primary 任务；运行中默认提交 `follow-up` 进入追加队列，没有发送模式选择栏。通过追加条目的「引导」按钮提升为 `steer`。可写会话的主请求运行中时，Composer 主按钮切换为停止按钮，用于中止当前任务，Enter 仍提交 `follow-up`；没有可见浮层（弹窗、菜单、Inspector、移动侧栏）时连按两次 Esc（1.5 秒内）也会中止，第一次按下只显示「再按 Esc 中止」；输入法组字中不触发。程序 API/hooks 的 abort 能力不变。Web UI 展示服务端权威驻留队列项，支持单条删除，提交通知与队列行分开显示。追加支持文字与图片（不支持文件附件）；准入仅清除提交的快照，保留新草稿/附件。结果未知时绝不自动重发。
 - 默认 SQLite；显式选择 PostgreSQL。
 - 会话以 Pi JSONL 文件保存，项目、会话与任务状态等信息存入数据库；同一请求重复提交会返回已记录的结果，不重复执行。
 - 基于角色的路由访问控制，默认拒绝：`viewer`、`user`、`operator`、`admin`；允许网段内未单独登记的 IP 默认视为 `user`。
@@ -97,20 +97,22 @@ PI_EXTENSION_PATHS=/absolute/path/to/pi-extension
 
 ### Web UI
 
-Web UI 提供当前会话的子代理列表与只读会话，保留原有主会话侧栏。配合更新后的 `agent-team` 集成，初始任务、实际用户消息（包括已送达的 steer）、助手消息、工具参数/结果和送达记录会独立于 `subagent_wait` 追加保存到主会话 JSONL，刷新或重启后仍可查看。旧记录可能不完整；突发崩溃可能丢失尚未结束的内存流式输出。安装、API、存储边界与验收见[子代理会话与扩展接入](docs/subagent-conversations.md)。
-可选独立 Web UI 通过 `pnpm web` 启动。
+可选独立 Web UI 通过 `pnpm web` 启动。界面采用「稿纸」设计（定义见 [DESIGN.md](DESIGN.md)）：以阅读与专注为中心的极简风格，比例字体承载内容，等宽字体承载结构；`docs/design/` 中的旧参考图仅作历史记录，不再作为设计或验收依据。
 
-重设计分阶段进行：基础和两栏侧边栏／会话区已实现，包括侧栏唯一项目选择、日期分组会话、工具轻卡、统一输入框及单一主题菜单（浅色／深色／跟随系统三项单选），展开、收起及手机侧栏均可操作。所选浅色／深色／跟随系统模式缓存到 localStorage，刷新时恢复。未设置或非法值默认跟随系统，仅此模式响应操作系统变化；存储不可用时仍可在本页切换主题。阶段三 A 已加入引导／追加控件及权威驻留控制队列 UI。Inspector 默认关闭，按需以 380px 右侧栏挤出会话列，无遮罩或焦点陷阱。宽度 ≤600px 时占据可用布局宽度，隐藏但不卸载会话；关闭或 Esc 返回聊天并回焦轨迹入口，草稿不丢失。左侧移动导航仍为独立 overlay 抽屉。单一图标控制 Inspector 展开／收起并保留所选标签，标签按「子代理」、「步骤」（默认）、「系统提示词」、「事件流」排列。步骤按权威快照顺序展示用户消息、思考、助手文本、工具调用及独立工具结果，可展开查看完整内容；系统提示词明确区分当前有效值与创建时快照。来源、刷新行为和历史顺序限制见[会话步骤与 Inspector](docs/session-steps.md)。新增的[控制队列参考图](docs/design/reference-control-queues.png)只引导追加交互，不得覆盖既有 280px 侧栏、26px Logo 或原工具名。参见 [DESIGN.md](DESIGN.md) 和原有[工作区视觉参考](docs/design/reference-gpt-workspace.png)。
+- **对话流**：每条记录占一行三列——左侧时间、`YOU` / `PI` / `SYS` 标签、右侧内容，无消息气泡。内容列在主区（打开 Inspector 时为剩余空间）居中，时间与标签挂在其左侧边距；题头、排队区、Composer 与统计栏与内容列同列，空间不足时退回左对齐。历史条目显示导出记录的时间；实时条目显示本页首次收到它的时间，刷新后以记录时间为准。同一回合内连续的工具调用（及其间的思考）收拢为一个**工作块**：块头显示步数、逐步色条、总耗时与失败数，展开后每步一行（编号、状态、原始工具名、摘要、耗时），点击查看完整参数与结果。运行中的工作块自动展开，回合结束后收起，手动开合优先；折叠只隐藏不卸载，轨迹与 minimap 定位到折叠步骤时会自动展开。思考折叠时显示「思考」与 60 字预览。助手首字到来前，`PI` 行末尾是回复将要使用的流式光标，只补充屏幕上别处没说的事：等待模型时显示「等待模型回复」，已建立的事件流断开时显示「连接中断，正在恢复…」（新会话仍在连接不算断开）；运行中的步骤或思考行已说明 PI 在做什么；中止后的半截回复保留「已中止」标记，历史仅在导出含 `stopReason: "aborted"` 时恢复。
+- **运行态**：题头显示线性图标（同一圆环，环内画出状态）与状态词：「等待运行确认 / 排队中 / 运行中 + 计时 / 已完成、已中止或失败 + 耗时」，终态停留约 4 秒，空闲时不显示；计时只在本页观察到运行开始时显示。运行中浏览器标签标题前加 `▶`，读屏仅播报状态变化。当前会话存在运行中的子代理时，回合末尾显示子代理面板（代理名、真实计时、最近 3 步动作、「打开子代理会话」）。
+- **输入与控制**：空闲时 Enter 发送；运行中 Enter 追加到队列，主按钮变为「■ 中止」，连按两次 Esc（1.5 秒内）同样中止。排队区只显示服务端权威驻留队列，每行可「↑ 改为引导」或删除。
+- **统计栏**：Composer 下方一行三组——做了多少（`2 次任务 · 3 次调用 · 工具 1 次`）、会话用量（含子代理）、缓存命中与费用（`会话 1.3万 tok · 缓存 90% · $0.004`；未计价模型不显示费用）、上下文对窗口的占用（≥80% 显示警示色）。运行中前两组改为本次任务（第几次模型调用、工具数、实时速度、已用 token）。一行放不下时按固定顺序隐藏低优先级项，用量与上下文始终保留。点击打开按口径分组的详情（本次任务、末次模型调用、会话累计、子代理、工具、上下文），口径说明收在 ⓘ 中。
+- **侧栏**：`pi/agent` 字标、新建会话（`N`）、项目切换与会话搜索（`/`）、按今天 / 昨天 / 近 7 天 / 更早分组的会话。行尾 `⋯` 菜单（右键同样打开）提供会话详情、改名、导出与删除；`⋯` 与相对时间共用行尾位置，悬停、键盘聚焦或当前会话时原位替换时间，共享图标跟在标题之后，时间列始终右对齐。Web UI 不提供项目删除（后端 API、路由、RBAC 与客户端 SDK 保留 `deleteProject`）。侧栏默认 272px，可拖宽 200–360px，窄屏为覆盖抽屉。底部「主题」在浅色 / 深色 / 跟随系统间选择，模式缓存在 localStorage 并于刷新时恢复，未设置或非法值默认跟随系统，仅该模式响应系统变化，存储不可用时仍可在本页切换。
+- **键盘**：⌘K 命令面板（新建、搜索、轨迹、侧栏、主题、复制会话 ID、跳转项目与会话）；`?` 查看完整快捷键表（N、/、j/k、⌘I、⌘B、i、e、End、Esc）。单字母快捷键在输入框与可见浮层中不生效。键盘操作时显示焦点，鼠标点击不显示。
+- **Inspector（轨迹）**：题头「轨迹」或 ⌘I 打开；视口 ≥1500px（对话区仍保持舒适的阅读宽度）时随会话默认打开，更窄的屏幕默认关闭（本页内手动开 / 关在切换会话时保留，刷新恢复默认）。以 380px 右侧栏挤压主区，无遮罩；窄屏时占满主区并隐藏（不卸载）对话，关闭后回焦入口且草稿不丢失。标签依次为「子代理」（默认）「步骤」「系统提示词」「事件流」。步骤按权威快照顺序展示用户消息、思考、助手文本、工具调用与独立工具结果；系统提示词区分当前有效值与创建时快照。子代理与步骤在服务端推送 `subagents_changed` / `steps_changed` 时重新读取，不轮询。来源与限制见[会话步骤与 Inspector](docs/session-steps.md)。
+- **子代理会话**：配合更新后的 `agent-team` 集成，初始任务、实际用户消息（含已送达的 steer）、助手消息、工具参数 / 结果与送达记录会独立于 `subagent_wait` 追加保存到主会话 JSONL，刷新或重启后仍可在 Inspector 与只读会话中查看。Inspector 列表每行为状态符号、代理名与紧凑耗时（`2m16s`）；只读会话的信息条显示状态、代理名、模型与耗时，不重复任务文字——任务即第一条，标签为 `主代理`，时间栏在时间下附注其类型（初始任务 / 引导，即 steer）。子代理会话每一行都显示其消息记录的时间；主代理发出的条目由结构化字段 `hostInput`（`initial` | `steer`）标识，而不是解析 `sourceLabel`。旧记录可能不完整；突发崩溃可能丢失尚未结束的内存流式输出。见[子代理会话与扩展接入](docs/subagent-conversations.md)。
 
-已批准的[项目切换参考](docs/design/project-switcher-reference.png)将常驻项目行精简为左侧项目名称紧邻 chevron 的一体触发器（x16）与右侧搜索按钮，移除装饰性 folder 图标与常驻「+」按钮。项目下拉提供带左侧对勾的项目选择列表、分隔线以及底部「+ 新建项目」展开创建表单。Web UI 明确不做项目删除（后端 API、路由、RBAC 及客户端 SDK 完整保留 `deleteProject` 能力）。搜索在项目行下方展开，安全高亮纯文本标题匹配，无结果可清空；清空保留输入展开，关闭或切项目均清空并退出搜索。会话重命名／导出／删除仍可用。侧栏默认 280px，可拖宽 180–400px，保留 rail／drawer 恢复及手机 44px 触控。隔离 workspace 测试覆盖这些交互、几何及 1440/1280/390px 明暗 App 截图；参考证据写入 `/tmp/pi-sidebar-v5-final`。这不代表生产部署或真机键盘已验收。
+实现基础：不含 Preflight 的 Tailwind v4（`ui:` 前缀，仅扫描 `web/src/components/ui`）与本地维护的 Radix 基础组件；主题令牌位于 `web/src/styles/tokens.css`，Portal 共用；字体为随构建打包的 IBM Plex Sans / Mono（latin 子集，`web/src/styles/fonts.css`），不访问外网，中文使用系统字体。圆角同样是令牌：控件 4px、浮层 6px 小圆角，页面结构保持直角。固定文案、无障碍标签与前端错误消息统一放在 `web/src/i18n/zh-CN.ts`，用户与服务端内容、模型 ID、工具名与协议字段保留原值；数字、日期与单位（`1.3万`、`95%`、`$0.004`、`tok/s`）只在 `web/src/i18n/format.ts` 中按语言对象的 `locale` 与 `units` 格式化。字号、圆角与本地化格式各有源码守护测试。目前仅中文。模型面板打开时当前模型滚入可见区并保留搜索焦点；思考级别去重后按 `off → minimal → low → medium → high → xhigh → max` 排列，未知级别排在末尾。
 
-工具卡保留正常参数／结果展开及流式更新，不再提供原始数据查看／复制操作、专用检查弹窗或 footer 占位。协议数据、事件日志、代码复制及共用统计／超大 diff 弹窗不变。可运行 `volta run pnpm --dir web exec playwright test --config playwright.workspace.config.ts` 验证；展开工具卡截图位于 `web/test-results/workspace/tool-expanded-no-footer.png`。
+导航使用 `/p/:projectId` 表示项目起始态，`/p/:projectId/s/:sessionId` 表示会话。显式 URL 优先于最近选择，会话归属通过服务端授权元数据校验。返回 / 前进和刷新恢复导航，不恢复未发送草稿或附件。空项目可能在刷新后从过滤的项目列表中消失。独立 Web 托管服务只应为前端导航路径提供 SPA 入口，不能兜底 `/v1`、SSE 或缺失资源；Fastify 不托管 Web UI。生产深链接兜底仍需部署验收。
 
-UI 基础采用不含 Preflight 的 Tailwind v4、`ui:` 前缀工具类及本地维护的 Radix 基础组件。全局主题 token 位于 `web/src/styles/tokens.css`，按 `[data-ui]` 启用的别名与 Portal 共用这些 token。业务组件保留既有数据契约，使用系统字体。工具类目前仅扫描 `web/src/components/ui`，其他区域接入时需显式扩展扫描范围。固定 UI 文案、无障碍标签、提示及前端校验／错误消息统一使用 `web/src/i18n/zh-CN.ts` 中的中文语言对象，按功能分组，动态文案使用函数。Thinking／Thought 显示为“正在思考”／“思考过程”，并提供中文展开／收起提示。用户及服务端内容、模型 ID、工具名称与协议字段保留原值。目前仅使用中文，尚未实现语言切换。 模型面板打开时会将当前模型滚到可见区，并保留搜索焦点。可用思考级别去重后按 `off → minimal → low → medium → high → xhigh → max` 排列；未来未知级别仍保留在末尾。选中项显示强调色描边及较高字重。 助手正文首字到来前，回复区域显示明确等待提示，并区分等待运行确认、思考、工具执行及断线状态。中止后的半截回复保留“已中止”标记，发送下一轮后仍可见；历史仅在导出包含明确的 `stopReason: "aborted"` 证据时恢复该标记。
-
-导航使用 `/p/:projectId` 表示项目起始态，`/p/:projectId/s/:sessionId` 表示会话。显式 URL 优先于最近选择，会话归属通过服务端授权元数据校验。返回／前进和刷新恢复导航，不恢复未发送草稿或附件。空项目可能在刷新后从过滤的项目列表中消失。独立 Web 托管服务只应为前端导航路径提供 SPA 入口，不能兜底 `/v1`、SSE 或缺失资源；Fastify 不托管 Web UI。生产深链接兜底仍需部署验收。
-
-验证命令：`pnpm --filter web test`、`pnpm --filter web build`、`pnpm --dir web exec playwright test --config playwright.ui-foundation.config.ts`（隔离 mock／fixture，无需真实 Agent）。基础浏览器测试覆盖键盘／焦点交互，并对桌面／手机、两种主题下的空态与历史会话比较基础样式开关前后的截图；这验证样式隔离，不代表与参考稿逐像素一致。运行 `pnpm --dir web exec playwright test --config playwright.workspace.config.ts` 可复验新版工作区 fixture 并生成截图。运行 `volta run pnpm --dir web exec playwright test --config playwright.steps.config.ts` 可验证 Inspector 组件及完整 App 的 mock API 接线。真机软键盘、200% 缩放及完整异常状态矩阵仍待进一步验收。
+验证命令：`pnpm --filter web test`、`pnpm --filter web build`，以及 `web/` 下的 Playwright 用例（如 `pnpm --dir web exec playwright test --config playwright.workspace.config.ts`，使用隔离 mock / fixture，无需真实 Agent）。真机软键盘、200% 缩放及完整异常状态矩阵仍待进一步验收。
 
 ## 部署
 内网部署请按[运维文档](docs/operations.md)完成安装、配置和启动检查。
@@ -131,7 +133,7 @@ UI 基础采用不含 Preflight 的 Tailwind v4、`ui:` 前缀工具类及本地
 | `PATCH` / `DELETE` | `/v1/sessions/:id` | 重命名或逻辑删除会话 |
 | `PATCH` | `/v1/sessions/:id/config` | 修改模型/思考配置 |
 | `POST` | `/v1/sessions/:id/messages` | 提交提示词（必须提供 `requestId`） |
-| `GET` | `/v1/sessions/:id/events` | SSE；viewer 对无 live runtime 的会话收到 `204`。所有与 turn 相关的事件都携带产生它们的 `requestId`（`text_delta`、`thinking_delta`、`tool_start`、`tool_update`、`tool_end`、`status`、`usage`、`queued`、`error`、`completed`、`aborted`） |
+| `GET` | `/v1/sessions/:id/events` | SSE；viewer 对无 live runtime 的会话收到 `204`。所有与 turn 相关的事件都携带产生它们的 `requestId`（`text_delta`、`thinking_delta`、`tool_start`、`tool_update`、`tool_end`、`status`、`usage`、`queued`、`error`、`completed`、`aborted`）。会话级 `steps_changed` 与 `subagents_changed`（合并发送，不带 `requestId`）通知客户端重新读取步骤与子代理 |
 | `POST` | `/v1/sessions/:id/steer` | 引导运行中的任务；带关联身份的请求返回空 `202`，消费由 SSE 确认，HTTP 准入不代表消费。见[消费确认](docs/steering-confirmation.md) |
 | `POST` | `/v1/sessions/:id/follow-ups` | 排队追加 follow-up；带关联身份时准入返回空 `202`，旧版纯文本请求返回空 `204` |
 | `GET` | `/v1/sessions/:id/control-queue` | 读取驻留引导/追加项的权威快照 |
@@ -232,7 +234,7 @@ pnpm --filter web build
 pnpm run e2e
 ```
 
-`pnpm run e2e` 使用本机已安装的 Chrome 顺序运行分组，保留已有 skip 守卫，默认排除长会话性能与最近会话恢复测试。rich-app/start-state 的 12 个测试在独立 rich 组使用隔离 mock 端口 5189/8089 执行；只有该组的测试进程及服务设置 `MOCK_SCENARIO=rich`。其它组和全量基线 discovery 显式清空该变量，即使调用者环境中已设置。失败不阻止后续组；原生 Playwright JSON 报告及汇总（通过/失败/跳过/未执行）保存在启动时打印的独立临时目录。使用 `pnpm run e2e -- --list` 可核验分组的 Playwright discovery，不启动服务或执行测试。
+`pnpm run e2e` 使用本机已安装的 Chrome 并发运行分组（默认取 CPU 核数的一半，最多 4 组；设置 `PI_E2E_CONCURRENCY=1` 则逐组运行）。每组使用独立端口，并由单元测试保证不冲突，各组不会共用服务；保留已有 skip 守卫，默认排除长会话性能与最近会话恢复测试。rich-app/start-state 的 11 个测试在独立 rich 组使用隔离 mock 端口 5226/8126 执行；只有该组的测试进程及服务设置 `MOCK_SCENARIO=rich`。其它组和全量基线 discovery 显式清空该变量，即使调用者环境中已设置。某组失败不影响其它组。通过的组只输出一行，失败的组输出完整日志；每组的日志（`output.log`）、原生 Playwright JSON 报告及汇总（通过/失败/跳过/未执行）保存在启动时打印的独立临时目录。使用 `pnpm run e2e -- --list` 可核验分组的 Playwright discovery，不启动服务或执行测试。
 
 专项离线命令与 PostgreSQL 门禁见 [docs/operations.md](docs/operations.md)、[docs/postgres-podman-test.md](docs/postgres-podman-test.md)和 `package.json`。
 

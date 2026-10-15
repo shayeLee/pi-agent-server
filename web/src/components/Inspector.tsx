@@ -15,7 +15,7 @@ import { useFollowBottom } from "../hooks/useFollowBottom.js";
 export type InspectorTab = 'steps' | 'systemPrompt' | 'events' | 'subagents';
 const TABS = [
   { id: "subagents", label: "子代理" },
-  { id: "steps", label: zhCN.trace.title },
+  { id: "steps", label: zhCN.trace.steps },
   { id: "systemPrompt", label: zhCN.trace.systemPrompt },
   { id: "events", label: zhCN.trace.events },
 ] as const;

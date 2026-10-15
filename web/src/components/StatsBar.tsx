@@ -1,122 +1,213 @@
 import { zhCN } from "../i18n/zh-CN.js";
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 import type { ChatState, TimelineItem, UsageStats, UsageTokens } from "pi-agent-server/client";
-import { formatDuration, formatTokens, rawMetric, validMetric } from "../stats-format.js";
+import { cacheShare, rawMetric, validMetric } from "../stats-format.js";
+import { formatCompact, formatDuration, formatPercent, formatSpeed, formatTokens, formatUsd } from "../i18n/format.js";
 import { Icon } from "./Icon.js";
 import { Modal } from "./Modal.js";
-const compact = (value: number) => new Intl.NumberFormat("en-US", { notation: "compact", maximumSignificantDigits: 3 }).format(value);
 
-export type StatsBarProps = { stats: UsageStats | null; connected: boolean; timeline: TimelineItem[]; pending?: boolean; modelOutput?: ChatState["modelOutput"]; activeTools?: boolean };
-type Metric = { id: string; label: string; value: unknown; unit?: string };
-const tokenMetrics = (tokens: UsageTokens, prefix = ""): Metric[] => [
-  { id: `${prefix}input`, label: zhCN.stats.input, value: tokens.input },
-  { id: `${prefix}output`, label: zhCN.stats.output, value: tokens.output },
-  { id: `${prefix}cache-read`, label: zhCN.stats.cacheRead, value: tokens.cacheRead },
-  { id: `${prefix}cache-write`, label: zhCN.stats.cacheWrite, value: tokens.cacheWrite },
-  { id: `${prefix}tokens`, label: zhCN.stats.total, value: tokens.totalTokens },
-  { id: `${prefix}cost`, label: zhCN.stats.costEstimate, value: tokens.costUsdEstimate, unit: "USD" },
-];
-function Metrics({ metrics, source }: { metrics: Metric[]; source: string }) {
-  return metrics.filter(m => validMetric(m.value)).map(({ id, label, value, unit }) => {
-    const n = value as number;
-    const formatted = unit === zhCN.stats.milliseconds ? formatDuration(n) : unit === "USD" ? `${n === 0 ? "0" : n < 0.001 ? n.toPrecision(2) : n.toLocaleString("en-US", { maximumSignificantDigits: 4 })} USD` : `${formatTokens(n)}${unit ? ` ${unit}` : ""}`;
-    return <span key={id} className="stat-item" data-testid={`stat-${id}`} title={`${label}：${rawMetric(n)} ${unit ?? "tokens"}。${source}`}>
-      {label} {formatted}
-    </span>;
-  });
+/** Context occupancy from which the summary warns (DESIGN.md §3.1). */
+export const CONTEXT_WARN_PERCENT = 80;
+
+/**
+ * Summary items given up, in this order, while the bar does not fit on one line. The headline usage
+ * and the context never drop.
+ */
+export const SUMMARY_DROP_ORDER = ["tools", "task-tools", "session-cache", "calls", "session-cost", "tasks", "live-speed", "current-call"];
+
+/** `streamLost`: the event stream dropped and is being retried (not merely still connecting). */
+export type StatsBarProps = {
+  stats: UsageStats | null; streamLost?: boolean; timeline: TimelineItem[]; pending?: boolean;
+  modelOutput?: ChatState["modelOutput"]; runProgress?: ChatState["runProgress"]; activeTools?: boolean;
+};
+
+type ToolItem = Extract<TimelineItem, { kind: "tool" }>;
+const tools = (items: TimelineItem[]) => items.filter((item): item is ToolItem => item.kind === "tool");
+const count = formatCompact;
+/** A zero estimate for a model with traffic means it has no price configured, not that it was free. */
+const priced = (tokens: UsageTokens | null | undefined) => validMetric(tokens?.costUsdEstimate) && (tokens.costUsdEstimate > 0 || tokens.totalTokens === 0);
+const costText = (tokens: UsageTokens) => priced(tokens) ? formatUsd(tokens.costUsdEstimate!) : validMetric(tokens.costUsdEstimate) ? zhCN.stats.unpriced : null;
+
+type Row = { id: string; label: string; value: ReactNode; title?: string };
+function tokenRows(tokens: UsageTokens | null | undefined, prefix: string): Row[] {
+  if (!tokens) return [];
+  const rows: Row[] = [];
+  if (validMetric(tokens.totalTokens)) rows.push({ id: `${prefix}tokens`, label: zhCN.stats.usage, value: formatTokens(tokens.totalTokens), title: zhCN.units.exactTokens(rawMetric(tokens.totalTokens)) });
+  const parts = [tokens.input, tokens.output, tokens.cacheRead, tokens.cacheWrite];
+  if (parts.every(validMetric)) rows.push({ id: `${prefix}breakdown`, label: zhCN.stats.breakdown, value: zhCN.stats.breakdownValue(...parts.map(n => formatCompact(n!)) as [string, string, string, string]) });
+  const share = cacheShare(tokens.input, tokens.cacheRead, tokens.cacheWrite);
+  if (share !== null) rows.push({ id: `${prefix}cache-hit`, label: zhCN.stats.cacheHit, value: formatPercent(share) });
+  const cost = costText(tokens);
+  if (cost) rows.push({ id: `${prefix}cost`, label: zhCN.stats.cost, value: cost, title: validMetric(tokens.costUsdEstimate) ? zhCN.units.exactUsd(rawMetric(tokens.costUsdEstimate)) : undefined });
+  return rows;
 }
-export function StatsBar({ stats, timeline, connected, pending = false, modelOutput, activeTools }: StatsBarProps) {
+
+function Section({ id, title, hint, rows }: { id: string; title: ReactNode; hint: string; rows: Row[] }) {
+  if (!rows.length) return null;
+  return <section className="stats-section" data-testid={`stats-section-${id}`}>
+    <h3>{title}<span className="stats-hint" title={hint} aria-label={hint} role="img"><Icon name="info" size={14} /></span></h3>
+    <dl>{rows.map(row => <div key={row.id} className="stats-row" data-testid={`stat-${row.id}`}>
+      <dt>{row.label}</dt><dd title={row.title}>{row.value}</dd>
+    </div>)}</dl>
+  </section>;
+}
+
+/**
+ * Under the Composer (DESIGN.md §3.1): what the session has done, what it has cost, and how full the
+ * context is. While a task runs the left and middle groups follow that task instead.
+ */
+export function StatsBar({ stats, timeline, streamLost = false, pending = false, modelOutput, runProgress, activeTools }: StatsBarProps) {
   const [details, setDetails] = useState(false);
+  const summaryRef = useRef<HTMLButtonElement>(null);
+  // Drop low-priority items until the line fits; re-run after every render and on resize.
+  useLayoutEffect(() => {
+    const summary = summaryRef.current;
+    if (!summary) return;
+    const fit = () => {
+      for (const element of summary.querySelectorAll("[data-dropped]")) element.removeAttribute("data-dropped");
+      for (const id of SUMMARY_DROP_ORDER) {
+        if (summary.scrollWidth <= summary.clientWidth) break;
+        const item = summary.querySelector<HTMLElement>(`.stats-item-${id}`);
+        if (!item) continue;
+        item.setAttribute("data-dropped", "");
+        const cluster = item.closest(".stats-cluster");
+        if (cluster && !cluster.querySelector(".stats-item:not([data-dropped])")) cluster.setAttribute("data-dropped", "");
+      }
+    };
+    fit();
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(fit);
+    observer.observe(summary);
+    return () => observer.disconnect();
+  });
   const [now, setNow] = useState(() => performance.now());
   useEffect(() => {
     setNow(performance.now());
-    if (!pending || !connected || !modelOutput) return;
+    if (!pending || streamLost || !modelOutput) return;
     const timer = setTimeout(() => setNow(performance.now()), Math.max(0, modelOutput.receivedAt + 2001 - performance.now()));
     return () => clearTimeout(timer);
-  }, [pending, connected, modelOutput]);
-  const active = connected && modelOutput && Math.max(now, performance.now()) - modelOutput.receivedAt < 2000;
-  const tools = activeTools ?? timeline.some(item => item.kind === "tool" && !item.call.done);
-  const liveLabel = !connected ? zhCN.stats.disconnected : active ? zhCN.stats.recentOutput : tools ? zhCN.stats.toolRunning : zhCN.stats.waiting;
-  const response = stats?.lastResponse;
-  const last: Metric[] = stats ? response ? [
-    ...tokenMetrics(response),
-    { id: "cache-hit", label: zhCN.stats.cacheHit, value: response.cacheHitPercent, unit: "%" },
-    { id: "speed", label: zhCN.stats.speed, value: !pending && validMetric(response.speed?.generationDurationMs) && response.speed.generationDurationMs >= 10 ? response.speed.tokensPerSecond : null, unit: "tok/s" },
-  ] : stats.lastResponse === undefined ? [
-    { id: "input", label: zhCN.stats.input, value: stats.promptTokens },
-    { id: "output", label: zhCN.stats.output, value: stats.completionTokens },
-    { id: "tokens", label: zhCN.stats.total, value: stats.totalTokens },
-  ] : [] : [];
-  if (stats) last.push(
-    { id: "duration", label: zhCN.stats.requestDuration, value: stats.durationMs, unit: zhCN.stats.milliseconds },
-    { id: "ttft", label: zhCN.stats.firstDelta, value: validMetric(stats.durationMs) && stats.ttftMs < stats.durationMs ? stats.ttftMs : null, unit: zhCN.stats.milliseconds },
-  );
+  }, [pending, streamLost, modelOutput]);
+  const active = !streamLost && modelOutput && Math.max(now, performance.now()) - modelOutput.receivedAt < 2000;
+
+  const allTools = tools(timeline);
+  let lastUser = timeline.length - 1;
+  while (lastUser >= 0 && !(timeline[lastUser]!.kind === "message" && (timeline[lastUser] as { role?: string }).role === "user")) lastUser--;
+  const taskTools = tools(timeline.slice(lastUser + 1));
+  const toolsRunning = activeTools ?? taskTools.some(item => !item.call.done);
   const execution = stats?.execution;
   const loops = execution?.coverage === "complete" ? execution.totalLoops : execution?.recordedLoops;
   const turns = execution?.coverage === "complete" ? execution.totalTurns : execution?.recordedTurns;
-  const executionSource = zhCN.stats.executionScope;
+  const partial = execution?.coverage === "recorded" ? zhCN.stats.partial : "";
   const totals = stats?.sessionTotals;
+  const subagents = stats?.subagentTotals;
+  const prompt = stats?.currentPrompt;
   const context = stats?.context;
-  const source = zhCN.stats.lastResponseScope;
-  const total = response?.totalTokens;
-  const speed = last.find(m => m.id === "speed")?.value;
-  const toolCount = timeline.filter(i => i.kind === "tool").length;
-  const liveSource = zhCN.stats.activityScope(liveLabel);
-  const activityMetrics: { id: string; content: ReactNode }[] = [];
-  if (validMetric(loops)) activityMetrics.push({ id: "loops", content: <span data-testid="stat-turns" title={executionSource}>{compact(loops)}  {zhCN.stats.roundUnit}</span> });
-  if (validMetric(turns)) activityMetrics.push({ id: "turns", content: <span data-testid="stat-model-turns" title={executionSource}>{compact(turns)} turn</span> });
-  if (validMetric(toolCount) && toolCount > 0) activityMetrics.push({ id: "tools", content: <span data-testid="stat-steps" title={zhCN.stats.toolCountScope}>{zhCN.errors.toolFallback} {compact(toolCount)}  {zhCN.stats.toolUnit}</span> });
-  if (pending && active && validMetric(modelOutput?.tokensPerSecondEstimate)) activityMetrics.push({ id: "live-speed", content: <span data-testid="stat-live-speed" title={liveSource}>~{compact(modelOutput.tokensPerSecondEstimate)} tok/s</span> });
-  else if (!pending && validMetric(speed)) activityMetrics.push({ id: "speed", content: <span data-testid="stat-summary-speed" title={source}>{compact(speed)} tok/s</span> });
-  const contextMetrics: Metric[] = context ? [
-    { id: "context-percent", label: zhCN.stats.occupied, value: context.percent, unit: "%" },
-    { id: "context-tokens", label: "tokens", value: context.tokens },
-    { id: "context-window", label: zhCN.stats.window, value: context.window },
+  const speed = modelOutput?.tokensPerSecondEstimate;
+
+  // Left: what was done.
+  const activity: { id: string; text: string }[] = [];
+  if (pending) {
+    if (runProgress) activity.push({ id: "current-call", text: zhCN.stats.currentCall(count(runProgress.calls)) });
+    if (taskTools.length) activity.push({ id: "task-tools", text: zhCN.stats.tools(count(taskTools.length)) });
+    if (active && validMetric(speed)) activity.push({ id: "live-speed", text: formatSpeed(speed, true) });
+  } else {
+    if (validMetric(loops)) activity.push({ id: "tasks", text: zhCN.stats.tasks(count(loops)) });
+    if (validMetric(turns)) activity.push({ id: "calls", text: zhCN.stats.calls(count(turns)) });
+    if (allTools.length) activity.push({ id: "tools", text: zhCN.stats.tools(count(allTools.length)) });
+  }
+  // Middle: what it cost. Running: this task so far; otherwise the whole session.
+  const usage: { id: string; text: string }[] = [];
+  if (pending && validMetric(runProgress?.promptTokens)) usage.push({ id: "task-tokens", text: `${zhCN.stats.current} ${formatTokens(runProgress.promptTokens)}` });
+  else if (validMetric(totals?.totalTokens)) {
+    const share = validMetric(subagents?.totalTokens) && subagents.totalTokens > 0 ? `（${zhCN.stats.subagentShare(formatCompact(subagents.totalTokens))}）` : "";
+    usage.push({ id: "session-tokens", text: `${zhCN.stats.session} ${formatTokens(totals.totalTokens)}${share}` });
+    const hit = cacheShare(totals.input, totals.cacheRead, totals.cacheWrite);
+    if (hit !== null) usage.push({ id: "session-cache", text: `${zhCN.stats.cache} ${formatPercent(hit)}` });
+    const cost = priced(totals) ? totals.costUsdEstimate! + (priced(subagents) ? subagents!.costUsdEstimate! : 0) : null;
+    if (cost !== null && cost > 0) usage.push({ id: "session-cost", text: formatUsd(cost) });
+  }
+  // Right: how full the context is.
+  const contextText = validMetric(context?.tokens) && validMetric(context?.window)
+    ? `${formatCompact(context.tokens)} / ${formatCompact(context.window)}` : validMetric(context?.percent) ? formatPercent(context.percent) : null;
+  const nearFull = validMetric(context?.percent) && context.percent >= CONTEXT_WARN_PERCENT;
+  const contextTitle = [validMetric(context?.percent) ? `${zhCN.stats.occupied} ${formatPercent(context.percent)}` : "", nearFull ? zhCN.stats.contextNearFull : ""].filter(Boolean).join("。");
+
+  // Separators come from CSS, so they follow whichever items are still shown.
+  const joined = (items: { id: string; text: string }[]) => items.map(item => <span key={item.id} className={`stats-item stats-item-${item.id}`}>
+    <span data-testid={`stat-summary-${item.id}`}>{item.text}</span></span>);
+
+  // Details.
+  const state = pending ? streamLost ? zhCN.stats.disconnected : active ? zhCN.stats.recentOutput : toolsRunning ? zhCN.stats.toolRunning : zhCN.stats.waiting : null;
+  const calls = pending ? runProgress?.calls : prompt?.calls;
+  const taskRows: Row[] = [
+    ...(state ? [{ id: "task-state", label: zhCN.stats.state, value: state }] : []),
+    ...(validMetric(calls) ? [{ id: "task-calls", label: zhCN.stats.modelCalls, value: zhCN.stats.count(count(calls)) }] : []),
+    ...(lastUser >= 0 ? [{ id: "task-tools", label: zhCN.stats.toolCalls, value: zhCN.stats.count(count(taskTools.length)) }] : []),
+    ...(pending
+      ? validMetric(runProgress?.promptTokens) ? [{ id: "task-tokens", label: zhCN.stats.usage, value: formatTokens(runProgress.promptTokens) }] : []
+      : tokenRows(prompt, "task-")),
+    ...(!pending && validMetric(stats?.durationMs) ? [{ id: "task-duration", label: zhCN.stats.duration, value: formatDuration(stats.durationMs) }] : []),
+    ...(!pending && validMetric(stats?.ttftMs) && validMetric(stats?.durationMs) && stats.ttftMs < stats.durationMs
+      ? [{ id: "task-ttft", label: zhCN.stats.firstDelta, value: formatDuration(stats.ttftMs) }] : []),
+  ];
+  const response = stats?.lastResponse;
+  const responseSpeed = response?.speed;
+  // Older servers send only the three legacy totals.
+  const legacy = response === undefined && stats && [stats.promptTokens, stats.completionTokens, stats.totalTokens].some(validMetric)
+    ? { input: stats.promptTokens, output: stats.completionTokens, cacheRead: null, cacheWrite: null, totalTokens: stats.totalTokens, costUsdEstimate: null } : null;
+  const lastRows: Row[] = [
+    ...tokenRows(response ?? legacy, "last-"),
+    ...(validMetric(responseSpeed?.tokensPerSecond) ? [{ id: "last-speed", label: zhCN.stats.speed, value: formatSpeed(responseSpeed.tokensPerSecond) }] : []),
+  ];
+  const userMessages = timeline.filter(item => item.kind === "message" && item.role === "user").length;
+  const sessionRows: Row[] = [
+    ...(validMetric(loops) ? [{ id: "session-tasks", label: zhCN.stats.taskCount, value: zhCN.stats.count(count(loops)) + partial }] : []),
+    ...(validMetric(turns) ? [{ id: "session-calls", label: zhCN.stats.modelCalls, value: zhCN.stats.count(count(turns)) + partial }] : []),
+    { id: "session-messages", label: zhCN.stats.userMessages, value: zhCN.stats.messageCount(count(userMessages)) },
+    ...tokenRows(totals, "session-"),
+  ];
+  const subagentRows: Row[] = subagents ? [
+    { id: "subagent-runs", label: zhCN.stats.runs, value: zhCN.stats.runCount(count(subagents.runs)) },
+    { id: "subagent-calls", label: zhCN.stats.modelCalls, value: zhCN.stats.count(count(subagents.calls)) },
+    ...tokenRows(subagents, "subagent-"),
   ] : [];
-  const hasLeft = activityMetrics.length > 0 || validMetric(total);
-  const hasRight = validMetric(context?.percent);
+  const byName = new Map<string, number>();
+  for (const item of allTools) byName.set(item.call.toolName, (byName.get(item.call.toolName) ?? 0) + 1);
+  const failures = allTools.filter(item => item.call.done && item.call.isError).length;
+  const toolTime = allTools.reduce((sum, item) => sum + (validMetric(item.call.durationMs) ? item.call.durationMs : 0), 0);
+  const toolRows: Row[] = allTools.length ? [
+    { id: "tool-count", label: zhCN.stats.toolCalls, value: zhCN.stats.count(count(allTools.length)) },
+    ...(failures ? [{ id: "tool-failures", label: zhCN.stats.failures, value: zhCN.stats.count(count(failures)) }] : []),
+    ...(toolTime > 0 ? [{ id: "tool-time", label: zhCN.stats.toolTime, value: formatDuration(toolTime) }] : []),
+    { id: "tool-distribution", label: zhCN.stats.distribution, value: [...byName].sort((a, b) => b[1] - a[1]).map(([name, n]) => `${name} ${count(n)}`).join(" · ") },
+  ] : [];
+  const contextRows: Row[] = [
+    ...(contextText && validMetric(context?.tokens) ? [{ id: "context-used", label: zhCN.stats.used, value: contextText }] : []),
+    ...(validMetric(context?.percent) ? [{ id: "context-percent", label: zhCN.stats.occupied, value: formatPercent(context.percent) }] : []),
+  ];
+
   return <><div className="stats-bar" data-testid="stats-bar">
-    <button type="button" className="stats-summary" aria-label={zhCN.stats.detailsLabel} aria-haspopup="dialog" onClick={() => setDetails(true)}>
-      {hasLeft && <span className="stats-group-left">
-        {activityMetrics.length > 0 && <span className="stats-cluster">
-          <Icon name="activity" />
-          {activityMetrics.map((metric, index) => <span key={metric.id}>{index > 0 && " · "}{metric.content}</span>)}
-        </span>}
-        {validMetric(total) && <span className="stats-cluster" title={zhCN.stats.totalTokensHint(rawMetric(total), source, pending ? zhCN.stats.previousSnapshot : "")}><Icon name="tokens" /><span data-testid="stat-summary-tokens">{compact(total)} tok</span>
-          {validMetric(response?.cacheHitPercent) && <span className="stats-cache" title={zhCN.stats.cacheHitHint(rawMetric(response!.cacheHitPercent!))}>{zhCN.stats.cacheHitLabel} {compact(response!.cacheHitPercent!)}%</span>}
-        </span>}
+    <button ref={summaryRef} type="button" className="stats-summary" aria-label={zhCN.stats.detailsLabel} aria-haspopup="dialog" data-running={pending ? "true" : undefined} onClick={() => setDetails(true)}>
+      {(activity.length > 0 || usage.length > 0) && <span className="stats-group-left">
+        {activity.length > 0 && <span className="stats-cluster stats-activity"><Icon name="activity" /><span>{joined(activity)}</span></span>}
+        {usage.length > 0 && <span className="stats-cluster stats-usage"><Icon name="tokens" /><span>{joined(usage)}</span></span>}
       </span>}
-      {hasRight && <span className="stats-group-right">
-        <span className="stats-cluster" title={zhCN.stats.contextHint(rawMetric(context!.percent!))}>
-          <Icon name="context" />
-          <span>{zhCN.stats.context} <span data-testid="stat-summary-context">{compact(context!.percent!)}%</span></span>
+      {contextText && <span className="stats-group-right">
+        <span className="stats-cluster stats-context" data-warn={nearFull ? "true" : undefined} title={contextTitle || undefined}>
+          <Icon name="context" /><span data-testid="stat-summary-context">{zhCN.stats.context} {contextText}</span>
         </span>
       </span>}
     </button>
   </div>
   <Modal open={details} onClose={() => setDetails(false)} title={zhCN.stats.details}>
     <div className="stats-detail-content">
-    {pending && <p title={liveSource}>{liveSource}</p>}
-    <div className="stat-group">
-      <span className="stat-item" title={executionSource}>{validMetric(loops) ? rawMetric(loops) : zhCN.stats.unknown}  {zhCN.stats.roundsAndTurns} {validMetric(turns) ? rawMetric(turns) : zhCN.stats.unknown} turn</span>
-      <span className="stat-item">{zhCN.steps.user} {timeline.filter(i => i.kind === "message" && i.role === "user").length}  {zhCN.steps.countUnit}</span>
-      <span className="stat-separator" />
-      <span className="stat-item" title={zhCN.stats.loadedToolsScope}>{timeline.filter(i => i.kind === "tool").length}  {zhCN.stats.toolCalls}</span>
-    </div>
-    <p>{executionSource} {execution?.coverage === "recorded" ? zhCN.stats.partialHistory : execution?.coverage === "complete" ? zhCN.stats.completeHistory : zhCN.stats.unknownExecutionCount}  {zhCN.stats.toolScope}</p>
-    {last.some(m => validMetric(m.value)) && <div className="stat-group">
-      <span data-testid="stat-scope" title={source}>{zhCN.stats.lastResponse}{pending ? zhCN.stats.previousNonLive : ""}</span>
-      <Metrics metrics={last} source={source} />
-    </div>}
-    {totals && tokenMetrics(totals).some(m => validMetric(m.value)) && <section className="stat-details">
-      <h3 data-testid="stat-session-scope" title={zhCN.stats.allEntriesScope}>{zhCN.stats.sessionTotals}</h3>
-      <div className="stat-group"><Metrics metrics={tokenMetrics(totals, "session-")} source={zhCN.stats.sessionTotalsHint} /></div>
-    </section>}
-    {contextMetrics.some(m => validMetric(m.value)) && <div className="stat-group">
-      <span title={zhCN.stats.contextScope}>{zhCN.stats.contextTitle}</span>
-      <Metrics metrics={contextMetrics} source={zhCN.stats.contextDetails} />
-    </div>}
+      <Section id="task" title={zhCN.stats.currentTask} hint={zhCN.stats.currentTaskHint} rows={taskRows} />
+      <Section id="last" title={<>{zhCN.stats.lastCall}{pending && <span className="stats-note">{zhCN.stats.previousRun}</span>}</>} hint={zhCN.stats.lastCallHint} rows={lastRows} />
+      <Section id="session" title={zhCN.stats.sessionTotals} hint={zhCN.stats.sessionTotalsHint} rows={sessionRows} />
+      <Section id="subagents" title={zhCN.stats.subagents} hint={zhCN.stats.subagentsHint} rows={subagentRows} />
+      <Section id="tools" title={zhCN.stats.toolsSection} hint={zhCN.stats.toolsHint} rows={toolRows} />
+      <Section id="context" title={zhCN.stats.context} hint={zhCN.stats.contextHint} rows={contextRows} />
     </div>
   </Modal></>;
 }

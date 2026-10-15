@@ -31,7 +31,7 @@ it.each(["A", "B"])("resumes selection with cursor AND known epoch when the serv
     newlyCreatedIdsRef: { current: new Set() }, historyReadySessionIdsRef: { current: new Set() },
     emptyHistoryIdsRef: { current: new Set() }, eventCursorsRef: { current: new Map() }, usageRevisionRef: { current: new Map() },
     setHistoryReadySessionIds: vi.fn(), setUsageSnapshots: vi.fn(), setInvalidContexts: vi.fn(),
-    onInvalidSession: vi.fn(), setConnected: vi.fn(), onLoad: vi.fn(), rememberFirstPrompt: vi.fn(), onEvent: vi.fn(),
+    onInvalidSession: vi.fn(), setConnection: vi.fn(), onLoad: vi.fn(), rememberFirstPrompt: vi.fn(), onEvent: vi.fn(),
   };
   const hook = renderHook(useSessionStream, { initialProps: options });
   try {
@@ -45,5 +45,47 @@ it.each(["A", "B"])("resumes selection with cursor AND known epoch when the serv
     expect(vi.mocked(options.onEvent).mock.calls.map(call => call[2].requestId)).toEqual(
       epoch === "B" ? ["r100", "r1", "r2", "r3", "r4", "r5"] : ["r100", "r101"],
     );
+  } finally { hook.unmount(); }
+});
+
+function streamOptions(setConnection: (value: unknown) => void): Parameters<typeof useSessionStream>[0] {
+  return {
+    api: new ApiClient({ baseUrl: "" }), activeSessionId: "s1", navigationGeneration: 0,
+    isCurrent: () => true, chatStore: createChatStore(),
+    newlyCreatedIdsRef: { current: new Set(["s1"]) }, historyReadySessionIdsRef: { current: new Set() },
+    emptyHistoryIdsRef: { current: new Set() }, eventCursorsRef: { current: new Map() }, usageRevisionRef: { current: new Map() },
+    setHistoryReadySessionIds: vi.fn(), setUsageSnapshots: vi.fn(), setInvalidContexts: vi.fn(),
+    onInvalidSession: vi.fn(), setConnection, onLoad: vi.fn(), rememberFirstPrompt: vi.fn(), onEvent: vi.fn(),
+  };
+}
+
+it("reports connecting until the stream opens, and reconnecting only after an open stream drops", async () => {
+  let respond!: (response: Response) => void;
+  let finish!: () => void;
+  const fetcher = vi.fn()
+    // A new session's runtime is created on this first request; it answers late.
+    .mockImplementationOnce(() => new Promise<Response>(resolve => { respond = resolve; }))
+    .mockImplementation(() => new Promise<Response>(() => {}));
+  vi.stubGlobal("fetch", fetcher);
+  const states: unknown[] = [];
+  const hook = renderHook(useSessionStream, { initialProps: streamOptions(value => states.push(value)) });
+  try {
+    await waitFor(() => expect(fetcher).toHaveBeenCalledTimes(1));
+    expect(states).toEqual(["connecting"]);
+    respond(new Response(new ReadableStream<Uint8Array>({ start(controller) { finish = () => controller.close(); } })));
+    await waitFor(() => expect(states.at(-1)).toBe("open"));
+    finish();
+    await waitFor(() => expect(states.at(-1)).toBe("reconnecting"));
+    expect(states).toEqual(["connecting", "open", "reconnecting"]);
+  } finally { hook.unmount(); }
+});
+
+it("treats the server's 204 as no live stream, not as a dropped connection", async () => {
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(null, { status: 204 })));
+  const states: unknown[] = [];
+  const hook = renderHook(useSessionStream, { initialProps: streamOptions(value => states.push(value)) });
+  try {
+    await waitFor(() => expect(states.at(-1)).toBe("no-live"));
+    expect(states).not.toContain("reconnecting");
   } finally { hook.unmount(); }
 });

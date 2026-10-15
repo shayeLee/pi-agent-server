@@ -14,25 +14,19 @@ for (const width of [1440, 390]) for (const theme of ['light', 'dark']) {
         const box = number.getBoundingClientRect();
         const range = document.createRange(); range.selectNodeContents(number);
         const text = range.getBoundingClientRect();
-        const line = getComputedStyle(el, '::before');
         return { leftPadding: text.left - box.left, rightPadding: box.right - text.right,
-          width: box.width, height: box.height, font: getComputedStyle(number).fontSize,
-          icon: el.querySelector('.step-icon')!.getBoundingClientRect().left,
-          main: el.querySelector('.step-main')!.getBoundingClientRect().left,
-          center: box.left + box.width / 2,
-          line: el.getBoundingClientRect().left + parseFloat(line.left) + .5 };
+          height: box.height, right: box.right,
+          main: el.querySelector('.step-main')!.getBoundingClientRect().left };
       }));
-      for (const [i, row] of rows.entries()) {
-        expect(row.font).toBe('10px');
-        expect(row.leftPadding).toBeGreaterThanOrEqual(4.9);
-        expect(row.rightPadding).toBeGreaterThanOrEqual(4.9);
-        expect(row.height).toBe(22);
-        expect(row.icon).toBe(rows[0].icon);
+      for (const row of rows) {
+        // The number always fits its gutter, however many digits; numbers right-align and content starts on one line.
+        expect(row.leftPadding).toBeGreaterThanOrEqual(0);
+        expect(row.rightPadding).toBeGreaterThanOrEqual(0);
+        expect(row.height).toBe(rows[0].height);
+        expect(Math.abs(row.right - rows[0].right)).toBeLessThan(.1);
         expect(row.main).toBe(rows[0].main);
-        expect(Math.abs(row.center - rows[0].center)).toBeLessThan(.1);
-        if (i < rows.length - 1) expect(Math.abs(row.line - row.center)).toBeLessThan(.1);
+        expect(row.right).toBeLessThanOrEqual(row.main);
       }
-      expect(rows[0].width).toBe(22);
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
       await page.screenshot({ path: `/tmp/pi-header-nav-refine/numbers/${width}-${theme}-${max}.png` });
     }

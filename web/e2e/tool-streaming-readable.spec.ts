@@ -43,7 +43,7 @@ test.beforeAll(async () => {
     }
     json({ error: `Unexpected fixture path ${path}` }, 404);
   });
-  await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(8097, "127.0.0.1", resolve); });
+  await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(8124, "127.0.0.1", resolve); });
 });
 test.afterAll(async () => { stream?.end(); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); });
 
@@ -56,17 +56,17 @@ test("真实定时 SSE 在完成前显示两次可读快照，最终替换且无
   await expect(card.locator(".tool-call-header")).toHaveAttribute("aria-expanded", "true");
   const output = card.getByTestId("tool-result-text").locator('.code-block[data-language="bash"] pre');
   await expect(output).toHaveText("第一行\n");
-  await expect(page.getByTestId("abort-button")).toHaveCount(0);
+  // While streaming, the stop button is the primary control (restored in b412ef105).
+  await expect(page.getByTestId("abort-button")).toBeVisible();
   await expect(page.locator('.composer-runtime-controls')).toHaveCount(0);
   for (const [theme, width, height] of [["dark", 1400, 900], ["light", 1400, 900], ["dark", 390, 844], ["light", 390, 844]] as const) {
     await page.setViewportSize({ width: 1400, height: 900 });
-    if (await page.getByTestId("app").getAttribute("data-theme") !== theme) await page.getByTestId("theme-toggle").click();
+    await page.emulateMedia({ colorScheme: theme as 'light' | 'dark' });
     await expect(page.getByTestId("app")).toHaveAttribute("data-theme", theme);
     await page.setViewportSize({ width, height });
     await page.waitForTimeout(250);
-    await expect(page.getByTestId('abort-button')).toHaveCount(0);
-    await expect(page.getByTestId('send-button')).toBeInViewport();
-    await page.screenshot({ path: `/tmp/tool-streaming-readable/no-stop-${theme}-${width}.png` });
+    await expect(page.getByTestId('abort-button')).toBeInViewport();
+    await page.screenshot({ path: `/tmp/tool-streaming-readable/streaming-${theme}-${width}.png` });
   }
   expect(finalSent).toBe(false);
   const abortRequest = page.waitForRequest((request) => request.url().endsWith("/abort") && request.method() === "POST");

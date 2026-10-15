@@ -10,6 +10,10 @@ import { ControlQueue, type ControlQueueProps } from "./ControlQueue.js";
 import { CompactionBanner, type CompactionState } from "./CompactionBanner.js";
 import { StatsBar } from "./StatsBar.js";
 import { ChatHeader } from "./ChatHeader.js";
+import { useRunStatus } from "../hooks/useRunStatus.js";
+import { SubagentLivePanel } from "./SubagentLivePanel.js";
+import type { LiveSubagent } from "../hooks/useLiveSubagents.js";
+import type { SessionConnection } from "../hooks/useSessionStream.js";
 import { EmptyState } from "./EmptyState.js";
 import type { SubmissionState, SubmitOutcome, UnsentMessage } from "../attachment-state.js";
 
@@ -26,16 +30,21 @@ export type ChatProps = {
   historyNotice?: string | null;
   streaming: boolean;
   queued: boolean;
+  /** Raw chat phase; drives the header run state (DESIGN.md §5.2). */
+  phase?: import("pi-agent-server/client").ChatPhase;
+  /** The most recent turn ended with an error event. */
+  runFailed?: boolean;
   primaryAwaitingStart?: boolean;
   loadError: string | null;
   models: ModelInfo[];
   thinkingLevels: string[];
   defaultModel: ModelInfo | null;
   defaultThinkingLevel: string;
-  connected: boolean;
+  connection: SessionConnection;
   stats: UsageStats | null;
   compaction?: CompactionState | null;
   modelOutput?: import("pi-agent-server/client").ChatState["modelOutput"];
+  runProgress?: import("pi-agent-server/client").ChatState["runProgress"];
   activeTools?: boolean;
   onSend: (text: string) => void | Promise<boolean>;
   draft?: UnsentMessage;
@@ -60,6 +69,8 @@ export type ChatProps = {
   onAbort?: () => void;
   onFollowUp: (text: string) => void | Promise<boolean>;
   onToggleTrace?: () => void;
+  liveSubagents?: LiveSubagent[];
+  onOpenSubagent?: (runId: string) => void;
   onNavigateTurn?: (timelineId: string) => void;
   traceOpen?: boolean;
   onConfigChange: (config: { modelProvider?: string; modelId?: string; thinkingLevel?: string }) => void;
@@ -78,16 +89,19 @@ export function Chat({
   historyNotice,
   streaming,
   queued,
+  phase,
+  runFailed = false,
   primaryAwaitingStart = false,
   loadError,
   models,
   thinkingLevels,
   defaultModel,
   defaultThinkingLevel,
-  connected,
+  connection,
   stats,
   compaction,
   modelOutput,
+  runProgress,
   activeTools,
   onSend,
   draft,
@@ -112,11 +126,16 @@ export function Chat({
   onAbort,
   onFollowUp,
   onToggleTrace,
+  liveSubagents,
+  onOpenSubagent,
   onNavigateTurn,
   traceOpen,
   onConfigChange,
 }: ChatProps) {
   const bodyRef = useRef<HTMLDivElement>(null);
+  const derivedPhase = phase ?? (queued ? "queued" : primaryAwaitingStart ? "submitting" : streaming ? "streaming" : "idle");
+  const runStatus = useRunStatus(session?.id ?? null, derivedPhase, runFailed);
+  const [abortArmed, setAbortArmed] = useState(false);
 
   // 48px accommodates fractional scroll metrics and small touch movements.
   // Intent lives outside React updates: content growth must not look like scrolling away.
@@ -171,7 +190,7 @@ export function Chat({
 
   const controlsBlocked = Object.values(controlQueueOperations ?? {}).some(operation => operation.status === "pending" || operation.status === "unknown");
   // Real resident items remain visible; an empty control read is not the primary request queue.
-  const showControlQueue = !!controlQueue?.items.length || !!controlQueueError;
+  const showControlQueue = !!controlQueue?.items?.length || !!controlQueueError;
   const hasMessages = timeline.length > 0;
   let lastUserIndex = -1;
   for (let index = timeline.length - 1; index >= 0; index--) {
@@ -181,9 +200,16 @@ export function Chat({
   const currentReply = timeline.slice(lastUserIndex + 1);
   const waitingForReply = (streaming || primaryAwaitingStart) && !queued &&
     !currentReply.some(item => item.kind === "message" && item.role === "assistant" && item.text.trim());
-  const waitingLabel = !connected ? zhCN.stats.disconnected : primaryAwaitingStart ? zhCN.status.submitting
-    : activeTools ? zhCN.stats.toolRunning : currentReply.some(item => item.kind === "thinking" && item.streaming)
-      ? zhCN.chat.thinkingReply : zhCN.chat.waitingReply;
+  // Only a stream that dropped is a problem; a new session's stream is still connecting.
+  const streamLost = connection === "reconnecting";
+  const thinkingLive = currentReply.some(item => item.kind === "thinking" && item.streaming);
+  // DESIGN.md §5.3. The header already says "等待运行确认", and a running step or live thinking
+  // row already shows what PI is doing, so this line only says what nothing else on screen does.
+  const pendingLine = !waitingForReply ? null
+    : streamLost ? <WaitingLine text={zhCN.ledger.reconnecting} warn />
+    : primaryAwaitingStart ? <WaitingLine />
+    : activeTools || thinkingLive ? null
+    : <WaitingLine text={zhCN.ledger.awaitingModel} />;
   const placeholder = zhCN.chat.placeholder;
 
   return (
@@ -191,7 +217,10 @@ export function Chat({
       {session && (
         <ChatHeader
           session={session}
+          cwd={projects?.find(project => project.id === session.projectId)?.cwd ?? null}
           traceOpen={traceOpen ?? false}
+          runStatus={runStatus}
+          abortArmed={abortArmed}
           onToggleTrace={() => onToggleTrace?.()}
         />
       )}
@@ -245,9 +274,10 @@ export function Chat({
             {!hasMessages ? (
               <EmptyState />
             ) : (
-              <Timeline timeline={timeline} />
+              <Timeline key={session.id} timeline={timeline} live={streaming || queued || primaryAwaitingStart} ready={!historyLoading}
+                tail={liveSubagents?.length ? <SubagentLivePanel items={liveSubagents} onOpen={onOpenSubagent} /> : undefined}
+                pending={pendingLine} />
             )}
-            {waitingForReply && <div className="assistant-waiting-status" role="status" data-testid="waiting-reply">{waitingLabel}</div>}
           </div>
         )}
       </div>
@@ -255,16 +285,18 @@ export function Chat({
       </div>
       {session && hasMessages && (
         <div className="chat-latest-row">
+          {/* An icon is enough; while PI is still writing below, it turns accent and drifts (DESIGN.md §3). */}
           {showLatest && (
-            <button type="button" className="chat-latest" aria-label={zhCN.chat.latest} title={zhCN.chat.latest} onClick={goToLatest}>
-              <span className="chat-latest-face" aria-hidden="true"><Icon name="down" /></span>
+            <button type="button" className="chat-latest" data-live={streaming ? "true" : undefined}
+              aria-label={streaming ? zhCN.chat.latestLive : zhCN.chat.latest} title={streaming ? zhCN.chat.latestLive : zhCN.chat.latest} onClick={goToLatest}>
+              <span className="chat-latest-face"><Icon name="down" size={18} /></span>
             </button>
           )}
         </div>
       )}
       {(session || projects !== null) && (
         <div className="chat-footer">
-          <CompactionBanner key={session?.id ?? "no-session"} compaction={compaction} connected={connected} />
+          <CompactionBanner key={session?.id ?? "no-session"} compaction={compaction} streamLost={streamLost} />
           {session && showControlQueue && deleteControl && promoteControl && <ControlQueue items={controlQueue?.items ?? []}
             loading={controlQueueLoading} error={controlQueueError} operations={controlQueueOperations}
             onRefresh={refreshControlQueue} onDelete={deleteControl} onPromote={promoteControl}
@@ -302,12 +334,24 @@ export function Chat({
             onRetrySubmit={onRetrySubmit}
             onConfirmCreation={onConfirmCreation}
             onAbort={hidden ? undefined : onAbort}
+            onAbortArmedChange={setAbortArmed}
             onFollowUp={onFollowUp}
             onConfigChange={onConfigChange}
           />
-          {session && hasMessages && <StatsBar stats={stats} connected={connected} timeline={timeline} pending={streaming || queued} modelOutput={modelOutput} activeTools={activeTools} />}
+          {session && hasMessages && <StatsBar stats={stats} streamLost={streamLost} timeline={timeline} pending={streaming || queued} modelOutput={modelOutput} runProgress={runProgress} activeTools={activeTools} />}
         </div>
       )}
     </section>
   );
+}
+
+/**
+ * PI's line before its first words: a status in --dim mono (or --warn when the stream dropped),
+ * ended by the same caret the reply will stream behind. The caret alone means "about to write".
+ */
+function WaitingLine({ text, warn = false }: { text?: string; warn?: boolean }) {
+  return <div className={`ledger-waiting${warn ? " is-warn" : ""}`} data-testid="waiting-reply" role={text ? "status" : undefined}>
+    {text && <span className="ledger-waiting-text">{text}</span>}
+    {!warn && <span className="ledger-caret" aria-hidden="true" />}
+  </div>;
 }

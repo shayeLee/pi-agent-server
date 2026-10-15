@@ -80,9 +80,11 @@ test("unified native directory: real App, actors, append, private, tombstones, e
     await page.getByRole("button", { name: /思考过程/ }).click();
     await expect(page.locator(".thinking-body")).toContainText("原生思考记录");
     await expect(page.getByTestId("subagent-notification")).toContainText("原生通知");
+    // Finished tool steps sit folded inside work blocks.
+    for (const block of await page.locator('.work-header[aria-expanded="false"]').all()) await block.click();
     await expect(page.getByText("fixture.txt", { exact: false }).first()).toBeVisible();
     const historicalTool = page.locator('[data-tool-call-id="tool"]');
-    await expect(historicalTool.locator(".tool-duration")).toHaveText("2.3 s");
+    await expect(historicalTool.locator(".tool-duration")).toHaveText("2.3s");
     await expect(page.locator('[data-tool-call-id="old-tool"] .tool-duration')).toHaveCount(0);
     if (await historicalTool.locator('.tool-call-header').getAttribute('aria-expanded') === 'false') await historicalTool.locator('.tool-call-header').click();
     await expect(historicalTool.locator('.tool-duration')).toHaveAttribute('title', '工具调用耗时：2345.6789 ms');
@@ -101,7 +103,7 @@ test("unified native directory: real App, actors, append, private, tombstones, e
     mkdirSync(artifacts, { recursive: true });
     for (const theme of ["light", "dark"] as const) {
       await page.setViewportSize({ width: 1280, height: 900 });
-      if (await page.getByTestId("app").getAttribute("data-theme") !== theme) await page.getByTestId("theme-toggle").click();
+      await page.emulateMedia({ colorScheme: theme as 'light' | 'dark' });
       await expect(page.getByTestId("app")).toHaveAttribute("data-theme", theme);
       for (const width of [1280, 390]) {
         await page.setViewportSize({ width, height: 900 });

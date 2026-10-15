@@ -38,14 +38,14 @@ test("多项目：创建额外项目 → 建会话归属项目 → 切换项目�
   await expect(page.getByTestId("chat")).toBeVisible();
   await page.getByTestId("composer-input").fill("用于测试项目隔离");
   await page.getByTestId("send-button").click();
-  await expect(page.locator('[data-testid^="rename-"]').first()).toBeAttached();
+  await expect(page.locator('[data-testid^="session-menu-"]').first()).toBeAttached();
   await expect(page.getByTestId("abort-button")).toHaveCount(0);
 
   const uniqueTitle = `项目会话-${Date.now()}`;
   page.once("dialog", (d) => d.accept(uniqueTitle));
-  const rename = page.locator('[data-testid^="rename-"]').first();
-  await rename.locator("xpath=ancestor::li[contains(@class, 'session-item')]").hover();
-  await rename.click();
+  // Rename lives in the row's ⋯ menu (DESIGN.md §7).
+  await page.locator('[data-testid^="session-menu-"]').first().click();
+  await page.locator('[data-testid^="rename-"]').click();
   await expect(page.getByText(uniqueTitle).first()).toBeVisible();
 
   // 切回默认项目：不该出现额外项目的会话

@@ -8,7 +8,7 @@ export const DropdownMenuGroup = Primitive.Group;
 export const DropdownMenuRadioGroup = Primitive.RadioGroup;
 export function DropdownMenuContent({ className, sideOffset = 4, ...props }: ComponentProps<typeof Primitive.Content>) {
   return <Primitive.Portal><Primitive.Content data-ui="dropdown-menu" sideOffset={sideOffset} className={cn(
-    "ui:z-50 ui:min-w-40 ui:max-w-[calc(100vw-2rem)] ui:max-h-[var(--radix-dropdown-menu-content-available-height)] ui:overflow-y-auto ui:rounded-md ui:border ui:border-solid ui:border-line ui:bg-surface ui:p-1 ui:font-sans ui:text-base-sm ui:text-foreground ui:shadow-md",
+    "ui:z-50 ui:min-w-40 ui:max-w-[calc(100vw-2rem)] ui:max-h-[var(--radix-dropdown-menu-content-available-height)] ui:overflow-y-auto ui:rounded-lg ui:border ui:border-solid ui:border-line ui:bg-surface ui:p-1 ui:font-sans ui:text-base-sm ui:text-foreground ui:shadow-md",
     className,
   )} {...props} /></Primitive.Portal>;
 }

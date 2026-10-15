@@ -22,7 +22,6 @@ export const MessageItem = memo(function MessageItem({ item }: MessageItemProps)
     return (
       <div className="message-row row-user" data-testid={`message-${item.id}`}>
         <div className="message-user">
-          {item.sourceLabel && <div className="subagent-message-source">{item.sourceLabel}</div>}
           <div className="user-bubble">
             {item.text && <div>{item.text}</div>}
             {readMessageImages(item.images).length > 0 && <div className="message-images">
@@ -47,7 +46,8 @@ export const MessageItem = memo(function MessageItem({ item }: MessageItemProps)
       <div className="message-assistant">
         <div className="assistant-content">
           {item.text && <Markdown text={item.text} />}
-          {item.streaming && <Icon name="dot" className="streaming-cursor" />}
+          {/* Same caret as the waiting line, so the reply continues where PI was about to write. */}
+          {item.streaming && <span className="streaming-cursor ledger-caret" aria-hidden="true" />}
           {item.stopReason === "aborted" && <div className="assistant-terminal-status" data-testid={`aborted-${item.id}`}>
             {zhCN.status.aborted}
           </div>}

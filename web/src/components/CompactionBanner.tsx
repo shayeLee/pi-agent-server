@@ -1,4 +1,5 @@
 import { zhCN } from "../i18n/zh-CN.js";
+import { formatExact } from "../i18n/format.js";
 import { useEffect, useState } from "react";
 import type { ChatState } from "pi-agent-server/client";
 
@@ -13,9 +14,10 @@ const labels = {
 };
 const reasons = { manual: zhCN.compaction.manual, threshold: zhCN.compaction.threshold, overflow: zhCN.compaction.overflow };
 const isNumber = (value: number | undefined): value is number => typeof value === "number" && Number.isFinite(value) && value >= 0;
-const format = (value: number) => value.toLocaleString("zh-CN");
+const format = formatExact;
 
-export function CompactionBanner({ compaction, connected }: { compaction?: CompactionState | null; connected: boolean }) {
+/** `streamLost`: the event stream dropped and is being retried (not merely still connecting). */
+export function CompactionBanner({ compaction, streamLost = false }: { compaction?: CompactionState | null; streamLost?: boolean }) {
   const [hidden, setHidden] = useState(false);
   const sourceStatus = compaction?.status;
   useEffect(() => {
@@ -28,7 +30,7 @@ export function CompactionBanner({ compaction, connected }: { compaction?: Compa
   }, [compaction]);
 
   if (!compaction || (sourceStatus === "succeeded" && hidden)) return null;
-  const disconnectedRunning = compaction.status === "running" && !connected;
+  const disconnectedRunning = compaction.status === "running" && streamLost;
   const status = disconnectedRunning ? "unknown" : compaction.status;
   return (
     <div className="compaction-banner" data-testid="compaction-banner" data-status={status} role="status" aria-live="polite" aria-atomic="true">

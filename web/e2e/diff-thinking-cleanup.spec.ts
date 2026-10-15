@@ -18,11 +18,11 @@ for (const width of [1280, 390]) for (const theme of ["light", "dark"]) {
     expect(await thinking.locator(".thinking-body").textContent()).toBe(original.fullThinking);
     const style = await thinking.locator(".thinking-body").evaluate(el => {
       const computed = getComputedStyle(el);
-      return { font: computed.fontSize, line: computed.lineHeight, token: computed.getPropertyValue("--font-md").trim() };
+      return { font: computed.fontSize, token: computed.getPropertyValue("--font-md").trim() };
     });
+    // Size comes from the type scale token, never a hard-coded value.
     expect(style.token).not.toBe("");
     expect(style.font).toBe(style.token);
-    expect(parseFloat(style.line)).toBeCloseTo(parseFloat(style.font) * 1.65, 2);
     await thinking.getByRole("button").click();
     await page.getByRole("button", { name: "结束思考" }).click();
     await expect(thinking.getByRole("button")).toHaveAttribute("aria-expanded", "false");

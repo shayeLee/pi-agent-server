@@ -24,7 +24,7 @@ function Fixture() {
     </div>
     <Chat session={null} projects={[]} activeProjectId={null} onSelectProject={() => {}} canCreateSession={false} canWrite={false}
       timeline={[]} streaming={false} queued={false} loadError={null} models={[]} thinkingLevels={[]} defaultModel={null} defaultThinkingLevel="off"
-      connected={connected} stats={null} compaction={compaction}
+      connection={connected ? "open" : "reconnecting"} stats={null} compaction={compaction}
       onSend={() => {}} onFollowUp={() => {}} onConfigChange={() => {}} />
   </main>;
 }

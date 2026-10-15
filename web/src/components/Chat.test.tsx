@@ -51,7 +51,7 @@ function setup(partial: Partial<Parameters<typeof Chat>[0]> = {}) {
     thinkingLevels: ["off", "low", "medium", "high"],
     defaultModel: null,
     defaultThinkingLevel: "medium",
-    connected: true,
+    connection: "open" as const,
     stats: null,
     onSend: vi.fn(),
     onAddFile: vi.fn(async () => undefined),
@@ -67,36 +67,59 @@ function setup(partial: Partial<Parameters<typeof Chat>[0]> = {}) {
 }
 
 describe("Chat（聊天区）", () => {
-  it("shows first-reply waiting feedback until text arrives and closes it on termination", () => {
+  it("shows PI's waiting line only for what nothing else on screen says, until the first words arrive", () => {
     vi.useFakeTimers();
     try {
       const user: TimelineItem = { kind: "message", id: "new", role: "user", text: "new request", streaming: false };
       const view = setup({ timeline: [...timeline, user], streaming: true });
-      expect(screen.getByTestId("waiting-reply")).toHaveTextContent("正在等待模型回复…");
-      expect(screen.getByTestId("waiting-reply")).toHaveAttribute("role", "status");
+      const line = () => screen.getByTestId("waiting-reply");
+      expect(line()).toHaveTextContent("等待模型回复");
+      expect(line()).toHaveAttribute("role", "status");
+      expect(line().querySelector(".ledger-caret")).not.toBeNull();
+      // It opens the PI entry where the reply will appear, right after the user's entry.
+      const entry = line().closest(".ledger-entry")!;
+      expect(entry).toHaveAttribute("data-role", "assistant");
+      expect(entry.previousElementSibling).toHaveAttribute("data-role", "user");
       act(() => vi.advanceTimersByTime(33000));
-      expect(screen.getByTestId("waiting-reply")).toHaveTextContent("正在等待模型回复…");
+      expect(line()).toHaveTextContent("等待模型回复");
+      // A running step already says what PI is doing.
       view.update({ activeTools: true });
-      expect(screen.getByTestId("waiting-reply")).toHaveTextContent("工具执行中");
-      view.update({ connected: false });
-      expect(screen.getByTestId("waiting-reply")).toHaveTextContent("连接已断开");
-      view.update({ connected: true, activeTools: false, timeline: [...timeline, user,
+      expect(screen.queryByTestId("waiting-reply")).toBeNull();
+      view.update({ activeTools: false, connection: "reconnecting" });
+      expect(line()).toHaveTextContent("连接中断，正在恢复…");
+      expect(line()).toHaveClass("is-warn");
+      view.update({ connection: "open", timeline: [...timeline, user,
         { kind: "message", id: "partial", role: "assistant", text: "half", streaming: true }] });
       expect(screen.queryByTestId("waiting-reply")).toBeNull();
       view.update({ streaming: false, timeline: [...timeline, user,
         { kind: "message", id: "partial", role: "assistant", text: "half", streaming: false, stopReason: "aborted" }] });
       expect(screen.getByTestId("aborted-partial")).toHaveTextContent("已中止");
       expect(screen.queryByTestId("waiting-reply")).toBeNull();
-      view.update({ streaming: false, primaryAwaitingStart: true, timeline: [...timeline, user] });
-      expect(screen.getByTestId("waiting-reply")).toHaveTextContent("等待运行确认");
       view.update({ primaryAwaitingStart: false, queued: true });
       expect(screen.queryByTestId("waiting-reply")).toBeNull();
     } finally { vi.useRealTimers(); }
   });
+  it("a new session's first send shows only the caret while its stream is still connecting", () => {
+    const user: TimelineItem = { kind: "message", id: "first", role: "user", text: "first", streaming: false };
+    setup({ timeline: [user], primaryAwaitingStart: true, connection: "connecting" });
+    const line = screen.getByTestId("waiting-reply");
+    // The header carries "等待运行确认"; connecting is not a dropped connection.
+    expect(line).toHaveTextContent("");
+    expect(line).not.toHaveAttribute("role");
+    expect(line.querySelector(".ledger-caret")).not.toBeNull();
+    expect(screen.queryByText(/连接/)).toBeNull();
+  });
+  it("joins the live PI entry instead of opening a second one", () => {
+    const user: TimelineItem = { kind: "message", id: "ask", role: "user", text: "ask", streaming: false };
+    const tool: TimelineItem = { kind: "tool", id: "t1", call: { toolCallId: "t1", toolName: "bash", args: {}, done: true, isError: false } } as TimelineItem;
+    setup({ timeline: [user, tool], streaming: true });
+    expect(screen.getByTestId("waiting-reply").closest(".ledger-entry")).toHaveAttribute("data-role", "assistant");
+    expect(document.querySelectorAll('.ledger-entry[data-role="assistant"]')).toHaveLength(1);
+  });
   it("将右侧栏图标开关状态与点击传给父级，不维护虚假的本地页签", () => {
     const onToggleTrace = vi.fn();
     const view = setup({ traceOpen: false, onToggleTrace });
-    const toggle = screen.getByRole('button', { name: '展开右侧栏' });
+    const toggle = screen.getByRole('button', { name: '轨迹' });
     expect(screen.queryByTestId('chat-tab')).not.toBeInTheDocument();
     expect(toggle).toHaveAttribute('aria-expanded', 'false');
     fireEvent.click(toggle);
@@ -169,8 +192,15 @@ describe("Chat（聊天区）", () => {
     const button = screen.getByRole("button", { name: "回到最新" });
     expect(button).toHaveAttribute("aria-label", "回到最新");
     expect(button).toHaveAttribute("title", "回到最新");
+    // An icon-only control: the name lives in aria-label / title, the arrow is decorative.
     expect(button).toHaveTextContent("");
     expect(button.querySelector('svg[data-icon="down"]')).toHaveAttribute("aria-hidden", "true");
+    expect(button).not.toHaveAttribute("data-live");
+    // While PI is still writing below, it says so.
+    props.update({ timeline: [...timeline], streaming: true });
+    const live = screen.getByRole("button", { name: "回到最新（正在生成）" });
+    expect(live).toHaveAttribute("data-live", "true");
+    props.update({ timeline: [...timeline], streaming: false });
     const slot = button.parentElement;
     fireEvent.click(button);
     expect(el.scrollTop).toBe(1800);
@@ -277,10 +307,17 @@ describe("Chat（聊天区）", () => {
     expect(screen.getByText("好的")).toBeInTheDocument();
     expect(screen.getByTestId("tool-call-card")).toBeInTheDocument();
     expect(screen.getByTestId("tool-name")).toHaveTextContent("weather");
-    expect(screen.getByTestId("message-list").children).toHaveLength(3);
-    expect(screen.getByTestId("message-list").children[0].firstElementChild).toHaveClass("row-user");
-    expect(screen.getByTestId("message-list").children[1].firstElementChild).toHaveClass("row-assistant");
-    expect(screen.getByTestId("message-list").children[2].firstElementChild).toHaveClass("tool-call");
+    // Ledger entries: YOU, then one PI entry holding the reply and its work block.
+    const entries = screen.getByTestId("message-list").children;
+    expect(entries).toHaveLength(2);
+    expect(entries[0]).toHaveAttribute("data-role", "user");
+    expect(entries[0].querySelector(".ledger-tag")).toHaveTextContent("YOU");
+    expect(entries[0].querySelector(".timeline-entry")?.firstElementChild).toHaveClass("row-user");
+    expect(entries[1]).toHaveAttribute("data-role", "assistant");
+    expect(entries[1].querySelector(".ledger-tag")).toHaveTextContent("PI");
+    const anchors = Array.from(document.querySelectorAll<HTMLElement>("[data-timeline-id]")).map(row => row.dataset.timelineKind);
+    expect(anchors).toEqual(["user", "assistant_text", "tool_call"]);
+    expect(entries[1].querySelector("[data-testid='work-block'] .tool-call")).toBe(screen.getByTestId("tool-call-card"));
     // Reading-first：旧 Crossband 固定来源槽及其标签已废除。
     expect(screen.queryByText("用户原文")).not.toBeInTheDocument();
     expect(screen.queryByText("模型正文")).not.toBeInTheDocument();
