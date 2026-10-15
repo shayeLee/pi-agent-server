@@ -100,4 +100,4 @@
   [路由、授权上下文与生命周期](../src/server/plugin-host.ts)
 - [权限档位与角色矩阵](../src/server/route-rbac.ts) ·
   [OpenAPI v1 定义](../src/public-api/openapi-v1.ts)
-- [英文 README 配置说明](../README.md#current-boundaries)（中英文 README 说明保持同步）
+- [配置说明](configuration.md)（`PI_PLUGINS` 等环境变量）

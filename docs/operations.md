@@ -4,6 +4,14 @@
 
 `pi-agent-server` 在前台运行正式服务；进程守护和重启由 systemd 负责。
 
+## 持久化与离线命令概要
+
+- 元数据存于 SQLite 或 PostgreSQL；完整对话历史存于 Pi 管理的 JSONL。
+- managed 会话 DELETE 把持久清理意图写入 `file_operations`，但仓库只提供只读 planner；物理执行不在当前范围。原生会话 DELETE 只为服务端索引登记墓碑，绝不调度源文件删除。
+- backup、restore、migration、reconcile 和 owner-transfer 均为离线命令，不启动服务，也不安装 timer/worker。`pi-agent-server-drill` 同样如此：做门禁（preflight）、执行隔离一键演习（run）与清理隔离运行产物（cleanup）。它绝不自动启动服务、安装 timer，也不触碰正式资源。
+- PostgreSQL server、`pg_dump`、`pg_restore` major 必须匹配，并且有效业务 schema 必须非 `public`、非系统 schema。
+- 只有相应环境门控的真实 PostgreSQL/age 检查实际运行时才能形成验收证据；skip 不算验收。
+
 ## 通用首次生产部署
 
 本节是**首次部署到全新 Linux 主机**的完整流程，默认：Node.js 22.22.3 及以上版本与 pnpm 已由运维安装；服务账号 `agent-server`；源码目录 `/srv/pi-agent-server`；数据目录 `/var/lib/pi-agent-server`；SQLite 单实例；systemd 守护。账号和路径使用下文给出的示例值；仓库地址、发布版本、用户网段和模型标识需按实际环境填写。模型凭据的存放位置、文件所属用户和访问权限见第 5 步。
