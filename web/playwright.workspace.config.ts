@@ -1,3 +1,16 @@
 import { defineConfig } from '@playwright/test';
 import foundation from './playwright.ui-foundation.config';
-export default defineConfig({ ...foundation, testMatch: ['workspace.spec.ts', 'session-search-align.spec.ts', 'theme-menu.spec.ts', 'composer-geometry.spec.ts', 'focus-appearance.spec.ts', 'typography.spec.ts'], outputDir: 'test-results/workspace' });
+
+// Same fixture-only setup as ui-foundation, on its own port so both groups can run at once.
+export default defineConfig({
+  ...foundation,
+  testMatch: ['workspace.spec.ts', 'theme-menu.spec.ts'],
+  outputDir: 'test-results/workspace',
+  use: { ...foundation.use, baseURL: 'http://127.0.0.1:5191' },
+  webServer: {
+    command: 'VITE_API_TARGET=http://127.0.0.1:1 volta run pnpm dev --port 5191 --strictPort --host 127.0.0.1',
+    url: 'http://127.0.0.1:5191',
+    reuseExistingServer: false,
+    timeout: 30_000,
+  },
+});

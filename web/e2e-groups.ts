@@ -25,7 +25,7 @@ const group = (name: string, config: string, ...specs: string[]): E2EGroup => ({
 });
 export const specialGroups: E2EGroup[] = [
   group("ui-foundation", "playwright.ui-foundation.config.ts", "ui-foundation"),
-  group("workspace", "playwright.workspace.config.ts", "workspace", "session-search-align", "theme-menu", "composer-geometry", "focus-appearance", "typography"),
+  group("workspace", "playwright.workspace.config.ts", "workspace", "theme-menu"),
   group("control-queue", "playwright.control-queue.config.ts", "control-queue"),
   group("steps", "playwright.steps.config.ts", "steps", "inspector-app"),
   group("rich", "playwright.rich-local.config.ts", "rich-app", "start-state"),

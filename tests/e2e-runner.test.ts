@@ -1,10 +1,10 @@
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { describe, expect, it, vi } from "vitest";
 import { buildGroups, discoverSpecs, excludedSpecs, findGroup, groupEnvironment, specMatch } from "../web/e2e-groups.js";
-import { aggregate, reportTests } from "../scripts/e2e.mjs";
+import { aggregate, concurrencyFrom, inPool, reportTests } from "../scripts/e2e.mjs";
 
 describe("E2E mapping", () => {
   it("assigns rich specs exactly once and preserves default exclusions", () => {
@@ -20,7 +20,7 @@ describe("E2E mapping", () => {
   it("routes isolated UI fixtures to their dedicated frontend-only configurations", async () => {
     const groups = buildGroups(discoverSpecs(resolve(dirname(fileURLToPath(import.meta.url)), "../web/e2e")));
     for (const name of ["workspace", "ui-foundation", "control-queue", "steps"]) {
-      const specs = name === "workspace" ? ["workspace.spec.ts", "session-search-align.spec.ts", "theme-menu.spec.ts", "composer-geometry.spec.ts", "focus-appearance.spec.ts", "typography.spec.ts"] : name === "steps" ? ["steps.spec.ts", "inspector-app.spec.ts"] : [`${name}.spec.ts`];
+      const specs = name === "workspace" ? ["workspace.spec.ts", "theme-menu.spec.ts"] : name === "steps" ? ["steps.spec.ts", "inspector-app.spec.ts"] : [`${name}.spec.ts`];
       expect(findGroup(groups, name)).toEqual({ name, config: `playwright.${name}.config.ts`, specs });
       for (const spec of specs) expect(findGroup(groups, "general").specs).not.toContain(spec);
       try {
@@ -33,7 +33,7 @@ describe("E2E mapping", () => {
         expect(servers).toHaveLength(1);
         expect(servers[0]?.command).toContain("VITE_API_TARGET=http://127.0.0.1:1 ");
         expect(servers[0]?.reuseExistingServer).toBe(false);
-        const port = name === "control-queue" ? 60174 : name === "steps" ? 60186 : 5190;
+        const port = { "control-queue": 60174, steps: 60186, workspace: 5191 }[name] ?? 5190;
         expect(config.use?.baseURL).toBe(`http://127.0.0.1:${port}`);
         expect(servers[0]?.url).toBe(config.use?.baseURL);
         expect(servers[0]?.command).toContain(`--port ${port}`);
@@ -72,6 +72,26 @@ describe("E2E mapping", () => {
   });
 });
 
+// Only the fields the port check reads; @playwright/test types live in the web package.
+interface GroupConfig { use?: { baseURL?: string }; webServer?: { command?: string; url?: string; port?: number } | { command?: string; url?: string; port?: number }[] }
+describe("E2E port isolation", () => {
+  it("gives every group its own ports so groups can run concurrently", async () => {
+    const web = resolve(dirname(fileURLToPath(import.meta.url)), "../web");
+    const owner = new Map<number, string>();
+    for (const group of buildGroups(discoverSpecs(resolve(web, "e2e")))) {
+      const { default: config } = await import(pathToFileURL(resolve(web, group.config)).href) as { default: GroupConfig };
+      const servers = [config.webServer ?? []].flat();
+      const text = [config.use?.baseURL ?? "", ...servers.flatMap(server => [server.command ?? "", server.url ?? "", String(server.port ?? "")]),
+        ...group.specs.map(spec => readFileSync(resolve(web, "e2e", spec), "utf8"))].join("\n");
+      const ports = new Set([...text.matchAll(/(?:127\.0\.0\.1:|localhost:|listen\(|port:\s*|PORT=)(\d{4,5})\b/g)].map(match => Number(match[1])));
+      for (const port of ports) {
+        expect(owner.get(port), `${group.name} reuses port ${port}`).toBeUndefined();
+        owner.set(port, group.name);
+      }
+    }
+  });
+});
+
 describe("E2E scenario isolation", () => {
   it("overrides inherited rich for every non-rich group without mutating the parent", () => {
     const env = { MOCK_SCENARIO: "rich", UNRELATED: "preserved" };
@@ -98,7 +118,7 @@ describe("E2E scenario isolation", () => {
           expect(server?.env?.MOCK_SCENARIO).toBe(scenario);
           expect(server?.reuseExistingServer).toBe(false);
         }
-        expect(config.use?.baseURL).toBe("http://127.0.0.1:5189");
+        expect(config.use?.baseURL).toBe(name === "rich" ? "http://127.0.0.1:5226" : "http://127.0.0.1:5189");
         expect(config.use?.channel).toBe("chrome");
       }
     } finally { vi.unstubAllEnvs(); vi.resetModules(); }
@@ -109,6 +129,33 @@ const report = (status: string, outcome = "expected", expectedStatus = "passed")
   id: "native-spec-id", file: "example.spec.ts", line: 1, column: 1, title: "test",
   tests: [{ projectId: "chrome", projectName: "Chrome", expectedStatus, status: outcome, results: [{ status }] }],
 }] }] });
+describe("E2E concurrency", () => {
+  it("never runs more than the limit at once and keeps results in input order", async () => {
+    let running = 0, peak = 0;
+    const results = await inPool([30, 5, 20, 1, 10], 2, async delay => {
+      peak = Math.max(peak, ++running);
+      await new Promise(done => setTimeout(done, delay));
+      running--;
+      return delay;
+    });
+    expect(peak).toBe(2);
+    expect(results).toEqual([30, 5, 20, 1, 10]);
+  });
+  it("stops starting new work once stopped, leaving the rest unrun", async () => {
+    const started: number[] = [];
+    let stopped = false;
+    const results = await inPool([1, 2, 3, 4], 1, async item => { started.push(item); if (item === 2) stopped = true; return item; }, () => stopped);
+    expect(started).toEqual([1, 2]);
+    expect(results.filter(result => result !== undefined)).toEqual([1, 2]);
+  });
+  it("takes an explicit concurrency, otherwise half the CPUs capped to keep timing-sensitive specs stable", () => {
+    expect(concurrencyFrom({ PI_E2E_CONCURRENCY: "1" }, 16)).toBe(1);
+    expect(concurrencyFrom({ PI_E2E_CONCURRENCY: "0" }, 2)).toBe(1);
+    expect(concurrencyFrom({}, 16)).toBeLessThan(16 / 2 + 1);
+    expect(concurrencyFrom({}, 1)).toBe(1);
+  });
+});
+
 describe("E2E aggregation", () => {
   it("retains later results after child failure and separates skipped/unexecuted", () => {
     expect(aggregate(4, [
