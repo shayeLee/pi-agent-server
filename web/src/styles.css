@@ -823,15 +823,6 @@ textarea::placeholder {
   white-space: nowrap;
 }
 
-.session-shared-badge {
-  flex: none;
-  display: inline-flex;
-  align-items: center;
-  color: var(--text-tertiary);
-}
-
-.session-shared-badge svg { display: block; }
-
 .session-time {
   flex: none;
 }
@@ -3503,9 +3494,6 @@ details[open] > summary > .details-chevron { transform: rotate(90deg); }
 .session-title { font-size: var(--fs-ui); color: var(--ink); }
 .session-item.active .session-title { font-weight: 500; }
 /* Time is visible again, as a quiet right-aligned column (§7). */
-/* The title only takes its text width so a shared badge can follow it; the meta column stays flush right. */
-.session-select .session-title { flex: 0 1 auto; }
-.session-shared-badge { flex: none; display: inline-flex; color: var(--dim); }
 .session-meta { position: static; width: auto; height: auto; overflow: visible; clip-path: none; display: inline-flex; align-items: center; gap: 6px; flex: none; margin-left: auto; }
 .session-time { font-family: var(--font-mono); font-size: var(--fs-tag); color: var(--dim); }
 .session-running { font-family: var(--font-mono); font-size: var(--fs-tag); color: var(--acc); }

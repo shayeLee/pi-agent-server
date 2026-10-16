@@ -73,14 +73,11 @@ describe("SessionList（会话列表）", () => {
     expect(time2).toHaveAttribute("dateTime", new Date(sessions[1]!.updatedAt).toISOString());
   });
 
-  it("optional shared/native metadata adds only a compact SVG and explains removal", () => {
+  it("shared/native sessions show no row badge and explain removal", () => {
     setup({ sessions: [{ ...sessions[0]!, visibility: "shared", origin: "native" }, sessions[1]!] });
-    const badge = screen.getByLabelText("原生共享会话");
-    expect(badge.querySelector('svg[data-icon="shared"]')).not.toBeNull();
-    expect(badge).toHaveTextContent("");
+    expect(screen.queryByLabelText("原生共享会话")).not.toBeInTheDocument();
     fireEvent.contextMenu(screen.getByTestId("session-s1"));
     expect(screen.getByTestId("delete-s1")).toHaveAttribute("title", "从共享列表移除（保留原始文件）");
-    expect(screen.getByTestId("session-s2").querySelector(".session-shared-badge")).toBeNull();
   });
 
   it("full title is accessible, metadata stays together and actions never select", () => {
@@ -95,11 +92,7 @@ describe("SessionList（会话列表）", () => {
     const menu = screen.getByRole("menu", { name: `会话操作：${title}` });
     expect(menu).toHaveTextContent("共享会话");
     const meta = screen.getByTestId("session-time-s1").parentElement!;
-    // The shared badge follows the title (the time column stays flush right) and still describes the row.
-    const badge = screen.getByLabelText("共享会话");
-    expect(select.querySelector(".session-title")!.nextElementSibling).toBe(badge);
-    expect(meta).not.toContainElement(badge);
-    expect(select).toHaveAttribute("aria-describedby", `${meta.id} ${badge.id}`);
+    expect(select).toHaveAttribute("aria-describedby", meta.id);
     for (const action of ["rename", "export", "delete"]) {
       const item = screen.getByTestId(`${action}-s1`);
       expect(select).not.toContainElement(item);
@@ -193,7 +186,7 @@ describe("SessionList（会话列表）", () => {
     expect(input).toEqual(before);
   });
 
-  it("原位更新的 rename/config 时间重排，搜索保留有序分组与动作/共享提示", () => {
+  it("原位更新的 rename/config 时间重排，搜索保留有序分组与动作", () => {
     const input = [
       { ...sessions[0]!, title: "匹配一", updatedAt: FIXED_NOW - 1000 },
       { ...sessions[1]!, title: "匹配二", updatedAt: FIXED_NOW - 86400000, visibility: "shared" as const, origin: "native" as const },
@@ -211,7 +204,6 @@ describe("SessionList（会话列表）", () => {
     expect(order()).toEqual(["session-s2", "session-s1"]);
     expect(screen.getByText("今天")).toBeInTheDocument();
     expect(screen.queryByText("昨天")).not.toBeInTheDocument();
-    expect(screen.getByLabelText("原生共享会话")).toBeInTheDocument();
     fireEvent.contextMenu(screen.getByTestId("session-s2"));
     expect(screen.getByTestId("delete-s2")).toHaveAttribute("title", "从共享列表移除（保留原始文件）");
     fireEvent.contextMenu(screen.getByTestId("session-s2"));

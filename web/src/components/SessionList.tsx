@@ -203,18 +203,13 @@ export function SessionList({
               className="session-select"
               aria-label={resolveSessionDisplayTitle(s)}
               aria-current={s.id === activeId ? "true" : undefined}
-              aria-describedby={s.visibility === "shared" || s.origin === "native" ? `session-meta-${s.id} session-shared-${s.id}` : `session-meta-${s.id}`}
+              aria-describedby={`session-meta-${s.id}`}
               data-testid={`session-${s.id}`}
               onClick={() => onSelect(s.id)}
               onContextMenu={(event) => { event.preventDefault(); setMenuFor(s.id); }}
             >
               <span className="session-glyph" aria-hidden="true">{s.id === runningId ? "▶" : "·"}</span>
               <span className="session-title" title={resolveSessionDisplayTitle(s)}>{highlightSessionTitle(resolveSessionDisplayTitle(s), query)}</span>
-              {(s.visibility === "shared" || s.origin === "native") && (
-                <span className="session-shared-badge" id={`session-shared-${s.id}`} title={s.origin === "native" ? zhCN.sessionList.nativeShared : zhCN.sessionList.shared} aria-label={s.origin === "native" ? zhCN.sessionList.nativeShared : zhCN.sessionList.shared}>
-                  <Icon name="shared" size={14} />
-                </span>
-              )}
             <span className="session-meta" id={`session-meta-${s.id}`}>
               {s.id === runningId ? <span className="session-running">{zhCN.run.running}</span> : <time
                 className="session-time"
