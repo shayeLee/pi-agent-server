@@ -308,7 +308,6 @@ export function Chat({
       </div>
       {session && hasMessages && (
         <div className="chat-latest-row">
-          <CompanionDock mood={companion.mood} nodKey={companion.nodKey} persona={persona} onPersona={setPersona} />
           {/* An icon is enough; while PI is still writing below, it turns accent and drifts (DESIGN.md §3). */}
           {showLatest && (
             <button type="button" className="chat-latest" data-live={streaming ? "true" : undefined}
@@ -364,6 +363,7 @@ export function Chat({
             searchFiles={searchFiles}
             onRunCommand={onRunCommand}
             onActivity={companion.signal}
+            perch={session && hasMessages ? <CompanionDock mood={companion.mood} nodKey={companion.nodKey} persona={persona} onPersona={setPersona} /> : undefined}
             onConfigChange={onConfigChange}
           />
           {session && hasMessages && <StatsBar stats={stats} streamLost={streamLost} timeline={timeline} pending={streaming || queued} modelOutput={modelOutput} runProgress={runProgress} activeTools={activeTools} />}

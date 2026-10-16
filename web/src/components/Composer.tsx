@@ -62,6 +62,8 @@ export type ComposerProps = {
   onRunCommand?: (input: SessionCommandInput) => Promise<string | null>;
   /** Focus, typing, menus and sends, for the companion to react to; never the text itself. */
   onActivity?: (activity: ComposerActivity) => void;
+  /** Sits on the composer's top edge (the docked companion, DESIGN.md §6.6). */
+  perch?: React.ReactNode;
 };
 
 export function Composer({
@@ -69,7 +71,7 @@ export function Composer({
   models, thinkingLevels, defaultModel, defaultThinkingLevel,
   streaming, queued, primaryAwaitingStart = false, historyLoading = false, controlsBlocked = false, placeholder, onSend,
   draft: suppliedDraft, draftSource, draftScope = "", submission, pendingControls, onDraftText, onDraftSettings, onAddFile, onRetryFile, onRemoveFile, onRetrySubmit, onConfirmCreation,
-  onAbort, onAbortArmedChange, onFollowUp, onConfigChange, loadCommands, searchFiles, onRunCommand, onActivity,
+  onAbort, onAbortArmedChange, onFollowUp, onConfigChange, loadCommands, searchFiles, onRunCommand, onActivity, perch,
 }: ComposerProps) {
   const subscribeDraft = useCallback((listener: () => void) =>
     draftSource?.subscribe(draftScope, listener) ?? (() => {}), [draftSource, draftScope]);
@@ -308,6 +310,7 @@ export function Composer({
   return (
     <div className="composer-stack">
     <div className="composer" data-testid="composer">
+      {perch}
       {attachmentNotice && <div className="composer-submit-notice" role="status">{attachmentNotice}</div>}
       {attachments.length > 0 && (
         <div className="composer-attachments" data-testid="composer-attachments" aria-live="polite">

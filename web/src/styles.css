@@ -3761,10 +3761,12 @@ div.shortcut-help { width: min(440px, calc(100vw - 32px)); max-height: 80vh; ove
 .companion-style[aria-checked="true"] { border-color: var(--ink); color: var(--ink); background: var(--hl); }
 .companion-done { color: var(--ink); }
 
-.chat-latest-row { position: relative; }
-.companion-dock { position: absolute; right: 0; top: 4px; display: grid; place-items: center; width: 36px; height: 36px; padding: 0; border: 0; background: none; color: var(--ink); cursor: pointer; border-radius: var(--radius-control); }
-.companion-dock:hover { background: var(--hl); }
-.companion-dock.is-away { opacity: 0.6; }
+/* Docked: sitting on the composer's top edge, its base on the border line. The SVG's
+   viewBox leaves 6/64 below the base, hence the small negative offset. */
+.composer > .companion-dock { position: absolute; z-index: 1; right: var(--space-16); bottom: calc(100% - 3px); display: grid; place-items: end center; width: 36px; height: 36px; padding: 0; border: 0; background: none; color: var(--ink); cursor: pointer; }
+.composer > .companion-dock.is-away { bottom: calc(100% + 2px); height: 12px; place-items: center; opacity: 0.6; }
+/* The control queue sits right above the composer; keep its row actions clear of the cat. */
+.chat-footer:has(.composer > .companion-dock:not(.is-away)) > .control-queue { margin-bottom: 36px; }
 .companion-dock-dot { width: 6px; height: 6px; border-radius: var(--radius-pill); background: var(--faint); }
 
 /* Paint: currentColor lines; the catchlight is the page showing through, the accent marks work and joy. */
@@ -3829,7 +3831,8 @@ div.shortcut-help { width: min(440px, calc(100vw - 32px)); max-height: 80vh; ove
 .companion-figure[data-antic="wiggle"] .companion-lean { animation: companion-wiggle 0.5s ease-in-out 3; }
 .companion-figure[data-antic="boing"] .companion-sprout { animation: companion-boing 0.8s ease-out 2; }
 /* Say hello to whoever hovers. */
-.companion-avatar:hover .companion-figure[data-mood="idle"] .companion-raise-right { opacity: 1; animation: companion-paw-wave-right 0.5s ease-in-out infinite; }
+.companion-avatar:hover .companion-figure[data-mood="idle"] .companion-raise-right,
+.companion-dock:hover .companion-figure[data-mood="idle"] .companion-raise-right { opacity: 1; animation: companion-paw-wave-right 0.5s ease-in-out infinite; }
 
 .companion-body.is-nod { animation: companion-nod 0.5s ease-out 1; }
 .companion-body.is-boop { animation: companion-boop 0.55s cubic-bezier(0.34, 1.56, 0.64, 1) 1; }
