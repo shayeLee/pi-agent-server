@@ -1549,6 +1549,17 @@ details[open] > summary > .details-chevron { transform: rotate(90deg); }
 .modal-body { min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 16px 20px 20px; }
 .modal-body .code-block { margin: 0; background: var(--bg-raised); }
 .modal-footer { flex-shrink: 0; padding: 12px 16px; border-top: 1px solid var(--line); }
+/* Session rename (replaces window.prompt): narrow form, actions right-aligned. */
+.modal.rename-dialog { width: min(440px, calc(100% - 32px)); }
+.rename-field { display: flex; flex-direction: column; gap: 8px; font-size: var(--fs-meta); color: var(--dim); }
+.rename-field input { box-sizing: border-box; width: 100%; height: 36px; padding: 0 10px; border: 1px solid var(--line); border-radius: var(--radius-control); background: var(--bg); color: var(--ink); font: inherit; font-size: var(--fs-ui); }
+.rename-field input:focus-visible { outline: 1px solid var(--ink); outline-offset: 2px; }
+.rename-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.rename-actions button { height: 30px; min-width: 64px; padding: 0 12px; border: 1px solid var(--line); border-radius: var(--radius-control); background: transparent; color: var(--ink); font-size: var(--fs-step); cursor: pointer; }
+.rename-actions button:hover:not(:disabled) { background: var(--hl); }
+.rename-actions .rename-save { border-color: var(--ink); background: var(--ink); color: var(--invert); }
+.rename-actions .rename-save:hover:not(:disabled) { background: var(--body2); }
+.rename-actions .rename-save:disabled { border-color: transparent; background: var(--hl); color: var(--faint); cursor: default; }
 @media (max-width: 639px) {
   .modal { width: calc(100% - 24px); max-width: calc(100% - 24px); max-height: calc(100dvh - 24px - env(safe-area-inset-top) - env(safe-area-inset-bottom)); }
   .modal-header { padding: 8px 12px; }
@@ -3258,12 +3269,15 @@ details[open] > summary > .details-chevron { transform: rotate(90deg); }
 .ledger-time { font-family: var(--font-mono); font-size: var(--fs-meta); line-height: 28px; color: var(--dim); text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .ledger-tag { font-family: var(--font-mono); font-size: var(--fs-tag); letter-spacing: 0.08em; line-height: 28px; color: var(--dim); }
 .ledger-entry[data-role="assistant"] > .ledger-tag { color: var(--acc); }
+/* A long entry keeps its time and tag in view, so the gutter never reads as an empty margin mid-scroll. */
+.ledger-time, .ledger-tag { position: sticky; top: 8px; align-self: start; }
 .ledger-body { min-width: 0; display: flex; flex-direction: column; gap: 14px; }
 .ledger .timeline-entry { margin: -4px -8px; padding: 4px 8px; }
 @container chat (max-width: 640px) {
   .ledger-entry { grid-template-columns: auto minmax(0, 1fr); column-gap: 8px; row-gap: 2px; }
   .ledger-tag { order: 1; line-height: 20px; }
   .ledger-time { order: 2; text-align: left; line-height: 20px; }
+  .ledger-time, .ledger-tag { position: static; }
   .ledger-body { order: 3; grid-column: 1 / -1; }
 }
 
@@ -3369,6 +3383,8 @@ details[open] > summary > .details-chevron { transform: rotate(90deg); }
 .send-button { width: auto; min-width: 64px; height: 28px; padding: 0 10px; font-family: var(--font-mono); font-size: var(--fs-meta); }
 .send-button:disabled { background: var(--hl); color: var(--faint); }
 .send-button[data-testid="abort-button"] { background: var(--ink); color: var(--invert); }
+/* Drawn, not a ■ glyph: font fallback sized and baselined the glyph out of step with the label. */
+.send-button-visual > .stop-glyph { flex: none; width: 8px; height: 8px; margin-right: 6px; background: currentColor; }
 .send-button-visual { display: inline-flex; align-items: center; white-space: nowrap; }
 @media (max-width: 640px) { .composer-hint { display: none; } .send-button { min-height: 44px; } }
 /* Phone touch targets (≥44px): work-block headers and step rows. */

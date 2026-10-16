@@ -8,6 +8,7 @@ export type ModalProps = {
   title: ReactNode;
   children: ReactNode;
   footer?: ReactNode;
+  className?: string;
 };
 
 let locks = 0;
@@ -21,7 +22,7 @@ function lockScroll() {
 }
 
 /** Native top-layer modal: browser inertness, with explicit keyboard boundary wrapping. */
-export function Modal({ open, onClose, title, children, footer }: ModalProps) {
+export function Modal({ open, onClose, title, children, footer, className }: ModalProps) {
   const titleId = useId();
   const dialog = useRef<HTMLDialogElement>(null);
   const close = useRef<HTMLButtonElement>(null);
@@ -44,7 +45,7 @@ export function Modal({ open, onClose, title, children, footer }: ModalProps) {
     const rect = dialog.current!.getBoundingClientRect();
     return x < rect.left || x > rect.right || y < rect.top || y > rect.bottom;
   };
-  return <dialog ref={dialog} className="modal" role="dialog" aria-modal="true" aria-labelledby={titleId}
+  return <dialog ref={dialog} className={className ? `modal ${className}` : "modal"} role="dialog" aria-modal="true" aria-labelledby={titleId}
     onCancel={event => { event.preventDefault(); onClose(); }}
     onPointerDown={event => { outsideDown.current = event.target === event.currentTarget && outside(event.clientX, event.clientY); }}
     onPointerCancel={() => { outsideDown.current = false; }}

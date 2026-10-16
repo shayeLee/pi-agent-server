@@ -1572,9 +1572,10 @@ describe("会话显示标题兜底", () => {
     const api = await blankChat();
     let finishRename!: (row: SessionRecord) => void;
     api.renameSession.mockImplementationOnce(() => new Promise<SessionRecord>((resolve) => { finishRename = resolve; }));
-    vi.spyOn(window, "prompt").mockReturnValueOnce("旧项目标题");
     fireEvent.contextMenu(screen.getByTestId("session-s1"));
     fireEvent.click(screen.getByTestId("rename-s1"));
+    fireEvent.change(screen.getByTestId("rename-input"), { target: { value: "旧项目标题" } });
+    fireEvent.click(screen.getByTestId("rename-save"));
     await waitFor(() => expect(api.renameSession).toHaveBeenCalled());
     mocks.deferSessionsFor("p1");
     fireEvent.click(screen.getByTestId("project-select"));
@@ -1619,9 +1620,10 @@ describe("会话显示标题兜底", () => {
     api.sendMessage.mockImplementationOnce(() => new Promise((resolve) => { accept = resolve; }));
     send("首条提示词");
     api.renameSession.mockResolvedValueOnce({ ...sessions[0]!, title: "未命名会话" });
-    vi.spyOn(window, "prompt").mockReturnValueOnce("未命名会话");
     fireEvent.contextMenu(screen.getByTestId("session-s1"));
     fireEvent.click(screen.getByTestId("rename-s1"));
+    fireEvent.change(screen.getByTestId("rename-input"), { target: { value: "未命名会话" } });
+    fireEvent.click(screen.getByTestId("rename-save"));
     await waitFor(() => expect(api.renameSession).toHaveBeenCalled());
     await act(async () => { accept(undefined); });
     expectTitle("未命名会话");

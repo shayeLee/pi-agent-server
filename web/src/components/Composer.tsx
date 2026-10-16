@@ -259,7 +259,7 @@ export function Composer({
           </span>
           {canAbort ? <button type="button" className="send-button" data-testid="abort-button"
             onClick={onAbort} aria-label={zhCN.composer.abort} title={zhCN.composer.abortHint}>
-            <span className="send-button-visual">{zhCN.run.abortLabel}</span>
+            <span className="send-button-visual"><span className="stop-glyph" aria-hidden="true" />{zhCN.run.abortLabel}</span>
           </button> : <button type="button" className="send-button" data-testid="send-button" onClick={() => void handleSubmit()}
             disabled={!canSubmit} aria-label={zhCN.composer.send} title={runtimeControls ? zhCN.composer.queue : zhCN.composer.send}>
             <span className="send-button-visual">{zhCN.run.sendLabel}</span>

@@ -106,9 +106,9 @@ describe("SessionList（会话列表）", () => {
       expect(item).toHaveAttribute("role", "menuitem");
     }
     fireEvent.keyDown(menu, { key: "Escape" });
-    vi.spyOn(window, "prompt").mockReturnValue("新标题");
     fireEvent.contextMenu(screen.getByTestId("session-s1"));
     fireEvent.click(screen.getByTestId("rename-s1"));
+    fireEvent.click(screen.getByRole("button", { name: "取消" }));
     fireEvent.contextMenu(screen.getByTestId("session-s1"));
     fireEvent.click(screen.getByTestId("export-s1"));
     fireEvent.contextMenu(screen.getByTestId("session-s1"));
@@ -234,13 +234,18 @@ describe("SessionList（会话列表）", () => {
     expect(props.onDelete).toHaveBeenCalledWith("s1");
   });
 
-  it("重命名按钮触发 onRename(id, title)", () => {
+  it("重命名在应用内对话框中编辑，保存触发 onRename(id, title)", () => {
     const { props } = setup();
-    vi.spyOn(window, "prompt").mockReturnValue("新标题");
     fireEvent.contextMenu(screen.getByTestId("session-s2"));
     fireEvent.click(screen.getByTestId("rename-s2"));
+    const input = screen.getByTestId("rename-input");
+    expect(input).toHaveValue("会话二");
+    fireEvent.change(input, { target: { value: "  " } });
+    expect(screen.getByTestId("rename-save")).toBeDisabled();
+    fireEvent.change(input, { target: { value: " 新标题 " } });
+    fireEvent.click(screen.getByTestId("rename-save"));
     expect(props.onRename).toHaveBeenCalledWith("s2", "新标题");
-    vi.restoreAllMocks();
+    expect(screen.queryByTestId("rename-input")).not.toBeInTheDocument();
   });
 
   it("activeId 会话标记为激活样式", () => {

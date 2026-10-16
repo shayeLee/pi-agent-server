@@ -1,8 +1,9 @@
 import { zhCN } from "../i18n/zh-CN.js";
 import { formatDateTime } from "../i18n/format.js";
-import { Fragment, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from "./ui/dropdown-menu.js";
 import { Icon } from "./Icon.js";
+import { Modal } from "./Modal.js";
 import { resolveSessionDisplayTitle, type SessionRecord } from "pi-agent-server/client";
 
 function validTimestamp(timestamp: number): boolean {
@@ -117,6 +118,10 @@ export function SessionList({
   /** Row whose action menu is open; right-click opens the same menu as ⋯. */
   const [menuFor, setMenuFor] = useState<string | null>(null);
   const [searchOpen, setSearchOpen] = useState(false);
+  /** Session being renamed; the dialog takes focus, so the closing menu must not reclaim it. */
+  const [renaming, setRenaming] = useState<SessionRecord | null>(null);
+  const renamingRef = useRef(renaming);
+  renamingRef.current = renaming;
   const searchId = useId();
   const inputRef = useRef<HTMLInputElement>(null);
   const toggleRef = useRef<HTMLButtonElement>(null);
@@ -229,17 +234,15 @@ export function SessionList({
                 <button type="button" className="session-menu" data-testid={`session-menu-${s.id}`}
                   aria-label={zhCN.sessionList.actions(resolveSessionDisplayTitle(s))} title={zhCN.sessionList.actionsHint}>⋯</button>
               </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="session-menu-content" aria-label={zhCN.sessionList.actions(resolveSessionDisplayTitle(s))}>
+              <DropdownMenuContent align="end" className="session-menu-content"
+                onCloseAutoFocus={event => { if (renamingRef.current) event.preventDefault(); }} aria-label={zhCN.sessionList.actions(resolveSessionDisplayTitle(s))}>
                 <DropdownMenuLabel className="session-details">
                   <span className="session-details-time">{zhCN.sessionList.createdAt(formatFullSessionTime(s.createdAt) || zhCN.sessionList.unknownDate)}</span>
                   <span className="session-details-time">{zhCN.sessionList.updatedAt(formatFullSessionTime(s.updatedAt) || zhCN.sessionList.unknownDate)}</span>
                   <span className="session-details-time">{s.origin === "native" ? zhCN.sessionList.nativeShared : s.visibility === "shared" ? zhCN.sessionList.shared : zhCN.sessionList.private}</span>
                 </DropdownMenuLabel>
                 <DropdownMenuSeparator />
-                <DropdownMenuItem data-testid={`rename-${s.id}`} onSelect={() => {
-                  const title = window.prompt(zhCN.sessionList.newTitle, s.title);
-                  if (title && title.trim()) onRename(s.id, title.trim());
-                }}>{zhCN.sessionList.rename}</DropdownMenuItem>
+                <DropdownMenuItem data-testid={`rename-${s.id}`} onSelect={() => setRenaming(s)}>{zhCN.sessionList.rename}</DropdownMenuItem>
                 <DropdownMenuItem data-testid={`export-${s.id}`} onSelect={() => onExport(s.id)}>{zhCN.sessionList.export}</DropdownMenuItem>
                 <DropdownMenuItem data-testid={`delete-${s.id}`} className="session-menu-danger" onSelect={() => onDelete(s.id)}
                   title={s.origin === "native" ? zhCN.sessionList.removeShared : zhCN.sessionList.delete}>
@@ -251,6 +254,35 @@ export function SessionList({
           </Fragment>
         ))}
       </ul>
+      <RenameDialog key={renaming?.id ?? ""} session={renaming} onClose={() => setRenaming(null)}
+        onRename={title => { onRename(renaming!.id, title); setRenaming(null); }} />
     </section>
   );
+}
+
+/** In-app rename (replaces window.prompt): prefilled, selected, Enter saves, Esc cancels. */
+function RenameDialog({ session, onClose, onRename }: { session: SessionRecord | null; onClose: () => void; onRename: (title: string) => void }) {
+  // Prefill what the row shows (title, else first prompt), never the "untitled" placeholder.
+  const [draft, setDraft] = useState(session ? session.title.trim() || session.firstPrompt?.trim() || "" : "");
+  const input = useRef<HTMLInputElement>(null);
+  const formId = useId();
+  // Runs after Modal's own layout effect, which focuses the close button.
+  useEffect(() => {
+    if (!session) return;
+    input.current?.focus({ preventScroll: true });
+    input.current?.select();
+  }, [session]);
+  const title = draft.trim();
+  return <Modal open={session !== null} onClose={onClose} title={zhCN.sessionList.rename} className="rename-dialog"
+    footer={<div className="rename-actions">
+      <button type="button" className="rename-cancel" onClick={onClose}>{zhCN.sessionList.cancel}</button>
+      <button type="submit" form={formId} className="rename-save" data-testid="rename-save" disabled={!title}>{zhCN.sessionList.save}</button>
+    </div>}>
+    <form id={formId} onSubmit={event => { event.preventDefault(); if (title) onRename(title); }}>
+      <label className="rename-field">
+        <span>{zhCN.sessionList.newTitle}</span>
+        <input ref={input} data-testid="rename-input" value={draft} onChange={event => setDraft(event.target.value)} />
+      </label>
+    </form>
+  </Modal>;
 }
