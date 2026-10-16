@@ -28,7 +28,7 @@ describe("MessageItem streaming cursor", () => {
   it.each([true, false].flatMap(streaming => ["", "思考文本"].map(text => ({ streaming, text }))))(
     "thinking text=$text streaming=$streaming", ({ text, streaming }) => {
       const { container } = render(<MessageItem item={{ kind: "thinking", id: "thinking", text, streaming }} />);
-      if (text && !streaming) fireEvent.click(screen.getByRole("button", { name: "思考过程" }));
+      if (text) fireEvent.click(screen.getByRole("button", { name: "思考过程" }));
       expect(container.querySelectorAll(cursor)).toHaveLength(text && streaming ? 1 : 0);
       if (!text) expect(container).toBeEmptyDOMElement();
     },
@@ -37,7 +37,6 @@ describe("MessageItem streaming cursor", () => {
   it("removes the thinking cursor after cancellation even when manually expanded", () => {
     const item = { kind: "thinking" as const, id: "cancelled-thinking", text: "保留思考内容", streaming: true };
     const { container, rerender } = render(<MessageItem item={item} />);
-    fireEvent.click(screen.getByRole("button"));
     fireEvent.click(screen.getByRole("button"));
     expect(container.querySelectorAll(cursor)).toHaveLength(1);
     rerender(<MessageItem item={{ ...item, streaming: false }} />);

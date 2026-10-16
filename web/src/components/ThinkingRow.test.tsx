@@ -16,6 +16,8 @@ describe("ThinkingRow", () => {
     expect(container).toBeEmptyDOMElement();
     const text = " \n".repeat(40) + "真实\t思考\n保留  原文\r\n";
     rerender(<ThinkingRow thinking={{ ...thinking, text }} />);
+    expect(screen.getByRole("button")).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(screen.getByRole("button"));
     expect(screen.getByTestId("thinking-body-late").textContent).toBe(text);
     expect(container.querySelector(".thinking-summary")).toBeNull();
     fireEvent.click(screen.getByRole("button"));
@@ -36,34 +38,31 @@ describe("ThinkingRow", () => {
     const { container } = render(<ThinkingRow thinking={{ kind: "thinking", id: "no-preview", text, streaming }} />);
     const toggle = screen.getByRole("button", { name: "思考过程" });
     expect(toggle).toHaveTextContent(title);
-    expect(toggle).toHaveAttribute("title", streaming ? "收起思考过程" : "展开思考过程");
+    expect(toggle).toHaveAttribute("title", "展开思考过程");
     expect(container.querySelector(".thinking-summary")).toBeNull();
     // Ledger (DESIGN.md §4.4): collapsed rows show a whitespace-normalised 60-char preview.
-    const preview = container.querySelector(".thinking-preview");
-    if (streaming) expect(preview).toBeNull();
-    else expect(preview?.textContent).toBe(`第一行 ${"思考内容".repeat(30)}`.slice(0, 60) + "…");
-    if (!streaming) fireEvent.click(toggle);
+    expect(container.querySelector(".thinking-preview")?.textContent).toBe(`第一行 ${"思考内容".repeat(30)}`.slice(0, 60) + "…");
+    fireEvent.click(toggle);
     expect(container.querySelector(".thinking-preview")).toBeNull();
     expect(toggle).toHaveAttribute("title", "收起思考过程");
     expect(screen.getByTestId("thinking-body-no-preview").textContent).toBe(text);
   });
-  it("流式思考默认展开，但用户可收合；完成后保留用户选择", () => {
+  it("流式与完成后的思考都默认收起，用户展开后保留选择", () => {
     const thinking = { kind: "thinking" as const, id: "t-1", text: "检查调用链", streaming: true };
     const { rerender } = render(<ThinkingRow thinking={thinking} />);
     const toggle = screen.getByRole("button", { name: /思考过程/ });
-    expect(toggle).toHaveAttribute("aria-expanded", "true");
-    expect(toggle.lastElementChild).toHaveClass("thinking-chevron");
-    expect(screen.getByTestId("thinking-body-t-1")).toHaveTextContent("检查调用链");
-
-    fireEvent.click(toggle);
     expect(toggle).toHaveAttribute("aria-expanded", "false");
     expect(toggle.lastElementChild).toHaveClass("thinking-chevron");
     expect(screen.queryByTestId("thinking-body-t-1")).not.toBeInTheDocument();
-    rerender(<ThinkingRow thinking={{ ...thinking, streaming: false }} />);
-    expect(toggle).toHaveAttribute("aria-expanded", "false");
 
     fireEvent.click(toggle);
     expect(toggle).toHaveAttribute("aria-expanded", "true");
     expect(screen.getByTestId("thinking-body-t-1")).toHaveTextContent("检查调用链");
+    rerender(<ThinkingRow thinking={{ ...thinking, streaming: false }} />);
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByTestId("thinking-body-t-1")).not.toBeInTheDocument();
   });
 });

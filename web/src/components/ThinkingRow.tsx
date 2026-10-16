@@ -11,9 +11,8 @@ export type ThinkingRowProps = {
 };
 
 export function ThinkingRow({ thinking, step = false }: ThinkingRowProps) {
-  // Streaming opens by default, but an explicit user choice can still collapse it.
-  const [manualExpanded, setManualExpanded] = useState<boolean | null>(null);
-  const visible = manualExpanded ?? thinking.streaming;
+  // Starts collapsed, streaming or not; only the reader opens it.
+  const [visible, setVisible] = useState(false);
   // Keep hooks and manual state mounted for this id, even before useful text arrives.
   if (!thinking.text.trim()) return null;
 
@@ -26,7 +25,7 @@ export function ThinkingRow({ thinking, step = false }: ThinkingRowProps) {
       <button
         type="button"
         className="thinking-header chevron-trigger"
-        onClick={() => setManualExpanded(!visible)}
+        onClick={() => setVisible(!visible)}
         aria-expanded={visible}
         aria-label={zhCN.thinking.label}
         title={visible ? zhCN.thinking.collapse : zhCN.thinking.expand}
