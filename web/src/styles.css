@@ -3729,3 +3729,146 @@ div.shortcut-help { width: min(440px, calc(100vw - 32px)); max-height: 80vh; ove
 /* Diffs in Markdown code blocks: full-width line bands, as in the edit tool's diff (DESIGN.md §2.1). */
 .code-block[data-language="diff"] pre code { display: block; min-width: max-content; }
 .code-block[data-language="diff"] .diff-line { margin-inline: -10px; padding-inline: 10px; }
+
+/* =====================================================================
+   数字人（DESIGN.md §6.6）：线描角色，颜色只取 currentColor；动作都在这里，减少动态时全部停下。
+   ===================================================================== */
+/* With the companion the welcome is the page's subject: centred in the chat area on both axes,
+   not hung on the ledger's time gutter like transcript rows. */
+.chat .workbench-welcome:has(.companion-welcome) { width: 100%; max-width: calc(var(--prose-max) + 2 * var(--reading-inline-inset)); margin: auto; padding: var(--space-16) var(--reading-inline-inset); }
+.chat .workbench-welcome:has(.companion-welcome) .workbench-welcome-copy { text-align: center; }
+.companion-welcome { display: flex; flex-direction: column; align-items: center; gap: var(--space-16); margin-bottom: var(--space-24); text-align: center; }
+.companion-stage { display: flex; flex-direction: column; align-items: center; gap: var(--space-12); min-width: 0; }
+.companion-avatar { flex: none; display: grid; place-items: center; padding: 0; border: 0; background: none; color: var(--ink); cursor: pointer; border-radius: var(--radius-float); }
+.companion-avatar:hover { background: var(--hl); }
+.companion-avatar:focus-visible, .companion-dock:focus-visible, .companion-chip:focus-visible { outline: 2px solid var(--acc); outline-offset: 2px; }
+.companion-speech { display: flex; flex-direction: column; align-items: center; gap: var(--space-4); min-width: 0; }
+.companion-name { font-family: var(--font-mono); font-size: var(--fs-meta); color: var(--dim); }
+.companion-greeting { margin: 0; font-size: var(--fs-h2); line-height: 1.5; color: var(--ink); }
+.companion-hint { margin: 0; font-size: var(--fs-ui); line-height: 1.6; color: var(--body2); }
+
+.companion-quick { display: flex; flex-wrap: wrap; justify-content: center; gap: var(--space-8); }
+.companion-chip { display: inline-flex; align-items: baseline; gap: var(--space-8); max-width: 100%; min-width: 0; padding: 6px 10px; border: 1px solid var(--line); border-radius: var(--radius-control); background: none; color: var(--ink); cursor: pointer; text-align: left; }
+.companion-chip:hover { border-color: var(--ink); background: var(--hl); }
+.companion-chip-name { flex: none; font-family: var(--font-mono); font-size: var(--fs-step); }
+.companion-chip-detail { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 28ch; font-size: var(--fs-meta); color: var(--dim); }
+
+.companion-editor { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: var(--space-12); font-size: var(--fs-meta); color: var(--dim); }
+.companion-field { display: inline-flex; align-items: center; gap: var(--space-8); }
+.companion-field input { width: 12ch; padding: 4px 8px; border: 1px solid var(--line); border-radius: var(--radius-control); background: var(--card); color: var(--ink); font: inherit; font-size: var(--fs-step); }
+.companion-field input:focus { outline: none; border-color: var(--ink); }
+.companion-style, .companion-done { padding: 4px 10px; border: 1px solid var(--line); border-radius: var(--radius-control); background: none; color: var(--body2); font: inherit; cursor: pointer; }
+.companion-style[aria-checked="true"] { border-color: var(--ink); color: var(--ink); background: var(--hl); }
+.companion-done { color: var(--ink); }
+
+.chat-latest-row { position: relative; }
+.companion-dock { position: absolute; right: 0; top: 4px; display: grid; place-items: center; width: 36px; height: 36px; padding: 0; border: 0; background: none; color: var(--ink); cursor: pointer; border-radius: var(--radius-control); }
+.companion-dock:hover { background: var(--hl); }
+.companion-dock.is-away { opacity: 0.6; }
+.companion-dock-dot { width: 6px; height: 6px; border-radius: var(--radius-pill); background: var(--faint); }
+
+/* Paint: currentColor lines; the catchlight is the page showing through, the accent marks work and joy. */
+.companion-shine { fill: var(--companion-shine); }
+.companion-sparkles path { fill: var(--acc); }
+.companion-dots, .companion-z { color: var(--dim); }
+
+/* Moving parts. transform-box keeps each origin on the part itself. */
+.companion-figure { overflow: visible; }
+.companion-figure * { transform-box: fill-box; }
+.companion-body { transform-origin: 50% 100%; animation: companion-breathe 3.2s ease-in-out infinite; }
+.companion-lean { transform-origin: 50% 100%; transition: transform 220ms cubic-bezier(0.34, 1.56, 0.64, 1); }
+.companion-sprout { transform-origin: 50% 100%; animation: companion-sway 2.8s ease-in-out infinite; transition: color var(--motion); }
+.companion-gaze, .companion-eyes-gaze { transition: transform 160ms ease-out; }
+/* Limbs swing from where they join the body. */
+/* Paws and tail move from where they join the body. */
+.companion-paw { transform-origin: 50% 100%; }
+.companion-raise { opacity: 0; transition: opacity 120ms ease-out; }
+.companion-raise-left { transform-origin: 100% 100%; }
+.companion-raise-right { transform-origin: 0% 100%; }
+.companion-blush { opacity: 0.55; transition: opacity var(--motion); }
+.companion-face[data-blush="strong"] .companion-blush { opacity: 1; }
+.companion-tail { transform-origin: 0% 100%; animation: companion-wag 2.4s ease-in-out infinite; }
+.companion-eye { transform-origin: center; animation: companion-blink 4.6s infinite; }
+.companion-eyes { transition: transform var(--motion); }
+
+.companion-figure[data-mood="listening"] .companion-lean { transform: rotate(4deg); }
+.companion-figure[data-mood="listening"] .companion-eyes { transform: translateY(1.5px); }
+.companion-figure[data-mood="curious"] .companion-lean { transform: rotate(-6deg); }
+.companion-figure[data-mood="curious"] .companion-sprout { animation: companion-boing 0.6s ease-out 1; }
+.companion-figure[data-mood="thinking"] .companion-eyes { transform: translate(1.5px, -2px); }
+.companion-figure[data-mood="thinking"] .companion-lean { transform: rotate(-3deg); }
+.companion-figure[data-mood="working"] .companion-eyes { animation: companion-scan 1.6s ease-in-out infinite; }
+.companion-figure[data-mood="working"] .companion-body { animation: companion-bob 0.72s ease-in-out infinite; }
+.companion-figure[data-mood="working"] .companion-paw-left { animation: companion-knead 0.36s ease-in-out infinite; }
+.companion-figure[data-mood="working"] .companion-paw-right { animation: companion-knead 0.36s ease-in-out 0.18s infinite; }
+.companion-figure[data-mood="working"] .companion-sprout,
+.companion-figure[data-mood="happy"] .companion-sprout { color: var(--acc); }
+.companion-figure[data-mood="working"] .companion-leaf { transform-origin: 0% 100%; animation: companion-glow 0.9s ease-in-out infinite; }
+.companion-figure[data-mood="happy"] .companion-lean { animation: companion-hop 0.7s ease-out 3; }
+.companion-figure[data-mood="happy"] .companion-tail { animation-duration: 0.4s; }
+.companion-figure[data-mood="working"] .companion-tail { animation-duration: 1.2s; }
+.companion-figure[data-mood="sad"] .companion-tail { animation: none; transform: rotate(28deg); }
+.companion-figure[data-mood="sleepy"] .companion-tail { animation-duration: 5s; }
+/* Cheering: both paws come up and wave. */
+.companion-figure[data-mood="happy"] .companion-raise { opacity: 1; }
+.companion-figure[data-mood="happy"] .companion-raise-left { animation: companion-paw-wave-left 0.5s ease-in-out infinite; }
+.companion-figure[data-mood="happy"] .companion-raise-right { animation: companion-paw-wave-right 0.5s ease-in-out 0.25s infinite; }
+.companion-figure[data-mood="sad"] .companion-lean { transform: scale(1.03, 0.94); }
+.companion-figure[data-mood="sad"] .companion-sprout { animation: none; transform: rotate(-38deg); color: var(--dim); }
+.companion-figure[data-mood="sleepy"] .companion-body { animation-duration: 5s; }
+.companion-figure[data-mood="sleepy"] .companion-lean { transform: rotate(7deg); }
+.companion-figure[data-mood="sleepy"] .companion-sprout { animation: none; transform: rotate(25deg); }
+
+/* Idle antics, picked at random every few seconds (companion-life.ts). */
+.companion-figure[data-antic="wave"] .companion-raise-right { opacity: 1; animation: companion-paw-wave-right 0.5s ease-in-out 3; }
+.companion-figure[data-antic="knead"] .companion-paw-left { animation: companion-knead 0.4s ease-in-out 4; }
+.companion-figure[data-antic="knead"] .companion-paw-right { animation: companion-knead 0.4s ease-in-out 0.2s 4; }
+.companion-figure[data-antic="hop"] .companion-lean { animation: companion-hop 0.8s ease-out 1; }
+.companion-figure[data-antic="tilt"] .companion-lean { animation: companion-tilt 1.6s ease-in-out 1; }
+.companion-figure[data-antic="peek"] .companion-eyes { animation: companion-peek 1.6s ease-in-out 1; }
+.companion-figure[data-antic="wiggle"] .companion-lean { animation: companion-wiggle 0.5s ease-in-out 3; }
+.companion-figure[data-antic="boing"] .companion-sprout { animation: companion-boing 0.8s ease-out 2; }
+/* Say hello to whoever hovers. */
+.companion-avatar:hover .companion-figure[data-mood="idle"] .companion-raise-right { opacity: 1; animation: companion-paw-wave-right 0.5s ease-in-out infinite; }
+
+.companion-body.is-nod { animation: companion-nod 0.5s ease-out 1; }
+.companion-body.is-boop { animation: companion-boop 0.55s cubic-bezier(0.34, 1.56, 0.64, 1) 1; }
+.companion-sparkles path { transform-origin: center; animation: companion-sparkle 1.1s ease-in-out infinite; }
+.companion-sparkles path:nth-child(2) { animation-delay: 0.35s; }
+.companion-sparkles path:nth-child(3) { animation-delay: 0.7s; }
+.companion-dots circle { animation: companion-dot 1.2s ease-in-out infinite; }
+.companion-dots circle:nth-child(2) { animation-delay: 0.2s; }
+.companion-dots circle:nth-child(3) { animation-delay: 0.4s; }
+.companion-z { animation: companion-float 2.4s ease-in-out infinite; }
+
+@keyframes companion-breathe { 0%, 100% { transform: scale(1, 1); } 50% { transform: scale(1.018, 0.982); } }
+@keyframes companion-sway { 0%, 100% { transform: rotate(-8deg); } 50% { transform: rotate(8deg); } }
+@keyframes companion-blink { 0%, 92%, 100% { transform: scaleY(1); } 95% { transform: scaleY(0.08); } }
+@keyframes companion-scan { 0%, 100% { transform: translateX(-1.6px); } 50% { transform: translateX(1.6px); } }
+@keyframes companion-bob { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(0.8px); } }
+@keyframes companion-knead { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-1.6px); } }
+@keyframes companion-paw-wave-left { 0%, 100% { transform: rotate(0); } 50% { transform: rotate(16deg); } }
+@keyframes companion-paw-wave-right { 0%, 100% { transform: rotate(0); } 50% { transform: rotate(-16deg); } }
+@keyframes companion-wag { 0%, 100% { transform: rotate(-6deg); } 50% { transform: rotate(8deg); } }
+@keyframes companion-glow { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.2); } }
+@keyframes companion-hop {
+  0%, 100% { transform: translateY(0) scale(1, 1); }
+  15% { transform: translateY(0) scale(1.08, 0.9); }
+  45% { transform: translateY(-6px) scale(0.94, 1.08); }
+  70% { transform: translateY(0) scale(1.05, 0.95); }
+}
+@keyframes companion-tilt { 0%, 100% { transform: rotate(0); } 25%, 70% { transform: rotate(10deg); } }
+@keyframes companion-peek { 0%, 100% { transform: translateX(0); } 20%, 40% { transform: translateX(-2px); } 60%, 80% { transform: translateX(2px); } }
+@keyframes companion-wiggle { 0%, 100% { transform: rotate(0); } 25% { transform: rotate(-5deg); } 75% { transform: rotate(5deg); } }
+@keyframes companion-boing { 0%, 100% { transform: scale(1, 1) rotate(0); } 30% { transform: scale(0.9, 1.35) rotate(-14deg); } 60% { transform: scale(1.05, 0.9) rotate(12deg); } }
+@keyframes companion-nod { 0%, 100% { transform: translateY(0); } 35% { transform: translateY(2.5px) scale(1.03, 0.96); } }
+@keyframes companion-boop { 0%, 100% { transform: scale(1, 1); } 30% { transform: scale(1.12, 0.86); } 60% { transform: scale(0.95, 1.06); } }
+@keyframes companion-sparkle { 0%, 100% { transform: scale(0.3) rotate(0); opacity: 0; } 50% { transform: scale(1) rotate(45deg); opacity: 1; } }
+@keyframes companion-dot { 0%, 100% { opacity: 0.25; } 50% { opacity: 1; } }
+@keyframes companion-float { 0% { opacity: 0; transform: translateY(2px); } 50% { opacity: 1; } 100% { opacity: 0; transform: translateY(-4px); } }
+@media (prefers-reduced-motion: reduce) {
+  .companion-figure *, .companion-figure[data-mood] .companion-eyes { animation: none !important; transition: none !important; }
+}
+@container chat (max-width: 640px) {
+  .companion-greeting { font-size: var(--fs-body); }
+}

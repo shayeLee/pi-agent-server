@@ -676,6 +676,13 @@ export class SessionService {
     }
   }
 
+  /** Root identity of a project the caller may create sessions in; drafts use it before any session exists. */
+  async projectCwd(ownerKey: string, projectId: string): Promise<{ cwd: string; dev: number; ino: number } | null> {
+    const project = await this.resolveProject(ownerKey, projectId);
+    if (!project) return null;
+    try { return canonicalCwdIdentity(project.cwd); } catch { return null; }
+  }
+
   /** Resolve only the creation-time JSONL root identity; mutable project/AGENT_CWD is never a preview fallback. */
   async sessionProjectCwd(ownerKey: string, id: string): Promise<{ cwd: string; dev: number; ino: number } | null> {
     const record = await this.findOwned(ownerKey, id);

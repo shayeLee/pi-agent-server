@@ -29,6 +29,8 @@ export const PUBLIC_API_OPERATIONS = [
   ["/v1/projects", "get", "projects:list"],
   ["/v1/projects", "post", "projects:create"],
   ["/v1/projects/{id}", "delete", "projects:delete"],
+  ["/v1/projects/{id}/files", "get", "sessions:create"],
+  ["/v1/projects/{id}/commands", "get", "sessions:create"],
   ["/v1/files", "post", "files:upload"],
   ["/v1/sessions", "get", "sessions:list"],
   ["/v1/sessions", "post", "sessions:create"],
@@ -245,6 +247,19 @@ export const openapiV1 = {
         "204": noContent,
         "400": error(400, "The default project cannot be deleted."),
         "404": error(404, "Project not found."),
+      }, { parameters: [id] }),
+    },
+    "/v1/projects/{id}/files": {
+      get: operation("searchProjectFiles", "sessions:create", {
+        "200": { description: "The `@` suggestions of searchSessionFiles for a draft before its session exists, rooted at the project's current canonical cwd.", ...json(ref("ProjectFileSearch")) },
+        "400": error(400, "The query is invalid."),
+        "404": error(404, "Project not found, not usable for new sessions, or its directory is unavailable."),
+      }, { parameters: [id, { name: "query", in: "query", required: false, schema: { type: "string", maxLength: 256 }, description: "Fuzzy path query; a leading @ is ignored." }] }),
+    },
+    "/v1/projects/{id}/commands": {
+      get: operation("listProjectCommands", "sessions:create", {
+        "200": { description: "Prompt templates and skill:<name> a draft in this project can start with. Host commands (compact, reload) need a session and are left out.", ...json(ref("SessionCommandList")) },
+        "404": error(404, "Project not found, not usable for new sessions, or its directory is unavailable."),
       }, { parameters: [id] }),
     },
     "/v1/files": {

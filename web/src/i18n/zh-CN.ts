@@ -1,3 +1,57 @@
+type CompanionVoice = {
+  greetings: Record<"dawn" | "morning" | "noon" | "afternoon" | "evening" | "night", readonly ((project: string) => string)[]>;
+  resume: (title: string, ago: string) => string;
+  commands: (count: number) => string;
+  files: string;
+  moods: Record<"idle" | "listening" | "curious" | "thinking" | "working" | "happy" | "sad" | "sleepy", string>;
+};
+
+/** The companion's three voices (DESIGN.md §6.6): same facts, different temperament. */
+const companionVoices: Record<"concise" | "lively" | "formal", CompanionVoice> = {
+  concise: {
+    greetings: {
+      dawn: [p => `这么早。${p}，开始吧。`],
+      morning: [p => `早。今天在 ${p} 做什么？`, p => `早上好。${p} 就绪。`],
+      noon: [p => `中午好。${p} 有什么要处理？`],
+      afternoon: [p => `下午好。${p}，说任务。`, p => `${p} 就绪，说吧。`],
+      evening: [p => `晚上好。${p} 还要做点什么？`],
+      night: [p => `夜深了。${p}，快速搞定？`],
+    },
+    resume: (title, ago) => `上次：「${title}」，${ago}。`,
+    commands: count => `本项目有 ${count} 个模板 / skill，输入 / 查看。`,
+    files: "输入 @ 引用项目文件。",
+    moods: { idle: "待命。", listening: "在听。", curious: "选哪个？", thinking: "排队中。", working: "执行中。", happy: "完成。", sad: "没成功。", sleepy: "待机中。" },
+  },
+  lively: {
+    greetings: {
+      dawn: [p => `天还没亮呢，${p} 这么早就要开工啦？`],
+      morning: [p => `早上好呀！今天想在 ${p} 里做点什么？`, p => `新的一天！${p} 已经准备好了～`],
+      noon: [p => `中午好～吃过饭了吗？${p} 随时待命。`],
+      afternoon: [p => `下午好！来，${p} 里有什么要搞定的？`, p => `下午茶时间也能干活，${p} 想做什么？`],
+      evening: [p => `晚上好～${p} 还有什么想收尾的吗？`],
+      night: [p => `夜深啦，在 ${p} 里再做一点就去休息吧？`],
+    },
+    resume: (title, ago) => `${ago}我们在聊「${title}」，要接着来吗？`,
+    commands: count => `这个项目藏着 ${count} 个模板和 skill，输入 / 就能翻出来～`,
+    files: "想让我看哪个文件？输入 @ 就能挑。",
+    moods: { idle: "我在这儿～", listening: "嗯嗯，我在听！", curious: "哪个好呢？", thinking: "马上就来…", working: "埋头干活中！", happy: "搞定啦！", sad: "呜，没成功…", sleepy: "有点困了…" },
+  },
+  formal: {
+    greetings: {
+      dawn: [p => `您好，现在时间尚早。请问在 ${p} 中需要处理什么？`],
+      morning: [p => `早上好。请问今天在 ${p} 中有什么需要协助？`],
+      noon: [p => `中午好。${p} 已就绪，请吩咐。`],
+      afternoon: [p => `下午好。请问在 ${p} 中需要处理什么任务？`],
+      evening: [p => `晚上好。${p} 中还有需要完成的工作吗？`],
+      night: [p => `您好，时间已晚。请问在 ${p} 中还需要处理什么？`],
+    },
+    resume: (title, ago) => `您${ago}的会话是「${title}」，如需继续可在左侧打开。`,
+    commands: count => `本项目提供 ${count} 个提示词模板与 skill，输入 / 即可选用。`,
+    files: "如需引用项目文件，请输入 @ 选择。",
+    moods: { idle: "随时待命。", listening: "正在聆听。", curious: "请选择。", thinking: "正在排队。", working: "正在处理。", happy: "已完成。", sad: "未能完成。", sleepy: "处于待机状态。" },
+  },
+};
+
 /** Chinese UI copy. Keep protocol identifiers and user/server content out of this object. */
 export const zhCN = {
   /** BCP 47 tag for every number, date and unit format (`i18n/format.ts`). */
@@ -137,6 +191,23 @@ export const zhCN = {
     latest: "回到最新",
     latestLive: "回到最新（正在生成）",
   },
+  companion: {
+    defaultName: "小派",
+    thisProject: "这个项目",
+    untitled: "未命名会话",
+    agoMinutes: "刚才",
+    agoHours: (hours: number) => `${hours} 小时前`,
+    agoDays: (days: number) => `${days} 天前`,
+    voices: companionVoices,
+    edit: (name: string) => `和${name}打招呼：改名字或说话风格`,
+    nameLabel: "名字",
+    styleLabel: "说话风格",
+    styles: { concise: "简洁", lively: "活泼", formal: "正式" } as Record<"concise" | "lively" | "formal", string>,
+    done: "好了",
+    quickStart: "快捷开始",
+    hide: (name: string) => `收起${name}`,
+    show: (name: string) => `叫回${name}`,
+  },
   controlQueue: {
     position: (position: number) => `第 ${position} 条`,
     refresh: "刷新队列",
@@ -194,6 +265,7 @@ export const zhCN = {
     noFiles: "没有匹配的文件",
     commandSource: { prompt: "模板", skill: "skill" } as Record<"prompt" | "skill", string>,
     commandBusy: "运行中不能执行命令，等本轮结束后再试；输入已保留。",
+    commandNeedsSession: "该命令作用于已有会话，请先发送第一条消息；输入已保留。",
     commandFailed: (command: string, reason: string) => `/${command} 未完成：${reason}`,
     compactCancelled: "已取消压缩",
     reloaded: (counts: { contextFiles: number; promptTemplates: number; skills: number; extensions: number }) =>

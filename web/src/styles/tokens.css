@@ -59,6 +59,9 @@
   --err: #B3261E;
   --warn: #8A5A00;
   --line: #E4E3DE;
+  /* The companion's catchlight is the page showing through its eyes; on dark pages its
+     light eyes read better plain (DESIGN.md §6.6). */
+  --companion-shine: var(--bg);
   /* Diff lines only (DESIGN.md §2.1): content color, never a status or accent. */
   --diff-add: #276B37;
   --diff-add-bg: #276B3712;
@@ -80,6 +83,7 @@
   --err: #F2827A;
   --warn: #E0B25C;
   --line: #26272B;
+  --companion-shine: transparent;
   --diff-add: #A4D69C;
   --diff-add-bg: #A4D69C12;
   --diff-del: #FF91AD;

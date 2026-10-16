@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { act, render, screen, fireEvent } from "@testing-library/react";
+import { act, render, screen, fireEvent, within } from "@testing-library/react";
 import { Chat } from "./Chat.js";
 import type { SessionRecord, TimelineItem } from "pi-agent-server/client";
 
@@ -337,11 +337,26 @@ describe("Chat（聊天区）", () => {
     expect(screen.queryByTestId("chat-empty")).not.toBeInTheDocument();
   });
 
-  it("未选择会话显示可操作的说明而不添加虚假快捷按钮", () => {
-    setup({ session: null });
+  it("未选择会话由数字人迎接，快捷入口只来自项目里真实存在的命令", async () => {
+    const loadCommands = vi.fn(async () => [
+      { name: "compact", source: "builtin" as const, description: "压缩" },
+      { name: "review", source: "prompt" as const, description: "Review a change" },
+    ]);
+    const onDraftText = vi.fn();
+    setup({ session: null, loadCommands, onDraftText });
     const welcome = screen.getByTestId("no-session-hint");
     expect(welcome).toHaveTextContent("选择项目并发送第一条消息");
-    expect(welcome.querySelector("button")).toBeNull();
+    expect(await within(welcome).findByText(/我的仓库/)).toBeInTheDocument();
+    const chips = within(welcome).getByRole("group", { name: "快捷开始" });
+    expect(within(chips).getAllByRole("button").map(button => button.textContent)).toEqual([expect.stringContaining("/review")]);
+    fireEvent.click(within(chips).getByRole("button"));
+    expect(onDraftText).toHaveBeenCalledWith("/review ");
+  });
+
+  it("没有可用命令时不显示快捷入口", async () => {
+    setup({ session: null, loadCommands: async () => [] });
+    await screen.findByText(/@/);
+    expect(screen.queryByRole("group", { name: "快捷开始" })).not.toBeInTheDocument();
   });
 
   it("无会话时不重复侧栏项目选择并通过 onSend 提交创建消息", () => {

@@ -1,8 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { buildApp } from "../../src/server/app.js";
+import { DEFAULT_PROJECT_ID } from "../../src/shared/project-identity.js";
 import { MockAgentAdapter } from "../../src/agent/mock-agent-adapter.js";
 import type { SessionCommandInput, SessionCommandResult } from "../../src/shared/commands.js";
 import { makeInitializedMemoryDb } from "../helpers/sqlite.js";
@@ -25,7 +26,7 @@ async function setup(adapter: MockAgentAdapter) {
   const id = created.json().id as string;
   const post = (payload: unknown, remoteAddress = "10.0.0.1") => app.inject({ method: "POST", url: `/v1/sessions/${id}/commands`, remoteAddress,
     headers: { "content-type": "application/json" }, payload: JSON.stringify(payload) });
-  return { app, id, post };
+  return { app, id, post, dir };
 }
 
 describe("session command routes", () => {
@@ -58,6 +59,17 @@ describe("session command routes", () => {
       for (const url of [`/v1/sessions/${id}/commands`, `/v1/sessions/${id}/files?query=src`]) {
         expect((await app.inject({ method: "GET", url, remoteAddress: "10.0.0.1" })).statusCode).toBe(404);
       }
+    } finally { await app.close(); }
+  });
+
+  it("serves a draft's project menus without host commands, and only for usable projects", async () => {
+    const { app, dir } = await setup(new CommandAdapter());
+    writeFileSync(path.join(dir, "notes.md"), "x");
+    const get = (url: string) => app.inject({ method: "GET", url, remoteAddress: "10.0.0.1" });
+    try {
+      expect((await get(`/v1/projects/${DEFAULT_PROJECT_ID}/commands`)).json()).toEqual({ commands: [] });
+      expect((await get(`/v1/projects/${DEFAULT_PROJECT_ID}/files?query=notes`)).json().entries).toEqual([{ path: "notes.md", kind: "file" }]);
+      for (const url of ["/v1/projects/missing/commands", "/v1/projects/missing/files"]) expect((await get(url)).statusCode).toBe(404);
     } finally { await app.close(); }
   });
 });

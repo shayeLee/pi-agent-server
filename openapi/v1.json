@@ -825,6 +825,172 @@
         ]
       }
     },
+    "/v1/projects/{id}/files": {
+      "get": {
+        "operationId": "searchProjectFiles",
+        "security": [
+          {
+            "IpAdmission": []
+          },
+          {
+            "IpAdmission": [],
+            "BearerAuth": []
+          }
+        ],
+        "x-pi-rbac": {
+          "permission": "sessions:create",
+          "roles": [
+            "admin",
+            "user"
+          ]
+        },
+        "responses": {
+          "200": {
+            "description": "The `@` suggestions of searchSessionFiles for a draft before its session exists, rooted at the project's current canonical cwd.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectFileSearch"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The query is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer token required for this admitted IP profile.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "IP admission or RBAC denied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Project not found, not usable for new sessions, or its directory is unavailable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "query",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 256
+            },
+            "description": "Fuzzy path query; a leading @ is ignored."
+          }
+        ]
+      }
+    },
+    "/v1/projects/{id}/commands": {
+      "get": {
+        "operationId": "listProjectCommands",
+        "security": [
+          {
+            "IpAdmission": []
+          },
+          {
+            "IpAdmission": [],
+            "BearerAuth": []
+          }
+        ],
+        "x-pi-rbac": {
+          "permission": "sessions:create",
+          "roles": [
+            "admin",
+            "user"
+          ]
+        },
+        "responses": {
+          "200": {
+            "description": "Prompt templates and skill:<name> a draft in this project can start with. Host commands (compact, reload) need a session and are left out.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionCommandList"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer token required for this admitted IP profile.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "IP admission or RBAC denied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Project not found, not usable for new sessions, or its directory is unavailable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
     "/v1/files": {
       "post": {
         "operationId": "uploadFile",

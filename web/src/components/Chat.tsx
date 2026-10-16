@@ -15,6 +15,8 @@ import { SubagentLivePanel } from "./SubagentLivePanel.js";
 import type { LiveSubagent } from "../hooks/useLiveSubagents.js";
 import type { SessionConnection } from "../hooks/useSessionStream.js";
 import { EmptyState } from "./EmptyState.js";
+import { CompanionDock, CompanionWelcome, useCompanionPersona } from "./companion/Companion.js";
+import { useCompanion } from "./companion/companion-mood.js";
 import type { SubmissionState, SubmitOutcome, UnsentMessage } from "../attachment-state.js";
 
 export type ChatProps = {
@@ -76,6 +78,8 @@ export type ChatProps = {
   onOpenSubagent?: (runId: string) => void;
   onNavigateTurn?: (timelineId: string) => void;
   traceOpen?: boolean;
+  /** The project's latest session, for the companion's welcome on a blank session. */
+  recentSession?: { title: string; updatedAt: number } | null;
   onConfigChange: (config: { modelProvider?: string; modelId?: string; thinkingLevel?: string }) => void;
 };
 
@@ -133,12 +137,22 @@ export function Chat({
   onOpenSubagent,
   onNavigateTurn,
   traceOpen,
+  recentSession = null,
   onConfigChange,
 }: ChatProps) {
   const bodyRef = useRef<HTMLDivElement>(null);
   const derivedPhase = phase ?? (queued ? "queued" : primaryAwaitingStart ? "submitting" : streaming ? "streaming" : "idle");
   const runStatus = useRunStatus(session?.id ?? null, derivedPhase, runFailed);
   const [abortArmed, setAbortArmed] = useState(false);
+  const companion = useCompanion(runStatus.kind);
+  const [persona, setPersona] = useCompanionPersona();
+  const sectionRef = useRef<HTMLElement>(null);
+  const quickStart = onDraftText ? (text: string) => {
+    onDraftText(text);
+    const input = sectionRef.current?.querySelector<HTMLTextAreaElement>("[data-testid='composer-input']");
+    // After React writes the text, so the caret lands at its end.
+    requestAnimationFrame(() => { input?.focus(); input?.setSelectionRange(text.length, text.length); });
+  } : undefined;
 
   // 48px accommodates fractional scroll metrics and small touch movements.
   // Intent lives outside React updates: content growth must not look like scrolling away.
@@ -219,7 +233,7 @@ export function Chat({
   const placeholder = zhCN.chat.placeholder;
 
   return (
-    <section className="chat" data-testid="chat" hidden={hidden}>
+    <section className="chat" data-testid="chat" hidden={hidden} ref={sectionRef}>
       {session && (
         <ChatHeader
           session={session}
@@ -263,6 +277,9 @@ export function Chat({
         {!session ? (
           <div className="workbench-welcome" data-testid="no-session-hint">
             {loadError && <div className="chat-phase-banner error" role="alert">{loadError}</div>}
+            <CompanionWelcome mood={companion.mood} nodKey={companion.nodKey} persona={persona} onPersona={setPersona}
+              projectId={activeProjectId} projectName={projects?.find(project => project.id === activeProjectId)?.name ?? null}
+              recent={recentSession} loadCommands={canCreateSession ? loadCommands : undefined} onQuickStart={canCreateSession && canWrite ? quickStart : undefined} />
             <p className="workbench-welcome-copy">{zhCN.chat.welcome}</p>
           </div>
         ) : (
@@ -291,6 +308,7 @@ export function Chat({
       </div>
       {session && hasMessages && (
         <div className="chat-latest-row">
+          <CompanionDock mood={companion.mood} nodKey={companion.nodKey} persona={persona} onPersona={setPersona} />
           {/* An icon is enough; while PI is still writing below, it turns accent and drifts (DESIGN.md §3). */}
           {showLatest && (
             <button type="button" className="chat-latest" data-live={streaming ? "true" : undefined}
@@ -345,6 +363,7 @@ export function Chat({
             loadCommands={loadCommands}
             searchFiles={searchFiles}
             onRunCommand={onRunCommand}
+            onActivity={companion.signal}
             onConfigChange={onConfigChange}
           />
           {session && hasMessages && <StatsBar stats={stats} streamLost={streamLost} timeline={timeline} pending={streaming || queued} modelOutput={modelOutput} runProgress={runProgress} activeTools={activeTools} />}

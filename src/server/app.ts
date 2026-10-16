@@ -7,6 +7,7 @@ import Fastify, {
   LogController,
   type FastifyInstance,
   type FastifyReply,
+  type FastifyRequest,
 } from "fastify";
 import cors from "@fastify/cors";
 import { identityKey, type UserIdentity } from "../core/user-identity.js";
@@ -686,29 +687,37 @@ export function buildApp(deps: ServerDeps): FastifyInstance {
       },
     );
     // Path names only (never contents) for `@` references; same session-owned root as preview.
-    api.get<{ Params: { id: string }; Querystring: { query?: unknown } }>(
-      "/sessions/:id/files",
-      { exposeHeadRoute: false, ...requirePermission("sessions:file-preview") },
-      async (request, reply) => {
-        const projectCwd = await sessions.sessionProjectCwd(ownerKeyOf(request), request.params.id);
-        if (!projectCwd) return NOT_FOUND(reply);
-        try {
-          return reply.code(200).send(await searchProjectFiles(projectCwd, request.query.query));
-        } catch (error) {
-          if (error instanceof FileSearchError) {
-            return reply.code(400).send({ statusCode: 400, error: "Bad Request", code: error.code, message: "文件搜索请求不可用" });
-          }
-          throw error;
+    // The project variants serve the blank composer before its session exists.
+    type RootOf = (ownerKey: string, id: string) => Promise<{ cwd: string; dev: number; ino: number } | null>;
+    const fileSearchRoute = (rootOf: RootOf) => async (request: FastifyRequest<{ Params: { id: string }; Querystring: { query?: unknown } }>, reply: FastifyReply) => {
+      const projectCwd = await rootOf(ownerKeyOf(request), request.params.id);
+      if (!projectCwd) return NOT_FOUND(reply);
+      try {
+        return reply.code(200).send(await searchProjectFiles(projectCwd, request.query.query));
+      } catch (error) {
+        if (error instanceof FileSearchError) {
+          return reply.code(400).send({ statusCode: 400, error: "Bad Request", code: error.code, message: "文件搜索请求不可用" });
         }
-      },
-    );
+        throw error;
+      }
+    };
+    const commandListRoute = (rootOf: RootOf, includeBuiltins: boolean) => async (request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply) => {
+      const projectCwd = await rootOf(ownerKeyOf(request), request.params.id);
+      if (!projectCwd) return NOT_FOUND(reply);
+      const commands = deps.listSessionCommands ? await deps.listSessionCommands(projectCwd.cwd) : [...BUILTIN_SESSION_COMMANDS];
+      // Host commands act on a live session; a draft only gets templates and skills.
+      return reply.code(200).send({ commands: includeBuiltins ? commands : commands.filter(command => command.source !== "builtin") });
+    };
+    const sessionRoot: RootOf = (owner, id) => sessions.sessionProjectCwd(owner, id);
+    const projectRoot: RootOf = (owner, id) => sessions.projectCwd(owner, id);
+    api.get<{ Params: { id: string }; Querystring: { query?: unknown } }>("/sessions/:id/files",
+      { exposeHeadRoute: false, ...requirePermission("sessions:file-preview") }, fileSearchRoute(sessionRoot));
     api.get<{ Params: { id: string } }>("/sessions/:id/commands",
-      { exposeHeadRoute: false, ...requirePermission("sessions:export") }, async (request, reply) => {
-        const projectCwd = await sessions.sessionProjectCwd(ownerKeyOf(request), request.params.id);
-        if (!projectCwd) return NOT_FOUND(reply);
-        const commands = deps.listSessionCommands ? await deps.listSessionCommands(projectCwd.cwd) : [...BUILTIN_SESSION_COMMANDS];
-        return reply.code(200).send({ commands });
-      });
+      { exposeHeadRoute: false, ...requirePermission("sessions:export") }, commandListRoute(sessionRoot, true));
+    api.get<{ Params: { id: string }; Querystring: { query?: unknown } }>("/projects/:id/files",
+      { exposeHeadRoute: false, ...requirePermission("sessions:create") }, fileSearchRoute(projectRoot));
+    api.get<{ Params: { id: string } }>("/projects/:id/commands",
+      { exposeHeadRoute: false, ...requirePermission("sessions:create") }, commandListRoute(projectRoot, false));
     api.post<{ Params: { id: string }; Body: import("../shared/commands.js").SessionCommandInput }>(
       "/sessions/:id/commands",
       { schema: { body: SESSION_COMMAND_BODY_SCHEMA }, ...requirePermission("sessions:control") },

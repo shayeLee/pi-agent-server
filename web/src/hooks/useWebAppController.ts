@@ -796,15 +796,16 @@ export function useWebAppController() {
     api.abort(sessionId).catch((err) => reportChatError(sessionId, err));
   }
 
+  // A blank composer drafts into the selected project, so its menus read that project.
   const loadCommands = useCallback(async () => {
-    if (!activeSessionId) return [];
-    return (await api.listSessionCommands(activeSessionId)).commands;
-  }, [api, activeSessionId]);
+    if (activeSessionId) return (await api.listSessionCommands(activeSessionId)).commands;
+    return activeProjectId ? (await api.listProjectCommands(activeProjectId)).commands : [];
+  }, [api, activeSessionId, activeProjectId]);
 
   const searchFiles = useCallback(async (query: string) => {
-    if (!activeSessionId) return [];
-    return (await api.searchSessionFiles(activeSessionId, query)).entries;
-  }, [api, activeSessionId]);
+    if (activeSessionId) return (await api.searchSessionFiles(activeSessionId, query)).entries;
+    return activeProjectId ? (await api.searchProjectFiles(activeProjectId, query)).entries : [];
+  }, [api, activeSessionId, activeProjectId]);
 
   /** /compact reports through its compaction events; /reload returns what it loaded. */
   async function runCommand(input: SessionCommandInput): Promise<string | null> {

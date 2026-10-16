@@ -229,6 +229,16 @@ export class ApiClient {
     return this.request("GET", `/v1/sessions/${encodeURIComponent(id)}/commands`);
   }
 
+  /** `@` suggestions for a draft in this project, before its session exists. */
+  searchProjectFiles(projectId: string, query: string): Promise<import("../shared/commands.js").ProjectFileSearch> {
+    return this.request("GET", `/v1/projects/${encodeURIComponent(projectId)}/files?query=${encodeURIComponent(query)}`);
+  }
+
+  /** Prompt templates and skills a draft in this project can start with (no host commands). */
+  listProjectCommands(projectId: string): Promise<import("../shared/commands.js").SessionCommandList> {
+    return this.request("GET", `/v1/projects/${encodeURIComponent(projectId)}/commands`);
+  }
+
   runSessionCommand(id: string, input: import("../shared/commands.js").SessionCommandInput): Promise<import("../shared/commands.js").SessionCommandResult> {
     return this.request("POST", `/v1/sessions/${encodeURIComponent(id)}/commands`, input);
   }

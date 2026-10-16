@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "
 import { Icon } from "./Icon.js";
 
 import type { ModelInfo, Project, ProjectFileEntry, SessionCommandInfo, SessionCommandInput, SessionRecord } from "pi-agent-server/client";
+import type { ComposerActivity } from "./companion/companion-mood.js";
 import { EMPTY_MESSAGE, type SubmissionState, type SubmitOutcome, type UnsentMessage } from "../attachment-state.js";
 import type { DraftSource } from "../draft-store.js";
 import { ModelThinkingPicker } from "./ModelThinkingPicker.js";
@@ -59,14 +60,16 @@ export type ComposerProps = {
   searchFiles?: (query: string) => Promise<ProjectFileEntry[]>;
   /** Runs /compact or /reload; resolves to a one-line result, or null when the run itself reports it. */
   onRunCommand?: (input: SessionCommandInput) => Promise<string | null>;
+  /** Focus, typing, menus and sends, for the companion to react to; never the text itself. */
+  onActivity?: (activity: ComposerActivity) => void;
 };
 
 export function Composer({
-  session, canCreateSession, canWrite = true,
+  session, activeProjectId, canCreateSession, canWrite = true,
   models, thinkingLevels, defaultModel, defaultThinkingLevel,
   streaming, queued, primaryAwaitingStart = false, historyLoading = false, controlsBlocked = false, placeholder, onSend,
   draft: suppliedDraft, draftSource, draftScope = "", submission, pendingControls, onDraftText, onDraftSettings, onAddFile, onRetryFile, onRemoveFile, onRetrySubmit, onConfirmCreation,
-  onAbort, onAbortArmedChange, onFollowUp, onConfigChange, loadCommands, searchFiles, onRunCommand,
+  onAbort, onAbortArmedChange, onFollowUp, onConfigChange, loadCommands, searchFiles, onRunCommand, onActivity,
 }: ComposerProps) {
   const subscribeDraft = useCallback((listener: () => void) =>
     draftSource?.subscribe(draftScope, listener) ?? (() => {}), [draftSource, draftScope]);
@@ -147,7 +150,8 @@ export function Composer({
   textRef.current = text;
 
   // Completion menus (Pi's editor): `/` at the start lists commands, `@` lists project paths.
-  const sessionId = session?.id ?? null;
+  // Before the session exists the menus read the draft's project.
+  const sessionId = session ? session.id : canCreateSession && activeProjectId ? `project:${activeProjectId}` : null;
   const rawToken = sessionId && caret !== null && canWrite && !historyLoading ? completionToken(text, Math.min(caret, text.length)) : null;
   const tokenKey = rawToken ? `${rawToken.kind}:${rawToken.start}` : null;
   const token = rawToken && ((rawToken.kind === "command" && loadCommands) || (rawToken.kind === "file" && searchFiles)) &&
@@ -161,6 +165,9 @@ export function Composer({
     : menuItems.length ? null : token.kind === "command" ? zhCN.composer.noCommands : zhCN.composer.noFiles;
   const menuOpen = token !== null;
   const activeIndex = Math.min(menuActive, Math.max(0, menuItems.length - 1));
+  const activityRef = useRef(onActivity);
+  activityRef.current = onActivity;
+  useEffect(() => { activityRef.current?.(menuOpen ? "menu-open" : "menu-close"); }, [menuOpen]);
 
   useEffect(() => { setMenuActive(0); }, [tokenKey, token?.query]);
   useEffect(() => { if (dismissedToken && tokenKey !== dismissedToken) setDismissedToken(null); }, [tokenKey, dismissedToken]);
@@ -221,10 +228,12 @@ export function Composer({
   async function handleSubmit() {
     if (!canSubmit || submittingRef.current) return;
     submittingRef.current = true;
+    onActivity?.("send");
     setDispatching(true);
     setLocalError(null);
     try {
-      const command = session && onRunCommand ? hostCommand(text) : null;
+      const command = onRunCommand ? hostCommand(text) : null;
+      if (command && !session) { setLocalError(zhCN.composer.commandNeedsSession); return; }
       if (command) {
         if (runtimeControls) { setLocalError(zhCN.composer.commandBusy); return; }
         setCommandNotice(null);
@@ -363,9 +372,10 @@ export function Composer({
         aria-autocomplete={loadCommands || searchFiles ? "list" : undefined} aria-expanded={loadCommands || searchFiles ? menuOpen && menuItems.length > 0 : undefined}
         aria-controls={menuOpen && menuItems.length ? COMPOSER_MENU_ID : undefined}
         aria-activedescendant={menuOpen && menuItems.length ? composerOptionId(activeIndex) : undefined}
-        onChange={(event) => { setText(event.target.value); setCaret(event.target.selectionStart); }}
+        onChange={(event) => { setText(event.target.value); setCaret(event.target.selectionStart); onActivity?.("type"); }}
+        onFocus={() => onActivity?.("focus")}
         onSelect={(event) => setCaret(event.currentTarget.selectionStart)}
-        onBlur={() => setCaret(null)}
+        onBlur={() => { setCaret(null); onActivity?.("blur"); }}
         onKeyDown={handleKeyDown} onPaste={handlePaste}
         disabled={!canWrite || historyLoading} />
       <div className="composer-toolbar">

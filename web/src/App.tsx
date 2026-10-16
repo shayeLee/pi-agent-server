@@ -277,6 +277,9 @@ export default function App() {
     .filter(Boolean)
     .join(" ");
 
+  const latest = (controller.sessions ?? []).reduce<NonNullable<typeof controller.sessions>[number] | null>((best, item) => !best || item.updatedAt > best.updatedAt ? item : best, null);
+  const recentSession = latest ? { title: latest.title || latest.firstPrompt || "", updatedAt: latest.updatedAt } : null;
+
   return (
     <main
       ref={shellRef}
@@ -401,6 +404,7 @@ export default function App() {
         session={activeSession}
         projects={controller.projects}
         activeProjectId={controller.activeProjectId}
+        recentSession={recentSession}
         onSelectProject={controller.selectProject}
         canCreateSession={canCreateSession}
         canWrite={controller.canWrite && (activeSession !== null || controller.projectAllowsCreation)}

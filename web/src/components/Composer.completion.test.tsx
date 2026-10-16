@@ -121,8 +121,22 @@ describe('composer completion menus', () => {
     expect(input()).toHaveValue('/compact');
   });
 
-  it('offers no menus before the session exists', () => {
-    render(<Harness session={null} canCreateSession />);
+  it('reads the draft project before the session exists, and keeps host commands for sessions', async () => {
+    const searchFiles = vi.fn(async () => [{ path: 'src/cli.js', kind: 'file' as const }]);
+    const onRunCommand = vi.fn(async () => null);
+    render(<Harness session={null} activeProjectId="p1" canCreateSession searchFiles={searchFiles} onRunCommand={onRunCommand} />);
+    type('@cl');
+    expect(await screen.findByRole('option', { name: /cli\.js/ })).toBeInTheDocument();
+    type('/compact');
+    fireEvent.blur(input());
+    fireEvent.keyDown(input(), { key: 'Enter' });
+    expect(await screen.findByTestId('composer-submit-notice')).toHaveTextContent('请先发送第一条消息');
+    expect(onRunCommand).not.toHaveBeenCalled();
+    expect(input()).toHaveValue('/compact');
+  });
+
+  it('offers no menus when the draft cannot create a session', () => {
+    render(<Harness session={null} activeProjectId="p1" canCreateSession={false} />);
     type('@sr');
     expect(screen.queryByTestId('composer-menu')).not.toBeInTheDocument();
   });
