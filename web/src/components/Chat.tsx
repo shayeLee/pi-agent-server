@@ -192,6 +192,9 @@ export function Chat({
   // Real resident items remain visible; an empty control read is not the primary request queue.
   const showControlQueue = !!controlQueue?.items?.length || !!controlQueueError;
   const hasMessages = timeline.length > 0;
+  // Unloaded history or a first message still in flight is not proof of an empty session.
+  const sending = primaryAwaitingStart || submission?.phase === "creating" || submission?.phase === "configuring" || submission?.phase === "submitting";
+  const showEmpty = !hasMessages && !historyLoading && !sending && !streaming && !queued;
   let lastUserIndex = -1;
   for (let index = timeline.length - 1; index >= 0; index--) {
     const item = timeline[index];
@@ -271,9 +274,9 @@ export function Chat({
               <div className="chat-phase-banner queued" data-testid="phase-queued">
                 {zhCN.chat.queued}</div>
             )}
-            {!hasMessages ? (
+            {showEmpty ? (
               <EmptyState />
-            ) : (
+            ) : hasMessages && (
               <Timeline key={session.id} timeline={timeline} live={streaming || queued || primaryAwaitingStart} ready={!historyLoading}
                 tail={liveSubagents?.length ? <SubagentLivePanel items={liveSubagents} onOpen={onOpenSubagent} /> : undefined}
                 pending={pendingLine} />

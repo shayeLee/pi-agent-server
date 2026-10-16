@@ -330,6 +330,13 @@ describe("Chat（聊天区）", () => {
     expect(screen.getByTestId("chat-empty")).toBeInTheDocument();
   });
 
+  it("历史加载中或首条消息发送中不显示空状态", () => {
+    const props = setup({ timeline: [], historyLoading: true });
+    expect(screen.queryByTestId("chat-empty")).not.toBeInTheDocument();
+    props.update({ timeline: [], historyLoading: false, primaryAwaitingStart: true });
+    expect(screen.queryByTestId("chat-empty")).not.toBeInTheDocument();
+  });
+
   it("未选择会话显示可操作的说明而不添加虚假快捷按钮", () => {
     setup({ session: null });
     const welcome = screen.getByTestId("no-session-hint");
