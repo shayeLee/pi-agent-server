@@ -5,7 +5,7 @@
 //   生产部署应通过 PI_AUTH_PATH 指向服务端独立凭证）；服务端默认模型 API key 可从环境变量注入（setRuntimeApiKey，不落盘）。
 
 import { homedir } from "node:os";
-import { resolveHostToolSelection } from "../agent/tool-selection.js";
+import { resolveHostToolSelection, resolveSdkToolConfig } from "../agent/tool-selection.js";
 import { readAppendSystemPromptFile } from "./system-prompt-file.js";
 import { frozenPromptWithoutCwd } from "./frozen-system-prompt.js";
 import { DatabaseSync } from "node:sqlite";
@@ -467,8 +467,8 @@ export async function startServer(config: StartConfig) {
         : {}),
     });
 
-  // all 不向 SDK 传 tools/noTools 限制，保留 SDK 的会话工具激活/恢复语义。
-  // 显式白名单覆盖全部工具来源，不能通过能力 manifest 或扩展工具扩大范围。
+  // all 在 SDK 边界用宿主默认工具快照 + modifiers，保留扩展/custom 与动态激活。
+  // 显式白名单保持原语义；SDK 的 MCP exposure 边界不在此收紧。
   const toolGrant = toolPolicyFromAllowlist(config.tools).resolve();
   const agentToolConfig = toolGrant.kind === "all"
     ? {}
@@ -529,7 +529,7 @@ export async function startServer(config: StartConfig) {
     cwd,
     ...(configuredDefaultModel ? { model: configuredDefaultModel } : {}),
     ...(config.defaultThinkingLevel ? { thinkingLevel: config.defaultThinkingLevel } : {}),
-    ...agentToolConfig,
+    ...resolveSdkToolConfig(agentToolConfig, SettingsManager.inMemory().getDefaultTools()),
     ...(pluginTools.length > 0 ? { customTools: pluginTools } : {}),
   });
   const resolvedDefaultModel = defaultSession.model;
@@ -559,7 +559,7 @@ export async function startServer(config: StartConfig) {
         cwd: projectCwd,
         ...(configuredDefaultModel ? { model: configuredDefaultModel } : {}),
         ...(config.defaultThinkingLevel ? { thinkingLevel: config.defaultThinkingLevel } : {}),
-        ...agentToolConfig,
+        ...resolveSdkToolConfig(agentToolConfig, SettingsManager.inMemory().getDefaultTools()),
         ...(pluginTools.length > 0 ? { customTools: pluginTools } : {}),
       });
       try {

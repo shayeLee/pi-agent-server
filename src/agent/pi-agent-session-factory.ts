@@ -3,7 +3,7 @@
 
 import path from "node:path";
 import { abortTrace, traceSessionLifecycle } from "../core/abort-trace.js";
-import { validateResolvedToolSelection } from "./tool-selection.js";
+import { resolveSdkToolConfig, validateResolvedToolSelection } from "./tool-selection.js";
 import { constants, openSync, closeSync, writeSync, fstatSync, mkdirSync, lstatSync, realpathSync } from "node:fs";
 import { canonicalCwdIdentity } from "../core/native-session-policy.js";
 import { nativeProjectDirectory, nativePathSnapshot, type NativeSessionSource, type NativeSourceBinding } from "./native-session-source.js";
@@ -263,12 +263,8 @@ export class PiAgentSessionFactory implements AgentSessionFactory {
     const thinkingLevel = (isNewSession || !transcriptHasThinking)
       ? context.thinkingLevel ?? (isNewSession ? this.defaultThinkingLevel : undefined)
       : undefined;
-    const toolConfig: { tools?: string[]; noTools?: "all" | "builtin" } = {};
     const settingsManager = SettingsManager.inMemory();
-    // No parsing here: startup has already frozen modifiers into exact names.
-    validateResolvedToolSelection(this.agentToolConfig.tools);
-    if (this.agentToolConfig.tools !== undefined) toolConfig.tools = [...this.agentToolConfig.tools];
-    if (this.agentToolConfig.noTools !== undefined) toolConfig.noTools = this.agentToolConfig.noTools;
+    const toolConfig = resolveSdkToolConfig(this.agentToolConfig, settingsManager.getDefaultTools());
     const resolvedLoader = await this.resolveResourceLoader(context);
     // Fail before SDK startup: an unbridged extension must never mistake this host for CLI.
     if (!resolvedLoader?.loader || typeof resolvedLoader.failbackLifecycleSource?.on !== "function") {

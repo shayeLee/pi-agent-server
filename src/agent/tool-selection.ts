@@ -1,13 +1,35 @@
 import { validateToolSelection } from "../application/ports/tool-authorization-policy-port.js";
 
-/** SDK-facing names are exact, never another modifier expression. */
+/** Translate the host's resolved policy using only public SDK options.
+ * In default mode, seed the host SettingsManager.inMemory() defaults rather than Pi 1.3's
+ * process-global settings. Modifiers leave custom/extension tools and dynamic activation
+ * unrestricted; noTools:'builtin' prevents the SDK from adding its own defaults.
+ * This is a session-creation snapshot: SDK defaultTools reload increments are not followed.
+ */
+export function resolveSdkToolConfig(
+  config: { readonly tools?: readonly string[]; readonly noTools?: "all" | "builtin" },
+  defaultTools: readonly string[] | undefined,
+): { tools?: string[]; noTools?: "all" | "builtin" } {
+  validateResolvedToolSelection(config.tools);
+  if (config.tools === undefined && config.noTools === undefined) {
+    const names = defaultTools ?? ["read", "bash", "edit", "write"];
+    // An empty exact list would become a whitelist; keep modifier mode even with no defaults.
+    return { noTools: "builtin", tools: names.length ? names.map(name => `+${name}`) : ["-read"] };
+  }
+  return {
+    ...(config.tools !== undefined ? { tools: [...config.tools] } : {}),
+    ...(config.noTools !== undefined ? { noTools: config.noTools } : {}),
+  };
+}
+
+/** Host-facing resolved names are exact, never another modifier expression. */
 export function validateResolvedToolSelection(tools: readonly string[] | undefined): void {
   if (tools?.some(name => name.startsWith("+") || name.startsWith("-"))) {
     throw new Error("Invalid resolved tools option: exact tool names cannot start with + or -");
   }
 }
 
-/** Pi 1.1 default selection semantics, frozen as the host's SDK allowlist.
+/** Host modifier selection semantics, frozen as the host's SDK allowlist.
  * SDK helpers are internal, not public exports. Keep this in sync with settings-manager.
  */
 export function resolveHostToolSelection(

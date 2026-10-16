@@ -77,10 +77,10 @@ async function inspect(tools?: string[], invalid = false): Promise<void> {
 }
 
 describe("startServer 工具策略 → 真实 SDK", () => {
-  it("未配置允许全部：不传受限工具列表，扩展工具可见且可激活", async () => {
+  it("未配置允许全部：默认快照 modifiers，扩展工具可见且可激活", async () => {
     await inspect();
-    expect(probe.options).not.toHaveProperty("tools");
-    expect(probe.options).not.toHaveProperty("noTools");
+    expect(probe.options.tools).toEqual(["+read", "+bash", "+edit", "+write"]);
+    expect(probe.options.noTools).toBe("builtin");
     expect(probe.available).toEqual(expect.arrayContaining(["read", "bash", "edit", "write", "fixture_extension_tool", "fixture_plugin_tool"]));
     expect(probe.available).not.toContain("fixture_inactive_tool");
     expect(probe.active).toEqual(["read", "bash", "ls", "find", "grep", "fixture_extension_tool", "fixture_plugin_tool"]);

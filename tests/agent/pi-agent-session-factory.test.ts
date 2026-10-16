@@ -110,7 +110,7 @@ describe("PiAgentSessionFactory", () => {
     }));
   });
 
-  it("all 接线不向 SDK 传工具限制，仍传入自定义工具", async () => {
+  it("all 接线传宿主默认快照 modifiers，仍传入自定义工具", async () => {
     const customTool = tool("plugin_tool");
     const factory = new PiAgentSessionFactory({
       modelRuntime: {} as ModelRuntime,
@@ -121,8 +121,8 @@ describe("PiAgentSessionFactory", () => {
     const prepared = await factory.prepareNew(context({ agentToolConfig: {} }));
     await prepared.open();
     const options = sdk.createAgentSession.mock.calls[0]![0];
-    expect(options).not.toHaveProperty("tools");
-    expect(options).not.toHaveProperty("noTools");
+    expect(options.tools).toEqual(["+read", "+bash", "+edit", "+write"]);
+    expect(options.noTools).toBe("builtin");
     expect(options.customTools).toEqual([customTool]);
   });
 
