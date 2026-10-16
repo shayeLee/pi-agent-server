@@ -27,6 +27,9 @@ Pi SDK 与 pi-ai 固定为 **1.1.0**；本次 SDK 升级无需数据库迁移（
 | `GET` | `/v1/sessions/:id/steps` | Inspector 完整步骤快照，数组顺序权威；只读且不创建 runtime |
 | `GET` / `HEAD` | `/v1/sessions/:id/system-prompt` | 读取系统提示词并明确标注 `live_effective`、`creation_snapshot` 或 `unavailable` 来源；只读且不创建 runtime |
 | `GET` | `/v1/sessions/:id/file-preview?path=<relative>&line=<optional>` | 预览该会话项目目录中的文本文件；`path` 填相对文件路径，`line` 可选，用于定位行号。不能读取项目目录外的文件 |
+| `GET` | `/v1/sessions/:id/files?query=<optional>` | `@` 引用的路径建议：最多 20 条项目相对路径（文件与目录），只返回名字、不返回内容。git 项目列出已跟踪及未被忽略的文件，其他项目做有上限的遍历（跳过 `.git`、`node_modules`）；凭据类文件名不出现。`query` 为空时列出项目根目录 |
+| `GET` | `/v1/sessions/:id/commands` | `/` 菜单：内置命令 `compact`、`reload`，以及从项目与服务 agentDir 发现的提示词模板和 `skill:<名字>`。直接读磁盘，不创建 runtime |
+| `POST` | `/v1/sessions/:id/commands` | 执行 `{ "command": "compact", "args"?: "总结要求" }` 或 `{ "command": "reload" }`，只能在会话空闲时执行（否则 `409`）。见下文「宿主命令」 |
 
 队列出队不代表任务完成或控制内容已消费。公开事件边界的队列同步可能延迟；GET 与队列变更会即时对照 SDK 当前驻留对象。变更使用原始 control ID 及 request/acknowledgement 身份。保证与限制见[控制队列](control-queues.md)。
 
@@ -38,3 +41,10 @@ Inspector 读取沿用会话 export 的授权层级，且不创建 runtime。步
 - `GET /v1/access` 只返回 `{ canRead, canWrite }`：分别表示用户能否使用只读功能、提交或控制任务。`GET /v1/capabilities/<plugin-id>/access` 返回当前用户能使用该插件的哪些功能。权限配置见 [IP 访问控制](ip-rbac-design.md)。
 - 每次有意提交消息使用唯一 `requestId`。持久化 fingerprint 在重启后仍以 `409` 拒绝内容变化；无 fingerprint 的旧记录不保证该检查。共享会话的 ID 还绑定操作者。消息图片支持 PNG、JPEG 和 WebP，服务不会压缩图片。非图片上传需显式配置存储与配额，见[附件上传](attachment-uploads.md)。
 - `file-preview` 的路径相对于会话的受信项目目录，不能读取目录外文件。没有保存目录快照的旧会话无法使用预览；请新建会话。
+- `files` 与 `commands` 同样以会话保存的项目目录快照为根；没有快照的会话（例如还没发过消息）返回 `404`。
+
+### 宿主命令
+
+- `compact`：调用 Pi 的手动压缩，`args` 作为总结要求。执行期间该会话的新提交返回 `409`，子代理通知排队到命令结束；压缩以命令自己的 `requestId` 发出 `compaction_start` / `compaction_end`，成功时先发出一次 `usage`（压缩后 `context.tokens` 为 `null`，要等下一次模型回复才知道实际占用），最后发出 `completed`（成功）、`aborted`（通过 `POST /abort` 取消，HTTP 返回 `409` 与 `COMMAND_ABORTED`）或 `error`（HTTP 返回 `422`，例如没有可压缩的内容）。export 的 `compaction` 只描述仍在进行的任务或命令：所属任务或命令结束（`completed` / `error` / `aborted`）后即不再返回，刷新页面不会重放已结束的压缩（自动压缩与 `/compact` 相同）。
+- `reload`：调用 Pi 的 `session.reload()`，重新读取 `AGENTS.md` / `CLAUDE.md`、提示词模板与 skills，并重新执行该会话显式配置的扩展；返回各类资源的数量，不发出 SSE 事件。扩展会收到 `session_shutdown` 与 `session_start`（reason 为 `reload`），运行中的子代理可能因此结束。重新执行扩展会重放扩展的模块级副作用，见 [SDK 边界](pi-sdk-api.md)。
+- 提示词模板（`/名字 参数`）与 skill（`/skill:名字`）不是宿主命令：作为普通消息提交，由 Pi 在发送时展开。磁盘上新增的模板和 skills 在 `reload` 或新建会话后才对该会话生效。

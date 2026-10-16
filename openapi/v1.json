@@ -2588,6 +2588,300 @@
         ]
       }
     },
+    "/v1/sessions/{id}/files": {
+      "get": {
+        "operationId": "searchSessionFiles",
+        "security": [
+          {
+            "IpAdmission": []
+          },
+          {
+            "IpAdmission": [],
+            "BearerAuth": []
+          }
+        ],
+        "x-pi-rbac": {
+          "permission": "sessions:file-preview",
+          "roles": [
+            "admin",
+            "user",
+            "viewer"
+          ]
+        },
+        "responses": {
+          "200": {
+            "description": "At most 20 project-relative path suggestions for `@` references (names only, never contents). Git projects list tracked and non-ignored files; others use a bounded walk without .git and node_modules. Sensitive names are omitted. An empty query lists the project root.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectFileSearch"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The query is invalid or the project root is no longer the session's frozen root.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer token required for this admitted IP profile.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "IP admission or RBAC denied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Session not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "query",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "maxLength": 256
+            },
+            "description": "Fuzzy path query; a leading @ is ignored."
+          }
+        ]
+      }
+    },
+    "/v1/sessions/{id}/commands": {
+      "get": {
+        "operationId": "listSessionCommands",
+        "security": [
+          {
+            "IpAdmission": []
+          },
+          {
+            "IpAdmission": [],
+            "BearerAuth": []
+          }
+        ],
+        "x-pi-rbac": {
+          "permission": "sessions:export",
+          "roles": [
+            "admin",
+            "user",
+            "viewer"
+          ]
+        },
+        "responses": {
+          "200": {
+            "description": "Commands the composer offers after `/`: host commands (compact, reload), prompt templates and skill:<name>, discovered from the session project and the service agentDir. Read from disk without creating a runtime; templates and skills apply to a running session after /reload.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionCommandList"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer token required for this admitted IP profile.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "IP admission or RBAC denied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Session not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      },
+      "post": {
+        "operationId": "runSessionCommand",
+        "security": [
+          {
+            "IpAdmission": []
+          },
+          {
+            "IpAdmission": [],
+            "BearerAuth": []
+          }
+        ],
+        "x-pi-rbac": {
+          "permission": "sessions:control",
+          "roles": [
+            "admin",
+            "user"
+          ]
+        },
+        "responses": {
+          "200": {
+            "description": "Command finished. compact publishes compaction_start/compaction_end and then completed/aborted/error SSE events under its own requestId; reload publishes no events.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionCommandResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid command body.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer token required for this admitted IP profile.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "IP admission or RBAC denied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Session not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The session is busy, or the compaction was cancelled (code COMMAND_ABORTED).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "The command failed, for example nothing to compact.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "The session agent does not support host commands.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SessionCommandInput"
+              }
+            }
+          }
+        },
+        "x-pi-request-validation": {
+          "coerceTypes": true,
+          "removeAdditional": "silent-strip"
+        },
+        "description": "Request bodies use Fastify's AJV baseline: declared types are coerced (`coerceTypes: 'array'`,\nso numbers, booleans, and single-element arrays are accepted where a string is declared) and\nundeclared fields are silently stripped (`removeAdditional: true` combined with\n`additionalProperties: false`) instead of returning 400. A 400 therefore reports a missing\nrequired field or a value that cannot be coerced/constrained, never a wrong scalar type or an\nunknown field."
+      }
+    },
     "/v1/sessions/{id}/control-queue": {
       "get": {
         "operationId": "getControlQueue",
@@ -4329,6 +4623,161 @@
         },
         "additionalProperties": false
       },
+      "ProjectFileSearch": {
+        "type": "object",
+        "required": [
+          "entries",
+          "truncated"
+        ],
+        "properties": {
+          "entries": {
+            "type": "array",
+            "maxItems": 20,
+            "items": {
+              "type": "object",
+              "required": [
+                "path",
+                "kind"
+              ],
+              "properties": {
+                "path": {
+                  "type": "string",
+                  "description": "Project-relative path with / separators."
+                },
+                "kind": {
+                  "enum": [
+                    "file",
+                    "directory"
+                  ]
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "truncated": {
+            "type": "boolean",
+            "description": "The project listing hit its file cap; some paths cannot be suggested."
+          }
+        },
+        "additionalProperties": false
+      },
+      "SessionCommandList": {
+        "type": "object",
+        "required": [
+          "commands"
+        ],
+        "properties": {
+          "commands": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "name",
+                "source",
+                "description"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "description": "Typed after /."
+                },
+                "source": {
+                  "enum": [
+                    "builtin",
+                    "prompt",
+                    "skill"
+                  ]
+                },
+                "description": {
+                  "type": "string"
+                },
+                "argumentHint": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "SessionCommandInput": {
+        "type": "object",
+        "required": [
+          "command"
+        ],
+        "properties": {
+          "command": {
+            "enum": [
+              "compact",
+              "reload"
+            ]
+          },
+          "args": {
+            "type": "string",
+            "maxLength": 4000,
+            "description": "compact: optional summary instructions."
+          }
+        },
+        "additionalProperties": false
+      },
+      "SessionCommandResult": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "command",
+              "tokensBefore"
+            ],
+            "properties": {
+              "command": {
+                "const": "compact"
+              },
+              "tokensBefore": {
+                "type": "number",
+                "minimum": 0
+              },
+              "tokensAfter": {
+                "type": "number",
+                "minimum": 0
+              }
+            },
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "required": [
+              "command",
+              "contextFiles",
+              "promptTemplates",
+              "skills",
+              "extensions"
+            ],
+            "properties": {
+              "command": {
+                "const": "reload"
+              },
+              "contextFiles": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "promptTemplates": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "skills": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "extensions": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "additionalProperties": false
+          }
+        ]
+      },
       "ExportMessage": {
         "type": "object",
         "required": [
@@ -4890,7 +5339,7 @@
           }
         },
         "additionalProperties": false,
-        "description": "Ephemeral runtime metadata at lastEventId; absent without an observed live compaction. Restore running as unknown until live confirmation. No summary or SDK error."
+        "description": "Ephemeral runtime metadata at lastEventId; absent without an observed live compaction and cleared once the owning task or command ends (completed/error/aborted), so a finished compaction is never replayed. Restore running as unknown until live confirmation. No summary or SDK error."
       },
       "TimelineItem": {
         "oneOf": [

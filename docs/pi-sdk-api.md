@@ -68,6 +68,16 @@ volta run node --input-type=module -e \
 
 ⚠️ `DefaultResourceLoader` 默认自动发现 `<cwd>/.pi/extensions`、skills、prompts、`AGENTS.md`、themes 及 `agentDir` 下全局资源——直接使用会加载未声明扩展与上下文。needs.md §7 要求只从 manifest 注入受控资源：使用不自动发现的自定义 `ResourceLoader`，或清空各类 override 与 append-system-prompt。会话创建时冻结系统提示词；带 mode profile 的会话创建和恢复均使用该冻结提示词对应的受控 ResourceLoader。
 
+**文本资源按会话项目发现（`src/server/session-resources.ts`）**：扩展仍只走显式路径；`AGENTS.md` / `CLAUDE.md`、提示词模板与 skills 则按 Pi 自己的目录规则加载，但以**会话项目 cwd** 为根，而不是 loader cwd（loader cwd 必须恒为服务 cwd，见下文）。loader 仍设 `noSkills/noPromptTemplates/noContextFiles: true`，避免 SDK 以服务 cwd 去发现；宿主改为显式给出：
+
+- skills：`<项目>/.pi/skills` → 从项目向上到 git 根（无 git 时到文件系统根）每一级的 `.agents/skills` → `<agentDir>/skills` → `~/.agents/skills`，作为 `additionalSkillPaths`（同名先到先得，与 SDK 自动发现的顺序一致）；
+- 提示词模板：`<项目>/.pi/prompts` → `<agentDir>/prompts`，作为 `additionalPromptTemplatePaths`；
+- 上下文文件：`agentsFilesOverride` 每次 reload 调用 SDK 导出的 `loadProjectContextFiles({ cwd: 项目, agentDir })`。
+
+不存在的目录也照传（只记录诊断），以便 `/reload` 能读到之后创建的目录。服务没有 Pi TUI 的项目信任确认，登记过的项目对这些文本资源一律视为受信任。
+
+冻结提示词恢复时，`frozenPromptBase` 除了去掉 `<cwd>` 段，也去掉最后一个 `<project_context>` 与 `<skills>` 段：SDK 在自定义提示词之后会按 loader 重新加上这两段，不去掉就会出现两份。因此这两段是**随会话 loader 变化**的部分（恢复、`/reload` 时取磁盘当前内容），其余部分仍按冻结字面量恢复。
+
 外部插件 mode 的**追加**提示词（P7c）不经过资源加载器的 append 通道：宿主先经 `SystemPromptPort` 取得该项目在 Pi 侧的完整提示词，再以与 `buildSystemPrompt` 相同的空行分隔追加片段，把合并结果作为会话快照冻结进 `sessions.system_prompt`；恢复时按该字面量 override 复用，不重新解析、不重复追加。旧的 `systemPrompt` 整体覆盖语义保持不变，二者互斥。
 
 **显式 Pi 扩展（0.86.0 核对结论）**：服务通过 `PI_EXTENSION_PATHS` 将显式配置的路径传给 `additionalExtensionPaths`；旧名 `PI_PROVIDER_EXTENSION_PATHS` 是兼容弃用 alias。`additionalExtensionPaths` 在 `noExtensions: true` 下仍会被加载（`noExtensions` 只关掉 settings/manifest 自动发现），因此此通道也可加载不注册 provider 的通用 SDK 扩展。变量只允许一个有效非空列表：旧变量单独使用时告警，两个都非空则拒绝启动。扩展工厂里的 `pi.registerProvider()` 在 loader 阶段**只入队** `runtime.pendingProviderRegistrations`；由 `createAgentSession` → `AgentSession._buildRuntime` → `ExtensionRunner.bindCore` 刷入 `ModelRuntime`（`agent-session-services.js` 的显式 flush 同理）。宿主若在首个会话创建前就要用到这些 provider（默认模型/凭证校验、插件 mode 校验、`GET /v1/models`），必须在 `loader.reload()` 后自行 flush，且刷完清空队列以避免二次注册；无需额外调用（0.84.4 时期曾误判需要）`bindExtensions`——`sdk.js` 的 `onPayload`/`transformHeaders` 已统一走 `extensionRunnerRef.current` 的 `before_provider_request` / `before_provider_headers`（该结论在 0.86.0 仍成立；但注意 `bindExtensions` 在 0.86.0 里还负责 `session_start` 与 `extendResourcesFromExtensions`，宿主已显式调用，无回归）。注册失败（如 `streamSimple` 缺 `api`）在宿主这里即 fail-fast 拒绝启动，且错误只回显扩展路径与 provider 标识，不透传 SDK/provider 原文与 `cause`。
@@ -77,14 +87,14 @@ volta run node --input-type=module -e \
 - 每个活动 session 在创建 adapter 时构造并 `reload()` 一个**独立** loader；同一 session 的多轮复用该 session 的 `AgentSession`/adapter/loader（SDK 单会话语义，无需也不应重建）；
 - **startup 默认模型/提示词探针与项目提示词探针**各自使用一次性 loader：探针会话 `dispose()` 后该 loader 的 runtime 变为 stale，但它不再交给任何真实会话；若与真实会话共享同一个 loader，真实会话拿到的 runtime 会在**第一次探针 dispose 后**直接失效（这是实测行为，不是理论风险）；
 - **恢复冻结提示词会话**同样按会话构造 loader（`systemPromptOverride` 按字面量返回快照），因此恢复出的会话也持有自己的 runtime；绝不按 frozen `systemPrompt` 字符串缓存/复用 loader，否则同一快照的第二个会话会被第一个会话的 dispose 污染；
-- **每个 loader 只 `reload()` 一次**：宿主不用 `session.reload()`/`loader.reload()` 二次加载；这样同一 cwd 下扩展模块只求值一次（见下条）。
+- **宿主自身每个 loader 只 `reload()` 一次**；唯一例外是用户执行的 `/reload`（`POST /v1/sessions/:id/commands`），它调用 `session.reload()` 再次 reload 该会话的 loader（见下条的副作用）。
 
 **扩展加载 cwd 必须稳定、与项目 cwd 解耦（实测结论）**：`DefaultResourceLoader` 的 `cwd` 同时决定扩展模块缓存的键（`loadExtensionsCached(paths, cwd, ...)` → `useExtensionCacheCwd`）与项目提示词/上下文的根。`AgentSession` 的会话 cwd 由 `createAgentSession({ cwd })` 决定，与 loader 的 `cwd` 是两个独立入参：提示词里的 cwd 段取**会话 cwd**（0.86.0 起渲染为 `<cwd>\n<path>\n</cwd>` 结构化 section，不再是一行 `Current working directory: <path>`；见 §3.9）。因此宿主让**所有** loader 的 `cwd` 恒为服务 cwd，只把项目 cwd 传给 `createAgentSession({ cwd })`：
 
 - 若 loader 的 `cwd` 跟着项目 cwd 交替（startup 探针用服务 cwd、项目探针用项目 cwd、冻结会话又回服务 cwd），`useExtensionCacheCwd()` 每次遇到不同 cwd 就 `clearExtensionCache()`，扩展模块整进程被反复重新求值；模块级副作用（例如扩展在 `globalThis.fetch` 上再包一层）会层层叠加，进程生命周期内无法卸载。
 - 扩展加载 cwd 稳定后：模块只求值一次、模块级副作用只发生一次，工厂函数仍按 loader（即按活动会话/探针）重跑，provider 注册与每会话独立 runtime 完全不受影响；项目提示词仍按各自项目 cwd 解析（未篡改）。
 
-扩展模块缓存语义（实测）：`ResourceLoader.reload()` 在**自身已 loaded** 时先 `clearExtensionCache()`，否则只在 cwd 与前一次缓存不同时清。因此：已加载过的 loader 再次 reload 会重求值全部扩展模块；**新建 loader 首次 reload 在 cwd 不变时只复用缓存（仅重跑工厂函数）**。宿主每个 loader 只 reload 一次且扩展加载 cwd 恒定，所以扩展模块顶层的副作用（如 `globalThis.fetch` 包装）整进程只发生一次；工厂函数则每个 loader 重跑一次（这正是「每会话独立 runtime」需要的）。仅在以下情形会重叠：同一 cwd 的 loader 被再次 reload（如 `session.reload()`，宿主当前不会调用）。
+扩展模块缓存语义（实测）：`ResourceLoader.reload()` 在**自身已 loaded** 时先 `clearExtensionCache()`，否则只在 cwd 与前一次缓存不同时清。因此：已加载过的 loader 再次 reload 会重求值全部扩展模块；**新建 loader 首次 reload 在 cwd 不变时只复用缓存（仅重跑工厂函数）**。宿主每个 loader 只 reload 一次且扩展加载 cwd 恒定，所以扩展模块顶层的副作用（如 `globalThis.fetch` 包装）整进程只发生一次；工厂函数则每个 loader 重跑一次（这正是「每会话独立 runtime」需要的）。仅在以下情形会重叠：同一 cwd 的 loader 被再次 reload，即用户执行 `/reload`。这时 SDK 会 `clearExtensionCache()` 并重求值全部扩展模块，模块级副作用（如 `globalThis.fetch` 包装）会再发生一次；`session.reload()` 还会调用 `resetApiProviders()`（进程级），随后由本会话重建的扩展 runtime 重新注册其 provider。扩展需要能承受重复求值；这是用户主动触发、与 Pi TUI 的 `/reload` 相同的行为。session 专属 EventBus 跨 reload 保留，宿主的 failback / agent-team 通道不需要重新接线。
 
 **提示词的追加源必须显式给出**：`DefaultResourceLoader` 在未传 `appendSystemPrompt` 时会自动发现 `agentDir/APPEND_SYSTEM.md` 与 `<cwd>/.pi/APPEND_SYSTEM.md`（受项目信任影响）。冻结字面量恢复路径（`systemPromptOverride`，不传 `appendSystemPrompt`）若依赖该默认值，恢复出的会话会把**当前磁盘内容**追加到冻结快照之后，破坏「恢复即冻结字面量」；因此宿主对每个 loader 都显式传 `appendSystemPrompt`（无能力片段时传 `[]`）关闭该自动发现（0.86.0 仍成立）。
 

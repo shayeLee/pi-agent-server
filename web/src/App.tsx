@@ -446,6 +446,9 @@ export default function App() {
         onSend={activeSession ? controller.sendMessage : controller.createSessionWithMessage}
         onAbort={controller.abort}
         onFollowUp={controller.followUp}
+        loadCommands={controller.loadCommands}
+        searchFiles={controller.searchFiles}
+        onRunCommand={controller.runCommand}
         onToggleTrace={toggleInspector}
         traceOpen={!detailsCollapsed}
         onNavigateTurn={timelineId => {

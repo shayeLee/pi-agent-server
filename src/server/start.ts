@@ -7,7 +7,8 @@
 import { homedir } from "node:os";
 import { resolveHostToolSelection, resolveSdkToolConfig } from "../agent/tool-selection.js";
 import { readAppendSystemPromptFile } from "./system-prompt-file.js";
-import { frozenPromptWithoutCwd } from "./frozen-system-prompt.js";
+import { frozenPromptBase } from "./frozen-system-prompt.js";
+import { createSessionCommandLister } from "./session-resources.js";
 import { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
 import { chmodSync, copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
@@ -444,17 +445,20 @@ export async function startServer(config: StartConfig) {
    */
   const createSessionResourceLoader = (
     extra: {
+      /** Session project cwd: AGENTS.md, prompt templates and skills are discovered from it. */
+      resourceCwd: string;
       systemPrompt?: string;
       systemPromptOverride?: () => string;
       appendSystemPrompt?: readonly string[];
       appendSystemPromptText?: string;
-    } = {},
+    },
   ): Promise<DefaultResourceLoader> =>
     loadSessionResourceLoader(modelRuntime, {
       extensionCwd: cwd,
       agentDir,
       extensionPaths,
       extensionFactories: providerAdapterExtensionFactories,
+      resources: { projectCwd: extra.resourceCwd, agentDir },
       ...(extra.systemPrompt !== undefined ? { systemPrompt: extra.systemPrompt } : {}),
       ...(extra.systemPromptOverride !== undefined
         ? { systemPromptOverride: extra.systemPromptOverride }
@@ -489,7 +493,7 @@ export async function startServer(config: StartConfig) {
       : {}),
     appendSystemPrompt: collectPromptFragmentSources(capabilitySnapshot.promptFragments),
   };
-  const probeResourceLoader = await createSessionResourceLoader(unfrozenPromptOptions);
+  const probeResourceLoader = await createSessionResourceLoader({ ...unfrozenPromptOptions, resourceCwd: cwd });
 
   // provider 扩展注册完成后才解析默认模型与插件 mode：显式接入的 provider 对二者可见。
   const configuredDefaultModel = config.defaultModel
@@ -550,7 +554,7 @@ export async function startServer(config: StartConfig) {
       if (projectCwd === cwd) return defaultSystemPrompt;
       // 探针 loader 同样独立：创建后立即 dispose，只影响该次探针自己的 runtime；
       // 扩展加载 cwd 仍是服务 cwd（模块缓存不因项目 cwd 交替而清空）。
-      const projectLoader = await createSessionResourceLoader(unfrozenPromptOptions);
+      const projectLoader = await createSessionResourceLoader({ ...unfrozenPromptOptions, resourceCwd: projectCwd });
       const { session } = await createAgentSession({
         sessionManager: SessionManager.inMemory(projectCwd),
         modelRuntime,
@@ -669,9 +673,10 @@ export async function startServer(config: StartConfig) {
     const createResourceLoader = async (request: PiResourceLoaderRequest) => {
       const frozen = request.systemPrompt;
       const loader = await createSessionResourceLoader({
+        resourceCwd: request.projectCwd,
         ...(frozen === null
           ? unfrozenPromptOptions
-          : { systemPromptOverride: () => frozenPromptWithoutCwd(frozen) }),
+          : { systemPromptOverride: () => frozenPromptBase(frozen) }),
       });
       return { loader, failbackLifecycleSource: getProviderExtensionEventBus(loader) };
     };
@@ -756,6 +761,7 @@ export async function startServer(config: StartConfig) {
     conversationStorage,
     nativeSessions,
     createAdapter: (sessionId) => sessionConversationCoordinator.createAdapter(sessionId),
+    listSessionCommands: createSessionCommandLister({ loaderCwd: cwd, agentDir }),
     idempotencyRepo,
     uploads,
     serverEpoch: randomUUID(),

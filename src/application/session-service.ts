@@ -705,6 +705,12 @@ export class SessionService {
     return decision;
   }
 
+  async runCommand(ownerKey: string, id: string, input: import("../shared/commands.js").SessionCommandInput): Promise<"not-found" | import("./ports/index.js").CommandDecision> {
+    const entry = await this.findEntry(ownerKey, id);
+    if (!entry) return "not-found";
+    return await entry.runtime.runCommand?.(input) ?? { kind: "unsupported" };
+  }
+
   async getControlQueue(ownerKey: string, id: string): Promise<import("../shared/control-queue.js").ControlQueueSnapshot | null> {
     const record = await this.findOwned(ownerKey, id);
     if (!record) return null;

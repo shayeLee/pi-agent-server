@@ -23,7 +23,7 @@ vi.mock("../../src/agent/pi-agent-session-factory.js", async (importOriginal) =>
 import { startServer, type StartConfig } from "../../src/server/start.js";
 import { runSqliteMigrations } from "../../src/storage/migration-engine.js";
 import { makeTestIpAccess } from "../helpers/ip-access.js";
-import { frozenPromptWithoutCwd } from "../../src/server/frozen-system-prompt.js";
+import { frozenPromptBase } from "../../src/server/frozen-system-prompt.js";
 
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
@@ -152,7 +152,7 @@ describe("PI_APPEND_SYSTEM composition", () => {
     // the SDK adds the session cwd back, so the session prompt equals the snapshot byte-for-byte.
     for (const frozen of [projectPrompt, "OLD_FROZEN_PROMPT", ""]) {
       const { loader } = await factory.createResourceLoader({ projectCwd: project, systemPrompt: frozen }) as PiSessionResourceLoader;
-      expect(loader.getSystemPrompt()).toBe(frozenPromptWithoutCwd(frozen));
+      expect(loader.getSystemPrompt()).toBe(frozenPromptBase(frozen));
       expect(loader.getAppendSystemPrompt()).toEqual([]);
     }
     expect(await sessionPrompt(factory, project, projectPrompt)).toBe(projectPrompt);

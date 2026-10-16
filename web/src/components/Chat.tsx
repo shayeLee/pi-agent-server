@@ -5,7 +5,7 @@ import type { ChatState, ModelInfo, Project, SessionRecord, UsageStats } from "p
 import { ConversationMinimap } from "./ConversationMinimap.js";
 import { Timeline } from "./Timeline.js";
 import type { DraftSource } from "../draft-store.js";
-import { Composer } from "./Composer.js";
+import { Composer, type ComposerProps } from "./Composer.js";
 import { ControlQueue, type ControlQueueProps } from "./ControlQueue.js";
 import { CompactionBanner, type CompactionState } from "./CompactionBanner.js";
 import { StatsBar } from "./StatsBar.js";
@@ -68,6 +68,9 @@ export type ChatProps = {
   onConfirmCreation?: () => Promise<SubmitOutcome>;
   onAbort?: () => void;
   onFollowUp: (text: string) => void | Promise<boolean>;
+  loadCommands?: ComposerProps["loadCommands"];
+  searchFiles?: ComposerProps["searchFiles"];
+  onRunCommand?: ComposerProps["onRunCommand"];
   onToggleTrace?: () => void;
   liveSubagents?: LiveSubagent[];
   onOpenSubagent?: (runId: string) => void;
@@ -124,7 +127,7 @@ export function Chat({
   onRetrySubmit,
   onConfirmCreation,
   onAbort,
-  onFollowUp,
+  onFollowUp, loadCommands, searchFiles, onRunCommand,
   onToggleTrace,
   liveSubagents,
   onOpenSubagent,
@@ -339,6 +342,9 @@ export function Chat({
             onAbort={hidden ? undefined : onAbort}
             onAbortArmedChange={setAbortArmed}
             onFollowUp={onFollowUp}
+            loadCommands={loadCommands}
+            searchFiles={searchFiles}
+            onRunCommand={onRunCommand}
             onConfigChange={onConfigChange}
           />
           {session && hasMessages && <StatsBar stats={stats} streamLost={streamLost} timeline={timeline} pending={streaming || queued} modelOutput={modelOutput} runProgress={runProgress} activeTools={activeTools} />}

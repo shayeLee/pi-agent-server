@@ -45,6 +45,8 @@ export type { UsageSnapshot, UsageTokens, LastResponseUsage, ExecutionSnapshot, 
 export type Export = { messages: ExportMessage[]; timeline: ExportTimelineItem[]; lastEventId: number; compaction?: import("../shared/events.js").CompactionState; usageSnapshot?: import("../core/usage-snapshot.js").UsageSnapshot };
 /** Owner/session-scoped UTF-8 text preview. `path` is always project-relative; no root is client supplied. */
 export type FilePreview = { path: string; content: string; lineCount: number; requestedLine?: number };
+/** `@` path suggestions, `/` command menu and host command results (`/v1/sessions/:id/files` and `/commands`). */
+export type { ProjectFileEntry, ProjectFileSearch, SessionCommandInfo, SessionCommandList, SessionCommandInput, SessionCommandName, SessionCommandResult } from "../shared/commands.js";
 
 /** Stable error envelope used by HTTP error responses. */
 export type ApiError = { statusCode: number; error: string; message: string; code?: string };

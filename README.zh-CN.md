@@ -11,6 +11,7 @@
 - 多用户访问：按客户端 IP 准入，角色 `viewer` / `user` / `operator` / `admin`，默认拒绝；可为精确 IP 绑定 Bearer token。
 - 项目与会话管理；Pi 原生会话自动发现并默认共享。
 - HTTP/JSON API 与 Server-Sent Events；运行中可追加 `follow-up`、提升为 `steer` 或中止。
+- Pi 文本资源：`AGENTS.md` / `CLAUDE.md`、提示词模板与 skills（含 `~/.agents/skills`）按会话项目与服务 agentDir 自动发现。输入框支持 `@` 引用文件，以及 `/compact`、`/reload`、模板与 `skill:` 命令。
 - 默认 SQLite，可显式选择 PostgreSQL；对话保存为 Pi JSONL，同一请求重复提交返回已记录的结果。
 - 可选的「稿纸」风格 Web UI：账本式对话流、运行状态、统计栏与轨迹 Inspector。
 
@@ -18,7 +19,7 @@
 
 - **面向内网、单实例运行**：公网部署与多实例在后续版本完善。
 - **Pi 工具默认全部授权**：包括 `bash`、`edit`、`write`。只读请设置 `TOOLS=read,ls,find,grep`，并另行落实文件系统 / 进程隔离。见[配置](docs/configuration.md)。
-- **扩展与插件需显式启用**：Pi 扩展用 `PI_EXTENSION_PATHS`，agent-server 插件用 `PI_PLUGINS`；不设置则不加载。
+- **扩展与插件需显式启用**：Pi 扩展用 `PI_EXTENSION_PATHS`，agent-server 插件用 `PI_PLUGINS`；不设置则不加载。上下文文件、提示词模板与 skills 自动加载，服务中登记的项目对这些资源一律视为受信任。
 - **JSONL 暂不自动清理**：删除项目或会话后，对应的 JSONL 文件仍保留。
 - **备份为本机加密备份**：异地容灾仍在规划中。见[备份与恢复](docs/backup-restore.md)。
 - **数据库需先初始化**：服务启动只校验、不迁移。首次部署或版本要求升级时，先按[运维文档](docs/operations.md)处理数据库。

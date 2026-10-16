@@ -21,6 +21,14 @@ export type SubmitDecision =
 /** 控制操作（steer/followUp/abort）的返回决策：ok（已执行）/ conflict（状态或 requestId 不允许）。 */
 export type ControlDecision = { kind: "ok" } | { kind: "conflict"; reason?: "failback-in-progress" };
 
+/** 宿主命令（/compact、/reload）的结果：只在会话空闲时执行。 */
+export type CommandDecision =
+  | { kind: "ok"; result: import("../../shared/commands.js").SessionCommandResult }
+  | { kind: "conflict" }
+  | { kind: "unsupported" }
+  | { kind: "aborted" }
+  | { kind: "failed"; message: string };
+
 /**
  * runTurn 的入参：requestId 专属的同步轮次。
  * - owner 由调用方（插件宿主）绑定，runtime 不接受模型/tools/cwd/图片；
@@ -94,6 +102,8 @@ export interface SessionRuntimePort {
   setModel(provider: string, modelId: string): Promise<void>;
   /** 切换思考级别。 */
   setThinkingLevel(level: string): Promise<void>;
+  /** 执行宿主命令；会话忙时返回 conflict。 */
+  runCommand?(input: import("../../shared/commands.js").SessionCommandInput): Promise<CommandDecision>;
 }
 
 /** RuntimeRegistry 内部持有的运行时：应用端口 + 生命周期操作。 */

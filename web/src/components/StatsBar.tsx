@@ -128,10 +128,14 @@ export function StatsBar({ stats, timeline, streamLost = false, pending = false,
     if (cost !== null && cost > 0) usage.push({ id: "session-cost", text: formatUsd(cost) });
   }
   // Right: how full the context is.
+  // After compaction Pi reports no token count until the next model response (shown as `?`, like Pi).
+  const contextUnknown = context?.tokens === null && validMetric(context?.window) && !validMetric(context?.percent);
   const contextText = validMetric(context?.tokens) && validMetric(context?.window)
-    ? `${formatCompact(context.tokens)} / ${formatCompact(context.window)}` : validMetric(context?.percent) ? formatPercent(context.percent) : null;
+    ? `${formatCompact(context.tokens)} / ${formatCompact(context.window)}` : validMetric(context?.percent) ? formatPercent(context.percent)
+    : contextUnknown ? `? / ${formatCompact(context!.window!)}` : null;
   const nearFull = validMetric(context?.percent) && context.percent >= CONTEXT_WARN_PERCENT;
-  const contextTitle = [validMetric(context?.percent) ? `${zhCN.stats.occupied} ${formatPercent(context.percent)}` : "", nearFull ? zhCN.stats.contextNearFull : ""].filter(Boolean).join("。");
+  const contextTitle = [validMetric(context?.percent) ? `${zhCN.stats.occupied} ${formatPercent(context.percent)}` : "", nearFull ? zhCN.stats.contextNearFull : "",
+    contextUnknown ? zhCN.stats.contextUnknown : ""].filter(Boolean).join("。");
 
   // Separators come from CSS, so they follow whichever items are still shown.
   const joined = (items: { id: string; text: string }[]) => items.map(item => <span key={item.id} className={`stats-item stats-item-${item.id}`}>

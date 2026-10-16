@@ -64,6 +64,11 @@ export interface AgentAdapter {
   /** 切换思考级别（off/minimal/low/medium/high/xhigh/max）。 */
   setThinkingLevel(level: string): Promise<void>;
 
+  /** 宿主命令（/compact、/reload）；仅在没有活动 prompt 时调用。 */
+  runCommand?(input: import("../shared/commands.js").SessionCommandInput): Promise<import("../shared/commands.js").SessionCommandResult>;
+  /** 取消进行中的命令（目前只有压缩可取消）。 */
+  abortCommand?(): void;
+
   /** 订阅 SDK 事件流；返回退订函数（SSE 事件源，needs.md §4.2）。 */
   subscribe(listener: (event: AgentSdkEvent) => void): () => void;
 

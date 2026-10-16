@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { ApiClient, SubagentConversation, SubagentSnapshot } from "pi-agent-server/client";
-import { recentActions, type LiveSubagent } from "./useLiveSubagents.js";
+import { latestReply, recentActions, type LiveSubagent } from "./useLiveSubagents.js";
 
 /** Running runs shown inline while the parent turn streams (DESIGN.md §4.7). */
 const MAX_LIVE_RUNS = 3;
@@ -63,7 +63,8 @@ export function useSubagents(api: ApiClient, sessionId: string | null, { runId, 
         const items: LiveSubagent[] = [];
         if (live) for (const run of list.runs.filter(r => r.status === "running").slice(0, MAX_LIVE_RUNS)) {
           const child = await detail(run);
-          items.push({ run, actions: child ? recentActions(child.timeline) : [] });
+          const reply = child ? latestReply(child.timeline) : undefined;
+          items.push({ run, actions: child ? recentActions(child.timeline) : [], ...(reply ? { reply } : {}) });
         }
         latest = list;
         if (!disposed) setState({ sessionId, runId, data: conversation ? { ...list, conversation } : list, live: items, error: null });

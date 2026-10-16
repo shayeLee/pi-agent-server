@@ -375,6 +375,7 @@ describe("public host API v1 contract", () => {
       "PATCH /v1/sessions/{id}/config",
       "POST /v1/projects",
       "POST /v1/sessions",
+      "POST /v1/sessions/{id}/commands",
       "POST /v1/sessions/{id}/control-queue/{controlId}/promote",
       "POST /v1/sessions/{id}/follow-ups",
       "POST /v1/sessions/{id}/messages",

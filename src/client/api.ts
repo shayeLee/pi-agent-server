@@ -220,4 +220,16 @@ export class ApiClient {
   exportSession(id: string): Promise<Export> {
     return this.request("GET", `/v1/sessions/${id}/export`);
   }
+
+  searchSessionFiles(id: string, query: string): Promise<import("../shared/commands.js").ProjectFileSearch> {
+    return this.request("GET", `/v1/sessions/${encodeURIComponent(id)}/files?query=${encodeURIComponent(query)}`);
+  }
+
+  listSessionCommands(id: string): Promise<import("../shared/commands.js").SessionCommandList> {
+    return this.request("GET", `/v1/sessions/${encodeURIComponent(id)}/commands`);
+  }
+
+  runSessionCommand(id: string, input: import("../shared/commands.js").SessionCommandInput): Promise<import("../shared/commands.js").SessionCommandResult> {
+    return this.request("POST", `/v1/sessions/${encodeURIComponent(id)}/commands`, input);
+  }
 }

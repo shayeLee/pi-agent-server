@@ -13,7 +13,7 @@ type NodeIdentity = { readonly path: string; readonly dev: number; readonly ino:
 
 // Explicit deny-list for project-local credential stores. This is a policy guard, not permission elevation:
 // preview remains limited to the trusted, service-maintained project root of the owning session.
-const sensitiveName = /^(?:\.env.*|auth(?:entication|orization)?(?:\..*)?|\.?npmrc|(?:\.?npm)?credentials?(?:\..*)?|.*(?:secret|credential|password|passwd|private[._-]?key|token|key|凭据|密钥|密码).*)$/iu;
+export const sensitiveName = /^(?:\.env.*|auth(?:entication|orization)?(?:\..*)?|\.?npmrc|(?:\.?npm)?credentials?(?:\..*)?|.*(?:secret|credential|password|passwd|private[._-]?key|token|key|凭据|密钥|密码).*)$/iu;
 const inside = (root: string, target: string) => target === root || target.startsWith(root + path.sep);
 function reject(code: FilePreviewErrorCode): never { throw new FilePreviewError(code); }
 

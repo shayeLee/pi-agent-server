@@ -19,6 +19,7 @@ import {
   type ModelRuntime,
   type ResourceLoader,
 } from "@earendil-works/pi-coding-agent";
+import { sessionResourceLoaderOptions, type SessionResourceRoots } from "./session-resources.js";
 
 /**
  * 归一化显式扩展路径（纯函数）：
@@ -226,14 +227,20 @@ export type SessionResourceLoaderOptions = {
   readonly appendSystemPrompt?: readonly string[];
   /** 显式追加原文，位于能力片段之前；不经过 SDK 的文本/文件路径解析。 */
   readonly appendSystemPromptText?: string;
+  /**
+   * 会话项目的文本资源（AGENTS.md/CLAUDE.md、提示词模板、skills）。按项目 cwd 显式给出 Pi 的
+   * 发现目录，不依赖 loader cwd；每次 loader reload（含 /reload）重新读取磁盘。缺省时不加载。
+   */
+  readonly resources?: SessionResourceRoots;
 };
 
 /**
  * 创建、reload 并接线一个**会话专属** ResourceLoader（宿主唯一入口）。
  *
  * 安全与生命周期契约：
- * - `noExtensions/noSkills/noPromptTemplates/noThemes/noContextFiles` 恒为 true：只加载显式
- *   配置的扩展路径，绝不自动发现；
+ * - `noExtensions/noSkills/noPromptTemplates/noThemes/noContextFiles` 恒为 true：扩展只加载显式
+ *   配置的路径，绝不自动发现；AGENTS.md、提示词模板与 skills 由 `resources` 按**会话项目 cwd**
+ *   显式给出 Pi 的发现目录（见 session-resources.ts），因为 SDK 自身的发现以 loader cwd 为根；
  * - 显式配置的扩展加载失败即抛错（fail-fast，绝不静默降级为「没加载」）；
  * - reload 后立即把扩展排队的 provider 注册刷进传入的 ModelRuntime（默认模型/凭证校验、插件
  *   mode 校验、`GET /v1/models` 与后续恢复会话都可见），并清空队列避免二次注册；
@@ -280,6 +287,7 @@ export async function loadSessionResourceLoader(
     ...(options.extensionFactories !== undefined
       ? { extensionFactories: options.extensionFactories }
       : {}),
+    ...(options.resources ? sessionResourceLoaderOptions(options.resources) : {}),
   });
   await loader.reload();
   if (extensionPaths.length > 0) assertExtensionsLoaded(loader, extensionPaths);

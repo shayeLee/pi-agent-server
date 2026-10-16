@@ -26,7 +26,9 @@ import type {
   SubmitDecision,
   ControlDecision,
   SubmitInput,
+  CommandDecision,
 } from "../application/ports/index.js";
+import type { SessionCommandInput, SessionCommandName } from "../shared/commands.js";
 import { TURN_ERROR_CODES } from "../application/ports/session-runtime-port.js";
 
 /** 单一 requestId 的同步轮次等待者：settle 时按该 key 专属结果一次性 resolve。 */
@@ -212,6 +214,8 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
   private currentFingerprint: string | null = null;
   private currentReservationToken: string | null = null;
   private readonly pending = new Map<string, PendingTask>();
+  /** Host command (/compact, /reload) in progress; submissions conflict and notifications wait. */
+  private command: { name: SessionCommandName; requestId: string; abortRequested: boolean } | null = null;
   /**
    * 同步轮次（runTurn）的 per-request 等待者与文本累计，键为 `${sessionId}:${requestId}`。
    * 文本只在当前 task 的 key 命中该表时累计，settle 只结算同 key 的等待者：旧请求的事件
@@ -376,7 +380,7 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
     }
     // preflight, settled callbacks and terminal accounting still own the host slot.
     // ACK the bounded host queue immediately; never await the run from its own settled handler.
-    if (this.taskState !== "idle" || this.currentTaskId !== null) {
+    if (this.taskState !== "idle" || this.currentTaskId !== null || this.command) {
       if (this.releaseNotifications.length >= 32) return { accepted: false, reason: "full" };
       this.releaseNotifications.push({ payload, requestId, generation });
       return { accepted: true, mode: "pending", requestId };
@@ -422,6 +426,7 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
       // abort 超时后的会话不可复用（旧底层调用可能仍产生事件）
       return { kind: "conflict", reason: "poisoned" };
     }
+    if (this.command) return { kind: "conflict", reason: "active" };
     const key = `${this.sessionId}:${input.requestId}`;
     const fingerprint = payloadFingerprint(input);
     // 同 requestId 并发提交：共享同一 in-flight promise，得到相同结果（不重复执行、无占位竞态）；
@@ -830,7 +835,49 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
    * 在任何状态变更、adapter.abort 或 aborted 事件之前返回 conflict。
    */
   async abort(expectedRequestId?: string): Promise<ControlDecision> {
+    const command = this.command;
+    if (command && this.taskState === "idle") {
+      if (expectedRequestId !== undefined && expectedRequestId !== command.requestId) return { kind: "conflict" };
+      if (command.name !== "compact" || !this.adapter.abortCommand) return { kind: "conflict" };
+      command.abortRequested = true;
+      this.adapter.abortCommand();
+      return { kind: "ok" };
+    }
     return this.abortInternal(expectedRequestId, false);
+  }
+
+  /**
+   * Pi's /compact and /reload, only while the session is idle. Compaction events are published
+   * under the command's requestId and closed with completed / aborted / error, so clients settle
+   * the run they observed; reload publishes nothing. Waiting notifications drain afterwards.
+   */
+  async runCommand(input: SessionCommandInput): Promise<CommandDecision> {
+    if (this.disposed) throw new SessionDeletedError(this.sessionId);
+    if (!this.adapter.runCommand) return { kind: "unsupported" };
+    if (this.poisoned || this.command || this.aborting || this.taskState !== "idle" || this.currentTaskId !== null ||
+        this.pending.size > 0 || this.inFlightSubmits.size > 0 || this.adapter.isSdkStreaming?.()) return { kind: "conflict" };
+    const command = { name: input.command, requestId: `command:${randomUUID()}`, abortRequested: false };
+    this.command = command;
+    try {
+      const result = await this.adapter.runCommand(input);
+      if (input.command === "compact") {
+        // The context shrank: publish fresh usage before the terminal event, as a run does.
+        const usage = await this.readUsageWithTimeout();
+        if (usage !== null) this.emitUsage(usage, 0, 0, command.requestId);
+        this.emitEvent({ type: "completed", requestId: command.requestId });
+      }
+      return { kind: "ok", result };
+    } catch (error) {
+      const message = error instanceof Error && error.message ? error.message : "命令执行失败";
+      if (input.command === "compact") {
+        this.emitEvent(command.abortRequested ? { type: "aborted", requestId: command.requestId }
+          : { type: "error", message, requestId: command.requestId });
+      }
+      return command.abortRequested ? { kind: "aborted" } : { kind: "failed", message };
+    } finally {
+      if (this.command === command) this.command = null;
+      this.scheduleNotificationDrain();
+    }
   }
 
   /** 删除/关闭/连接撤销的强制中止入口：永不被 failback 用户控制锁拦截。 */
@@ -950,7 +997,15 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
   private handleSdkEvent(event: AgentSdkEvent): void {
     // 仅在活动期处理：streaming（正常）或 aborting（abort 等待期间的部分输出仍可见）
     const active = this.taskState === "streaming" || this.aborting;
-    if (!active) return; // 忽略 stray 事件
+    if (!active) {
+      // An idle /compact owns only its own compaction lifecycle.
+      const command = this.command;
+      if (command && (event.type === "compaction_start" || event.type === "compaction_end")) {
+        const translated = translateSdkEvent(event);
+        if (translated) this.emitEvent({ ...translated, requestId: command.requestId });
+      }
+      return; // 忽略 stray 事件
+    }
     // agent_end 携带最终 assistant 的 stopReason/errorMessage，缓存供 prompt resolve 后判定
     if (event.type === "agent_end") {
       const final = extractFinalStop(event.messages);
@@ -1307,24 +1362,8 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
         usage = await this.readUsageWithTimeout();
         durationMs = this.now() - this.turnStartTime;
         ttftMs = this.turnFirstTokenTime !== null ? this.turnFirstTokenTime - this.turnStartTime : durationMs;
-        if (durationMs > 0 || usage !== null) {
-          this.emitEvent({
-            type: "usage",
-            ...(usage?.lastResponse !== undefined ? { lastResponse: usage.lastResponse } : {}),
-            ...(usage?.sessionTotals !== undefined ? { sessionTotals: usage.sessionTotals } : {}),
-            ...(usage?.context !== undefined ? { context: usage.context } : {}),
-            ...(usage?.execution !== undefined ? { execution: usage.execution } : {}),
-            ...(usage?.currentPrompt !== undefined ? { currentPrompt: usage.currentPrompt } : {}),
-            ...(usage?.subagentTotals !== undefined ? { subagentTotals: usage.subagentTotals } : {}),
-            promptTokens: usage?.promptTokens ?? null,
-            completionTokens: usage?.completionTokens ?? null,
-            totalTokens: usage?.totalTokens ?? null,
-            durationMs,
-            ttftMs,
-            // requestId 已在清空 currentRequestId 之前捕获：终态系列永远归属本请求。
-            requestId: requestId ?? undefined,
-          });
-        }
+        // requestId 已在清空 currentRequestId 之前捕获：终态系列永远归属本请求。
+        if (durationMs > 0 || usage !== null) this.emitUsage(usage, durationMs, ttftMs, requestId ?? undefined);
         // 观测埋点：调用耗时 + usage（脱敏，独立于 SSE 事件流）
         if (requestId) {
           this.observe({
@@ -1400,6 +1439,24 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
     }
   }
 
+  private emitUsage(usage: Awaited<ReturnType<SessionRuntime["readUsageWithTimeout"]>>, durationMs: number, ttftMs: number, requestId: string | undefined): void {
+    this.emitEvent({
+      type: "usage",
+      ...(usage?.lastResponse !== undefined ? { lastResponse: usage.lastResponse } : {}),
+      ...(usage?.sessionTotals !== undefined ? { sessionTotals: usage.sessionTotals } : {}),
+      ...(usage?.context !== undefined ? { context: usage.context } : {}),
+      ...(usage?.execution !== undefined ? { execution: usage.execution } : {}),
+      ...(usage?.currentPrompt !== undefined ? { currentPrompt: usage.currentPrompt } : {}),
+      ...(usage?.subagentTotals !== undefined ? { subagentTotals: usage.subagentTotals } : {}),
+      promptTokens: usage?.promptTokens ?? null,
+      completionTokens: usage?.completionTokens ?? null,
+      totalTokens: usage?.totalTokens ?? null,
+      durationMs,
+      ttftMs,
+      requestId,
+    });
+  }
+
   /** 读取 usage，带超时兜底：getLastUsage 挂起时不影响槽位释放。 */
   private async readUsageWithTimeout(): Promise<({ promptTokens: number | null; completionTokens: number | null; totalTokens: number | null } & import("../core/usage-snapshot.js").UsageSnapshot) | null> {
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -1445,9 +1502,10 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
         ...(event.tokensBefore !== undefined ? { tokensBefore: event.tokensBefore } : {}),
         ...(event.tokensAfter !== undefined ? { tokensAfter: event.tokensAfter } : {}) };
     } else if ((event.type === "completed" || event.type === "error" || event.type === "aborted") &&
-        this.compactionMetadata?.status === "running" && event.requestId === this.compactionMetadata.requestId) {
-      this.compactionMetadata = { ...this.compactionMetadata,
-        status: event.type === "completed" ? "unknown" : event.type === "error" ? "failed" : "aborted" };
+        event.requestId !== undefined && event.requestId === this.compactionMetadata?.requestId) {
+      // The owning task or command ended: live clients settle it from this event, and an
+      // export/refresh afterwards must not replay a finished compaction as current state.
+      this.compactionMetadata = undefined;
     }
     this.onEvent(event);
   }

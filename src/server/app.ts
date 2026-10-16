@@ -55,6 +55,8 @@ import { formatSseEvent } from "./sse-format.js";
 import { nextBackpressureState, SSE_BACKPRESSURE_THRESHOLD } from "./sse-backpressure.js";
 import { defaultSseSocket, type SseReplyRaw, type SseRequestRaw, type SseSocket } from "./sse-socket.js";
 import { FilePreviewError, previewProjectFile } from "./session-file-preview.js";
+import { FileSearchError, createProjectFileSearch } from "./session-file-search.js";
+import { BUILTIN_SESSION_COMMANDS } from "./session-resources.js";
 import { ATTACHMENT_MAX_BYTES } from "../attachments/file-policy.js";
 import { UploadService } from "../application/upload-service.js";
 
@@ -76,6 +78,8 @@ export type ServerDeps = {
   defaultThinkingLevel?: string;
   /** 通用 runtime adapter 工厂；生产组合由 SessionConversationCoordinator 提供。 */
   createAdapter: (sessionId: string) => Promise<AgentAdapter>;
+  /** `/` 菜单里的提示词模板与 skills（按会话项目 cwd 发现）；缺省时只列内置命令。 */
+  listSessionCommands?: (projectCwd: string) => Promise<import("../shared/commands.js").SessionCommandInfo[]>;
   /** 生产组合根注入的通用会话存储 registry；用于未实例化会话的只读导出。 */
   conversationStorage?: ConversationStorageRegistry;
   nativeSessions?: import("../application/ports/native-session-port.js").NativeSessionPort;
@@ -169,6 +173,11 @@ const STEERING_BODY_SCHEMA = {
   required: ["text"], additionalProperties: false,
   anyOf: [{ required: ["controlId", "acknowledgementId", "requestId"] },
     { not: { anyOf: [{ required: ["controlId"] }, { required: ["acknowledgementId"] }, { required: ["requestId"] }, { required: ["images"] }] } }],
+} as const;
+const SESSION_COMMAND_BODY_SCHEMA = {
+  type: "object",
+  properties: { command: { type: "string", enum: ["compact", "reload"] }, args: { type: "string", maxLength: 4000 } },
+  required: ["command"], additionalProperties: false,
 } as const;
 const CONTROL_MUTATION_BODY_SCHEMA = {
   type: "object",
@@ -331,6 +340,7 @@ export function buildApp(deps: ServerDeps): FastifyInstance {
     ops.ready = false;
     ops.readyAt = null;
   });
+  const searchProjectFiles = createProjectFileSearch();
   const sessions = new SessionService({
     sessions: deps.sessions,
     projects: deps.projects,
@@ -672,6 +682,45 @@ export function buildApp(deps: ServerDeps): FastifyInstance {
             return reply.code(400).send({ statusCode: 400, error: "Bad Request", code: error.code, message: "文件预览请求不可用" });
           }
           throw error;
+        }
+      },
+    );
+    // Path names only (never contents) for `@` references; same session-owned root as preview.
+    api.get<{ Params: { id: string }; Querystring: { query?: unknown } }>(
+      "/sessions/:id/files",
+      { exposeHeadRoute: false, ...requirePermission("sessions:file-preview") },
+      async (request, reply) => {
+        const projectCwd = await sessions.sessionProjectCwd(ownerKeyOf(request), request.params.id);
+        if (!projectCwd) return NOT_FOUND(reply);
+        try {
+          return reply.code(200).send(await searchProjectFiles(projectCwd, request.query.query));
+        } catch (error) {
+          if (error instanceof FileSearchError) {
+            return reply.code(400).send({ statusCode: 400, error: "Bad Request", code: error.code, message: "文件搜索请求不可用" });
+          }
+          throw error;
+        }
+      },
+    );
+    api.get<{ Params: { id: string } }>("/sessions/:id/commands",
+      { exposeHeadRoute: false, ...requirePermission("sessions:export") }, async (request, reply) => {
+        const projectCwd = await sessions.sessionProjectCwd(ownerKeyOf(request), request.params.id);
+        if (!projectCwd) return NOT_FOUND(reply);
+        const commands = deps.listSessionCommands ? await deps.listSessionCommands(projectCwd.cwd) : [...BUILTIN_SESSION_COMMANDS];
+        return reply.code(200).send({ commands });
+      });
+    api.post<{ Params: { id: string }; Body: import("../shared/commands.js").SessionCommandInput }>(
+      "/sessions/:id/commands",
+      { schema: { body: SESSION_COMMAND_BODY_SCHEMA }, ...requirePermission("sessions:control") },
+      async (request, reply) => {
+        const decision = await sessions.runCommand(ownerKeyOf(request), request.params.id, request.body);
+        if (decision === "not-found") return NOT_FOUND(reply);
+        switch (decision.kind) {
+          case "ok": return reply.code(200).send(decision.result);
+          case "conflict": return reply.code(409).send({ statusCode: 409, error: "Conflict", message: "会话正忙，请等当前任务结束后再执行命令" });
+          case "aborted": return reply.code(409).send({ statusCode: 409, error: "Conflict", code: "COMMAND_ABORTED", message: "命令已取消" });
+          case "unsupported": return reply.code(501).send({ statusCode: 501, error: "Not Implemented", message: "该会话不支持此命令" });
+          case "failed": return reply.code(422).send({ statusCode: 422, error: "Unprocessable Entity", message: decision.message });
         }
       },
     );

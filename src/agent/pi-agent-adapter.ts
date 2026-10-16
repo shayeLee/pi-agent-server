@@ -11,6 +11,7 @@ import type { AgentAdapter, AgentConfigurationSnapshot, ImageInput, UsageInfo } 
 import { FAILBACK_LIFECYCLE_EVENT, isFailbackLifecycleEvent, type FailbackLifecycleSource } from "./failback-lifecycle.js";
 import { FAILBACK_HOST_TRANSPORT_EVENT, isFailbackHostTransportHandshake, type FailbackHostTransport } from "./failback-host-transport.js";
 import type { AgentSdkEvent } from "./events.js";
+import type { SessionCommandInput, SessionCommandResult } from "../shared/commands.js";
 import { SUBAGENT_HOST_TRANSPORT_EVENT, isSubagentHostTransportHandshake, type SubagentHostTransport, type ExtensionCustomMessage } from "./subagent-host-transport.js";
 import { notificationFromEntry } from "./subagent-notification.js";
 import { ModelOutputSampler, type ModelOutputProgress } from "./model-output-sampler.js";
@@ -73,6 +74,15 @@ export type AgentSessionLike = {
   };
   bindExtensions?(bindings: { mode: "json"; onError: (error: Error) => void }): Promise<void>;
   navigateTree(targetId: string): Promise<void>;
+  compact?(customInstructions?: string): Promise<{ tokensBefore: number; estimatedTokensAfter?: number }>;
+  abortCompaction?(): void;
+  reload?(): Promise<void>;
+  readonly resourceLoader?: {
+    getAgentsFiles(): { agentsFiles: readonly unknown[] };
+    getPrompts(): { prompts: readonly unknown[] };
+    getSkills(): { skills: readonly unknown[] };
+    getExtensions(): { extensions: readonly unknown[] };
+  };
   subscribe(listener: (event: AgentSdkEvent) => void): () => void;
   dispose(): void;
   setModel(model: unknown): Promise<void>;
@@ -270,6 +280,8 @@ export class PiAgentAdapter implements AgentAdapter {
   private sawAssistantEvent = false;
   /** A request-local token survives post-run retry/continue and gates the actual SDK stream function. */
   private requestAbort: AbortController | null = null;
+  /** Host command (/compact, /reload) in progress outside any prompt. */
+  private commandAbort: AbortController | null = null;
   private failbackAttempt: string | null = null;
   /** 永远只调用 SDK 原始函数；每轮不得再包装上一轮 gate。 */
   private readonly baseStreamFunction: ((...args: any[]) => any) | undefined;
@@ -290,7 +302,11 @@ export class PiAgentAdapter implements AgentAdapter {
         this.failbackAttempt = attemptId;
         return true;
       },
-      cancelled: () => this.requestAbort === null || this.requestAbort.signal.aborted,
+      // An idle /compact is a live host operation too; only its own cancellation counts.
+      cancelled: () => {
+        const token = this.requestAbort ?? this.commandAbort;
+        return token === null || token.signal.aborted;
+      },
       enqueue: async (text) => {
         if (!this.failbackAttempt || !this.requestAbort || this.requestAbort.signal.aborted) return false;
         await this.session.steer(text);
@@ -613,6 +629,35 @@ export class PiAgentAdapter implements AgentAdapter {
     this.session.setThinkingLevel(level);
   }
 
+  /** Pi's /compact and /reload. The runtime only calls this while no prompt is active. */
+  async runCommand(input: SessionCommandInput): Promise<SessionCommandResult> {
+    if (input.command === "compact") {
+      if (!this.session.compact) throw new Error("会话不支持手动压缩");
+      const instructions = input.args?.trim();
+      const token = this.commandAbort = new AbortController();
+      try {
+        const result = await this.session.compact(instructions || undefined);
+        return { command: "compact", tokensBefore: result.tokensBefore,
+          ...(result.estimatedTokensAfter !== undefined ? { tokensAfter: result.estimatedTokensAfter } : {}) };
+      } finally {
+        if (this.commandAbort === token) this.commandAbort = null;
+      }
+    }
+    if (!this.session.reload) throw new Error("会话不支持重新加载");
+    // Re-reads AGENTS.md, prompt templates and skills, and re-evaluates this session's explicit
+    // extensions. The session-local EventBus survives, so host transports stay attached.
+    await this.session.reload();
+    const loader = this.session.resourceLoader;
+    return { command: "reload", contextFiles: loader?.getAgentsFiles().agentsFiles.length ?? 0,
+      promptTemplates: loader?.getPrompts().prompts.length ?? 0, skills: loader?.getSkills().skills.length ?? 0,
+      extensions: loader?.getExtensions().extensions.length ?? 0 };
+  }
+
+  abortCommand(): void {
+    this.commandAbort?.abort();
+    this.session.abortCompaction?.();
+  }
+
   private disposed = false;
 
   /**
@@ -650,6 +695,7 @@ export class PiAgentAdapter implements AgentAdapter {
     this.unsubscribeHostIdentity();
     this.unsubscribeTranscript();
     this.requestAbort?.abort();
+    this.commandAbort?.abort();
     this.session.clearQueue?.();
     this.unsubscribeMeasurement();
     this.unsubscribeCoreQueue();

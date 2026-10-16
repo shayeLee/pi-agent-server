@@ -41,6 +41,9 @@ export const PUBLIC_API_OPERATIONS = [
   ["/v1/sessions/{id}/steps", "get", "sessions:export"],
   ["/v1/sessions/{id}/system-prompt", "get", "sessions:export"],
   ["/v1/sessions/{id}/file-preview", "get", "sessions:file-preview"],
+  ["/v1/sessions/{id}/files", "get", "sessions:file-preview"],
+  ["/v1/sessions/{id}/commands", "get", "sessions:export"],
+  ["/v1/sessions/{id}/commands", "post", "sessions:control"],
   ["/v1/sessions/{id}/control-queue", "get", "sessions:export"],
   ["/v1/sessions/{id}/control-queue/{controlId}", "delete", "sessions:control"],
   ["/v1/sessions/{id}/control-queue/{controlId}/promote", "post", "sessions:control"],
@@ -341,6 +344,27 @@ export const openapiV1 = {
         "404": error(404, "Session or file not found."),
       }, { parameters: [...sessionParameters, { name: "path", in: "query", required: true, schema: { type: "string", minLength: 1 }, description: "Project-relative file path; absolute paths and traversal are rejected." }, { name: "line", in: "query", required: false, schema: { type: "integer", minimum: 1 }, description: "Optional 1-based line for a client-side scroll target." }] }),
     },
+    "/v1/sessions/{id}/files": {
+      get: operation("searchSessionFiles", "sessions:file-preview", {
+        "200": { description: "At most 20 project-relative path suggestions for `@` references (names only, never contents). Git projects list tracked and non-ignored files; others use a bounded walk without .git and node_modules. Sensitive names are omitted. An empty query lists the project root.", ...json(ref("ProjectFileSearch")) },
+        "400": error(400, "The query is invalid or the project root is no longer the session's frozen root."),
+        "404": error(404, "Session not found."),
+      }, { parameters: [...sessionParameters, { name: "query", in: "query", required: false, schema: { type: "string", maxLength: 256 }, description: "Fuzzy path query; a leading @ is ignored." }] }),
+    },
+    "/v1/sessions/{id}/commands": {
+      get: operation("listSessionCommands", "sessions:export", {
+        "200": { description: "Commands the composer offers after `/`: host commands (compact, reload), prompt templates and skill:<name>, discovered from the session project and the service agentDir. Read from disk without creating a runtime; templates and skills apply to a running session after /reload.", ...json(ref("SessionCommandList")) },
+        "404": error(404, "Session not found."),
+      }, { parameters: sessionParameters }),
+      post: operation("runSessionCommand", "sessions:control", {
+        "200": { description: "Command finished. compact publishes compaction_start/compaction_end and then completed/aborted/error SSE events under its own requestId; reload publishes no events.", ...json(ref("SessionCommandResult")) },
+        "400": error(400, "Invalid command body."),
+        "404": error(404, "Session not found."),
+        "409": error(409, "The session is busy, or the compaction was cancelled (code COMMAND_ABORTED)."),
+        "422": error(422, "The command failed, for example nothing to compact."),
+        "501": error(501, "The session agent does not support host commands."),
+      }, { parameters: sessionParameters, requestBody: request(ref("SessionCommandInput")), ...requestValidation }),
+    },
     "/v1/sessions/{id}/control-queue": {
       get: operation("getControlQueue", "sessions:export", { "200": { description: "Authoritative resident SDK queue. Public event reconciliation has propagation delay, not atomic realtime drain notification. No pending input-extension work or custom SDK messages.", ...json(ref("ControlQueueSnapshot")) }, "404": error(404, "Session not found.") }, { parameters: sessionParameters }),
       head: automaticHeadOperation("getControlQueueHead", "sessions:export", { "200": headJson("Authoritative queue; body suppressed."), "404": headJson("Session not found.") }, { parameters: sessionParameters }),
@@ -437,6 +461,13 @@ export const openapiV1 = {
       MessageInput: { type: "object", required: ["requestId", "prompt"], properties: { requestId: { type: "string", maxLength: 128 }, prompt: { type: "string", maxLength: 32768 }, parentId: { type: "string" }, images: { type: "array", maxItems: 4, items: ref("ImageInput") }, fileIds: { type: "array", maxItems: 5, items: { type: "string" } } }, additionalProperties: false },
       SubmitResult: { oneOf: [{ type: "object", required: ["status"], properties: { status: { const: "accepted" } }, additionalProperties: false }, { type: "object", required: ["status"], properties: { status: { const: "queued" }, position: { type: "integer" } }, additionalProperties: false }] },
       FilePreview: { type: "object", required: ["path", "content", "lineCount"], properties: { path: { type: "string", description: "Normalized project-relative path." }, content: { type: "string", description: "Complete UTF-8 content; maximum 262144 bytes." }, lineCount: { type: "integer", minimum: 1 }, requestedLine: { type: "integer", minimum: 1 } }, additionalProperties: false },
+      ProjectFileSearch: { type: "object", required: ["entries", "truncated"], properties: { entries: { type: "array", maxItems: 20, items: { type: "object", required: ["path", "kind"], properties: { path: { type: "string", description: "Project-relative path with / separators." }, kind: { enum: ["file", "directory"] } }, additionalProperties: false } }, truncated: { type: "boolean", description: "The project listing hit its file cap; some paths cannot be suggested." } }, additionalProperties: false },
+      SessionCommandList: { type: "object", required: ["commands"], properties: { commands: { type: "array", items: { type: "object", required: ["name", "source", "description"], properties: { name: { type: "string", description: "Typed after /." }, source: { enum: ["builtin", "prompt", "skill"] }, description: { type: "string" }, argumentHint: { type: "string" } }, additionalProperties: false } } }, additionalProperties: false },
+      SessionCommandInput: { type: "object", required: ["command"], properties: { command: { enum: ["compact", "reload"] }, args: { type: "string", maxLength: 4000, description: "compact: optional summary instructions." } }, additionalProperties: false },
+      SessionCommandResult: { oneOf: [
+        { type: "object", required: ["command", "tokensBefore"], properties: { command: { const: "compact" }, tokensBefore: { type: "number", minimum: 0 }, tokensAfter: { type: "number", minimum: 0 } }, additionalProperties: false },
+        { type: "object", required: ["command", "contextFiles", "promptTemplates", "skills", "extensions"], properties: { command: { const: "reload" }, contextFiles: { type: "integer", minimum: 0 }, promptTemplates: { type: "integer", minimum: 0 }, skills: { type: "integer", minimum: 0 }, extensions: { type: "integer", minimum: 0 } }, additionalProperties: false },
+      ] },
       ExportMessage: { type: "object", required: ["role", "text"], properties: { id: { type: "string", description: "Preserved legacy host message id, if any." }, sourceId: { type: "string", description: "Pi JSONL message-entry id. When present, exactly matches timeline.messageId; image-only messages have one too." }, role: { enum: ["user", "assistant"] }, text: { type: "string" }, images: { type: "array", items: ref("ImageInput") } }, additionalProperties: false },
       ExecutionSnapshot: { type: "object", required: ["scope", "coverage", "totalLoops", "totalTurns", "recordedLoops", "recordedTurns"], properties: {
         scope: { const: "allEntries" }, coverage: { enum: ["complete", "recorded", "unknown"] },
@@ -459,7 +490,7 @@ export const openapiV1 = {
       CompactionState: { type: "object", required: ["status", "reason"], properties: {
         status: { enum: ["running", "succeeded", "failed", "aborted", "unknown"] }, reason: { enum: ["manual", "threshold", "overflow"] },
         requestId: { type: "string" }, tokensBefore: { type: "number", minimum: 0 }, tokensAfter: { type: "number", minimum: 0 }, willRetry: { type: "boolean" },
-      }, additionalProperties: false, description: "Ephemeral runtime metadata at lastEventId; absent without an observed live compaction. Restore running as unknown until live confirmation. No summary or SDK error." },
+      }, additionalProperties: false, description: "Ephemeral runtime metadata at lastEventId; absent without an observed live compaction and cleared once the owning task or command ends (completed/error/aborted), so a finished compaction is never replayed. Restore running as unknown until live confirmation. No summary or SDK error." },
       TimelineItem: { oneOf: [
         { type: "object", required: ["id", "type", "version", "notificationId", "runIds", "text", "entryId", "timestamp", "order"], properties: { id: { type: "string" }, type: { const: "notification" }, version: { const: 1 }, notificationId: { type: "string", format: "uuid" }, runIds: { type: "array", minItems: 1, items: { type: "string", minLength: 1 } }, text: { type: "string" }, entryId: { type: "string" }, timestamp: { type: "string" }, order: { type: "integer", minimum: 0 } }, additionalProperties: false },
         { type: "object", required: ["id", "type", "role", "messageId", "turnId", "text", "order"], properties: { id: { type: "string" }, type: { const: "message" }, role: { enum: ["user", "assistant"] }, messageId: { type: "string" }, turnId: { type: ["string", "null"] }, text: { type: "string" }, order: { type: "integer", minimum: 0 }, timestamp: { type: "string" }, stopReason: { const: "aborted", description: "Explicitly interrupted assistant text; omitted when unavailable, never inferred from partial text." } }, additionalProperties: false },

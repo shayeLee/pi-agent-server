@@ -113,7 +113,7 @@ function makeRuntime(opts: {
 }
 
 describe("SessionRuntime compaction metadata", () => {
-  it("clears finished r1 metadata before queued r2 export, then delivers r2 cancellation to restored client", async () => {
+  it("clears finished r1 metadata once r1 settles, then delivers queued r2 cancellation to restored client", async () => {
     const adapter = new ManualAdapter();
     const concurrency = new ConcurrencyController({ ...baseConfig, globalLimit: 1 });
     const bus = new SessionEventBus();
@@ -124,7 +124,8 @@ describe("SessionRuntime compaction metadata", () => {
     adapter.emit({ type: "compaction_end", reason: "threshold", aborted: false, willRetry: false,
       result: { summary: "summary", tokensBefore: 10 } });
     adapter.finishStream(); await flush();
-    expect(runtime.compaction?.status).toBe("succeeded");
+    // r1 settled: its finished compaction is no longer exported.
+    expect(runtime.compaction).toBeUndefined();
     expect(concurrency.submit("blocker:task", "other-user", Date.now()).kind).toBe("run");
     expect(await runtime.submitMessage({ requestId: "r2", prompt: "next", userId: "owner-1" })).toEqual({ kind: "queued", position: 1 });
     // Export's cursor includes queued(r2); replay starts after it.
@@ -159,11 +160,13 @@ describe("SessionRuntime compaction metadata", () => {
     adapter.emit({ type: "compaction_end", reason: "threshold", aborted: true, willRetry: false });
     expect(events.at(-1)).toEqual({ type: "compaction_end", reason: "threshold", outcome: "aborted", willRetry: false, requestId: "r1" });
     adapter.finishAbort(); await abort; adapter.finishStream(); await flush();
-    expect(runtime.compaction?.status).toBe("aborted");
+    expect(runtime.compaction).toBeUndefined();
     await runtime.submitMessage({ requestId: "r2", prompt: "next", userId: "owner-1" }); await flush();
     expect(runtime.compaction).toBeUndefined();
-    adapter.emit({ type: "compaction_start", reason: "overflow" }); adapter.finishStream(); await flush();
-    expect(runtime.compaction).toEqual({ status: "unknown", reason: "overflow", requestId: "r2" });
+    adapter.emit({ type: "compaction_start", reason: "overflow" });
+    expect(runtime.compaction).toEqual({ status: "running", reason: "overflow", requestId: "r2" });
+    adapter.finishStream(); await flush();
+    expect(runtime.compaction).toBeUndefined();
     runtime.dispose();
   });
 });

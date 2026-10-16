@@ -2,11 +2,18 @@ import { zhCN } from "../i18n/zh-CN.js";
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { Icon } from "./Icon.js";
 
-import type { ModelInfo, Project, SessionRecord } from "pi-agent-server/client";
+import type { ModelInfo, Project, ProjectFileEntry, SessionCommandInfo, SessionCommandInput, SessionRecord } from "pi-agent-server/client";
 import { EMPTY_MESSAGE, type SubmissionState, type SubmitOutcome, type UnsentMessage } from "../attachment-state.js";
 import type { DraftSource } from "../draft-store.js";
 import { ModelThinkingPicker } from "./ModelThinkingPicker.js";
 import { hasVisibleOverlay } from "../lib/overlays.js";
+import { COMPOSER_MENU_ID, ComposerMenu, composerOptionId, type ComposerMenuItem } from "./ComposerMenu.js";
+import { applyCompletion, completionToken, fileReference, filterCommands, hostCommand } from "./composer-completion.js";
+
+/** Pause before asking the server for `@` suggestions while typing. */
+const FILE_SEARCH_DEBOUNCE_MS = 80;
+/** How long a command result stays above the editor. */
+const COMMAND_NOTICE_MS = 6000;
 
 /** Window for the second Esc press (DESIGN.md §5.4). */
 export const ABORT_CONFIRM_MS = 1500;
@@ -46,6 +53,12 @@ export type ComposerProps = {
   onAbortArmedChange?: (armed: boolean) => void;
   onFollowUp: (text: string) => void | Promise<boolean>;
   onConfigChange: (config: { modelProvider?: string; modelId?: string; thinkingLevel?: string }) => void;
+  /** `/` menu entries for the open session (built-ins, prompt templates, skills). */
+  loadCommands?: () => Promise<SessionCommandInfo[]>;
+  /** `@` path suggestions under the session project. */
+  searchFiles?: (query: string) => Promise<ProjectFileEntry[]>;
+  /** Runs /compact or /reload; resolves to a one-line result, or null when the run itself reports it. */
+  onRunCommand?: (input: SessionCommandInput) => Promise<string | null>;
 };
 
 export function Composer({
@@ -53,7 +66,7 @@ export function Composer({
   models, thinkingLevels, defaultModel, defaultThinkingLevel,
   streaming, queued, primaryAwaitingStart = false, historyLoading = false, controlsBlocked = false, placeholder, onSend,
   draft: suppliedDraft, draftSource, draftScope = "", submission, pendingControls, onDraftText, onDraftSettings, onAddFile, onRetryFile, onRemoveFile, onRetrySubmit, onConfirmCreation,
-  onAbort, onAbortArmedChange, onFollowUp, onConfigChange,
+  onAbort, onAbortArmedChange, onFollowUp, onConfigChange, loadCommands, searchFiles, onRunCommand,
 }: ComposerProps) {
   const subscribeDraft = useCallback((listener: () => void) =>
     draftSource?.subscribe(draftScope, listener) ?? (() => {}), [draftSource, draftScope]);
@@ -66,11 +79,24 @@ export function Composer({
   const [localText, setLocalText] = useState("");
   const [localError, setLocalError] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const [caret, setCaret] = useState<number | null>(null);
+  const [dismissedToken, setDismissedToken] = useState<string | null>(null);
+  const [menuActive, setMenuActive] = useState(0);
+  const [commands, setCommands] = useState<{ sessionId: string; list: SessionCommandInfo[] } | null>(null);
+  const [fileResults, setFileResults] = useState<{ query: string; entries: ProjectFileEntry[] } | null>(null);
+  const [menuError, setMenuError] = useState(false);
+  const [commandNotice, setCommandNotice] = useState<string | null>(null);
+  const pendingCaretRef = useRef<number | null>(null);
   const filePickerRef = useRef<HTMLInputElement>(null);
   const submittingRef = useRef(false);
-  const text = draft?.text ?? localText;
-  const attachments = draft?.attachments ?? [];
   const submitting = submission?.phase === "creating" || submission?.phase === "configuring" || submission?.phase === "submitting";
+  // While a submission is in flight its own text and attachments read as already sent: the
+  // editor looks empty at once. The owner still clears them only after acceptance, so a failed
+  // or unknown result shows them again (with the retained snapshot) and nothing is lost.
+  const inFlight = submitting ? submission!.snapshot : null;
+  const draftText = draft?.text ?? localText;
+  const text = inFlight && draftText.trim() === inFlight.text ? "" : draftText;
+  const attachments = (draft?.attachments ?? []).filter(item => !inFlight?.localIds.includes(item.localId));
   const primaryPending = primaryAwaitingStart || submitting || submission?.phase === "unknown";
   const runtimeControls = streaming && !queued && !primaryPending;
   const canAbort = Boolean(onAbort && session && canWrite && streaming && !queued && !historyLoading);
@@ -116,7 +142,69 @@ export function Composer({
     : null;
   const canSubmit = canWrite && !historyLoading && !primaryPending && !dispatching && !controlPending && !controlsBlocked && !queued && !attachmentNotice && submission?.phase !== "unknown" && !blockedByAttachment && hasContent &&
     (session !== null || canCreateSession);
-  const setText = (value: string) => { if (onDraftText) onDraftText(value); else setLocalText(value); };
+  const setText = (value: string) => { textRef.current = value; if (onDraftText) onDraftText(value); else setLocalText(value); };
+  const textRef = useRef(text);
+  textRef.current = text;
+
+  // Completion menus (Pi's editor): `/` at the start lists commands, `@` lists project paths.
+  const sessionId = session?.id ?? null;
+  const rawToken = sessionId && caret !== null && canWrite && !historyLoading ? completionToken(text, Math.min(caret, text.length)) : null;
+  const tokenKey = rawToken ? `${rawToken.kind}:${rawToken.start}` : null;
+  const token = rawToken && ((rawToken.kind === "command" && loadCommands) || (rawToken.kind === "file" && searchFiles)) &&
+    tokenKey !== dismissedToken ? rawToken : null;
+  const commandList = commands?.sessionId === sessionId ? commands.list : null;
+  const menuItems: ComposerMenuItem[] = !token ? [] : token.kind === "command"
+    ? filterCommands(commandList ?? [], token.query).map(command => ({ kind: "command", command }))
+    : (fileResults?.entries ?? []).map(entry => ({ kind: "file", entry }));
+  const menuLoading = token !== null && (token.kind === "command" ? commandList === null : fileResults?.query !== token.query && !fileResults);
+  const menuStatus = !token ? null : menuError ? zhCN.composer.menuUnavailable : menuLoading && !menuItems.length ? zhCN.composer.menuLoading
+    : menuItems.length ? null : token.kind === "command" ? zhCN.composer.noCommands : zhCN.composer.noFiles;
+  const menuOpen = token !== null;
+  const activeIndex = Math.min(menuActive, Math.max(0, menuItems.length - 1));
+
+  useEffect(() => { setMenuActive(0); }, [tokenKey, token?.query]);
+  useEffect(() => { if (dismissedToken && tokenKey !== dismissedToken) setDismissedToken(null); }, [tokenKey, dismissedToken]);
+  useEffect(() => { setMenuError(false); }, [tokenKey]);
+  useEffect(() => {
+    if (token?.kind !== "command" || !loadCommands || !sessionId) return;
+    let current = true;
+    loadCommands().then(list => { if (current) setCommands({ sessionId, list }); }, () => { if (current) setMenuError(true); });
+    return () => { current = false; };
+    // Re-read on each opening: templates and skills may have changed on disk.
+  }, [tokenKey, sessionId, loadCommands]);
+  const fileQuery = token?.kind === "file" ? token.query : null;
+  useEffect(() => {
+    if (fileQuery === null || !searchFiles) { setFileResults(null); return; }
+    let current = true;
+    const timer = setTimeout(() => {
+      searchFiles(fileQuery).then(entries => { if (current) { setMenuError(false); setFileResults({ query: fileQuery, entries }); } },
+        () => { if (current) setMenuError(true); });
+    }, FILE_SEARCH_DEBOUNCE_MS);
+    return () => { current = false; clearTimeout(timer); };
+  }, [fileQuery, sessionId, searchFiles]);
+  useEffect(() => {
+    if (!commandNotice) return;
+    const timer = setTimeout(() => setCommandNotice(null), COMMAND_NOTICE_MS);
+    return () => clearTimeout(timer);
+  }, [commandNotice]);
+  useEffect(() => {
+    const el = textareaRef.current;
+    const next = pendingCaretRef.current;
+    if (!el || next === null || el.value !== text) return;
+    pendingCaretRef.current = null;
+    el.setSelectionRange(next, next);
+    setCaret(next);
+  }, [text]);
+
+  function pickMenuItem(index: number) {
+    const item = menuItems[index];
+    if (!item || !token) return;
+    const directory = item.kind === "file" && item.entry.kind === "directory";
+    const next = applyCompletion(text, token, item.kind === "file" ? fileReference(item.entry) : `/${item.command.name}`, !directory);
+    pendingCaretRef.current = next.caret;
+    setText(next.text);
+    textareaRef.current?.focus();
+  }
 
   useEffect(() => {
     const el = textareaRef.current;
@@ -136,6 +224,22 @@ export function Composer({
     setDispatching(true);
     setLocalError(null);
     try {
+      const command = session && onRunCommand ? hostCommand(text) : null;
+      if (command) {
+        if (runtimeControls) { setLocalError(zhCN.composer.commandBusy); return; }
+        setCommandNotice(null);
+        // The command is under way (its progress shows above); free the editor at once.
+        const submitted = text;
+        setText("");
+        try {
+          setCommandNotice(await onRunCommand!(command));
+        } catch (error) {
+          // Give the command back for a retry unless something new was typed meanwhile.
+          if (!textRef.current) setText(submitted);
+          throw error;
+        }
+        return;
+      }
       if (runtimeControls) {
         if (!session) return;
         await onFollowUp(text.trim());
@@ -157,6 +261,24 @@ export function Composer({
   }
 
   function handleKeyDown(event: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if (menuOpen && !event.nativeEvent.isComposing && event.keyCode !== 229) {
+      if (event.key === "Escape") {
+        // Closing the menu is not the first Esc of an abort.
+        event.preventDefault();
+        setDismissedToken(tokenKey);
+        return;
+      }
+      if (menuItems.length && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
+        event.preventDefault();
+        setMenuActive((activeIndex + (event.key === "ArrowDown" ? 1 : menuItems.length - 1)) % menuItems.length);
+        return;
+      }
+      if (menuItems.length && (event.key === "Tab" || (event.key === "Enter" && !event.shiftKey))) {
+        event.preventDefault();
+        pickMenuItem(activeIndex);
+        return;
+      }
+    }
     if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing || event.keyCode === 229) return;
     event.preventDefault();
     void handleSubmit();
@@ -234,9 +356,17 @@ export function Composer({
           )}
         </div>
       )}
+      {commandNotice && <div className="composer-submit-notice is-info" role="status" data-testid="composer-command-notice">{commandNotice}</div>}
+      {menuOpen && <ComposerMenu items={menuItems} active={activeIndex} status={menuStatus} onPick={pickMenuItem} onHover={setMenuActive} />}
       <textarea ref={textareaRef} data-testid="composer-input" rows={1} placeholder={runtimeControls ? zhCN.run.runningPlaceholder : placeholder}
         aria-label={zhCN.composer.message} title={canAbort ? zhCN.composer.queueKeyboardHint : zhCN.composer.sendKeyboardHint} value={text}
-        onChange={(event) => setText(event.target.value)} onKeyDown={handleKeyDown} onPaste={handlePaste}
+        aria-autocomplete={loadCommands || searchFiles ? "list" : undefined} aria-expanded={loadCommands || searchFiles ? menuOpen && menuItems.length > 0 : undefined}
+        aria-controls={menuOpen && menuItems.length ? COMPOSER_MENU_ID : undefined}
+        aria-activedescendant={menuOpen && menuItems.length ? composerOptionId(activeIndex) : undefined}
+        onChange={(event) => { setText(event.target.value); setCaret(event.target.selectionStart); }}
+        onSelect={(event) => setCaret(event.currentTarget.selectionStart)}
+        onBlur={() => setCaret(null)}
+        onKeyDown={handleKeyDown} onPaste={handlePaste}
         disabled={!canWrite || historyLoading} />
       <div className="composer-toolbar">
         <div className="composer-left">

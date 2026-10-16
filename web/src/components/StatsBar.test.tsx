@@ -51,6 +51,12 @@ describe("summary bar while idle", () => {
     expect(screen.getByTestId("stat-session-cost")).toHaveTextContent("未计价");
   });
 
+  it("shows an unknown count after compaction against the window, as Pi does", () => {
+    render(<StatsBar stats={{ ...stats, context: { tokens: null, window: 1_000_000, percent: null, estimate: true } }} timeline={timeline} />);
+    expect(screen.getByTestId("stat-summary-context")).toHaveTextContent(`上下文 ? / ${formatCompact(1_000_000)}`);
+    expect(screen.getByTestId("stat-summary-context").parentElement).toHaveAttribute("title", "压缩后的实际占用要等下一次模型回复后才能得知");
+  });
+
   it("warns once the context nears its window", () => {
     const view = render(<StatsBar stats={stats} timeline={timeline} />);
     expect(screen.getByTestId("stat-summary-context").parentElement).not.toHaveAttribute("data-warn");

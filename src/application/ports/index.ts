@@ -6,6 +6,7 @@ export type {
   SubmitInput,
   SubmitDecision,
   ControlDecision,
+  CommandDecision,
   RunTurnInput,
   SessionTurnResult,
 } from "./session-runtime-port.js";

@@ -9,7 +9,7 @@ import {
   useSyncExternalStore,
 } from "react";
 import { DEFAULT_PROJECT_ID, ApiClient, ApiError, createChatStore, ownsSseEvent } from "pi-agent-server/client";
-import type { AccessCapabilities, ChatStore, ModelInfo, Project, SessionRecord, SseEvent, UsageSnapshot } from "pi-agent-server/client";
+import type { AccessCapabilities, ChatStore, ModelInfo, Project, SessionCommandInput, SessionRecord, SseEvent, UsageSnapshot } from "pi-agent-server/client";
 import type { EventLogEntry } from "../types.js";
 import { EMPTY_MESSAGE, type SubmissionState, type SubmitOutcome, type SubmitSnapshot, type UnsentMessage } from "../attachment-state.js";
 
@@ -796,6 +796,33 @@ export function useWebAppController() {
     api.abort(sessionId).catch((err) => reportChatError(sessionId, err));
   }
 
+  const loadCommands = useCallback(async () => {
+    if (!activeSessionId) return [];
+    return (await api.listSessionCommands(activeSessionId)).commands;
+  }, [api, activeSessionId]);
+
+  const searchFiles = useCallback(async (query: string) => {
+    if (!activeSessionId) return [];
+    return (await api.searchSessionFiles(activeSessionId, query)).entries;
+  }, [api, activeSessionId]);
+
+  /** /compact reports through its compaction events; /reload returns what it loaded. */
+  async function runCommand(input: SessionCommandInput): Promise<string | null> {
+    if (!activeSessionId) return null;
+    try {
+      const result = await api.runSessionCommand(activeSessionId, input);
+      return result.command === "reload" ? zhCN.composer.reloaded(result) : null;
+    } catch (error) {
+      if (!(error instanceof ApiError)) throw error;
+      // Show the server's one-line reason, not the raw "HTTP 422: {json}" envelope.
+      const body = /^HTTP \d+: (.*)$/s.exec(error.message)?.[1];
+      let parsed: { message?: unknown; code?: unknown } = {};
+      try { parsed = body ? JSON.parse(body) : {}; } catch { /* non-JSON body */ }
+      if (parsed.code === "COMMAND_ABORTED") return zhCN.composer.compactCancelled;
+      throw new Error(typeof parsed.message === "string" && parsed.message ? zhCN.composer.commandFailed(input.command, parsed.message) : error.message);
+    }
+  }
+
   function clearEventLog(): void {
     setEventLog([]);
   }
@@ -873,6 +900,9 @@ export function useWebAppController() {
     steer,
     followUp,
     abort,
+    loadCommands,
+    searchFiles,
+    runCommand,
     clearEventLog,
   };
 }

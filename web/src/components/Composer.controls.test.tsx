@@ -175,3 +175,19 @@ describe('runtime abort controls', () => {
     expect(props.onAbort).not.toHaveBeenCalled();
   });
 });
+
+describe('in-flight submission', () => {
+  const attachment = (localId: string, name: string) => ({ localId, name, size: 1024, kind: 'file', status: 'ready' }) as never;
+  it('reads as sent while it is in flight and shows the draft again once it fails', () => {
+    const snapshot = { text: 'draft', localIds: ['a'] } as SubmissionState['snapshot'];
+    const props = { ...base(), streaming: false, draft: { text: 'draft', attachments: [attachment('a', 'a.txt'), attachment('b', 'b.txt')], settings: {} } };
+    const view = render(<Composer {...props} submission={{ phase: 'creating', stage: 'create', snapshot }} />);
+    expect(screen.getByTestId('composer-input')).toHaveValue('');
+    expect(screen.getAllByTestId('composer-attachment').map(item => item.textContent)).toEqual([expect.stringContaining('b.txt')]);
+    view.rerender(<Composer {...props} draft={{ ...props.draft, text: 'next' }} submission={{ phase: 'submitting', stage: 'send', snapshot }} />);
+    expect(screen.getByTestId('composer-input')).toHaveValue('next');
+    view.rerender(<Composer {...props} submission={{ phase: 'failed', stage: 'send', snapshot, error: 'boom' }} />);
+    expect(screen.getByTestId('composer-input')).toHaveValue('draft');
+    expect(screen.getAllByTestId('composer-attachment')).toHaveLength(2);
+  });
+});

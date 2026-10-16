@@ -11,6 +11,7 @@ A long-running, session-based HTTP/SSE service built on the Pi Agent Runtime, wi
 - Multi-user access: admission by client IP, roles `viewer` / `user` / `operator` / `admin`, deny by default; Bearer tokens can be bound to exact IPs.
 - Project and session management; native Pi sessions are discovered automatically and shared by default.
 - HTTP/JSON API and Server-Sent Events; while a task runs you can queue a `follow-up`, promote it to `steer`, or abort.
+- Pi's text resources: `AGENTS.md` / `CLAUDE.md`, prompt templates and skills (including `~/.agents/skills`) are discovered from the session project and the service agentDir. The composer supports `@` file references and the `/compact`, `/reload`, template and `skill:` commands.
 - SQLite by default, PostgreSQL by explicit choice; conversations are saved as Pi JSONL, and a repeated request returns the recorded result.
 - Optional "Ledger"-style Web UI: ledger conversation, run state, stats bar and trace Inspector.
 
@@ -18,7 +19,7 @@ A long-running, session-based HTTP/SSE service built on the Pi Agent Runtime, wi
 
 - **Intranet, single instance**: public deployment and multiple instances come in later versions.
 - **All Pi tools are allowed by default**, including `bash`, `edit` and `write`. For read-only use set `TOOLS=read,ls,find,grep` and add filesystem / process isolation separately. See [configuration](docs/configuration.md).
-- **Extensions and plugins must be enabled explicitly**: Pi extensions via `PI_EXTENSION_PATHS`, agent-server plugins via `PI_PLUGINS`; nothing loads when unset.
+- **Extensions and plugins must be enabled explicitly**: Pi extensions via `PI_EXTENSION_PATHS`, agent-server plugins via `PI_PLUGINS`; nothing loads when unset. Context files, prompt templates and skills are loaded automatically, and every project registered with the service is trusted for them.
 - **JSONL files are not cleaned up yet**: deleting a project or session keeps its JSONL files.
 - **Backups are local and encrypted**: off-site disaster recovery is still planned. See [backup and restore](docs/backup-restore.md).
 - **Initialize the database first**: startup only verifies, never migrates. For a first deployment or a release that requires an upgrade, handle the database per the [operations guide](docs/operations.md) first.

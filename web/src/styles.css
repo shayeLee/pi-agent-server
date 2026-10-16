@@ -1921,6 +1921,102 @@ details[open] > summary > .details-chevron { transform: rotate(90deg); }
   border-color: var(--accent);
 }
 
+/* 命令结果是一次性提示（DESIGN.md §4.8），不是错误。 */
+.composer-submit-notice.is-info {
+  border-left-color: var(--line);
+  color: var(--text-tertiary);
+}
+
+/* ---------- 输入补全菜单（@ 文件 / 斜杠命令） ---------- */
+
+.composer {
+  position: relative;
+}
+
+.composer-menu {
+  position: absolute;
+  z-index: 60;
+  left: -1px;
+  right: -1px;
+  bottom: calc(100% + 4px);
+  display: flex;
+  flex-direction: column;
+  max-height: min(296px, 45dvh);
+  padding: var(--space-4);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-float);
+  background: var(--bg-surface);
+  box-shadow: var(--shadow-md);
+}
+
+.composer-menu-options {
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.composer-menu-status {
+  padding: var(--space-8);
+  color: var(--text-tertiary);
+  font-size: var(--font-small);
+}
+
+.composer-menu-option {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-8);
+  min-width: 0;
+  padding: 5px var(--space-8);
+  border-radius: var(--radius-item);
+  color: var(--text-primary);
+  font-size: var(--font-ui);
+  cursor: pointer;
+}
+
+.composer-menu-option[aria-selected="true"] {
+  background: var(--bg-hover);
+}
+
+.composer-menu-icon {
+  flex: none;
+  align-self: center;
+  color: var(--text-tertiary);
+}
+
+.composer-menu-name {
+  flex: none;
+  max-width: 60%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-mono);
+}
+
+.composer-menu-hint,
+.composer-menu-detail,
+.composer-menu-source {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-tertiary);
+  font-size: var(--font-small);
+}
+
+.composer-menu-hint {
+  flex: none;
+  font-family: var(--font-mono);
+}
+
+.composer-menu-detail {
+  flex: 1 1 auto;
+}
+
+.composer-menu-source {
+  flex: none;
+  margin-left: auto;
+  font-size: var(--font-micro);
+}
+
 /* ---------- 输入动作按钮 ---------- */
 
 .composer-add {
@@ -3429,6 +3525,9 @@ details[open] > summary > .details-chevron { transform: rotate(90deg); }
 .subagent-live-actions li.is-live { color: var(--ink); }
 .subagent-live-tool { flex: 0 0 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .subagent-live-summary { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.subagent-live-reply { display: flex; align-items: baseline; min-width: 0; margin: 0; color: var(--body2); font-size: var(--fs-ui); line-height: 22px; }
+.subagent-live-reply.is-live { color: var(--ink); }
+.subagent-live-reply-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .subagent-live-open { align-self: flex-start; padding: 0; border: 0; background: none; color: var(--acc); font-family: var(--font-mono); font-size: var(--fs-meta); cursor: pointer; }
 .subagent-live-open:hover { text-decoration: underline; text-underline-offset: 3px; }
 .ledger-caret { display: inline-block; width: 7px; height: 14px; margin-left: 6px; vertical-align: -2px; background: var(--acc); animation: ledger-blink 1.06s steps(1) infinite; }

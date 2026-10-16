@@ -187,6 +187,17 @@ export const zhCN = {
     empty: "暂无轨迹",
   },
   composer: {
+    menuLabel: "补全建议",
+    menuLoading: "加载中…",
+    menuUnavailable: "暂时无法读取建议",
+    noCommands: "没有匹配的命令",
+    noFiles: "没有匹配的文件",
+    commandSource: { prompt: "模板", skill: "skill" } as Record<"prompt" | "skill", string>,
+    commandBusy: "运行中不能执行命令，等本轮结束后再试；输入已保留。",
+    commandFailed: (command: string, reason: string) => `/${command} 未完成：${reason}`,
+    compactCancelled: "已取消压缩",
+    reloaded: (counts: { contextFiles: number; promptTemplates: number; skills: number; extensions: number }) =>
+      `已重新加载：上下文文件 ${counts.contextFiles} · 模板 ${counts.promptTemplates} · skills ${counts.skills} · 扩展 ${counts.extensions}`,
     followUpFilesUnsupported: "追加仅支持文字和图片，不支持文件附件；输入已保留。",
     sendFailed: "发送失败",
     ready: "就绪",
@@ -369,6 +380,7 @@ export const zhCN = {
     cache: "缓存",
     context: "上下文",
     contextNearFull: "上下文接近上限，可考虑压缩或开新会话",
+    contextUnknown: "压缩后的实际占用要等下一次模型回复后才能得知",
     // Live state words
     disconnected: "连接已断开",
     recentOutput: "正在输出",

@@ -668,6 +668,7 @@ describe("App（顶层流程）", () => {
     expect(inst.createSession).toHaveBeenCalledTimes(1);
     expect(inst.sendMessage).not.toHaveBeenCalled();
     expect(screen.getByTestId("send-button")).toBeDisabled();
+    expect(screen.getByTestId("composer-input")).toHaveValue("");
     const created = { ...sessions[0]!, id: "new-session", title: "" };
     await act(async () => releaseCreate(created));
     await waitFor(() => expect(inst.updateSessionConfig).toHaveBeenCalledTimes(1));
@@ -681,7 +682,8 @@ describe("App（顶层流程）", () => {
     expect(primary.prompt).toBe("primary first");
     if (!unknown) act(() => mocks.sse.onEvent?.({ type: "status", phase: "agent_start", requestId: primary.requestId }));
     enter();
-    expect(screen.getByTestId("composer-input")).toHaveValue("primary first");
+    // In flight the submitted text reads as sent; it comes back only if the result is unknown.
+    expect(screen.getByTestId("composer-input")).toHaveValue("");
     if (unknown) expect(screen.getByTestId("send-button")).toBeDisabled();
     else expect(screen.getByTestId("abort-button")).toBeEnabled();
     expect(inst.steer).not.toHaveBeenCalled();
