@@ -1,5 +1,5 @@
 import { zhCN } from "../i18n/zh-CN.js";
-import { memo, useEffect, useRef, useState } from "react";
+import { memo, useState } from "react";
 import { ToolStatusIcon } from "./ToolStatusIcon.js";
 import { Icon } from "./Icon.js";
 import type { ToolCall } from "pi-agent-server/client";
@@ -12,19 +12,9 @@ import { toolPresentation } from "../tools/presentation.js";
  * tool_end → 展示 result 并标记完成（done=true）。
  */
 /** With `index`, renders as a numbered Ledger step row inside a work block (DESIGN.md §4.5). */
-/**
- * Running tools open to show their live output, except where the inline subagent panel already
- * shows that progress (DESIGN.md §4.7): an open subagent_wait would repeat it. Its one-line summary
- * keeps the targets and counts; opening it by hand still shows the raw output.
- */
-const PROGRESS_SHOWN_ELSEWHERE = new Set(["subagent_wait"]);
+/** Every tool starts collapsed; only the reader opens it. */
 export const ToolCallCard = memo(function ToolCallCard({ call, index }: { call: ToolCall; index?: number }) {
-  const autoOpen = !call.done && !PROGRESS_SHOWN_ELSEWHERE.has(call.toolName);
-  const [expanded, setExpanded] = useState(autoOpen);
-  const userToggled = useRef(false);
-  useEffect(() => {
-    if (!userToggled.current) setExpanded(autoOpen);
-  }, [autoOpen]);
+  const [expanded, setExpanded] = useState(false);
   const duration = call.done ? formatToolDuration(call.durationMs) : null;
   const durationTitle = zhCN.toolCall.duration(call.durationMs, call.toolName === "subagent_wait" ? zhCN.toolCall.waitScope : "");
   const status = call.done ? (call.isError ? zhCN.composer.failed : zhCN.status.completed) : zhCN.steps.streaming;
@@ -42,10 +32,7 @@ export const ToolCallCard = memo(function ToolCallCard({ call, index }: { call: 
       <button
         type="button"
         className={`tool-call-header chevron-trigger${badge ? " tool-parallel-header" : ""}`}
-        onClick={() => {
-          userToggled.current = true;
-          setExpanded((v) => !v);
-        }}
+        onClick={() => setExpanded((v) => !v)}
         aria-expanded={expanded}
         aria-label={zhCN.toolCall.label(call.toolName, status)} title={call.toolName}
       >

@@ -51,7 +51,7 @@ describe("tool code language and snapshots", () => {
   it("uses path, preserves block order and replaces snapshots", () => {
     const result = (text: string) => ({ content: [{ type: "text", text }, { type: "text", text: "<footer>end</footer>\n" }] });
     const { container, rerender } = render(<ToolCallCard call={{ ...call, partialResult: result("<html>\n") }} />);
-    expect(screen.getByRole("button", { name: /工具调用/ })).toHaveAttribute("aria-expanded", "true");
+    fireEvent.click(screen.getByRole("button", { name: /工具调用/ }));
     expect(container.querySelector('.tool-result-text .code-block')?.getAttribute("data-language")).toBe("html");
     rerender(<ToolCallCard call={{ ...call, partialResult: result("<html>\n<body>second</body>\n") }} />);
     expect(Array.from(container.querySelectorAll(".tool-result-text pre"), p => p.textContent)).toEqual(["<html>\n<body>second</body>\n", "<footer>end</footer>\n"]);
@@ -66,13 +66,13 @@ describe("tool code language and snapshots", () => {
     [{ path: "x.html", language: "unknown" }, '<html>\n', undefined],
   ])("uses conservative hints %j", (args, text, language) => {
     const { container } = render(<ToolCallCard call={{ ...call, args, partialResult: text }} />);
-    expect(screen.getByRole("button", { name: /工具调用/ })).toHaveAttribute("aria-expanded", "true");
+    fireEvent.click(screen.getByRole("button", { name: /工具调用/ }));
     expect(container.querySelector(".tool-result-text .code-block")?.getAttribute("data-language")).toBe(language);
     expect(container.querySelector(".tool-result-text pre")?.textContent).toBe(text);
   });
   it("uses bash CodeBlock for both command and inert log output", () => {
     const { container } = render(<ToolCallCard call={{ ...call, toolName: "bash", args: { command: 'echo "hi"\n' }, partialResult: 'const true log\n' }} />);
-    expect(screen.getByRole("button", { name: /工具调用/ })).toHaveAttribute("aria-expanded", "true");
+    fireEvent.click(screen.getByRole("button", { name: /工具调用/ }));
     expect(container.querySelector(".tool-parameters .code-block")?.getAttribute("data-language")).toBe("bash");
     expect(container.querySelector(".tool-result-text .code-block")?.getAttribute("data-language")).toBe("bash");
     expect(container.querySelector(".tool-result-text pre")?.textContent).toBe('const true log\n');
