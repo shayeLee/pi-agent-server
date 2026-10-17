@@ -61,12 +61,12 @@ describe("default plaintext staging root (private per-user config root, no OS te
     const home = makeFakeHome();
     const staging = createPlaintextStaging(undefined, backupRootOf(home));
     cleanups.push(staging);
-    // The default root is exactly the per-user Application Support staging root.
-    expect(defaultPlaintextStagingRoot()).toBe(path.join(home, "Library", "Application Support", "pi-agent-server-backup-staging"));
+    // The default root is this platform's per-user staging root under the home directory.
+    expect(defaultPlaintextStagingRoot().startsWith(home + path.sep)).toBe(true);
     const root = path.dirname(staging);
-    // The staging root is the default config root (mkdtemp runs on its
-    // realpath canonicalization; on macOS that resolves /var → /private/var).
-    expect(root).toBe(realpathSync(path.join(home, "Library", "Application Support", "pi-agent-server-backup-staging")));
+    // The staging root is the default root (mkdtemp runs on its realpath
+    // canonicalization; on macOS that resolves /var → /private/var).
+    expect(root).toBe(realpathSync(defaultPlaintextStagingRoot()));
     const rootStat = statSync(root);
     expect(rootStat.mode & 0o777).toBe(0o700);
     expect(path.basename(staging)).toMatch(/^\.pi-agent-backup-staging-/);
@@ -110,16 +110,29 @@ describe("default plaintext staging root (private per-user config root, no OS te
 
   it("rejects a sticky world-writable ancestor deep in the default chain", () => {
     const home = makeFakeHome();
-    const applicationSupportDir = path.join(home, "Library", "Application Support");
-    mkdirSync(applicationSupportDir, { recursive: true, mode: 0o700 });
-    chmodSync(applicationSupportDir, 0o1777);
+    const stagingParentDir = path.dirname(defaultPlaintextStagingRoot());
+    mkdirSync(stagingParentDir, { recursive: true, mode: 0o700 });
+    chmodSync(stagingParentDir, 0o1777);
     try {
       expect(() => createPlaintextStaging(undefined, backupRootOf(home)))
         .toThrow(/plaintext staging ancestor must not be a sticky \(shared\) directory/);
       expect(existsSync(defaultPlaintextStagingRoot())).toBe(false);
     } finally {
-      chmodSync(applicationSupportDir, 0o700);
+      chmodSync(stagingParentDir, 0o700);
     }
+  });
+});
+
+describe("default plaintext staging root per platform", () => {
+  it("uses each platform's per-user application data directory and ignores relative overrides", () => {
+    const home = makeFakeHome();
+    expect(defaultPlaintextStagingRoot("darwin", {})).toBe(path.join(home, "Library", "Application Support", "pi-agent-server-backup-staging"));
+    expect(defaultPlaintextStagingRoot("linux", {})).toBe(path.join(home, ".local", "state", "pi-agent-server", "backup-staging"));
+    expect(defaultPlaintextStagingRoot("linux", { XDG_STATE_HOME: "/srv/state" })).toBe(path.join("/srv/state", "pi-agent-server", "backup-staging"));
+    expect(defaultPlaintextStagingRoot("linux", { XDG_STATE_HOME: "relative/state" })).toBe(path.join(home, ".local", "state", "pi-agent-server", "backup-staging"));
+    expect(defaultPlaintextStagingRoot("freebsd", {})).toBe(path.join(home, ".local", "state", "pi-agent-server", "backup-staging"));
+    expect(defaultPlaintextStagingRoot("win32", { LOCALAPPDATA: "/Users/x/AppData/Local" })).toBe(path.join("/Users/x/AppData/Local", "pi-agent-server", "backup-staging"));
+    expect(defaultPlaintextStagingRoot("win32", {})).toBe(path.join(home, "AppData", "Local", "pi-agent-server", "backup-staging"));
   });
 });
 

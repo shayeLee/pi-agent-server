@@ -1054,16 +1054,23 @@ function currentUid(): number | undefined {
  *
  * Deliberately NOT the OS temporary directory: shared temp roots are sticky
  * third-party surfaces by design, which is exactly the TOCTOU surface the
- * staging policy must exclude. The default is a per-user private directory
- * under the macOS Application Support directory
- * (`~/Library/Application Support/pi-agent-server-backup-staging`), created
- * 0700 on first use; its full ancestor chain is validated on every use
- * (see assertTrustedStagingAncestorChain). This staging directory is a
- * *temporary* plaintext working area — never the final encrypted backup
- * surface.
+ * staging policy must exclude. The default is the platform's per-user private
+ * application data directory, created 0700 on first use:
+ * - macOS: `~/Library/Application Support/pi-agent-server-backup-staging`;
+ * - Windows: `%LOCALAPPDATA%\pi-agent-server\backup-staging`;
+ * - Linux and other Unix: `$XDG_STATE_HOME/pi-agent-server/backup-staging`,
+ *   or `~/.local/state/...` when XDG_STATE_HOME is unset or relative (the XDG
+ *   spec says relative values are invalid and must be ignored).
+ * Its full ancestor chain is validated on every use (see
+ * assertTrustedStagingAncestorChain). This staging directory is a *temporary*
+ * plaintext working area — never the final encrypted backup surface.
  */
-export function defaultPlaintextStagingRoot(): string {
-  return path.join(homedir(), "Library", "Application Support", "pi-agent-server-backup-staging");
+export function defaultPlaintextStagingRoot(platform: NodeJS.Platform = process.platform, environment: NodeJS.ProcessEnv = process.env): string {
+  const home = homedir();
+  const absolute = (value: string | undefined) => { const configured = nonBlank(value); return configured && path.isAbsolute(configured) ? configured : undefined; };
+  if (platform === "darwin") return path.join(home, "Library", "Application Support", "pi-agent-server-backup-staging");
+  if (platform === "win32") return path.join(absolute(environment.LOCALAPPDATA) ?? path.join(home, "AppData", "Local"), "pi-agent-server", "backup-staging");
+  return path.join(absolute(environment.XDG_STATE_HOME) ?? path.join(home, ".local", "state"), "pi-agent-server", "backup-staging");
 }
 
 function nonBlank(value: string | undefined): string | undefined {
@@ -1158,9 +1165,8 @@ export interface PlaintextStagingHandle {
  * Root policy (default AND explicit): the root — and its full existing
  * ancestor chain — must be current-user/root owned, non-sticky, and without
  * group/world write bits; the root itself must be fully private (0700). The
- * default root is the per-user config staging root
- * (`~/Library/Application Support/pi-agent-server-backup-staging`, created
- * 0700 on first use); an explicit root must be an absolute current-user
+ * default root is the platform's per-user staging root
+ * (defaultPlaintextStagingRoot, created 0700 on first use); an explicit root must be an absolute current-user
  * 0700 directory. This is a temporary plaintext working area — the final
  * backup root holds only ciphertext. The staging root is
  * guaranteed to stay outside the backup root and its parent (checked lexically
@@ -1413,9 +1419,8 @@ export async function createSqliteBackup(options: BackupOptions): Promise<Backup
     publishStaging = mkdtempSync(path.join(options.paths.backupRoot, ".pi-agent-backup-publish-"));
     chmodSync(publishStaging, 0o700);
     // 2. Plaintext staging (SQLite snapshot, JSONL copies, manifest plaintext)
-    //    lives in a private per-user config staging root (default
-    //    ~/Library/Application Support/pi-agent-server-backup-staging; full
-    //    trusted ancestor chain), never in the backup root or its parent.
+    //    lives in a private per-user staging root (default per platform, see
+    //    defaultPlaintextStagingRoot; full trusted ancestor chain), never in the backup root or its parent.
     //    This is a temporary plaintext working area; the final backup root
     //    holds only ciphertext. The staging directory FD stays
     //    held for the whole backup and is revalidated before every sensitive

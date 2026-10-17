@@ -113,7 +113,7 @@ PI_DEFAULT_MODEL=<provider>/<modelId>
 PI_DEFAULT_THINKING_LEVEL=medium
 # 可选：为指定 IP 设置管理员、只读等权限；先创建下面的 JSON 文件，再取消下一行注释
 # PI_IP_ACCESS_POLICY_FILE=/etc/pi-agent-server/ip-access-policy.json
-# 可选：备份 plaintext staging 根（默认在 HOME 下自动创建为 0700；显式设置时需使用绝对路径，访问权限为 0700，所属用户为 agent-server，且不得与 backup root 或其父目录重叠）
+# 可选：备份 plaintext staging 根（默认按平台在 HOME 下自动创建为 0700，Linux 为 ~/.local/state/pi-agent-server/backup-staging 或 $XDG_STATE_HOME 下的同名目录，见 configuration.md；显式设置时需使用绝对路径，访问权限为 0700，所属用户为 agent-server，且不得与 backup root 或其父目录重叠）
 # PI_BACKUP_STAGING_ROOT=/srv/pi-agent-backup-staging
 ```
 

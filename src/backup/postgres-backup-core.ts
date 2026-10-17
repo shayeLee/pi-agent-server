@@ -1106,8 +1106,8 @@ async function runPostgresBackup(options: PostgresBackupOptions, verifySourceSch
     // publish is one same-filesystem atomic rename and the backup root's
     // parent is never touched; plaintext staging (pg_dump output, JSONL
     // copies, manifest plaintext) lives in a private per-user config staging
-    // root (default ~/Library/Application Support/pi-agent-server-backup-
-    // staging; full trusted ancestor chain), never in the backup root or its
+    // root (default per platform, see defaultPlaintextStagingRoot; full
+    // trusted ancestor chain), never in the backup root or its
     // parent. This is a temporary plaintext working area; the final backup
     // root holds only ciphertext. The staging directory
     // FD stays held and is revalidated before every sensitive operation.

@@ -46,7 +46,7 @@ export PI_ALLOWED_CLIENT_CIDRS=127.0.0.0/8,10.0.0.0/8
 | `PI_PLUGINS` | 未设置 | 逗号分隔的显式加载、受信任同进程 ESM specifier；可以是包名，也可以是构建产物入口的绝对路径（裸机部署用后者，因为 `pnpm link` 在重建 `node_modules` 后不保留）；不扫描目录或 `.pi` |
 | `PI_EXTENSION_PATHS` | 未设置 | 显式加载 Pi SDK 扩展的主变量，逗号分隔（绝对路径或 `~/…`）；不自动发现，无效路径或加载失败即拒绝启动。`PI_PROVIDER_EXTENSION_PATHS` 为已弃用兼容 alias：去除空白与空项后，仅旧变量得到非空列表时在路径校验前警告；两个变量都得到非空列表则拒绝启动 |
 | `CORS_ORIGINS` | 空 | 允许在浏览器中调用本服务的网页地址；多个地址用逗号分隔，例如 `http://127.0.0.1:5173` |
-| `PI_BACKUP_STAGING_ROOT` | 每用户私有应用目录 | 备份或数据库升级时使用的临时工作目录；通常无需设置 |
+| `PI_BACKUP_STAGING_ROOT` | 按平台的每用户私有目录：macOS `~/Library/Application Support/pi-agent-server-backup-staging`；Linux `$XDG_STATE_HOME/pi-agent-server/backup-staging`（未设置或为相对路径时用 `~/.local/state/pi-agent-server/backup-staging`）；Windows `%LOCALAPPDATA%\pi-agent-server\backup-staging` | 备份或数据库升级时存放明文的临时工作目录，完成后清空；通常无需设置 |
 
 路径关系：未显式配置时，`DATA_DIR=~/.pi`，`DB_PATH=~/.pi/agent/pi-agent-server.db`，`PI_AGENT_DIR=~/.pi/agent`；`PI_AUTH_PATH` 仍为 `~/.pi/agent/auth.json`，会话来源仍为 `PI_CODING_AGENT_DIR/sessions`（未设置时 `~/.pi/agent/sessions`）。路径配置为空白时视为未设置；服务存储路径不展开字面量 `~` 或 `$HOME`，显式配置请填写绝对路径。
 
