@@ -547,8 +547,11 @@ function invalidSessionHistory(message: string): never {
 export function parseJsonl(file: string): number {
   let bytes: Buffer;
   try { bytes = readFileSync(file); } catch { fail("staged file could not be read"); }
-  const text = bytes.toString("utf8");
-  if (text.length === 0 || text.includes("\uFFFD")) invalidSessionHistory("JSONL is not valid UTF-8");
+  // Strict decoding: a session may legitimately contain U+FFFD (a tool printed
+  // one), so only undecodable bytes are invalid, never the character itself.
+  let text: string;
+  try { text = new TextDecoder("utf-8", { fatal: true }).decode(bytes); } catch { invalidSessionHistory("JSONL is not valid UTF-8"); }
+  if (text.length === 0) invalidSessionHistory("JSONL is not valid UTF-8");
   const lines = text.split("\n");
   const records: Array<Record<string, unknown>> = [];
   for (const [index, raw] of lines.entries()) {

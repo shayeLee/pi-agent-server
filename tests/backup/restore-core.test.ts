@@ -266,6 +266,19 @@ describe("SQLite restore drill", () => {
     expect(() => parseJsonl(missing)).toThrow(/staged file could not be read/);
     try { parseJsonl(missing); } catch (error) { expect(error).not.toBeInstanceOf(InvalidSessionHistoryError); }
   });
+  it("accepts a history that contains U+FFFD and rejects only undecodable bytes", () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "pi-restore-utf8-"));
+    try {
+      const header = JSON.stringify({ type: "session", version: 3, id: "s", timestamp: "2026-01-01T00:00:00Z", cwd: "/w" });
+      const entry = JSON.stringify({ type: "message", id: "a", parentId: null, timestamp: "2026-01-01T00:00:01Z", message: { role: "user", content: "tool printed \uFFFD here" } });
+      const replacement = path.join(dir, "replacement.jsonl");
+      writeFileSync(replacement, `${header}\n${entry}\n`);
+      expect(() => parseJsonl(replacement)).not.toThrow();
+      const broken = path.join(dir, "broken.jsonl");
+      writeFileSync(broken, Buffer.concat([Buffer.from(`${header}\n`), Buffer.from([0xff, 0xfe]), Buffer.from("\n")]));
+      expect(() => parseJsonl(broken)).toThrow(/JSONL is not valid UTF-8/);
+    } finally { rmSync(dir, { recursive: true, force: true }); }
+  });
   it("runs the complete core path with an injectable crypto adapter and preserves payload hashes", async () => {
     const f = await fixture(false);
     const sourceFile = path.join(f.dataDir, "projects", "p", "sessions", "db-session", "history.jsonl");
