@@ -1,8 +1,9 @@
 # MCP 接入设计
 
-> 状态：设计草案（2026-10-17），尚未实现。本文记录 pi-agent-server 接入 MCP（Model Context
+> 状态：P0、P1 已实现（2026-10-17），P2（Web UI）未开始。本文记录 pi-agent-server 接入 MCP（Model Context
 > Protocol）server 与 codemode 的方案、已确认的决策和分阶段计划。代码事实基于 Pi SDK
-> `@earendil-works/pi-coding-agent@1.3.0`。
+> `@earendil-works/pi-coding-agent@1.3.0`。实现位于 `src/mcp/`、`src/agent/mcp-tool-boundary.ts`
+> 与 `src/storage/kysely-project-mcp-repository.ts`。
 
 ## 1. 目标与范围
 
@@ -73,8 +74,7 @@
       "maxExposure": "codemode",
       "toolExposure": { "delete_*": "hidden" },
       "adminOnly": false,
-      "defaultEnabled": false,
-      "pool": { "maxInstances": 8, "idleTimeoutSeconds": 600 }
+      "defaultEnabled": false
     }
   }
 }
@@ -88,7 +88,6 @@
 - `exposure` / `toolExposure`：目录给出的默认值。`toolExposure` 中的 `hidden` 是硬限制，项目不能放开。
 - `adminOnly`：默认 `false`；为 `true` 时只有 admin 能在项目中启用。
 - `defaultEnabled`：新项目与未配置的项目是否默认启用，默认 `false`。
-- `pool`：仅 stdio，见第 8 节。
 - 占位符：`${secret:NAME}` 从密钥文件读取（见第 7 节）；`${PROJECT_CWD}` 由宿主替换为会话项目 cwd。stdio 的相对 `cwd` 按项目 cwd 解析，不使用 SDK 的“相对会话目录”规则。
 - server 名称规则沿用 Pi：只允许字母、数字、`_`、`-`，仅 `-`/`_` 不同的名称视为同一个。
 
@@ -104,7 +103,7 @@
 | `server_name` | 目录中的 server 名称 |
 | `enabled` | 是否启用 |
 | `exposure` | 可选，覆盖目录默认值，不超过 `maxExposure` |
-| `tool_exposure` | 可选 JSON，按工具收紧 |
+| `hidden_tools` | JSON 数组，在本项目隐藏的工具（server 原工具名，精确匹配） |
 | `updated_at` / `updated_by` | 审计字段 |
 
 需要按 `docs/database-design.md` 的迁移注册表新增迁移，SQLite 与 PostgreSQL 同步。
@@ -118,6 +117,8 @@
 - 项目设置的 exposure 不能高于 `maxExposure`。
 - `codemode` 与 `deferred` 同级，项目可以在二者之间切换：`deferred` 适合不擅长写 JS 的模型。
 - 目录 `toolExposure` 中的 `hidden` 不可被项目覆盖；其余工具级覆盖同样受 `maxExposure` 约束。
+- 项目设置了 server 级 exposure 时，它同时是目录工具级覆盖的上限：例如项目选 `codemode`，目录里 `direct` 的工具也降为 `codemode`；选 `hidden` 则全部隐藏。
+- 项目级的工具设置只能隐藏（`hidden_tools`），不能给单个工具指定其他 exposure，避免与目录的通配规则互相覆盖。
 
 ### 4.4 权限
 
@@ -170,14 +171,12 @@ codemode 扩展配置：`mode: "on"`（内置工具保持声明），`models: fa
 
 ## 8. 进程与连接管理
 
-宿主通过 `createMcpExtension({ createTransport })` 接入连接池，替代“每个会话一套连接”：
+实现前验证的结论：SDK 的 `McpClient` 对每个 transport 单独执行 `initialize`，`createTransport` 只是“为一个连接造一个传输”的工厂，多个会话无法共用同一个 MCP 会话。因此采用原定的退路，不做跨会话连接池：
 
-- **stdio**：池的键是 `(serverName, projectId)`。同一项目的会话复用同一组进程；不同项目之间不共享，避免状态和 `${PROJECT_CWD}` 串到别的项目。`pool.maxInstances` 限制每个 server 的进程总数，`idleTimeoutSeconds` 后回收空闲进程。达到上限时，新会话的该 server 标记为不可用并提示，不阻塞会话启动。
-- **HTTP**：按会话建立连接，按 server 限制并发请求数。
-- 每个池化连接的子进程 env 只包含目录声明的变量与解析后的 secret，不继承服务进程 env（`PATH` 等最小集合除外）。
-- 指标：每个 server 的活动进程数、连接失败数、调用耗时，接入现有 `/metrics`。
-
-如果 `createTransport` 的契约不足以支持多会话复用（例如 MCP session 状态与扩展实例绑定），退路是第一版仍按会话建连，只对 stdio 加全局进程上限，连接池放到后续阶段。实现前需先验证这一点。
+- **按会话建连**：会话启动时为它启用的每个 server 建一个连接，会话结束时关闭。
+- **stdio 全局上限**：`PI_MCP_MAX_STDIO_PROCESSES`（默认 32）限制全服务同时运行的 MCP 进程数。达到上限时，新会话的这个 server 连接失败并提示，不阻塞会话启动。
+- **宿主自己的 transport**：不使用 SDK 默认 transport（它会继承服务进程 env，并把 `${NAME}` 与 `!cmd` 解析为环境变量和 shell 命令）。连接参数始终取自目录；子进程只继承 `PATH`、`HOME`、`LANG`、`LC_ALL`、`TMPDIR`、`TZ`，加上目录声明并替换了占位符的变量。HTTP 不接 SDK 的 OAuth provider，401 直接作为连接错误。
+- HTTP 连接的并发请求数暂不限制；指标（活动进程数、连接失败数、调用耗时）留到后续接入 `/metrics`。
 
 ## 9. codemode 并发与超时
 
@@ -198,7 +197,7 @@ codemode 扩展配置：`mode: "on"`（内置工具保持声明），`models: fa
 | 阶段 | 内容 | 验收 |
 |---|---|---|
 | P0 边界 | allowlist 自动排除 `mcp__*`；`tool_call` 兜底拦截；`translate.ts` 透传 `parentToolCallId`；README 写明 bash 环境变量风险 | allowlist 下未授权 MCP 工具无论直接调用还是从 codemode 调用都被拒；all 模式行为不变；嵌套事件带父 ID |
-| P1 接入 | 全局目录与密钥文件解析；项目级配置表、迁移、API 与权限；MCP/codemode 扩展接入（`models: false`）；stdio/HTTP 连接池；codemode 排队与超时 | 未配置目录时行为与现在一致；不读取任何 `mcp.json`；`user` 能启用普通 server、不能启用 `adminOnly` 或修改默认项目；同一项目的会话复用 stdio 进程；第 3 个并发脚本排队而不是报错 |
+| P1 接入 | 全局目录与密钥文件解析；项目级配置表、迁移 v4、API 与权限；MCP/codemode 扩展接入（`models: false`）；按会话建连 + stdio 全局上限；codemode 排队与超时 | 未配置目录时行为与现在一致；不读取任何 `mcp.json`；`user` 能启用普通 server、不能启用 `adminOnly` 或修改默认项目；stdio 进程数不超过上限；第 3 个并发脚本排队而不是报错 |
 | P2 UI | codemode 卡片与嵌套调用列表；项目 MCP 设置面板 | 实时显示与刷新回放一致；viewer 只读 |
 | P3 后续 | 按用户绑定凭证、OAuth、目录热更新、按模型覆盖 exposure | 另行设计 |
 
@@ -206,6 +205,11 @@ codemode 扩展配置：`mode: "on"`（内置工具保持声明），`models: fa
 
 ## 12. 待定问题
 
-- `createTransport` 是否支持跨会话复用同一 MCP 连接（决定第 8 节能否在 P1 落地）。
-- 项目 MCP 配置是否需要计入导出、备份与 owner 转移流程（`docs/backup-restore.md`、`docs/owner-transfer.md`）。
 - 是否需要给每个用户或项目设置 MCP 调用的速率或配额。
+- HTTP server 的并发请求上限与 MCP 指标（第 8 节）。
+
+已解决：
+
+- `createTransport` 不能跨会话复用连接，见第 8 节。
+- 项目 MCP 设置存在 `project_mcp_servers` 表中，按 `project_id` 挂在项目上：备份随数据库一起保存，owner 转移不改 `project_id` 所以设置跟着项目走，删除项目时级联删除。
+- `adminOnly` 只在启用时检查：管理员之后把已启用的 server 改成 `adminOnly`，已有的项目设置继续生效，需要管理员自行停用或从目录中移除。

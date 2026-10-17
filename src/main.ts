@@ -60,6 +60,14 @@ function parseDefaultModel(value: string | undefined): { provider: string; id: s
   return { provider, id };
 }
 
+// 正整数环境变量：未设置为 undefined，其余非正整数拒绝启动（不回显值以外的内容）。
+function parsePositiveInteger(name: string, value: string | undefined): number | undefined {
+  if (value === undefined || value.trim() === "") return undefined;
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 1) throw new Error(`${name} 必须是正整数`);
+  return parsed;
+}
+
 // 严格生产 migration 门禁：服务启动只接受 verify。`off` 已删除，任何显式值都会在
 // 资源创建前 fail-fast；所有数据库（包括 disposable test data）均须先经离线 migrate 建立
 // 并 verify 单一基线。未知非空值同样 fail-fast。
@@ -110,6 +118,12 @@ const app = await startServer({
   appendSystemPromptFile: process.env.PI_APPEND_SYSTEM_FILE,
   plugins: plugins.length > 0 ? plugins : undefined,
   extensionPaths: extensionPaths.length > 0 ? extensionPaths : undefined,
+  // MCP 接入（docs/mcp-integration.md）：未设置目录时不加载 MCP 与 codemode。
+  mcpCatalogFile: process.env.PI_MCP_CATALOG_FILE || undefined,
+  mcpSecretsFile: process.env.PI_MCP_SECRETS_FILE || undefined,
+  mcpMaxStdioProcesses: parsePositiveInteger("PI_MCP_MAX_STDIO_PROCESSES", process.env.PI_MCP_MAX_STDIO_PROCESSES),
+  codemodeTimeoutMs: parsePositiveInteger("PI_CODEMODE_TIMEOUT_MS", process.env.PI_CODEMODE_TIMEOUT_MS),
+  codemodeQueueWaitMs: parsePositiveInteger("PI_CODEMODE_QUEUE_WAIT_MS", process.env.PI_CODEMODE_QUEUE_WAIT_MS),
   // PI_DATA_MODE 仅保留为部署分类；它不能放宽 migration gate。服务启动总是 verify，
   // 并且绝不自行 bootstrap/migrate/reset。
   dataMode: process.env.PI_DATA_MODE as DataMode | undefined,

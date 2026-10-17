@@ -35,6 +35,8 @@ import { classifyPiJsonlReference } from "./pi-jsonl-reference.js";
 import { captureSessionCwdIdentity, readSessionCwdIdentity } from "./session-cwd-identity.js";
 
 export type PiResourceLoaderRequest = {
+  /** 会话所属项目（用于读取项目级 MCP 设置）。 */
+  readonly projectId: string;
   /** 会话所属项目的 cwd（提示词/工具根）。 */
   readonly projectCwd: string;
   /** 会话创建时冻结的系统提示词；null 表示未记录（宿主按项目 cwd 重新解析）。 */
@@ -326,6 +328,7 @@ export class PiAgentSessionFactory implements AgentSessionFactory {
    */
   private resolveResourceLoader(context: AgentSessionContext): Promise<PiSessionResourceLoader> {
     return this.createResourceLoader({
+      projectId: context.projectId,
       projectCwd: context.projectCwd,
       systemPrompt: context.systemPrompt ?? null,
     });

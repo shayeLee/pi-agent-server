@@ -24,6 +24,7 @@ import {
   SessionManager,
   SettingsManager,
   type InlineExtension,
+  type McpServerEntry,
 } from "@earendil-works/pi-coding-agent";
 import type { FastifyInstance } from "fastify";
 import { buildApp } from "./app.js";
@@ -68,6 +69,9 @@ import { KyselySessionRepository } from "../storage/kysely-session-repository.js
 import { KyselyProjectRepository } from "../storage/kysely-project-repository.js";
 import { KyselyIdempotencyRepository } from "../storage/kysely-idempotency-repository.js";
 import { KyselyCompanionPersonaRepository } from "../storage/kysely-companion-persona-repository.js";
+import { KyselyProjectMcpRepository } from "../storage/kysely-project-mcp-repository.js";
+import { createMcpHost } from "../mcp/host.js";
+import { effectiveMcpServerEntries } from "../mcp/project-settings.js";
 import { KyselyUploadedFileRepository } from "../storage/kysely-uploaded-file-repository.js";
 import { UploadService } from "../application/upload-service.js";
 import { KyselyFileOperationRepository } from "../storage/kysely-file-operation-repository.js";
@@ -180,6 +184,16 @@ export type StartConfig = {
    * `off`/rc+off 已删除，任何显式值均在资源创建前拒绝。
    */
   migrationGate?: "off" | "verify";
+  /** MCP 全局目录（PI_MCP_CATALOG_FILE，绝对路径）；未设置时不加载 MCP 与 codemode。 */
+  mcpCatalogFile?: string;
+  /** 目录中 `${secret:NAME}` 的取值文件（PI_MCP_SECRETS_FILE，绝对路径，权限 0600）。 */
+  mcpSecretsFile?: string;
+  /** 全服务同时运行的 MCP stdio 进程上限（PI_MCP_MAX_STDIO_PROCESSES，默认 32）。 */
+  mcpMaxStdioProcesses?: number;
+  /** codemode 脚本超时上限（PI_CODEMODE_TIMEOUT_MS，默认 120000）。 */
+  codemodeTimeoutMs?: number;
+  /** codemode 排队的最长等待（PI_CODEMODE_QUEUE_WAIT_MS，默认 60000）。 */
+  codemodeQueueWaitMs?: number;
 };
 
 const THINKING_LEVELS = new Set(["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
@@ -337,6 +351,18 @@ export async function startServer(config: StartConfig) {
 
   // 显式扩展路径（纯函数，fail-fast：相对路径/主旧同时配置在创建任何资源前拒绝；未配置时为空）。
   const extensionPaths = resolveExtensionPaths(config.extensionPaths, config.providerExtensionPaths);
+  // MCP 目录与密钥在任何资源创建前读取；格式、权限或引用错误都拒绝启动（docs/mcp-integration.md §4.1）。
+  const mcpHost = config.mcpCatalogFile
+    ? createMcpHost({
+        catalogFile: config.mcpCatalogFile,
+        ...(config.mcpSecretsFile ? { secretsFile: config.mcpSecretsFile } : {}),
+        ...(config.mcpMaxStdioProcesses !== undefined ? { maxStdioProcesses: config.mcpMaxStdioProcesses } : {}),
+        ...(config.codemodeTimeoutMs !== undefined ? { codemodeTimeoutMs: config.codemodeTimeoutMs } : {}),
+        ...(config.codemodeQueueWaitMs !== undefined ? { codemodeQueueWaitMs: config.codemodeQueueWaitMs } : {}),
+        logPath: path.join(agentDir, "mcp.log"),
+      })
+    : undefined;
+  if (!mcpHost && config.mcpSecretsFile) throw new Error("PI_MCP_SECRETS_FILE requires PI_MCP_CATALOG_FILE");
   // 在任何异步初始化之前固定文件快照；不随项目 cwd 变化重新读取。
   const appendFileText = readAppendSystemPromptFile(config.appendSystemPromptFile);
   const appendSystemPromptText = [config.appendSystemPrompt, appendFileText]
@@ -472,13 +498,20 @@ export async function startServer(config: StartConfig) {
       systemPromptOverride?: () => string;
       appendSystemPrompt?: readonly string[];
       appendSystemPromptText?: string;
+      /** 会话快照的 MCP server（目录 ∩ 项目设置）；探针与无 MCP 的会话不传。 */
+      mcpServers?: readonly McpServerEntry[];
     },
   ): Promise<DefaultResourceLoader> =>
     loadSessionResourceLoader(modelRuntime, {
       extensionCwd: cwd,
       agentDir,
       extensionPaths,
-      extensionFactories: [...providerAdapterExtensionFactories, ...toolBoundaryExtensionFactories],
+      // MCP 扩展排在边界 hook 之后，codemode 准入 hook 排在最后（被拦下的调用不占名额）。
+      extensionFactories: [
+        ...providerAdapterExtensionFactories,
+        ...toolBoundaryExtensionFactories,
+        ...(mcpHost && extra.mcpServers ? mcpHost.sessionExtensions(extra.mcpServers) : []),
+      ],
       resources: { projectCwd: extra.resourceCwd, agentDir },
       ...(extra.systemPrompt !== undefined ? { systemPrompt: extra.systemPrompt } : {}),
       ...(extra.systemPromptOverride !== undefined
@@ -682,10 +715,16 @@ export async function startServer(config: StartConfig) {
      * 未冻结时才重新解析（与 startup 探针同一份 Pi 默认提示词语义）。两者都用同一个稳定扩展
      * 加载 cwd，因此同一扩展模块整进程只求值一次、工厂函数每会话重跑一次。
      */
+    const projectMcp = mcpHost ? new KyselyProjectMcpRepository(kysely) : undefined;
     const createResourceLoader = async (request: PiResourceLoaderRequest) => {
       const frozen = request.systemPrompt;
+      // 项目 MCP 设置在 adapter 创建时快照：之后的修改只影响新建或恢复的会话（§4.5）。
+      const mcpServers = mcpHost && projectMcp
+        ? effectiveMcpServerEntries(mcpHost.catalog, await projectMcp.list(request.projectId))
+        : undefined;
       const loader = await createSessionResourceLoader({
         resourceCwd: request.projectCwd,
+        ...(mcpServers ? { mcpServers } : {}),
         ...(frozen === null
           ? unfrozenPromptOptions
           : { systemPromptOverride: () => frozenPromptBase(frozen) }),
@@ -779,6 +818,7 @@ export async function startServer(config: StartConfig) {
       ? { companionGreeter: new CompanionGreeter({ complete: completeWith(modelRuntime, resolvedDefaultModel) }) }
       : {}),
     companionPersonas,
+    ...(mcpHost && projectMcp ? { projectMcp: { catalog: mcpHost.catalog, store: projectMcp } } : {}),
     idempotencyRepo,
     uploads,
     serverEpoch: randomUUID(),

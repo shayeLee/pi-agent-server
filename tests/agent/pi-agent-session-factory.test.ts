@@ -142,7 +142,7 @@ describe("PiAgentSessionFactory", () => {
     const prepared = await factory.prepareNew(context({ systemPrompt: "会话提示词" }));
     await prepared.open();
 
-    expect(createResourceLoader).toHaveBeenCalledWith({ projectCwd: process.cwd(), systemPrompt: "会话提示词" });
+    expect(createResourceLoader).toHaveBeenCalledWith({ projectId: DEFAULT_PROJECT_ID, projectCwd: process.cwd(), systemPrompt: "会话提示词" });
     expect(sdk.createAgentSession).toHaveBeenCalledWith(expect.objectContaining({ resourceLoader: loaders[0] }));
   });
 
@@ -167,7 +167,7 @@ describe("PiAgentSessionFactory", () => {
       { agentKind: "pi", conversationFormat: "pi-jsonl-v3", conversationRef },
     );
 
-    expect(createResourceLoader).toHaveBeenCalledWith({ projectCwd: process.cwd(), systemPrompt: "会话提示词" });
+    expect(createResourceLoader).toHaveBeenCalledWith({ projectId: DEFAULT_PROJECT_ID, projectCwd: process.cwd(), systemPrompt: "会话提示词" });
     expect(sdk.createAgentSession).toHaveBeenCalledWith(expect.objectContaining({ resourceLoader: loaders[0] }));
   });
 
@@ -273,7 +273,7 @@ describe("PiAgentSessionFactory", () => {
     }
     expect(createResourceLoader).toHaveBeenCalledTimes(2);
     for (const call of createResourceLoader.mock.calls) {
-      expect(call[0]).toEqual({ projectCwd: process.cwd(), systemPrompt: null });
+      expect(call[0]).toEqual({ projectId: DEFAULT_PROJECT_ID, projectCwd: process.cwd(), systemPrompt: null });
     }
   });
 });

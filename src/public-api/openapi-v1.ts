@@ -32,6 +32,8 @@ export const PUBLIC_API_OPERATIONS = [
   ["/v1/projects/{id}/files", "get", "sessions:create"],
   ["/v1/projects/{id}/commands", "get", "sessions:create"],
   ["/v1/projects/{id}/companion/greeting", "post", "sessions:create"],
+  ["/v1/projects/{id}/mcp", "get", "projects:mcp-read"],
+  ["/v1/projects/{id}/mcp/servers/{name}", "put", "projects:mcp-write"],
   ["/v1/companion/persona", "get", "sessions:create"],
   ["/v1/companion/persona", "put", "sessions:create"],
   ["/v1/files", "post", "files:upload"],
@@ -123,6 +125,8 @@ const roles: Record<Permission, readonly string[]> = {
   "projects:list": ["admin", "user", "viewer"],
   "projects:create": ["admin", "user"],
   "projects:delete": ["admin", "user"],
+  "projects:mcp-read": ["admin", "user", "viewer"],
+  "projects:mcp-write": ["admin", "user"],
   "files:upload": ["admin", "user"],
   "sessions:list": ["admin", "user", "viewer"],
   "sessions:create": ["admin", "user"],
@@ -272,6 +276,20 @@ export const openapiV1 = {
         "404": error(404, "Project not found, not usable for new sessions, or its directory is unavailable."),
         "503": error(503, "No default model, PI_COMPANION_GREETING=off, or the model failed (code companion_unavailable); clients fall back to local lines."),
       }, { parameters: [id], requestBody: request(ref("CompanionGreetingInput")), ...requestValidation }),
+    },
+    "/v1/projects/{id}/mcp": {
+      get: operation("getProjectMcp", "projects:mcp-read", {
+        "200": { description: "The MCP catalog servers with this project's settings. configured is false when the server has no PI_MCP_CATALOG_FILE. canEdit says whether the caller may change them (the shared default project needs admin).", ...json({ type: "object", required: ["configured", "canEdit", "servers"], properties: { configured: { type: "boolean" }, canEdit: { type: "boolean" }, servers: { type: "array", items: ref("ProjectMcpServer") } }, additionalProperties: false }) },
+        "404": error(404, "Project not found."),
+      }, { parameters: [id] }),
+    },
+    "/v1/projects/{id}/mcp/servers/{name}": {
+      put: operation("saveProjectMcpServer", "projects:mcp-write", {
+        "200": { description: "Saved. Only sessions created or resumed afterwards use it.", ...json({ type: "object", required: ["server"], properties: { server: ref("ProjectMcpServer") }, additionalProperties: false }) },
+        "400": error(400, "Exposure above the catalog maxExposure, or invalid hiddenTools."),
+        "403": error(403, "Enabling an adminOnly server (code mcp_admin_only) or changing the default project (code mcp_default_project) needs admin."),
+        "404": error(404, "Project not found, no MCP catalog (code mcp_not_configured), or a server not in the catalog (code mcp_unknown_server)."),
+      }, { parameters: [id, { name: "name", in: "path", required: true, schema: { type: "string" } }], requestBody: request(ref("ProjectMcpServerInput")), ...requestValidation }),
     },
     "/v1/companion/persona": {
       get: operation("getCompanionPersona", "sessions:create", {
@@ -508,6 +526,21 @@ export const openapiV1 = {
         name: { type: "string", minLength: 1, maxLength: 12, pattern: "\\S" }, style: { enum: ["concise", "lively", "formal"] },
         docked: { type: "boolean", description: "Whether the companion sits on the composer inside a session." },
       }, additionalProperties: false },
+      ProjectMcpServer: { type: "object", required: ["name", "status", "enabled", "hiddenTools", "updatedAt"], properties: {
+        name: { type: "string" },
+        status: { enum: ["available", "missing"], description: "missing: the project has a setting for a server no longer in the catalog; it is ignored." },
+        description: { type: "string" }, transport: { enum: ["stdio", "http"] }, enabled: { type: "boolean" },
+        exposure: ref("McpExposure"), defaultExposure: ref("McpExposure"), maxExposure: ref("McpExposure"),
+        hiddenTools: { type: "array", items: { type: "string" } },
+        adminOnly: { type: "boolean" },
+        updatedAt: { type: ["integer", "null"], description: "null while the project uses the catalog defaults." },
+      }, additionalProperties: false },
+      ProjectMcpServerInput: { type: "object", required: ["enabled"], properties: {
+        enabled: { type: "boolean" },
+        exposure: { oneOf: [ref("McpExposure"), { type: "null" }], description: "Server exposure, at most the catalog maxExposure; null uses the catalog default." },
+        hiddenTools: { type: "array", maxItems: 256, items: { type: "string", minLength: 1, maxLength: 128, pattern: "^[^*\\s]+$" }, description: "Exact tool names, as the server offers them, to hide in this project." },
+      }, additionalProperties: false },
+      McpExposure: { enum: ["direct", "codemode", "deferred", "hidden"] },
       CompanionGreeting: { type: "object", required: ["greeting", "hint"], properties: { greeting: { type: "string" }, hint: { type: "string" } }, additionalProperties: false },
       SessionCommandInput: { type: "object", required: ["command"], properties: { command: { enum: ["compact", "reload"] }, args: { type: "string", maxLength: 4000, description: "compact: optional summary instructions." } }, additionalProperties: false },
       SessionCommandResult: { oneOf: [

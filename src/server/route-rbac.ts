@@ -62,6 +62,8 @@ export type RoutePermission =
   | "projects:list"
   | "projects:create"
   | "projects:delete"
+  | "projects:mcp-read"
+  | "projects:mcp-write"
   | "sessions:list"
   | "sessions:create"
   | "sessions:delete"
@@ -87,6 +89,7 @@ export const ROUTE_PERMISSIONS: Record<RoutePermission, readonly IpRole[]> = Obj
   // viewer 纯读：模型/项目/会话列表、会话导出、SSE 事件流。
   "models:list": frozenRoles("admin", "user", "viewer"),
   "projects:list": frozenRoles("admin", "user", "viewer"),
+  "projects:mcp-read": frozenRoles("admin", "user", "viewer"),
   "sessions:list": frozenRoles("admin", "user", "viewer"),
   "sessions:export": frozenRoles("admin", "user", "viewer"),
   "sessions:file-preview": frozenRoles("admin", "user", "viewer"),
@@ -101,6 +104,8 @@ export const ROUTE_PERMISSIONS: Record<RoutePermission, readonly IpRole[]> = Obj
   // 写/变更：user/admin（仍 owner 隔离；admin 暂不跨 owner）。
   "projects:create": frozenRoles("admin", "user"),
   "projects:delete": frozenRoles("admin", "user"),
+  // 项目 MCP 设置：owner 隔离由路由处理；adminOnly server 与默认项目另需 admin。
+  "projects:mcp-write": frozenRoles("admin", "user"),
   "sessions:create": frozenRoles("admin", "user"),
   "sessions:delete": frozenRoles("admin", "user"),
   "sessions:update": frozenRoles("admin", "user"),

@@ -44,6 +44,11 @@ export PI_ALLOWED_CLIENT_CIDRS=127.0.0.0/8,10.0.0.0/8
 | `PI_APPEND_SYSTEM_FILE` | 未设置 | 显式 UTF-8 文件，启动仅读一次；相对路径基于服务启动 cwd，不展开 `~`。无效文件拒绝启动。修改后重启并新建会话；冻结提示词不变。不自动发现 `APPEND_SYSTEM.md`。 |
 | `TOOLS` | 允许全部工具 | 受信服务配置，不是会话输入。纯工具名形成完整白名单，包含扩展/插件工具。全 modifier `+name,-name` 按顺序调整 Pi 默认选择（`read,bash,edit,write`），再冻结为宿主白名单；例如 `-bash,+custom_tool` 保留 read/edit/write 并允许已注册的自定义工具。混合纯名/modifier 或 modifier 通配符拒绝启动。未设置/空白/仅逗号允许全部；程序化 `StartConfig.tools=[]` 禁用全部。白名单中只有以 `mcp__` 开头的条目（或精确列出的 MCP 资源工具）授权 MCP 工具，`*` 等其他模式不算；未授权的 MCP 工具不注册，codemode 等工具的嵌套调用也会被 `tool_call` hook 拦截（[MCP 接入方案](mcp-integration.md) §6）。`codemode`、`tool_search` 需显式列出。 |
 | `PI_PLUGINS` | 未设置 | 逗号分隔的显式加载、受信任同进程 ESM specifier；可以是包名，也可以是构建产物入口的绝对路径（裸机部署用后者，因为 `pnpm link` 在重建 `node_modules` 后不保留）；不扫描目录或 `.pi` |
+| `PI_MCP_CATALOG_FILE` | 未设置 | MCP 全局目录，绝对路径的严格 JSON（格式见 [MCP 接入方案](mcp-integration.md) §4.1）。未设置时不加载 MCP 与 codemode；格式、字段或引用错误拒绝启动。服务从不读取任何 `mcp.json` |
+| `PI_MCP_SECRETS_FILE` | 未设置 | 目录中 `${secret:NAME}` 的取值：绝对路径的 JSON 对象，权限必须是 `0600`（或更严）。密钥只注入 MCP 子进程 env 与 HTTP header，不进入服务进程环境变量。需同时设置 `PI_MCP_CATALOG_FILE` |
+| `PI_MCP_MAX_STDIO_PROCESSES` | `32` | 全服务同时运行的 MCP stdio 进程上限。每个会话为它启用的每个 stdio server 启动一个进程；达到上限时该会话的这个 server 连接失败，不影响会话本身 |
+| `PI_CODEMODE_TIMEOUT_MS` | `120000` | codemode 脚本的超时上限：脚本没有声明时注入，声明更长时钳到此值（最大 2147483647） |
+| `PI_CODEMODE_QUEUE_WAIT_MS` | `60000` | 全服务最多同时运行 2 个 codemode 脚本，其余排队；等待超过此值后这次调用被拒绝并返回可读原因 |
 | `PI_EXTENSION_PATHS` | 未设置 | 显式加载 Pi SDK 扩展的主变量，逗号分隔（绝对路径或 `~/…`）；不自动发现，无效路径或加载失败即拒绝启动。`PI_PROVIDER_EXTENSION_PATHS` 为已弃用兼容 alias：去除空白与空项后，仅旧变量得到非空列表时在路径校验前警告；两个变量都得到非空列表则拒绝启动 |
 | `CORS_ORIGINS` | 空 | 允许在浏览器中调用本服务的网页地址；多个地址用逗号分隔，例如 `http://127.0.0.1:5173` |
 | `PI_BACKUP_STAGING_ROOT` | 按平台的每用户私有目录：macOS `~/Library/Application Support/pi-agent-server-backup-staging`；Linux `$XDG_STATE_HOME/pi-agent-server/backup-staging`（未设置或为相对路径时用 `~/.local/state/pi-agent-server/backup-staging`）；Windows `%LOCALAPPDATA%\pi-agent-server\backup-staging` | 备份或数据库升级时存放明文的临时工作目录，完成后清空；通常无需设置 |

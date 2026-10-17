@@ -1099,6 +1099,215 @@
         "description": "Request bodies use Fastify's AJV baseline: declared types are coerced (`coerceTypes: 'array'`,\nso numbers, booleans, and single-element arrays are accepted where a string is declared) and\nundeclared fields are silently stripped (`removeAdditional: true` combined with\n`additionalProperties: false`) instead of returning 400. A 400 therefore reports a missing\nrequired field or a value that cannot be coerced/constrained, never a wrong scalar type or an\nunknown field."
       }
     },
+    "/v1/projects/{id}/mcp": {
+      "get": {
+        "operationId": "getProjectMcp",
+        "security": [
+          {
+            "IpAdmission": []
+          },
+          {
+            "IpAdmission": [],
+            "BearerAuth": []
+          }
+        ],
+        "x-pi-rbac": {
+          "permission": "projects:mcp-read",
+          "roles": [
+            "admin",
+            "user",
+            "viewer"
+          ]
+        },
+        "responses": {
+          "200": {
+            "description": "The MCP catalog servers with this project's settings. configured is false when the server has no PI_MCP_CATALOG_FILE. canEdit says whether the caller may change them (the shared default project needs admin).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "configured",
+                    "canEdit",
+                    "servers"
+                  ],
+                  "properties": {
+                    "configured": {
+                      "type": "boolean"
+                    },
+                    "canEdit": {
+                      "type": "boolean"
+                    },
+                    "servers": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/ProjectMcpServer"
+                      }
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer token required for this admitted IP profile.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "IP admission or RBAC denied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Project not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/v1/projects/{id}/mcp/servers/{name}": {
+      "put": {
+        "operationId": "saveProjectMcpServer",
+        "security": [
+          {
+            "IpAdmission": []
+          },
+          {
+            "IpAdmission": [],
+            "BearerAuth": []
+          }
+        ],
+        "x-pi-rbac": {
+          "permission": "projects:mcp-write",
+          "roles": [
+            "admin",
+            "user"
+          ]
+        },
+        "responses": {
+          "200": {
+            "description": "Saved. Only sessions created or resumed afterwards use it.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "server"
+                  ],
+                  "properties": {
+                    "server": {
+                      "$ref": "#/components/schemas/ProjectMcpServer"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Exposure above the catalog maxExposure, or invalid hiddenTools.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer token required for this admitted IP profile.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Enabling an adminOnly server (code mcp_admin_only) or changing the default project (code mcp_default_project) needs admin.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Project not found, no MCP catalog (code mcp_not_configured), or a server not in the catalog (code mcp_unknown_server).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProjectMcpServerInput"
+              }
+            }
+          }
+        },
+        "x-pi-request-validation": {
+          "coerceTypes": true,
+          "removeAdditional": "silent-strip"
+        },
+        "description": "Request bodies use Fastify's AJV baseline: declared types are coerced (`coerceTypes: 'array'`,\nso numbers, booleans, and single-element arrays are accepted where a string is declared) and\nundeclared fields are silently stripped (`removeAdditional: true` combined with\n`additionalProperties: false`) instead of returning 400. A 400 therefore reports a missing\nrequired field or a value that cannot be coerced/constrained, never a wrong scalar type or an\nunknown field."
+      }
+    },
     "/v1/companion/persona": {
       "get": {
         "operationId": "getCompanionPersona",
@@ -5235,6 +5444,108 @@
           }
         },
         "additionalProperties": false
+      },
+      "ProjectMcpServer": {
+        "type": "object",
+        "required": [
+          "name",
+          "status",
+          "enabled",
+          "hiddenTools",
+          "updatedAt"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "available",
+              "missing"
+            ],
+            "description": "missing: the project has a setting for a server no longer in the catalog; it is ignored."
+          },
+          "description": {
+            "type": "string"
+          },
+          "transport": {
+            "enum": [
+              "stdio",
+              "http"
+            ]
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "exposure": {
+            "$ref": "#/components/schemas/McpExposure"
+          },
+          "defaultExposure": {
+            "$ref": "#/components/schemas/McpExposure"
+          },
+          "maxExposure": {
+            "$ref": "#/components/schemas/McpExposure"
+          },
+          "hiddenTools": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "adminOnly": {
+            "type": "boolean"
+          },
+          "updatedAt": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "description": "null while the project uses the catalog defaults."
+          }
+        },
+        "additionalProperties": false
+      },
+      "ProjectMcpServerInput": {
+        "type": "object",
+        "required": [
+          "enabled"
+        ],
+        "properties": {
+          "enabled": {
+            "type": "boolean"
+          },
+          "exposure": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/McpExposure"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Server exposure, at most the catalog maxExposure; null uses the catalog default."
+          },
+          "hiddenTools": {
+            "type": "array",
+            "maxItems": 256,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[^*\\s]+$"
+            },
+            "description": "Exact tool names, as the server offers them, to hide in this project."
+          }
+        },
+        "additionalProperties": false
+      },
+      "McpExposure": {
+        "enum": [
+          "direct",
+          "codemode",
+          "deferred",
+          "hidden"
+        ]
       },
       "CompanionGreeting": {
         "type": "object",

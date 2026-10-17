@@ -61,6 +61,7 @@ import { BUILTIN_SESSION_COMMANDS } from "./session-resources.js";
 import { ATTACHMENT_MAX_BYTES } from "../attachments/file-policy.js";
 import { UploadService } from "../application/upload-service.js";
 import { CompanionGreetingError, type CompanionGreeter } from "../application/companion-greeter.js";
+import { projectMcpServerViews, validateProjectMcpSetting, type ProjectMcpSettingInput } from "../mcp/project-settings.js";
 
 export type ServerDeps = {
   sessions: SessionStorePort;
@@ -86,6 +87,11 @@ export type ServerDeps = {
   companionGreeter?: Pick<CompanionGreeter, "greet">;
   /** Keeps the companion's persona per caller; without it the page keeps the persona per browser. */
   companionPersonas?: import("../application/ports/companion-persona-store-port.js").CompanionPersonaStorePort;
+  /** MCP 目录与项目设置；未配置 PI_MCP_CATALOG_FILE 时缺省，项目 MCP 接口返回未配置。 */
+  projectMcp?: {
+    readonly catalog: import("../mcp/catalog.js").McpCatalog;
+    readonly store: import("../application/ports/project-mcp-store-port.js").ProjectMcpStorePort;
+  };
   /** 生产组合根注入的通用会话存储 registry；用于未实例化会话的只读导出。 */
   conversationStorage?: ConversationStorageRegistry;
   nativeSessions?: import("../application/ports/native-session-port.js").NativeSessionPort;
@@ -206,6 +212,15 @@ const COMPANION_PERSONA_BODY_SCHEMA = {
     docked: { type: "boolean" },
   },
   required: ["name", "style", "docked"], additionalProperties: false,
+} as const;
+const PROJECT_MCP_SERVER_BODY_SCHEMA = {
+  type: "object",
+  properties: {
+    enabled: { type: "boolean" },
+    exposure: { anyOf: [{ type: "string", enum: ["direct", "codemode", "deferred", "hidden"] }, { type: "null" }] },
+    hiddenTools: { type: "array", maxItems: 256, items: { type: "string", minLength: 1, maxLength: 128, pattern: "^[^*\\s]+$" } },
+  },
+  required: ["enabled"], additionalProperties: false,
 } as const;
 const SESSION_COMMAND_BODY_SCHEMA = {
   type: "object",
@@ -772,6 +787,42 @@ export function buildApp(deps: ServerDeps): FastifyInstance {
           if (!(error instanceof CompanionGreetingError)) request.log.warn({ err: error }, "companion greeting failed");
           return unavailable();
         }
+      });
+    // 项目 MCP 设置（docs/mcp-integration.md §4.4）：项目可见者可读；owner 可启用与收紧，
+    // adminOnly server 与共享的默认项目只有 admin 能改。修改只影响之后创建或恢复的会话。
+    api.get<{ Params: { id: string } }>("/projects/:id/mcp", { exposeHeadRoute: false, ...requirePermission("projects:mcp-read") },
+      async (request, reply) => {
+        if ((await sessions.projectName(ownerKeyOf(request), request.params.id)) === null) return NOT_FOUND(reply);
+        if (!deps.projectMcp) return { configured: false, canEdit: false, servers: [] };
+        const settings = await deps.projectMcp.store.list(request.params.id);
+        const canEdit = ROUTE_PERMISSIONS["projects:mcp-write"].includes(request.access.role) &&
+          (request.params.id !== DEFAULT_PROJECT_ID || request.access.role === "admin");
+        return { configured: true, canEdit, servers: projectMcpServerViews(deps.projectMcp.catalog, settings) };
+      });
+    api.put<{ Params: { id: string; name: string }; Body: ProjectMcpSettingInput }>("/projects/:id/mcp/servers/:name",
+      { schema: { body: PROJECT_MCP_SERVER_BODY_SCHEMA }, ...requirePermission("projects:mcp-write") },
+      async (request, reply) => {
+        const ownerKey = ownerKeyOf(request);
+        const { id, name } = request.params;
+        if ((await sessions.projectName(ownerKey, id)) === null) return NOT_FOUND(reply);
+        if (!deps.projectMcp) {
+          return reply.code(404).send({ statusCode: 404, error: "Not Found", code: "mcp_not_configured", message: "服务未配置 MCP 目录" });
+        }
+        const isAdmin = request.access.role === "admin";
+        if (id === DEFAULT_PROJECT_ID && !isAdmin) {
+          return reply.code(403).send({ statusCode: 403, error: "Forbidden", code: "mcp_default_project", message: "默认项目由所有用户共享，只有管理员能修改其 MCP 设置" });
+        }
+        const error = validateProjectMcpSetting(deps.projectMcp.catalog, name, request.body, isAdmin);
+        if (error?.code === "unknown_server") return reply.code(404).send({ statusCode: 404, error: "Not Found", code: "mcp_unknown_server", message: "目录中没有这个 MCP server" });
+        if (error?.code === "admin_only") return reply.code(403).send({ statusCode: 403, error: "Forbidden", code: "mcp_admin_only", message: "这个 MCP server 只有管理员能启用" });
+        if (error) return reply.code(400).send({ statusCode: 400, error: "Bad Request", message: error.message });
+        const saved = await deps.projectMcp.store.put(id, {
+          serverName: name, enabled: request.body.enabled, exposure: request.body.exposure ?? null,
+          hiddenTools: [...new Set(request.body.hiddenTools ?? [])], updatedAt: Date.now(), updatedBy: ownerKey,
+        });
+        if (!saved) return NOT_FOUND(reply);
+        const views = projectMcpServerViews(deps.projectMcp.catalog, await deps.projectMcp.store.list(id));
+        return { server: views.find(view => view.name === name) };
       });
     // The companion's persona follows the caller; only people who can start sessions meet it.
     // Without a store it reads as unset and a save is refused, so the page keeps it per browser.

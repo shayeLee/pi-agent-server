@@ -1,4 +1,4 @@
-// 运行时 Schema Manifest —— projects / sessions / idempotency / file_operations / uploaded_files / native_session_sources / companion_personas 表、列、逻辑类型、
+// 运行时 Schema Manifest —— projects / sessions / idempotency / file_operations / uploaded_files / native_session_sources / companion_personas / project_mcp_servers 表、列、逻辑类型、
 // nullable、default、主键、外键、索引的**唯一手工声明来源**。
 //
 // 设计要点：
@@ -553,7 +553,7 @@ export const nativeSessionsSchemaManifest = defineSchema([
 ]);
 
 /** v3: the blank-session companion's persona, one row per caller (DESIGN.md §6.6). */
-export const schemaManifest = defineSchema([
+export const companionPersonasSchemaManifest = defineSchema([
   ...nativeSessionsSchemaManifest.tables,
   {
     name: "companion_personas",
@@ -566,6 +566,34 @@ export const schemaManifest = defineSchema([
     ],
     primaryKey: { columns: ["owner_key"] },
     foreignKeys: [],
+    indexes: [],
+  },
+]);
+
+/** v4: project MCP settings; rows reference catalog servers by name and follow their project on delete. */
+export const schemaManifest = defineSchema([
+  ...companionPersonasSchemaManifest.tables,
+  {
+    name: "project_mcp_servers",
+    columns: [
+      { name: "project_id", type: "uuid", nullable: false },
+      { name: "server_name", type: "text", nullable: false },
+      { name: "enabled", type: "integer", nullable: false },
+      { name: "exposure", type: "text", nullable: true },
+      { name: "hidden_tools", type: "json", nullable: false },
+      { name: "updated_at", type: "integer", nullable: false },
+      { name: "updated_by", type: "text", nullable: false },
+    ],
+    primaryKey: { columns: ["project_id", "server_name"] },
+    foreignKeys: [
+      {
+        constraintName: "project_mcp_servers_project_id_fk",
+        columns: ["project_id"],
+        targetTable: "projects",
+        targetColumns: ["id"],
+        onDelete: "cascade",
+      },
+    ],
     indexes: [],
   },
 ]);

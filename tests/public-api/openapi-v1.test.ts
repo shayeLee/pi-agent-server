@@ -273,7 +273,7 @@ describe("public host API v1 contract", () => {
     try {
       await app.ready();
       for (const [path, method, permission] of PUBLIC_API_OPERATIONS) {
-        const fastifyPath = path.replaceAll("{id}", ":id").replaceAll("{controlId}", ":controlId");
+        const fastifyPath = path.replaceAll("{id}", ":id").replaceAll("{controlId}", ":controlId").replaceAll("{name}", ":name");
         expect(app.hasRoute({ method: method.toUpperCase(), url: fastifyPath })).toBe(true);
         const documented = document.paths[path]![method]!;
         expect(documented["x-pi-rbac"]).toEqual({ permission, roles: ROUTE_PERMISSIONS[permission] });
@@ -304,7 +304,7 @@ describe("public host API v1 contract", () => {
           for (const [path, method, permission] of operations) {
             const response = await roleApp.inject({
               method: method.toUpperCase() as never,
-              url: path.replaceAll("{id}", "missing"),
+              url: path.replaceAll("{id}", "missing").replaceAll("{name}", "missing"),
               remoteAddress: ROLE_IP,
             });
             expect(response.statusCode === 403).toBe(!ROUTE_PERMISSIONS[permission].includes(role));
@@ -382,6 +382,7 @@ describe("public host API v1 contract", () => {
       "POST /v1/sessions/{id}/messages",
       "POST /v1/sessions/{id}/steer",
       "PUT /v1/companion/persona",
+      "PUT /v1/projects/{id}/mcp/servers/{name}",
     ]);
     for (const [label, operation] of ajvBodyOperations) {
       expect(operation["x-pi-request-validation"], label)

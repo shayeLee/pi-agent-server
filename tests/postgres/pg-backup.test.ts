@@ -769,6 +769,10 @@ class FakeTargetDatabase implements PgRestoreClient {
     if (text.startsWith("SELECT id, project_id, agent_kind, conversation_format, conversation_ref")) return { rows: [{ id: "session-1", project_id: DEFAULT_PROJECT_ID, agent_kind: "pi", conversation_format: "pi-jsonl-v3", conversation_ref: this.sessionFile }, ...nativeSessions] as unknown as readonly T[] };
     if (text.includes("SELECT id, name, cwd, owner_key")) return { rows: [{ id: "project-1", name: "project", cwd: "/tmp/project", owner_key: "owner" } as unknown as T] };
     if (text.includes("SELECT session_id, request_id, result")) return { rows: [{ session_id: "session-1", request_id: "request-1", result: "{}" } as unknown as T] };
+    if (text.includes("con.contype = 'f'")) {
+      const manifest = (this.nativeSourceRows.length ? migrationHead : fakePrefixHead).manifest;
+      return { rows: [{ total: manifest.tables.reduce((total, table) => total + (table.foreignKeys?.length ?? 0), 0), invalid: 0 } as unknown as T] };
+    }
     if (text.includes("count(*)::int")) return { rows: [{ total: 1, invalid: 0 } as unknown as T] };
     if (text.includes('"uploaded_files" SET storage_key')) {
       this.uploadedFileRows = this.uploadedFileRows.map((row) => row.id === values?.[2]
