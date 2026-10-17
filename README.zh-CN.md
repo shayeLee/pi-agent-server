@@ -12,7 +12,7 @@
 - 项目与会话管理；Pi 原生会话自动发现并默认共享。
 - HTTP/JSON API 与 Server-Sent Events；运行中可追加 `follow-up`、提升为 `steer` 或中止。
 - Pi 文本资源：`AGENTS.md` / `CLAUDE.md`、提示词模板与 skills（含 `~/.agents/skills`）按会话项目与服务 agentDir 自动发现。输入框支持 `@` 引用文件，以及 `/compact`、`/reload`、模板与 `skill:` 命令。
-- 接入管理员维护的 MCP 目录（`PI_MCP_CATALOG_FILE`，支持 stdio 与 HTTP）：项目 owner 按项目启用并收紧目录中的 server（`/v1/projects/:id/mcp`，迁移 v4）；工具默认经 codemode 调用，脚本排队执行并限时。见 [MCP 接入方案](docs/mcp-integration.md)。
+- 接入管理员维护的 MCP 目录（`PI_MCP_CATALOG_FILE`，支持 stdio 与 HTTP）：项目 owner 按项目启用并收紧目录中的 server（`/v1/projects/:id/mcp`，迁移 v4）；工具默认经 codemode 调用，脚本排队执行并限时。Web 端在侧栏项目行提供 MCP 设置面板，codemode 卡片列出脚本内部的工具调用。见 [MCP 接入方案](docs/mcp-integration.md)。
 - 默认 SQLite，可显式选择 PostgreSQL；对话保存为 Pi JSONL，同一请求重复提交返回已记录的结果。
 - 可选的「稿纸」风格 Web UI：账本式对话流、运行状态、统计栏与轨迹 Inspector，以及在空白会话迎接你（开场白由默认模型生成，设置 `PI_COMPANION_GREETING=off` 时只用本地句子）、随运行与输入变化表情的灵动线描小猫；它的名字、说话风格和是否收起由服务端按用户保存（迁移 v3）。
 

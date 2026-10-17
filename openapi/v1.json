@@ -4520,6 +4520,63 @@
         },
         "additionalProperties": false
       },
+      "NestedToolCalls": {
+        "type": "object",
+        "description": "Tool calls the tool made while it ran (for example MCP calls from a codemode script). At most 256 are recorded; complete is false when calls were dropped, arguments omitted, or calls had not finished.",
+        "required": [
+          "calls",
+          "complete"
+        ],
+        "properties": {
+          "calls": {
+            "type": "array",
+            "maxItems": 256,
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "name",
+                "status"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "name": {
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "ok",
+                    "error",
+                    "unfinished"
+                  ]
+                },
+                "arguments": {},
+                "argumentsBytes": {
+                  "type": "integer",
+                  "minimum": 0,
+                  "description": "Size of arguments omitted for exceeding the record limits."
+                },
+                "durationMs": {
+                  "type": "number",
+                  "minimum": 0
+                },
+                "error": {
+                  "type": "string",
+                  "maxLength": 500
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "complete": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      },
       "Access": {
         "type": "object",
         "required": [
@@ -5495,6 +5552,10 @@
           "adminOnly": {
             "type": "boolean"
           },
+          "canEnable": {
+            "type": "boolean",
+            "description": "Whether the caller may enable it: adminOnly servers need admin. Disabling is always allowed to editors."
+          },
           "updatedAt": {
             "type": [
               "integer",
@@ -6456,6 +6517,9 @@
                   "null"
                 ],
                 "minimum": 0
+              },
+              "nestedCalls": {
+                "$ref": "#/components/schemas/NestedToolCalls"
               },
               "order": {
                 "type": "integer",

@@ -6,6 +6,7 @@ import { GenericArguments, GenericResult } from "./generic.js";
 import { ReadResult, WriteArguments, EditArguments } from "./files.js";
 import { BashArguments, BashResult } from "./bash.js";
 import { SubagentArguments, SubagentResult } from "./subagent.js";
+import { CodemodeArguments } from "./codemode.js";
 
 const generic: ToolRenderers = { Arguments: GenericArguments, Result: GenericResult };
 const registry: Readonly<Record<string, ToolRenderers>> = {
@@ -15,6 +16,7 @@ const registry: Readonly<Record<string, ToolRenderers>> = {
   read: { Arguments: GenericArguments, Result: ReadResult },
   write: { Arguments: WriteArguments, Result: GenericResult },
   edit: { Arguments: EditArguments, Result: GenericResult },
+  codemode: { Arguments: CodemodeArguments, Result: GenericResult },
 };
 export function toolPresentation(call: ToolCall): ToolPresentation {
   const renderers = Object.hasOwn(registry, call.toolName) ? registry[call.toolName] : generic;

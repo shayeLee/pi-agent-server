@@ -2,6 +2,7 @@ import { zhCN } from "../i18n/zh-CN.js";
 import type { TimelineItem } from "pi-agent-server/client";
 import { readMessageImages } from "../message-images.js";
 import { toolDurationMs } from "../../../src/shared/tool-duration.js";
+import { readNestedToolCalls } from "../../../src/shared/nested-tool-calls.js";
 
 /** Project exported history without changing transport or live-store ownership. */
 export function projectExportTimeline(raw: readonly unknown[], messages: readonly unknown[]): TimelineItem[] {
@@ -39,7 +40,8 @@ export function projectExportTimeline(raw: readonly unknown[], messages: readonl
         if (item?.kind === "tool" && item.call.toolCallId === row.toolCallId) { index = i; break; }
       }
       const durationMs = toolDurationMs(row.durationMs);
-      const duration = durationMs !== undefined ? { durationMs } : {};
+      const nestedCalls = readNestedToolCalls(row.nestedCalls);
+      const duration = { ...(durationMs !== undefined ? { durationMs } : {}), ...(nestedCalls ? { nested: nestedCalls } : {}) };
       if (index >= 0) {
         const previous = items[index];
         if (previous?.kind === "tool") items[index] = { ...previous, call: {

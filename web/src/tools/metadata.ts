@@ -31,6 +31,7 @@ const registry: Readonly<Record<string, ToolMetadata>> = {
   wait: { ...generic, icon: "clock" },
   find: { ...generic, icon: "search" }, grep: { ...generic, icon: "search" },
   ls: { ...generic, icon: "folder" },
+  codemode: { icon: "tool", summarize: () => ({ summary: "" }) },
 };
 export function resolveToolMetadata(name: string): ToolMetadata {
   return Object.hasOwn(registry, name) ? registry[name] : name.startsWith("subagent_") ? { ...generic, icon: "agents" } : generic;
@@ -38,7 +39,9 @@ export function resolveToolMetadata(name: string): ToolMetadata {
 export function toolIcon(name: string): ToolHeader["icon"] { return resolveToolMetadata(name).icon; }
 export function toolHeader(call: ToolCall): ToolHeader {
   const adapter = resolveToolMetadata(call.toolName);
-  const header = adapter.summarize(call);
+  const summarized = adapter.summarize(call);
+  // Nested calls (MCP calls from a codemode script and the like) lead the summary.
+  const header = call.nested?.calls.length ? { ...summarized, summary: [zhCN.nestedCalls.summary(call.nested.calls.length), summarized.summary].filter(Boolean).join(" · ") } : summarized;
   const output = isFileAcknowledgement(call) ? [] : lines(resultText(call.result !== undefined ? call.result : call.done ? undefined : call.partialResult));
   const count = adapter.outputLines ?? 1;
   const latest = count === "last" ? output.slice(-1) : output.slice(0, count);

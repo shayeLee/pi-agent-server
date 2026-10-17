@@ -5,6 +5,7 @@ import { Icon } from "./Icon.js";
 import type { ToolCall } from "pi-agent-server/client";
 import { formatToolDuration } from "../tools/duration.js";
 import { toolPresentation } from "../tools/presentation.js";
+import { NestedToolCalls } from "./NestedToolCalls.js";
 
 /**
  * 一次工具调用的流式卡片。
@@ -59,6 +60,7 @@ export const ToolCallCard = memo(function ToolCallCard({ call, index }: { call: 
           ) : call.partialResult !== undefined ? (
             <Result label={zhCN.toolCall.partialResult} value={call.partialResult} args={call.args} />
           ) : null}
+          {call.nested && <NestedToolCalls nested={call.nested} />}
         </div>
       )}
     </div>

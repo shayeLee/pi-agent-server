@@ -136,6 +136,8 @@ const mocks = vi.hoisted(() => {
     createProject = vi.fn((name: string, cwd: string) =>
       Promise.resolve({ id: "new-project", name, cwd, isDefault: false }),
     );
+    getProjectMcp = vi.fn(() => Promise.resolve({ configured: false, canEdit: false, servers: [] }));
+    saveProjectMcpServer = vi.fn();
     deleteSession = vi.fn();
     deleteProject = vi.fn((id: string) => {
       // 与真实删除联动：从项目列表移除，供 refreshProjects 回退默认项目

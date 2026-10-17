@@ -61,7 +61,7 @@ import { BUILTIN_SESSION_COMMANDS } from "./session-resources.js";
 import { ATTACHMENT_MAX_BYTES } from "../attachments/file-policy.js";
 import { UploadService } from "../application/upload-service.js";
 import { CompanionGreetingError, type CompanionGreeter } from "../application/companion-greeter.js";
-import { projectMcpServerViews, validateProjectMcpSetting, type ProjectMcpSettingInput } from "../mcp/project-settings.js";
+import { projectMcpServerViews, validateProjectMcpSetting, type ProjectMcpServerView, type ProjectMcpSettingInput } from "../mcp/project-settings.js";
 
 export type ServerDeps = {
   sessions: SessionStorePort;
@@ -298,6 +298,11 @@ const CONFLICT = (reply: FastifyReply, code?: "MODEL_FAILBACK_IN_PROGRESS") =>
     ...(code ? { code } : {}),
     message: code ? "模型切换接续中，暂不能取消" : "会话无活动任务或状态不允许",
   });
+
+/** adminOnly server 只有 admin 能启用；没有编辑权或 server 已从目录删除时都不能启用。 */
+function withEnableCapability(views: readonly ProjectMcpServerView[], canEdit: boolean, isAdmin: boolean): ProjectMcpServerView[] {
+  return views.map(view => ({ ...view, canEnable: canEdit && view.status === "available" && (!view.adminOnly || isAdmin) }));
+}
 
 function hashIdentity(identity: UserIdentity): string {
   return createHash("sha256").update(identityKey(identity)).digest("hex").slice(0, 16);
@@ -797,7 +802,8 @@ export function buildApp(deps: ServerDeps): FastifyInstance {
         const settings = await deps.projectMcp.store.list(request.params.id);
         const canEdit = ROUTE_PERMISSIONS["projects:mcp-write"].includes(request.access.role) &&
           (request.params.id !== DEFAULT_PROJECT_ID || request.access.role === "admin");
-        return { configured: true, canEdit, servers: projectMcpServerViews(deps.projectMcp.catalog, settings) };
+        const servers = withEnableCapability(projectMcpServerViews(deps.projectMcp.catalog, settings), canEdit, request.access.role === "admin");
+        return { configured: true, canEdit, servers };
       });
     api.put<{ Params: { id: string; name: string }; Body: ProjectMcpSettingInput }>("/projects/:id/mcp/servers/:name",
       { schema: { body: PROJECT_MCP_SERVER_BODY_SCHEMA }, ...requirePermission("projects:mcp-write") },
@@ -821,7 +827,7 @@ export function buildApp(deps: ServerDeps): FastifyInstance {
           hiddenTools: [...new Set(request.body.hiddenTools ?? [])], updatedAt: Date.now(), updatedBy: ownerKey,
         });
         if (!saved) return NOT_FOUND(reply);
-        const views = projectMcpServerViews(deps.projectMcp.catalog, await deps.projectMcp.store.list(id));
+        const views = withEnableCapability(projectMcpServerViews(deps.projectMcp.catalog, await deps.projectMcp.store.list(id)), true, isAdmin);
         return { server: views.find(view => view.name === name) };
       });
     // The companion's persona follows the caller; only people who can start sessions meet it.

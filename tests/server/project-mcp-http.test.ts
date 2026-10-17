@@ -52,8 +52,12 @@ describe("project MCP routes", () => {
   });
 
   it("keeps adminOnly servers and the shared default project for admins", async () => {
-    const { app, projectId, put } = await setup();
+    const { app, projectId, get, put } = await setup();
     try {
+      const canEnable = async (id: string, ip: string) => Object.fromEntries((await get(id, ip)).json().servers.map((server: { name: string; canEnable: boolean }) => [server.name, server.canEnable]));
+      expect(await canEnable(projectId, USER_IP_A)).toEqual({ docs: true, admin: false });
+      expect(await canEnable(DEFAULT_PROJECT_ID, USER_IP_A)).toEqual({ docs: false, admin: false });
+      expect(await canEnable(DEFAULT_PROJECT_ID, ADMIN_IP)).toEqual({ docs: true, admin: true });
       expect((await put(projectId, "admin", { enabled: true }, USER_IP_A)).json()).toMatchObject({ code: "mcp_admin_only" });
       expect((await put(projectId, "admin", { enabled: false }, USER_IP_A)).statusCode).toBe(200);
       expect((await put(DEFAULT_PROJECT_ID, "docs", { enabled: true }, USER_IP_A)).json()).toMatchObject({ code: "mcp_default_project" });

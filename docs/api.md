@@ -1,6 +1,6 @@
 # API 概览
 
-Pi SDK 与 pi-ai 固定为 **1.1.0**；本次 SDK 升级无需数据库迁移（[原生会话](native-sessions.md)既有的 v2 迁移要求不变）。SSE `tool_end` 与 export `tool_result` 的可选 `durationMs` 是 SDK 实测工具执行时间，不是子 agent 运行时间或模型吞吐；旧记录缺失仍表示未知。轮/turn 计数仍表示实际执行。usage 快照另含可选的 `currentPrompt`（本次任务每次模型调用之和）与 `subagentTotals`（当前分支子代理模型调用之和，不含在 `sessionTotals` 内）。见 [SDK 边界](pi-sdk-api.md)与[统计契约](usage-measurement.md)。
+Pi SDK 与 pi-ai 固定为 **1.1.0**；本次 SDK 升级无需数据库迁移（[原生会话](native-sessions.md)既有的 v2 迁移要求不变）。SSE `tool_end` 与 export `tool_result` 的可选 `durationMs` 是 SDK 实测工具执行时间，不是子 agent 运行时间或模型吞吐；旧记录缺失仍表示未知。export `tool_result` 的可选 `nestedCalls` 是该工具运行中发起的调用（如 codemode 脚本里的 MCP 调用），最多记录 256 次，`complete:false` 表示记录不完整；实时 SSE 中这些调用以带 `parentToolCallId` 的 `tool_*` 事件出现。轮/turn 计数仍表示实际执行。usage 快照另含可选的 `currentPrompt`（本次任务每次模型调用之和）与 `subagentTotals`（当前分支子代理模型调用之和，不含在 `sessionTotals` 内）。见 [SDK 边界](pi-sdk-api.md)与[统计契约](usage-measurement.md)。
 
 | 方法 | 路由 | 用途 |
 | --- | --- | --- |
@@ -32,7 +32,7 @@ Pi SDK 与 pi-ai 固定为 **1.1.0**；本次 SDK 升级无需数据库迁移（
 | `GET` | `/v1/projects/:id/files?query=<optional>` | 新会话草稿（会话尚未创建）的 `@` 路径建议，规则同上，根目录为该项目当前的规范化目录；需要 `sessions:create` 权限，不可在该项目建会话或目录不可用时返回 `404` |
 | `GET` | `/v1/projects/:id/commands` | 新会话草稿的 `/` 菜单：只含提示词模板与 `skill:<名字>`，不含需要已有会话的 `compact`、`reload`；权限与 `404` 同上 |
 | `GET` | `/v1/companion/persona` | 调用者保存的数字人人设 `{ persona: { name, style, docked } \| null }`，未保存过时为 `null`；权限同 `sessions:create` |
-| `GET` | `/v1/projects/:id/mcp` | 项目的 MCP 设置 `{ configured, canEdit, servers }`：列出目录中每个 server 的启用状态、exposure、上限、隐藏工具与 `adminOnly`；目录里已删除但项目仍有设置的 server 标为 `missing`。未配置 `PI_MCP_CATALOG_FILE` 时 `configured:false`。项目可见者（含 viewer）可读；见 [MCP 接入方案](mcp-integration.md) |
+| `GET` | `/v1/projects/:id/mcp` | 项目的 MCP 设置 `{ configured, canEdit, servers }`：列出目录中每个 server 的启用状态、exposure、上限、隐藏工具、`adminOnly` 与 `canEnable`（调用者能否启用它）；目录里已删除但项目仍有设置的 server 标为 `missing`。未配置 `PI_MCP_CATALOG_FILE` 时 `configured:false`。项目可见者（含 viewer）可读；见 [MCP 接入方案](mcp-integration.md) |
 | `PUT` | `/v1/projects/:id/mcp/servers/:name` | 保存项目对一个目录 server 的设置 `{ enabled, exposure?, hiddenTools? }`，返回 `{ server }`。`exposure` 不能超过目录 `maxExposure`（`null` 用目录默认值），`hiddenTools` 是 server 原工具名的精确列表。项目 owner（`user`/`admin`）可改；启用 `adminOnly` server（`403 mcp_admin_only`）或修改共享的默认项目（`403 mcp_default_project`）需要 admin；目录外的 server 返回 `404 mcp_unknown_server`，未配置目录返回 `404 mcp_not_configured`。只影响之后创建或恢复的会话 |
 | `PUT` | `/v1/companion/persona` | 保存调用者的人设：`name` 1–12 个字且不能全是空白（存储时去掉首尾空白），`style` 为 `concise` / `lively` / `formal`，`docked` 为布尔值；返回 `{ persona }`。参数不合法返回 `400`；服务端未配置人设存储时返回 `503 companion_unavailable` |
 | `POST` | `/v1/projects/:id/companion/greeting` | 空白会话数字人的开场白：用默认模型，依据项目名、模板与 skill、时段和调用者最近的会话写两句话；按调用者和情境缓存约 30 分钟。未配置默认模型、`PI_COMPANION_GREETING=off` 或模型失败时返回 `503 companion_unavailable`，页面改用本地句子；权限与 `404` 同上 |

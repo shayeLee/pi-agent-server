@@ -1,6 +1,6 @@
 # MCP 接入设计
 
-> 状态：P0、P1 已实现（2026-10-17），P2（Web UI）未开始。本文记录 pi-agent-server 接入 MCP（Model Context
+> 状态：P0、P1、P2 已实现（2026-10-17），P3 另行设计。本文记录 pi-agent-server 接入 MCP（Model Context
 > Protocol）server 与 codemode 的方案、已确认的决策和分阶段计划。代码事实基于 Pi SDK
 > `@earendil-works/pi-coding-agent@1.3.0`。实现位于 `src/mcp/`、`src/agent/mcp-tool-boundary.ts`
 > 与 `src/storage/kysely-project-mcp-repository.ts`。
@@ -191,6 +191,13 @@ codemode 扩展配置：`mode: "on"`（内置工具保持声明），`models: fa
 - 回放：从工具结果消息的 `nestedCalls` 或 codemode 结果的 `details.calls` 重建同一视图，保证与实时显示一致。SDK 最多记录 256 次调用，超出时显示“记录不完整”。
 - Inspector（`SessionSteps`）已带 `parentToolCallId`，按父子关系缩进显示。
 - 项目设置页新增 MCP 面板：列出目录中的 server、启用状态、exposure，以及 `adminOnly` 和共享身份的标记。
+
+P2 实现说明：
+
+- 实时：`src/client/chat-state.ts` 把带 `parentToolCallId` 的事件记到所属卡片的 `nested` 上，不新增时间线条目。嵌套调用再发起的调用（父 ID 是某个嵌套 ID）记到同一张卡片。找不到所属卡片时退回为独立卡片。父调用结束时仍在运行的嵌套调用标为 `unfinished`，记录标为不完整。
+- 回放：导出的 `tool_result` 行新增可选 `nestedCalls`（形状同 SDK 的 `NestedToolCalls`，参数经过与工具参数相同的脱敏），Web 历史投影把它还原成同一个 `nested` 字段，所以实时与刷新后显示同一个列表。耗时来源不同：实时取 `tool_end.durationMs`，回放取 SDK 记录的耗时，两者可能差几毫秒。
+- 卡片：任何带嵌套调用的工具卡片标题都以“内部调用 N 次”开头，展开后在结果下方显示折叠列表（状态、工具名、耗时、错误摘要、参数过大未记录的说明）。codemode 的脚本默认折叠，展开后按 JavaScript 高亮。
+- 面板：侧栏项目行在服务配置了目录时显示“MCP 服务”按钮。每个 server 一张表单（启用、提供方式、隐藏的工具），单独保存。GET 返回的每个 server 带 `canEnable`，调用者不能启用的 `adminOnly` server 开关置灰；viewer 和非 admin 看共享的默认项目时整个面板只读。
 
 ## 11. 分阶段计划
 

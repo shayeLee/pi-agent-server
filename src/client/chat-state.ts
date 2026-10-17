@@ -2,6 +2,7 @@
 
 import type { SseEvent, TimelineItem, ToolCall, UsageStats } from "./types.js";
 import { toolDurationMs } from "../shared/tool-duration.js";
+import { NESTED_CALL_MAX, NESTED_ERROR_MAX_CHARS, type NestedToolCall, type NestedToolCalls } from "../shared/nested-tool-calls.js";
 
 /** Chat flow phase. */
 export type ChatPhase = "idle" | "submitting" | "queued" | "streaming" | "completed" | "aborted";
@@ -89,6 +90,10 @@ export function applySseEvent(state: ChatState, event: SseEvent, now: () => numb
         ...(event.requestId !== state.activeRequestId && event.requestId !== state.compaction?.requestId ? { compaction: null } : {}) };
     }
   }
+  if ((event.type === "tool_start" || event.type === "tool_update" || event.type === "tool_end") && event.parentToolCallId) {
+    const nested = applyNestedToolEvent(state, event, event.parentToolCallId);
+    if (nested) return nested;
+  }
   switch (event.type) {
     case "notification": {
       const { type: _type, ...notification } = event;
@@ -146,7 +151,7 @@ export function applySseEvent(state: ChatState, event: SseEvent, now: () => numb
         isError: event.isError,
         ...(toolDurationMs(event.durationMs) !== undefined ? { durationMs: toolDurationMs(event.durationMs) } : {}),
         done: true,
-      });
+      }, call => call.nested ? { nested: settleNestedCalls(call.nested) } : {});
     case "status": {
       const stats = event.phase === "agent_start" && state.stats ? { ...state.stats, lastResponse: null, context: null } : state.stats;
       return { ...state, activeToolCallIds: event.phase === "agent_start" ? [] : state.activeToolCallIds, modelOutput: event.phase === "agent_start" ? null : state.modelOutput,
@@ -291,11 +296,12 @@ function appendToolCall(
 function upsertToolCall(
   state: ChatState,
   patch: Partial<ToolCall> & { toolCallId: string; toolName: string },
+  derive?: (call: ToolCall) => Partial<ToolCall>,
 ): ChatState {
   const idx = findLastToolIndex(state.timeline, patch.toolCallId);
   if (idx < 0) return appendToolCall(state, patch);
   const prev = state.timeline[idx] as Extract<TimelineItem, { kind: "tool" }>;
-  const merged: ToolCall = { ...prev.call, ...patch };
+  const merged: ToolCall = { ...prev.call, ...patch, ...derive?.(prev.call) };
   const timeline = state.timeline.map((item, i) =>
     i === idx ? { kind: "tool" as const, id: patch.toolCallId, call: merged } : item,
   );
@@ -308,4 +314,55 @@ function findLastToolIndex(timeline: TimelineItem[], toolCallId: string): number
     if (item?.kind === "tool" && item.call.toolCallId === toolCallId) return i;
   }
   return -1;
+}
+
+type ToolEvent = Extract<SseEvent, { type: "tool_start" | "tool_update" | "tool_end" }>;
+
+/**
+ * A nested call only updates the card of the model-issued call it belongs to. Calls made by
+ * nested calls name a nested id as their parent, so the owner is the card listing that id.
+ * Returns undefined when no card owns the parent, and the event then gets its own card.
+ */
+function applyNestedToolEvent(state: ChatState, event: ToolEvent, parentId: string): ChatState | undefined {
+  let index = -1;
+  for (let i = state.timeline.length - 1; i >= 0 && index < 0; i--) {
+    const item = state.timeline[i];
+    if (item?.kind === "tool" && (item.call.toolCallId === parentId || item.call.nested?.calls.some(call => call.id === parentId))) index = i;
+  }
+  if (index < 0) return undefined;
+  const owner = state.timeline[index] as Extract<TimelineItem, { kind: "tool" }>;
+  const nested = owner.call.nested ?? { calls: [], complete: true };
+  const next = updateNestedCalls(nested, event);
+  if (next === nested) return state;
+  const timeline = state.timeline.map((item, i) => i === index ? { ...owner, call: { ...owner.call, nested: next } } : item);
+  return { ...state, timeline };
+}
+
+function updateNestedCalls(nested: NestedToolCalls, event: ToolEvent): NestedToolCalls {
+  const position = nested.calls.findIndex(call => call.id === event.toolCallId);
+  if (event.type === "tool_start") {
+    if (position >= 0) return nested;
+    if (nested.calls.length >= NESTED_CALL_MAX) return nested.complete ? { ...nested, complete: false } : nested;
+    return { ...nested, calls: [...nested.calls, { id: event.toolCallId, name: event.toolName, status: "running", arguments: event.args }] };
+  }
+  if (event.type === "tool_update" || position < 0) return nested;
+  const durationMs = toolDurationMs(event.durationMs);
+  const error = event.isError ? resultErrorText(event.result) : "";
+  const ended: NestedToolCall = { ...nested.calls[position]!, status: event.isError ? "error" : "ok",
+    ...(typeof durationMs === "number" ? { durationMs } : {}), ...(error ? { error } : {}) };
+  return { ...nested, calls: nested.calls.map((call, i) => i === position ? ended : call) };
+}
+
+/** When the owning call ends, calls still running will not report again. */
+function settleNestedCalls(nested: NestedToolCalls): NestedToolCalls {
+  if (!nested.calls.some(call => call.status === "running")) return nested;
+  return { complete: false, calls: nested.calls.map(call => call.status === "running" ? { ...call, status: "unfinished" } : call) };
+}
+
+function resultErrorText(result: unknown): string {
+  if (typeof result === "string") return result.slice(0, NESTED_ERROR_MAX_CHARS);
+  const content = result && typeof result === "object" && "content" in result && Array.isArray(result.content) ? result.content : [];
+  return content
+    .map((block: unknown) => block && typeof block === "object" && "type" in block && block.type === "text" && "text" in block && typeof block.text === "string" ? block.text : "")
+    .filter(Boolean).join("\n").slice(0, NESTED_ERROR_MAX_CHARS);
 }

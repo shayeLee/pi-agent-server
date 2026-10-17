@@ -6,6 +6,25 @@ const legacyFailbackFixture = JSON.parse(readFileSync(new URL("../fixtures/model
 const entry = (id: string, parentId: string | null, message: unknown) => ({ type: "message", id, parentId, timestamp: "2026-01-01T00:00:00.000Z", message });
 
 describe("Pi export tool timeline", () => {
+  it("exports the nested calls a tool made, with secrets in their arguments redacted", () => {
+    const snapshot = projectExportSnapshot([], [
+      entry("u", null, { role: "user", content: "go" }),
+      entry("a", "u", { role: "assistant", content: [{ type: "toolCall", id: "c1", name: "codemode", arguments: { code: "x" } }] }),
+      entry("r", "a", { role: "toolResult", toolCallId: "c1", toolName: "codemode", content: [{ type: "text", text: "ok" }], isError: false,
+        nestedCalls: { complete: false, calls: [
+          { id: "c1/1", name: "mcp__docs__search", status: "ok", durationMs: 5, arguments: { q: "x", token: "never" } },
+          { id: "c1/2", name: "mcp__docs__write", status: "error", argumentsBytes: 9000, error: "denied" },
+          { id: "c1/3", status: "ok" },
+        ] } }),
+      entry("r2", "r", { role: "toolResult", toolCallId: "c2", toolName: "read", content: [], isError: false, nestedCalls: "bogus" }),
+    ] as any);
+    const results = snapshot.timeline.filter(item => item.type === "tool_result");
+    expect(results[0]).toMatchObject({ nestedCalls: { complete: false, calls: [
+      { id: "c1/1", name: "mcp__docs__search", status: "ok", durationMs: 5, arguments: { q: "x", token: "[REDACTED]" } },
+      { id: "c1/2", name: "mcp__docs__write", status: "error", argumentsBytes: 9000, error: "denied" },
+    ] } });
+    expect(results[1]).not.toHaveProperty("nestedCalls");
+  });
   it("exports abort evidence without guessing from incomplete-looking text", () => {
     const snapshot = projectExportSnapshot([], [
       entry("u", null, { role: "user", content: "hello" }),

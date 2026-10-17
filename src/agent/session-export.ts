@@ -1,4 +1,5 @@
 import { toolDurationMs } from "../shared/tool-duration.js";
+import { readNestedToolCalls, type NestedToolCalls } from "../shared/nested-tool-calls.js";
 import { notificationFromEntry } from "./subagent-notification.js";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import {
@@ -21,7 +22,7 @@ export type ExportTimelineItem =
   | { id: string; type: "message"; role: "user" | "assistant"; messageId: string; turnId: string | null; text: string; order: number; timestamp?: string; stopReason?: "aborted" }
   | { id: string; type: "thinking"; messageId: string; turnId: string | null; text: string; order: number; timestamp?: string }
   | { id: string; type: "tool_call"; messageId: string; turnId: string | null; callId: string; toolCallId: string; toolName: string; args: unknown; status: "completed" | "error" | "no_result"; order: number; timestamp?: string }
-  | { id: string; type: "tool_result"; messageId: string | null; turnId: string | null; callId: string; toolCallId: string; toolName: string; result: unknown; isError: boolean; durationMs?: number | null; order: number; timestamp?: string }
+  | { id: string; type: "tool_result"; messageId: string | null; turnId: string | null; callId: string; toolCallId: string; toolName: string; result: unknown; isError: boolean; durationMs?: number | null; nestedCalls?: NestedToolCalls; order: number; timestamp?: string }
   | { id: string; type: "system_event"; event: "model_failback"; from: string; to: string; reason: string; order: number; timestamp?: string };
 
 /** Additive export payload. `messages` is the pre-existing text/image projection. */
@@ -101,7 +102,7 @@ export function projectExportSnapshot(messages: readonly unknown[], branch: read
       continue;
     }
     if (entry.type !== "message" || presentation.hiddenContinuationIds.has(entry.id)) continue;
-    const message = entry.message as { role?: unknown; content?: unknown; toolCallId?: unknown; toolName?: unknown; isError?: unknown; details?: unknown; durationMs?: unknown; stopReason?: unknown };
+    const message = entry.message as { role?: unknown; content?: unknown; toolCallId?: unknown; toolName?: unknown; isError?: unknown; details?: unknown; durationMs?: unknown; nestedCalls?: unknown; stopReason?: unknown };
     const timestamp = typeof entry.timestamp === "string" ? entry.timestamp : undefined;
     if (message.role === "user") {
       turnId = entry.id;
@@ -160,6 +161,7 @@ export function projectExportSnapshot(messages: readonly unknown[], branch: read
         result: sanitizeToolResult(message.content, message.details),
         isError: message.isError,
         ...(toolDurationMs(message.durationMs) !== undefined ? { durationMs: toolDurationMs(message.durationMs) } : {}),
+        ...nestedCallsField(message.nestedCalls),
         order: order++,
         ...(timestamp ? { timestamp } : {}),
       });
@@ -267,6 +269,11 @@ function forEachToolCall(content: unknown, callback: (block: ContentBlock) => vo
     const block = asRecord(value);
     if (block?.type === "toolCall") callback(block);
   }
+}
+
+function nestedCallsField(value: unknown): { nestedCalls?: NestedToolCalls } {
+  const nestedCalls = readNestedToolCalls(value, sanitizeToolValue);
+  return nestedCalls ? { nestedCalls } : {};
 }
 
 function sanitizeToolResult(content: unknown, details: unknown): unknown {

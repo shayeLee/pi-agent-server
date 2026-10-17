@@ -1484,6 +1484,21 @@ details[open] > summary > .details-chevron { transform: rotate(90deg); }
 .tool-display-mode:hover { background: var(--bg-hover); }
 .tool-prose .markdown > :first-child { margin-top: 0; }
 .tool-call-body .code-block { margin: 0; }
+/* codemode script and nested calls: collapsed disclosures inside the card body. */
+.codemode-script > summary, .nested-tool-calls-summary { display: flex; align-items: center; cursor: pointer; color: var(--text-secondary); font-size: var(--font-small); }
+.codemode-script[open] > summary { margin-bottom: 6px; }
+.nested-tool-calls-incomplete { margin-left: 8px; color: var(--text-tertiary); }
+.nested-tool-call-list { list-style: none; margin: 6px 0 0; padding: 0; }
+.nested-tool-call { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; padding: 3px 0; min-width: 0; }
+.nested-tool-call + .nested-tool-call { border-top: 1px solid var(--line); }
+.nested-tool-call-status { flex: none; width: 1em; text-align: center; color: var(--text-secondary); }
+.nested-tool-call-status.tool-status-success { color: var(--text-secondary); }
+.nested-tool-call-status.tool-status-error { color: var(--danger); }
+.nested-tool-call-status.tool-status-running { color: var(--accent); }
+.nested-tool-call-name { flex: 0 1 auto; min-width: 0; font-family: var(--font-mono); font-size: var(--font-small); overflow-wrap: anywhere; }
+.nested-tool-call-error, .nested-tool-call-note { flex-basis: 100%; padding-left: calc(1em + 8px); font-size: var(--font-small); white-space: pre-wrap; overflow-wrap: anywhere; }
+.nested-tool-call-error { color: var(--danger); }
+.nested-tool-call-note { color: var(--text-tertiary); }
 /* Tool Markdown owns spacing at block boundaries, never inside CodeBlock.
    One leading margin per adjacent block avoids doubled paragraph spacing. */
 .tool-call-body :is(.markdown, .markdown li, .markdown blockquote) > :where(p, h1, h2, h3, h4, h5, h6, ul, ol, blockquote, table, hr, .code-block) {
@@ -1532,6 +1547,32 @@ details[open] > summary > .details-chevron { transform: rotate(90deg); }
 .modal-body { min-height: 0; overflow: auto; overscroll-behavior: contain; padding: 16px 20px 20px; }
 .modal-body .code-block { margin: 0; background: var(--bg-raised); }
 .modal-footer { flex-shrink: 0; padding: 12px 16px; border-top: 1px solid var(--line); }
+/* Project MCP settings: one bordered form per catalog server. */
+.modal.project-mcp-dialog { width: min(600px, calc(100% - 32px)); }
+.project-mcp { display: flex; flex-direction: column; gap: 8px; font-size: var(--fs-ui); color: var(--ink); }
+.project-mcp-note { margin: 0; font-size: var(--fs-meta); color: var(--dim); }
+.project-mcp-readonly { color: var(--ink); }
+.project-mcp-servers { list-style: none; margin: 8px 0 0; padding: 0; display: flex; flex-direction: column; gap: 8px; }
+.project-mcp-server { display: flex; flex-direction: column; gap: 6px; padding: 12px; border: 1px solid var(--line); border-radius: var(--radius-control); }
+.project-mcp-missing { opacity: 0.7; }
+.project-mcp-server-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; min-width: 0; }
+.project-mcp-toggle { display: inline-flex; align-items: center; gap: 8px; min-width: 0; cursor: pointer; }
+.project-mcp-toggle:has(input:disabled) { cursor: default; }
+.project-mcp-server-name { font-family: var(--font-mono); font-weight: 600; overflow-wrap: anywhere; }
+.project-mcp-badge { padding: 1px 6px; border: 1px solid var(--line); border-radius: var(--radius-control); font-size: var(--font-micro); color: var(--dim); white-space: nowrap; }
+.project-mcp-server-desc { margin: 0; font-size: var(--fs-meta); color: var(--dim); overflow-wrap: anywhere; }
+.project-mcp-server-desc:empty { display: none; }
+.project-mcp-fields { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; }
+.project-mcp-fields label { display: flex; flex-direction: column; gap: 4px; min-width: 0; font-size: var(--fs-meta); color: var(--dim); }
+.project-mcp-fields :is(select, input) { box-sizing: border-box; width: 100%; height: 32px; padding: 0 8px; border: 1px solid var(--line); border-radius: var(--radius-control); background: var(--bg); color: var(--ink); font: inherit; font-size: var(--fs-ui); }
+.project-mcp-fields :is(select, input):disabled { color: var(--dim); }
+.project-mcp-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
+.project-mcp-status { flex: 1; min-width: 0; font-size: var(--fs-meta); color: var(--dim); overflow-wrap: anywhere; }
+.project-mcp-error { color: var(--danger); }
+.project-mcp-save { height: 30px; min-width: 64px; padding: 0 12px; border: 1px solid var(--ink); border-radius: var(--radius-control); background: var(--ink); color: var(--invert); font-size: var(--fs-step); cursor: pointer; }
+.project-mcp-save:disabled { border-color: transparent; background: var(--hl); color: var(--faint); cursor: default; }
+@media (max-width: 639px) { .project-mcp-fields { grid-template-columns: minmax(0, 1fr); } }
+
 /* Session rename (replaces window.prompt): narrow form, actions right-aligned. */
 .modal.rename-dialog { width: min(440px, calc(100% - 32px)); }
 .rename-field { display: flex; flex-direction: column; gap: 8px; font-size: var(--fs-meta); color: var(--dim); }

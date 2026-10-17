@@ -148,6 +148,16 @@ export class ApiClient {
     return this.request("DELETE", `/v1/projects/${id}`);
   }
 
+  /** 项目的 MCP server 设置；服务未配置目录时 configured 为 false。 */
+  getProjectMcp(projectId: string): Promise<import("../shared/project-mcp.js").ProjectMcpSettings> {
+    return this.request("GET", `/v1/projects/${encodeURIComponent(projectId)}/mcp`);
+  }
+
+  /** 修改只影响之后创建或恢复的会话。 */
+  saveProjectMcpServer(projectId: string, name: string, input: import("../shared/project-mcp.js").ProjectMcpServerInput): Promise<{ server: import("../shared/project-mcp.js").ProjectMcpServer }> {
+    return this.request("PUT", `/v1/projects/${encodeURIComponent(projectId)}/mcp/servers/${encodeURIComponent(name)}`, input);
+  }
+
   listModels(): Promise<{
     models: ModelInfo[];
     thinkingLevels: string[];

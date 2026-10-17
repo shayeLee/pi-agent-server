@@ -88,20 +88,7 @@ export function effectiveMcpServerEntries(
 }
 
 /** API 视图：目录中的每个 server 及项目设置；目录里已删除的 server 标记为 missing。 */
-export interface ProjectMcpServerView {
-  readonly name: string;
-  readonly status: "available" | "missing";
-  readonly description?: string;
-  readonly transport?: "stdio" | "http";
-  readonly enabled: boolean;
-  readonly exposure?: McpExposure;
-  readonly defaultExposure?: McpExposure;
-  readonly maxExposure?: McpExposure;
-  readonly hiddenTools: readonly string[];
-  readonly adminOnly?: boolean;
-  /** 项目尚未设置时为 null，表示沿用目录默认值。 */
-  readonly updatedAt: number | null;
-}
+export type ProjectMcpServerView = import("../shared/project-mcp.js").ProjectMcpServer;
 
 export function projectMcpServerViews(
   catalog: McpCatalog, settings: readonly ProjectMcpServerSetting[],

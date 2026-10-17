@@ -8,6 +8,7 @@ import { Icon } from "./components/Icon.js";
 import { useWebAppController } from "./hooks/useWebAppController.js";
 import { SessionList } from "./components/SessionList.js";
 import { ProjectSwitcher } from "./components/ProjectSwitcher.js";
+import { ProjectMcpButton } from "./components/ProjectMcpPanel.js";
 import type { TraceNavigation } from "./components/step-navigation.js";
 import { Chat } from "./components/Chat.js";
 import { Inspector, type InspectorTab } from "./components/Inspector.js";
@@ -369,7 +370,8 @@ export default function App() {
                   activeId={controller.activeProjectId!}
                   onSelect={(id) => { closeMobileSidebar(); controller.selectProject(id); }}
                   onCreate={controller.createProject}
-                >{searchToggle}</ProjectSwitcher>}
+                >{searchToggle}<ProjectMcpButton api={controller.api} projectId={controller.activeProjectId!}
+                    projectName={controller.projects?.find(project => project.id === controller.activeProjectId)?.name ?? zhCN.project.defaultProject} /></ProjectSwitcher>}
                   sessions={controller.sessions ?? []}
                   activeId={controller.activeSessionId}
                   onSelect={(id) => { closeMobileSidebar(); controller.selectSession(id); }}

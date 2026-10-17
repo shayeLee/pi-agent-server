@@ -3,6 +3,7 @@ export type { SubagentRun, SubagentSnapshot, SubagentConversation, SubagentInput
 export type { SteeringInput } from "../shared/steering.js";
 export type { ProjectFileEntry, ProjectFileSearch, SessionCommandInfo, SessionCommandList, SessionCommandInput, SessionCommandResult } from "../shared/commands.js";
 export type { CompanionGreeting, CompanionGreetingInput, CompanionPersonaRecord } from "../shared/companion.js";
+export type { McpExposure, ProjectMcpServer, ProjectMcpServerInput, ProjectMcpSettings } from "../shared/project-mcp.js";
 export { DEFAULT_PROJECT_ID } from "../shared/project-identity.js";
 export * from "./api.js";
 export * from "./session-title.js";

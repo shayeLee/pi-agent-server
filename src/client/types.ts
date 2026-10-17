@@ -74,6 +74,8 @@ export type ToolCall = {
   durationMs?: number | null;
   /** tool_end 已收到，调用结束。 */
   done: boolean;
+  /** 这次调用在运行中发起的工具调用（codemode 脚本里的 MCP 调用等）；它们不单独占时间线条目。 */
+  nested?: import("../shared/nested-tool-calls.js").NestedToolCalls;
 };
 
 /** 聊天区按时间顺序的统一条目：消息、思考或工具调用，按 SSE 事件到达顺序交错排列。 */
