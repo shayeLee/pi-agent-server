@@ -345,7 +345,6 @@ describe("Chat（聊天区）", () => {
     const onDraftText = vi.fn();
     setup({ session: null, loadCommands, onDraftText });
     const welcome = screen.getByTestId("no-session-hint");
-    expect(welcome).toHaveTextContent("选择项目并发送第一条消息");
     expect(await within(welcome).findByText(/我的仓库/)).toBeInTheDocument();
     const chips = within(welcome).getByRole("group", { name: "快捷开始" });
     expect(within(chips).getAllByRole("button").map(button => button.textContent)).toEqual([expect.stringContaining("/review")]);

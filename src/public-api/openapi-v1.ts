@@ -31,6 +31,9 @@ export const PUBLIC_API_OPERATIONS = [
   ["/v1/projects/{id}", "delete", "projects:delete"],
   ["/v1/projects/{id}/files", "get", "sessions:create"],
   ["/v1/projects/{id}/commands", "get", "sessions:create"],
+  ["/v1/projects/{id}/companion/greeting", "post", "sessions:create"],
+  ["/v1/companion/persona", "get", "sessions:create"],
+  ["/v1/companion/persona", "put", "sessions:create"],
   ["/v1/files", "post", "files:upload"],
   ["/v1/sessions", "get", "sessions:list"],
   ["/v1/sessions", "post", "sessions:create"],
@@ -262,6 +265,24 @@ export const openapiV1 = {
         "404": error(404, "Project not found, not usable for new sessions, or its directory is unavailable."),
       }, { parameters: [id] }),
     },
+    "/v1/projects/{id}/companion/greeting": {
+      post: operation("createCompanionGreeting", "sessions:create", {
+        "200": { description: "The blank-session companion's opening line, written by the default model from the project name, its templates and skills, the time of day and the caller's latest session. Cached per caller and context for about 30 minutes.", ...json(ref("CompanionGreeting")) },
+        "400": error(400, "Invalid persona, time of day or recent session."),
+        "404": error(404, "Project not found, not usable for new sessions, or its directory is unavailable."),
+        "503": error(503, "No default model, PI_COMPANION_GREETING=off, or the model failed (code companion_unavailable); clients fall back to local lines."),
+      }, { parameters: [id], requestBody: request(ref("CompanionGreetingInput")), ...requestValidation }),
+    },
+    "/v1/companion/persona": {
+      get: operation("getCompanionPersona", "sessions:create", {
+        "200": { description: "The caller's companion persona, or null before the first save; the page then keeps its own defaults.", ...json({ type: "object", required: ["persona"], properties: { persona: { oneOf: [{ type: "null" }, ref("CompanionPersona")] } }, additionalProperties: false }) },
+      }),
+      put: operation("saveCompanionPersona", "sessions:create", {
+        "200": { description: "Saved for the caller; the name is stored trimmed.", ...json({ type: "object", required: ["persona"], properties: { persona: ref("CompanionPersona") }, additionalProperties: false }) },
+        "400": error(400, "Empty or over-long name, unknown style, or missing docked."),
+        "503": error(503, "This server keeps no personas (code companion_unavailable); the page keeps it per browser."),
+      }, { requestBody: request(ref("CompanionPersona")), ...requestValidation }),
+    },
     "/v1/files": {
       post: operation("uploadFile", "files:upload", {
         "201": { description: "Validated original stored; a repeated upload key returns the same file.", ...json(ref("UploadedFile")) },
@@ -478,6 +499,16 @@ export const openapiV1 = {
       FilePreview: { type: "object", required: ["path", "content", "lineCount"], properties: { path: { type: "string", description: "Normalized project-relative path." }, content: { type: "string", description: "Complete UTF-8 content; maximum 262144 bytes." }, lineCount: { type: "integer", minimum: 1 }, requestedLine: { type: "integer", minimum: 1 } }, additionalProperties: false },
       ProjectFileSearch: { type: "object", required: ["entries", "truncated"], properties: { entries: { type: "array", maxItems: 20, items: { type: "object", required: ["path", "kind"], properties: { path: { type: "string", description: "Project-relative path with / separators." }, kind: { enum: ["file", "directory"] } }, additionalProperties: false } }, truncated: { type: "boolean", description: "The project listing hit its file cap; some paths cannot be suggested." } }, additionalProperties: false },
       SessionCommandList: { type: "object", required: ["commands"], properties: { commands: { type: "array", items: { type: "object", required: ["name", "source", "description"], properties: { name: { type: "string", description: "Typed after /." }, source: { enum: ["builtin", "prompt", "skill"] }, description: { type: "string" }, argumentHint: { type: "string" } }, additionalProperties: false } } }, additionalProperties: false },
+      CompanionGreetingInput: { type: "object", required: ["persona", "dayPart"], properties: {
+        persona: { type: "object", required: ["name", "style"], properties: { name: { type: "string", minLength: 1, maxLength: 12 }, style: { enum: ["concise", "lively", "formal"] } }, additionalProperties: false },
+        dayPart: { enum: ["dawn", "morning", "noon", "afternoon", "evening", "night"], description: "The caller's local time of day." },
+        recent: { oneOf: [{ type: "null" }, { type: "object", required: ["title", "minutesAgo"], properties: { title: { type: "string", maxLength: 200 }, minutesAgo: { type: "integer", minimum: 0 } }, additionalProperties: false }], description: "The caller's latest session in this project." },
+      }, additionalProperties: false },
+      CompanionPersona: { type: "object", required: ["name", "style", "docked"], properties: {
+        name: { type: "string", minLength: 1, maxLength: 12, pattern: "\\S" }, style: { enum: ["concise", "lively", "formal"] },
+        docked: { type: "boolean", description: "Whether the companion sits on the composer inside a session." },
+      }, additionalProperties: false },
+      CompanionGreeting: { type: "object", required: ["greeting", "hint"], properties: { greeting: { type: "string" }, hint: { type: "string" } }, additionalProperties: false },
       SessionCommandInput: { type: "object", required: ["command"], properties: { command: { enum: ["compact", "reload"] }, args: { type: "string", maxLength: 4000, description: "compact: optional summary instructions." } }, additionalProperties: false },
       SessionCommandResult: { oneOf: [
         { type: "object", required: ["command", "tokensBefore"], properties: { command: { const: "compact" }, tokensBefore: { type: "number", minimum: 0 }, tokensAfter: { type: "number", minimum: 0 } }, additionalProperties: false },

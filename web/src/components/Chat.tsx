@@ -15,7 +15,7 @@ import { SubagentLivePanel } from "./SubagentLivePanel.js";
 import type { LiveSubagent } from "../hooks/useLiveSubagents.js";
 import type { SessionConnection } from "../hooks/useSessionStream.js";
 import { EmptyState } from "./EmptyState.js";
-import { CompanionDock, CompanionWelcome, useCompanionPersona } from "./companion/Companion.js";
+import { CompanionDock, CompanionWelcome, useCompanionPersona, type CompanionPersonaSync, type CompanionWelcomeProps } from "./companion/Companion.js";
 import { useCompanion } from "./companion/companion-mood.js";
 import type { SubmissionState, SubmitOutcome, UnsentMessage } from "../attachment-state.js";
 
@@ -71,6 +71,10 @@ export type ChatProps = {
   onAbort?: () => void;
   onFollowUp: (text: string) => void | Promise<boolean>;
   loadCommands?: ComposerProps["loadCommands"];
+  /** The companion's model-written opening line for the selected project (DESIGN.md §6.6). */
+  companionGreeting?: CompanionWelcomeProps["generateLines"];
+  /** Keeps the companion's persona on the server; without it the persona stays in this browser. */
+  companionPersona?: CompanionPersonaSync;
   searchFiles?: ComposerProps["searchFiles"];
   onRunCommand?: ComposerProps["onRunCommand"];
   onToggleTrace?: () => void;
@@ -79,6 +83,7 @@ export type ChatProps = {
   onNavigateTurn?: (timelineId: string) => void;
   traceOpen?: boolean;
   /** The project's latest session, for the companion's welcome on a blank session. */
+  /** The project's latest session; `undefined` while the list loads. */
   recentSession?: { title: string; updatedAt: number } | null;
   onConfigChange: (config: { modelProvider?: string; modelId?: string; thinkingLevel?: string }) => void;
 };
@@ -131,13 +136,13 @@ export function Chat({
   onRetrySubmit,
   onConfirmCreation,
   onAbort,
-  onFollowUp, loadCommands, searchFiles, onRunCommand,
+  onFollowUp, loadCommands, companionGreeting, companionPersona, searchFiles, onRunCommand,
   onToggleTrace,
   liveSubagents,
   onOpenSubagent,
   onNavigateTurn,
   traceOpen,
-  recentSession = null,
+  recentSession,
   onConfigChange,
 }: ChatProps) {
   const bodyRef = useRef<HTMLDivElement>(null);
@@ -145,7 +150,7 @@ export function Chat({
   const runStatus = useRunStatus(session?.id ?? null, derivedPhase, runFailed);
   const [abortArmed, setAbortArmed] = useState(false);
   const companion = useCompanion(runStatus.kind);
-  const [persona, setPersona] = useCompanionPersona();
+  const [persona, setPersona] = useCompanionPersona(canCreateSession ? companionPersona : undefined);
   const sectionRef = useRef<HTMLElement>(null);
   const quickStart = onDraftText ? (text: string) => {
     onDraftText(text);
@@ -279,8 +284,7 @@ export function Chat({
             {loadError && <div className="chat-phase-banner error" role="alert">{loadError}</div>}
             <CompanionWelcome mood={companion.mood} nodKey={companion.nodKey} persona={persona} onPersona={setPersona}
               projectId={activeProjectId} projectName={projects?.find(project => project.id === activeProjectId)?.name ?? null}
-              recent={recentSession} loadCommands={canCreateSession ? loadCommands : undefined} onQuickStart={canCreateSession && canWrite ? quickStart : undefined} />
-            <p className="workbench-welcome-copy">{zhCN.chat.welcome}</p>
+              recent={recentSession} loadCommands={canCreateSession ? loadCommands : undefined} generateLines={canCreateSession ? companionGreeting : undefined} onQuickStart={canCreateSession && canWrite ? quickStart : undefined} />
           </div>
         ) : (
           <div className="chat-inner">

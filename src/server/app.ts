@@ -60,6 +60,7 @@ import { FileSearchError, createProjectFileSearch } from "./session-file-search.
 import { BUILTIN_SESSION_COMMANDS } from "./session-resources.js";
 import { ATTACHMENT_MAX_BYTES } from "../attachments/file-policy.js";
 import { UploadService } from "../application/upload-service.js";
+import { CompanionGreetingError, type CompanionGreeter } from "../application/companion-greeter.js";
 
 export type ServerDeps = {
   sessions: SessionStorePort;
@@ -81,6 +82,10 @@ export type ServerDeps = {
   createAdapter: (sessionId: string) => Promise<AgentAdapter>;
   /** `/` 菜单里的提示词模板与 skills（按会话项目 cwd 发现）；缺省时只列内置命令。 */
   listSessionCommands?: (projectCwd: string) => Promise<import("../shared/commands.js").SessionCommandInfo[]>;
+  /** Writes the blank-session companion's opening line; absent when no default model is configured. */
+  companionGreeter?: Pick<CompanionGreeter, "greet">;
+  /** Keeps the companion's persona per caller; without it the page keeps the persona per browser. */
+  companionPersonas?: import("../application/ports/companion-persona-store-port.js").CompanionPersonaStorePort;
   /** 生产组合根注入的通用会话存储 registry；用于未实例化会话的只读导出。 */
   conversationStorage?: ConversationStorageRegistry;
   nativeSessions?: import("../application/ports/native-session-port.js").NativeSessionPort;
@@ -174,6 +179,33 @@ const STEERING_BODY_SCHEMA = {
   required: ["text"], additionalProperties: false,
   anyOf: [{ required: ["controlId", "acknowledgementId", "requestId"] },
     { not: { anyOf: [{ required: ["controlId"] }, { required: ["acknowledgementId"] }, { required: ["requestId"] }, { required: ["images"] }] } }],
+} as const;
+type CompanionGreetingBody = import("../shared/companion.js").CompanionGreetingInput;
+const COMPANION_GREETING_BODY_SCHEMA = {
+  type: "object",
+  properties: {
+    persona: {
+      type: "object",
+      properties: { name: { type: "string", minLength: 1, maxLength: 12 }, style: { type: "string", enum: ["concise", "lively", "formal"] } },
+      required: ["name", "style"], additionalProperties: false,
+    },
+    dayPart: { type: "string", enum: ["dawn", "morning", "noon", "afternoon", "evening", "night"] },
+    recent: {
+      type: ["object", "null"],
+      properties: { title: { type: "string", maxLength: 200 }, minutesAgo: { type: "integer", minimum: 0 } },
+      required: ["title", "minutesAgo"], additionalProperties: false,
+    },
+  },
+  required: ["persona", "dayPart"], additionalProperties: false,
+} as const;
+const COMPANION_PERSONA_BODY_SCHEMA = {
+  type: "object",
+  properties: {
+    name: { type: "string", minLength: 1, maxLength: 12, pattern: "\\S" },
+    style: COMPANION_GREETING_BODY_SCHEMA.properties.persona.properties.style,
+    docked: { type: "boolean" },
+  },
+  required: ["name", "style", "docked"], additionalProperties: false,
 } as const;
 const SESSION_COMMAND_BODY_SCHEMA = {
   type: "object",
@@ -718,6 +750,43 @@ export function buildApp(deps: ServerDeps): FastifyInstance {
       { exposeHeadRoute: false, ...requirePermission("sessions:create") }, fileSearchRoute(projectRoot));
     api.get<{ Params: { id: string } }>("/projects/:id/commands",
       { exposeHeadRoute: false, ...requirePermission("sessions:create") }, commandListRoute(projectRoot, false));
+    // The blank-session companion's opening line. Only the caller's own facts reach the model;
+    // any failure is a 503 the page answers with its local lines.
+    api.post<{ Params: { id: string }; Body: CompanionGreetingBody }>("/projects/:id/companion/greeting",
+      { schema: { body: COMPANION_GREETING_BODY_SCHEMA }, ...requirePermission("sessions:create") },
+      async (request, reply) => {
+        const ownerKey = ownerKeyOf(request);
+        const projectName = await sessions.projectName(ownerKey, request.params.id);
+        const root = projectName === null ? null : await sessions.projectCwd(ownerKey, request.params.id);
+        if (projectName === null || !root) return NOT_FOUND(reply);
+        const unavailable = () => reply.code(503).send({ statusCode: 503, error: "Service Unavailable", code: "companion_unavailable", message: "开场白暂不可用" });
+        if (!deps.companionGreeter) return unavailable();
+        const commands = deps.listSessionCommands ? (await deps.listSessionCommands(root.cwd)).filter(command => command.source !== "builtin") : [];
+        const { persona, dayPart, recent } = request.body;
+        try {
+          return reply.code(200).send(await deps.companionGreeter.greet({
+            ownerKey, projectId: request.params.id, projectName, persona, dayPart, recent: recent ?? null,
+            commands: commands.map(command => ({ name: command.name, ...(command.description ? { description: command.description } : {}) })),
+          }));
+        } catch (error) {
+          if (!(error instanceof CompanionGreetingError)) request.log.warn({ err: error }, "companion greeting failed");
+          return unavailable();
+        }
+      });
+    // The companion's persona follows the caller; only people who can start sessions meet it.
+    // Without a store it reads as unset and a save is refused, so the page keeps it per browser.
+    api.get("/companion/persona", { exposeHeadRoute: false, ...requirePermission("sessions:create") },
+      async request => ({ persona: deps.companionPersonas ? await deps.companionPersonas.get(ownerKeyOf(request)) : null }));
+    api.put<{ Body: import("../shared/companion.js").CompanionPersonaRecord }>("/companion/persona",
+      { schema: { body: COMPANION_PERSONA_BODY_SCHEMA }, ...requirePermission("sessions:create") },
+      async (request, reply) => {
+        if (!deps.companionPersonas) {
+          return reply.code(503).send({ statusCode: 503, error: "Service Unavailable", code: "companion_unavailable", message: "人设暂不能保存" });
+        }
+        const persona = { ...request.body, name: request.body.name.trim() };
+        await deps.companionPersonas.put(ownerKeyOf(request), persona, Date.now());
+        return { persona };
+      });
     api.post<{ Params: { id: string }; Body: import("../shared/commands.js").SessionCommandInput }>(
       "/sessions/:id/commands",
       { schema: { body: SESSION_COMMAND_BODY_SCHEMA }, ...requirePermission("sessions:control") },

@@ -1,4 +1,4 @@
-// 运行时 Schema Manifest —— projects / sessions / idempotency / file_operations / uploaded_files 表、列、逻辑类型、
+// 运行时 Schema Manifest —— projects / sessions / idempotency / file_operations / uploaded_files / native_session_sources / companion_personas 表、列、逻辑类型、
 // nullable、default、主键、外键、索引的**唯一手工声明来源**。
 //
 // 设计要点：
@@ -520,7 +520,7 @@ export const uploadedFilesSchemaManifest = defineSchema([
 ]);
 
 /** v2: native bindings deliberately have no FK so deletion keeps durable tombstones. */
-export const schemaManifest = defineSchema([
+export const nativeSessionsSchemaManifest = defineSchema([
   uploadedFilesSchemaManifest.tables[0],
   {
     ...uploadedFilesSchemaManifest.tables[1],
@@ -549,5 +549,23 @@ export const schemaManifest = defineSchema([
       { name: "idx_native_source_id", columns: [{ name: "source_id" }], unique: true },
       { name: "idx_native_session_id", columns: [{ name: "session_id" }], unique: true },
     ],
+  },
+]);
+
+/** v3: the blank-session companion's persona, one row per caller (DESIGN.md §6.6). */
+export const schemaManifest = defineSchema([
+  ...nativeSessionsSchemaManifest.tables,
+  {
+    name: "companion_personas",
+    columns: [
+      { name: "owner_key", type: "text", nullable: false },
+      { name: "name", type: "text", nullable: false },
+      { name: "style", type: "text", nullable: false },
+      { name: "docked", type: "integer", nullable: false, default: 1 },
+      { name: "updated_at", type: "integer", nullable: false },
+    ],
+    primaryKey: { columns: ["owner_key"] },
+    foreignKeys: [],
+    indexes: [],
   },
 ]);

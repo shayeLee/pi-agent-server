@@ -38,6 +38,7 @@ export PI_ALLOWED_CLIENT_CIDRS=127.0.0.0/8,10.0.0.0/8
 | `PI_MODEL_PROVIDER` / `PI_MODEL_API_KEY` | 未设置 | 默认 provider 运行时凭证注入 |
 | `PI_DEFAULT_MODEL` | 未设置 | `provider/modelId` |
 | `PI_DEFAULT_THINKING_LEVEL` | Pi 默认值 | `off` 至 `max` |
+| `PI_COMPANION_GREETING` | 开启 | 设为 `off` 时，空白会话的数字人不再调用默认模型写开场白，只用本地句子。开启时每个用户、项目和情境组合约 30 分钟最多调用一次 |
 | `PI_SYSTEM_PROMPT` | Pi 默认提示词 | 可选的系统提示词整体覆盖；保留既有语义 |
 | `PI_APPEND_SYSTEM` | 未设置 | 追加系统提示词原文，**不是路径**；空白不追加。先于文件原文和能力片段追加。修改后重启并新建会话；见 [SDK 提示词边界](pi-sdk-api.md#35-资源加载与系统提示词安全边界)。 |
 | `PI_APPEND_SYSTEM_FILE` | 未设置 | 显式 UTF-8 文件，启动仅读一次；相对路径基于服务启动 cwd，不展开 `~`。无效文件拒绝启动。修改后重启并新建会话；冻结提示词不变。不自动发现 `APPEND_SYSTEM.md`。 |

@@ -676,6 +676,11 @@ export class SessionService {
     }
   }
 
+  /** Name of a project the caller may create sessions in, for the blank-session companion. */
+  async projectName(ownerKey: string, projectId: string): Promise<string | null> {
+    return (await this.resolveProject(ownerKey, projectId))?.name ?? null;
+  }
+
   /** Root identity of a project the caller may create sessions in; drafts use it before any session exists. */
   async projectCwd(ownerKey: string, projectId: string): Promise<{ cwd: string; dev: number; ino: number } | null> {
     const project = await this.resolveProject(ownerKey, projectId);

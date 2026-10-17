@@ -239,6 +239,19 @@ export class ApiClient {
     return this.request("GET", `/v1/projects/${encodeURIComponent(projectId)}/commands`);
   }
 
+  /** The blank-session companion's model-written opening line; 503 means "use your own". */
+  companionGreeting(projectId: string, input: import("../shared/companion.js").CompanionGreetingInput): Promise<import("../shared/companion.js").CompanionGreeting> {
+    return this.request("POST", `/v1/projects/${encodeURIComponent(projectId)}/companion/greeting`, input);
+  }
+
+  companionPersona(): Promise<{ persona: import("../shared/companion.js").CompanionPersonaRecord | null }> {
+    return this.request("GET", "/v1/companion/persona");
+  }
+
+  saveCompanionPersona(persona: import("../shared/companion.js").CompanionPersonaRecord): Promise<{ persona: import("../shared/companion.js").CompanionPersonaRecord }> {
+    return this.request("PUT", "/v1/companion/persona", persona);
+  }
+
   runSessionCommand(id: string, input: import("../shared/commands.js").SessionCommandInput): Promise<import("../shared/commands.js").SessionCommandResult> {
     return this.request("POST", `/v1/sessions/${encodeURIComponent(id)}/commands`, input);
   }

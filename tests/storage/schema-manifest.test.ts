@@ -135,7 +135,7 @@ describe("Schema Manifest 契约：Manifest → SQLite bootstrap DDL 等价（�
   it("Manifest 声明了当前 5 张表，每张表的列/主键/外键/索引与当前 schema 一致", () => {
     // 宽化为 TableManifest：字面量仅供 DatabaseSchema 推导，这里只做值的断言。
     const tables: readonly TableManifest[] = schemaManifest.tables;
-    expect(tables.map((t) => t.name)).toEqual(["projects", "sessions", "idempotency", "file_operations", "uploaded_files", "native_session_sources"]);
+    expect(tables.map((t) => t.name)).toEqual(["projects", "sessions", "idempotency", "file_operations", "uploaded_files", "native_session_sources", "companion_personas"]);
 
     expect(tables[0]!.columns.map((c) => [c.name, c.type, c.nullable])).toEqual([
       ["id", "uuid", false],
@@ -363,12 +363,13 @@ describe("Schema Manifest 契约：Manifest → SQLite bootstrap DDL 等价（�
       (db.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all() as { name: string }[]).map(
         (r) => r.name,
       ),
-    ).toEqual(["file_operations", "idempotency", "native_session_sources", "projects", "schema_migrations", "sessions", "uploaded_files"]);
+    ).toEqual(["companion_personas", "file_operations", "idempotency", "native_session_sources", "projects", "schema_migrations", "sessions", "uploaded_files"]);
     // Bootstrap creates the latest manifest atomically with the full canonical migration ledger.
     expect(db.prepare("SELECT version, name FROM schema_migrations ORDER BY version").all()).toEqual([
       { version: 0, name: "initial-schema" },
       { version: 1, name: "uploaded-files-and-idempotency-fingerprint" },
       { version: 2, name: "native-shared-sessions" },
+      { version: 3, name: "companion-personas" },
     ]);
     // 无版本化迁移痕迹（本方案没有 Migrator，不应创建迁移簿记表）
     expect(

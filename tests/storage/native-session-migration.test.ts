@@ -16,7 +16,7 @@ describe("native migration and backup boundary", () => {
       await runSqliteMigrations(db);
       expect(db.prepare("SELECT visibility,origin,title FROM sessions WHERE id='private'").get()).toEqual({ visibility: "private", origin: "managed", title: "old" });
       expect(db.prepare("SELECT COUNT(*) AS n FROM projects").get()).toMatchObject({ n: 2 });
-      expect(db.prepare("SELECT COUNT(*) AS n FROM schema_migrations").get()).toMatchObject({ n: 3 });
+      expect(db.prepare("SELECT COUNT(*) AS n FROM schema_migrations").get()).toMatchObject({ n: migrationDefinitions.length });
       expect(migrationChecksum(migrationDefinitions[2]!)).toBe(MIGRATION_V2_GOLDEN_CHECKSUM);
       expect((await runSqliteMigrations(db, { mode: "verify" })).pending).toEqual([]);
     } finally { db.close(); }

@@ -13,6 +13,7 @@ export type {
 // TURN_ERROR_CODES 是值（运行时对象），必须用值导出；上面的都是类型，只能用 `export type`。
 export { TURN_ERROR_CODES } from "./session-runtime-port.js";
 export type { IdempotencyStorePort } from "./idempotency-store-port.js";
+export type { CompanionPersonaStorePort } from "./companion-persona-store-port.js";
 export {
   FILE_OPERATION_KINDS,
   FILE_OPERATION_STATES,

@@ -13,7 +13,7 @@ A long-running, session-based HTTP/SSE service built on the Pi Agent Runtime, wi
 - HTTP/JSON API and Server-Sent Events; while a task runs you can queue a `follow-up`, promote it to `steer`, or abort.
 - Pi's text resources: `AGENTS.md` / `CLAUDE.md`, prompt templates and skills (including `~/.agents/skills`) are discovered from the session project and the service agentDir. The composer supports `@` file references and the `/compact`, `/reload`, template and `skill:` commands.
 - SQLite by default, PostgreSQL by explicit choice; conversations are saved as Pi JSONL, and a repeated request returns the recorded result.
-- Optional "Ledger"-style Web UI: ledger conversation, run state, stats bar and trace Inspector, plus a lively line-drawn cat companion that greets you on a blank session and reacts to runs and typing.
+- Optional "Ledger"-style Web UI: ledger conversation, run state, stats bar and trace Inspector, plus a lively line-drawn cat companion that greets you on a blank session (with a line written by the default model; `PI_COMPANION_GREETING=off` uses local lines only) and reacts to runs and typing; its name, voice and docked state are kept per user on the server (migration v3).
 
 ## Current boundaries
 

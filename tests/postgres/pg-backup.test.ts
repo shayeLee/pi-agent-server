@@ -722,7 +722,7 @@ class FakeTargetDatabase implements PgRestoreClient {
   /** Mimic the catalog effect of restoring a `--schema=<app>` dump. */
   applyRestore(schema: string, extra: readonly FakeCatalogObject[] = []): void {
     this.namespaces = [...new Set([...this.namespaces, schema])];
-    const tables = ["schema_migrations", "idempotency", "projects", "sessions", "file_operations", "uploaded_files", ...(this.nativeSourceRows.length ? ["native_session_sources"] : [])];
+    const tables = ["schema_migrations", "idempotency", "projects", "sessions", "file_operations", "uploaded_files", ...(this.nativeSourceRows.length ? ["native_session_sources", "companion_personas"] : [])];
     this.objects = [
       ...this.objects,
       ...tables.map((name) => ({ schema, kind: "relation", name })),
@@ -746,7 +746,7 @@ class FakeTargetDatabase implements PgRestoreClient {
     }
     if (text.includes("nspname AS schema_name")) return { rows: this.namespaces.filter((name) => name !== "public").map((schema_name) => ({ schema_name }) as unknown as T) };
     if (text.includes("SELECT table_name FROM information_schema.tables")) {
-      const tables = ["schema_migrations", "idempotency", "projects", "sessions", "file_operations", "uploaded_files", ...(this.nativeSourceRows.length ? ["native_session_sources"] : [])].sort();
+      const tables = ["schema_migrations", "idempotency", "projects", "sessions", "file_operations", "uploaded_files", ...(this.nativeSourceRows.length ? ["native_session_sources", "companion_personas"] : [])].sort();
       return { rows: tables.map((table_name) => ({ table_name }) as unknown as T) };
     }
     if (/FROM "[A-Za-z_][A-Za-z0-9_]*"\."schema_migrations"/.test(text)) {

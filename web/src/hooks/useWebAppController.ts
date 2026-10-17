@@ -9,7 +9,7 @@ import {
   useSyncExternalStore,
 } from "react";
 import { DEFAULT_PROJECT_ID, ApiClient, ApiError, createChatStore, ownsSseEvent } from "pi-agent-server/client";
-import type { AccessCapabilities, ChatStore, ModelInfo, Project, SessionCommandInput, SessionRecord, SseEvent, UsageSnapshot } from "pi-agent-server/client";
+import type { AccessCapabilities, ChatStore, CompanionGreetingInput, CompanionPersonaRecord, ModelInfo, Project, SessionCommandInput, SessionRecord, SseEvent, UsageSnapshot } from "pi-agent-server/client";
 import type { EventLogEntry } from "../types.js";
 import { EMPTY_MESSAGE, type SubmissionState, type SubmitOutcome, type SubmitSnapshot, type UnsentMessage } from "../attachment-state.js";
 
@@ -802,6 +802,16 @@ export function useWebAppController() {
     return activeProjectId ? (await api.listProjectCommands(activeProjectId)).commands : [];
   }, [api, activeSessionId, activeProjectId]);
 
+  const companionGreeting = useCallback(async (input: CompanionGreetingInput) => {
+    if (!activeProjectId) throw new Error("no project");
+    return api.companionGreeting(activeProjectId, input);
+  }, [api, activeProjectId]);
+
+  const companionPersona = useMemo(() => ({
+    load: async () => (await api.companionPersona()).persona,
+    save: async (persona: CompanionPersonaRecord) => { await api.saveCompanionPersona(persona); },
+  }), [api]);
+
   const searchFiles = useCallback(async (query: string) => {
     if (activeSessionId) return (await api.searchSessionFiles(activeSessionId, query)).entries;
     return activeProjectId ? (await api.searchProjectFiles(activeProjectId, query)).entries : [];
@@ -902,6 +912,8 @@ export function useWebAppController() {
     followUp,
     abort,
     loadCommands,
+    companionGreeting,
+    companionPersona,
     searchFiles,
     runCommand,
     clearEventLog,

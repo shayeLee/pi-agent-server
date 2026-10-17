@@ -277,8 +277,9 @@ export default function App() {
     .filter(Boolean)
     .join(" ");
 
-  const latest = (controller.sessions ?? []).reduce<NonNullable<typeof controller.sessions>[number] | null>((best, item) => !best || item.updatedAt > best.updatedAt ? item : best, null);
-  const recentSession = latest ? { title: latest.title || latest.firstPrompt || "", updatedAt: latest.updatedAt } : null;
+  // The companion talks about where you left off in this project, not elsewhere.
+  const latest = (controller.sessions ?? []).filter(item => item.projectId === controller.activeProjectId).reduce<NonNullable<typeof controller.sessions>[number] | null>((best, item) => !best || item.updatedAt > best.updatedAt ? item : best, null);
+  const recentSession = controller.sessions === null ? undefined : latest ? { title: latest.title || latest.firstPrompt || "", updatedAt: latest.updatedAt } : null;
 
   return (
     <main
@@ -451,6 +452,8 @@ export default function App() {
         onAbort={controller.abort}
         onFollowUp={controller.followUp}
         loadCommands={controller.loadCommands}
+        companionGreeting={controller.companionGreeting}
+        companionPersona={controller.companionPersona}
         searchFiles={controller.searchFiles}
         onRunCommand={controller.runCommand}
         onToggleTrace={toggleInspector}

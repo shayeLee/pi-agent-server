@@ -1045,14 +1045,6 @@ textarea::placeholder {
   margin-bottom: var(--space-16);
 }
 
-.workbench-welcome-copy {
-  margin: 0;
-  text-align: center;
-  color: var(--text-secondary);
-  font-size: var(--font-ui);
-  line-height: 1.6;
-}
-
 /* 空历史：单行次要文字，与起始态在文案与位置上可区分 */
 .chat-empty-history {
   margin: 0;
@@ -3644,7 +3636,6 @@ div.shortcut-help { width: min(440px, calc(100vw - 32px)); max-height: 80vh; ove
 .markdown :not(pre) > code { overflow-wrap: anywhere; word-break: break-word; }
 /* Start-state hint shares the content column's left edge with the Composer (§10). */
 .chat .workbench-welcome { max-width: calc(var(--ledger-max) + 2 * var(--reading-inline-inset)); margin: auto 0 0 var(--ledger-shift); padding: 16px var(--reading-inline-inset) 16px calc(var(--reading-inline-inset) + var(--ledger-offset)); }
-.chat .workbench-welcome-copy { text-align: left; font-family: var(--font-mono); font-size: var(--fs-meta); color: var(--dim); }
 @container chat (max-width: 640px) { .chat .workbench-welcome { padding-left: var(--reading-inline-inset); } }
 /* Queue keeps the input reachable (§5.5): at most ~4 rows, less on short screens,
    scrolling internally. The tag sits inside its own left padding so scrolling never clips it. */
@@ -3737,8 +3728,7 @@ div.shortcut-help { width: min(440px, calc(100vw - 32px)); max-height: 80vh; ove
    centred on the Composer's own column (the ledger rule above sets the same box), so the
    figure, its words and the input below share one axis. */
 .chat .workbench-welcome:has(.companion-welcome) { margin-top: auto; margin-bottom: auto; }
-.chat .workbench-welcome:has(.companion-welcome) .workbench-welcome-copy { text-align: center; }
-.companion-welcome { display: flex; flex-direction: column; align-items: center; gap: var(--space-16); margin-bottom: var(--space-24); text-align: center; }
+.companion-welcome { display: flex; flex-direction: column; align-items: center; gap: var(--space-16); text-align: center; }
 .companion-stage { display: flex; flex-direction: column; align-items: center; gap: var(--space-12); min-width: 0; }
 .companion-avatar { flex: none; display: grid; place-items: center; padding: 0; border: 0; background: none; color: var(--ink); cursor: pointer; border-radius: var(--radius-float); }
 .companion-avatar:hover { background: var(--hl); }
@@ -3747,12 +3737,19 @@ div.shortcut-help { width: min(440px, calc(100vw - 32px)); max-height: 80vh; ove
 .companion-name { font-family: var(--font-mono); font-size: var(--fs-meta); color: var(--dim); }
 .companion-greeting { margin: 0; font-size: var(--fs-h2); line-height: 1.5; color: var(--ink); }
 .companion-hint { margin: 0; font-size: var(--fs-ui); line-height: 1.6; color: var(--body2); }
+/* While the model writes the line: three dots in the greeting's place, so nothing jumps after. */
+.companion-pending { display: flex; justify-content: center; align-items: center; gap: 6px; min-height: 1.5em; }
+.companion-pending span { width: 6px; height: 6px; border-radius: var(--radius-pill); background: var(--dim); animation: companion-pending 1.2s ease-in-out infinite; }
+.companion-pending span:nth-child(2) { animation-delay: 0.15s; }
+.companion-pending span:nth-child(3) { animation-delay: 0.3s; }
+@keyframes companion-pending { 0%, 60%, 100% { opacity: 0.3; transform: translateY(0); } 30% { opacity: 1; transform: translateY(-3px); } }
 
-.companion-quick { display: flex; flex-wrap: wrap; justify-content: center; gap: var(--space-8); }
+/* An even grid: a chip that wraps lines up under the first column instead of floating mid-row. */
+.companion-quick { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); gap: var(--space-8); width: 100%; }
 .companion-chip { display: inline-flex; align-items: baseline; gap: var(--space-8); max-width: 100%; min-width: 0; padding: 6px 10px; border: 1px solid var(--line); border-radius: var(--radius-control); background: none; color: var(--ink); cursor: pointer; text-align: left; }
 .companion-chip:hover { border-color: var(--ink); background: var(--hl); }
 .companion-chip-name { flex: none; font-family: var(--font-mono); font-size: var(--fs-step); }
-.companion-chip-detail { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 28ch; font-size: var(--fs-meta); color: var(--dim); }
+.companion-chip-detail { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-meta); color: var(--dim); }
 
 .companion-editor { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: var(--space-12); font-size: var(--fs-meta); color: var(--dim); }
 .companion-field { display: inline-flex; align-items: center; gap: var(--space-8); }
@@ -3764,10 +3761,12 @@ div.shortcut-help { width: min(440px, calc(100vw - 32px)); max-height: 80vh; ove
 
 /* Docked: sitting on the composer's top edge, its base on the border line. The SVG's
    viewBox leaves 6/64 below the base, hence the small negative offset. */
-.composer > .companion-dock { position: absolute; z-index: 1; right: var(--space-16); bottom: calc(100% - 3px); display: grid; place-items: end center; width: 36px; height: 36px; padding: 0; border: 0; background: none; color: var(--ink); cursor: pointer; }
+.composer > .companion-dock { position: absolute; z-index: 1; right: var(--space-16); bottom: calc(100% - 4px); display: grid; place-items: end center; width: 44px; height: 44px; padding: 0; border: 0; background: none; color: var(--ink); cursor: pointer; }
 .composer > .companion-dock.is-away { bottom: calc(100% + 2px); height: 12px; place-items: center; opacity: 0.6; }
 /* The control queue sits right above the composer; keep its row actions clear of the cat. */
-.chat-footer:has(.composer > .companion-dock:not(.is-away)) > .control-queue { margin-bottom: 36px; }
+.chat-footer:has(.composer > .companion-dock:not(.is-away)) > .control-queue { margin-bottom: 44px; }
+/* At dock size the default line would render about a pixel wide and read as faint grey. */
+.companion-dock .companion-figure { stroke-width: 2.3; }
 .companion-dock-dot { width: 6px; height: 6px; border-radius: var(--radius-pill); background: var(--faint); }
 
 /* Paint: currentColor lines; the catchlight is the page showing through, the accent marks work and joy. */
@@ -3872,6 +3871,7 @@ div.shortcut-help { width: min(440px, calc(100vw - 32px)); max-height: 80vh; ove
 @keyframes companion-float { 0% { opacity: 0; transform: translateY(2px); } 50% { opacity: 1; } 100% { opacity: 0; transform: translateY(-4px); } }
 @media (prefers-reduced-motion: reduce) {
   .companion-figure *, .companion-figure[data-mood] .companion-eyes { animation: none !important; transition: none !important; }
+  .companion-pending span { animation: none; opacity: 0.6; }
 }
 @container chat (max-width: 640px) {
   .companion-greeting { font-size: var(--fs-body); }

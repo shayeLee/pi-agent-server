@@ -4,6 +4,7 @@
 // - 凭证默认指向个人 ~/.pi/agent/auth.json（与 pi CLI 共用；OAuth token 刷新由 SDK 自动回写该文件，
 //   生产部署应通过 PI_AUTH_PATH 指向服务端独立凭证）；服务端默认模型 API key 可从环境变量注入（setRuntimeApiKey，不落盘）。
 
+import { CompanionGreeter, CompanionGreetingError, type CompanionCompletion } from "../application/companion-greeter.js";
 import { homedir } from "node:os";
 import { resolveHostToolSelection, resolveSdkToolConfig } from "../agent/tool-selection.js";
 import { readAppendSystemPromptFile } from "./system-prompt-file.js";
@@ -65,6 +66,7 @@ import type { Kysely } from "kysely";
 import { KyselySessionRepository } from "../storage/kysely-session-repository.js";
 import { KyselyProjectRepository } from "../storage/kysely-project-repository.js";
 import { KyselyIdempotencyRepository } from "../storage/kysely-idempotency-repository.js";
+import { KyselyCompanionPersonaRepository } from "../storage/kysely-companion-persona-repository.js";
 import { KyselyUploadedFileRepository } from "../storage/kysely-uploaded-file-repository.js";
 import { UploadService } from "../application/upload-service.js";
 import { KyselyFileOperationRepository } from "../storage/kysely-file-operation-repository.js";
@@ -137,6 +139,8 @@ export type StartConfig = {
   /** 服务端默认模型 API key（环境变量 PI_MODEL_API_KEY 注入，运行时注入不落盘）。 */
   modelApiKey?: string;
   defaultModel?: { provider: string; id: string };
+  /** The blank-session companion writes its opening line with the default model (on by default). */
+  companionGreeting?: boolean;
   /** 默认思考级别；仅未被会话配置覆盖的新会话使用。 */
   defaultThinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
   /** 可选系统提示词覆盖；未设置时使用 Pi SDK 内置默认提示词。 */
@@ -717,6 +721,7 @@ export async function startServer(config: StartConfig) {
     // 对当前数据库中仍为 NULL 的系统提示词做防御性补齐；正常新会话创建时已冻结该值。
     await sessions.backfillSystemPrompt(defaultSystemPrompt);
     const idempotencyRepo = new KyselyIdempotencyRepository(kysely);
+    const companionPersonas = new KyselyCompanionPersonaRepository(kysely);
     const uploadStorageRoot = config.uploadStorageRoot ?? process.env.PI_UPLOAD_STORAGE_ROOT;
     const uploadAgentRoot = config.uploadAgentRoot ?? process.env.PI_UPLOAD_AGENT_ROOT;
     if ((uploadStorageRoot && !uploadAgentRoot) || (!uploadStorageRoot && uploadAgentRoot)) {
@@ -762,6 +767,10 @@ export async function startServer(config: StartConfig) {
     nativeSessions,
     createAdapter: (sessionId) => sessionConversationCoordinator.createAdapter(sessionId),
     listSessionCommands: createSessionCommandLister({ loaderCwd: cwd, agentDir }),
+    ...(resolvedDefaultModel && config.companionGreeting !== false
+      ? { companionGreeter: new CompanionGreeter({ complete: completeWith(modelRuntime, resolvedDefaultModel) }) }
+      : {}),
+    companionPersonas,
     idempotencyRepo,
     uploads,
     serverEpoch: randomUUID(),
@@ -828,4 +837,18 @@ export async function startServer(config: StartConfig) {
     }
     throw error;
   }
+}
+
+/** One tool-free completion with the default model; the reply's text, or an error. */
+function completeWith(modelRuntime: ModelRuntime, model: Parameters<ModelRuntime["completeSimple"]>[0]): CompanionCompletion {
+  return async ({ systemPrompt, prompt, signal }) => {
+    const reply = await modelRuntime.completeSimple(model, {
+      systemPrompt,
+      messages: [{ role: "user", content: prompt, timestamp: Date.now() }],
+    }, { signal, maxTokens: 400, ...(model.reasoning ? { reasoning: "minimal" as const } : {}) });
+    if (reply.stopReason === "error" || reply.stopReason === "aborted") {
+      throw new CompanionGreetingError(reply.errorMessage ?? "模型调用失败");
+    }
+    return reply.content.flatMap(part => part.type === "text" ? [part.text] : []).join("");
+  };
 }

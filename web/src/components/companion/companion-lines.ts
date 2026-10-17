@@ -8,15 +8,20 @@ export const DEFAULT_PERSONA: CompanionPersona = { name: zhCN.companion.defaultN
 const STORAGE_KEY = "pi.companion";
 const MAX_NAME = 12;
 
-/** Per-browser persona; unavailable storage just means the defaults. */
-export function readPersona(): CompanionPersona {
+/** This browser's copy of the persona: the server's when it has one, otherwise what was set here; `null` when nothing was. */
+export function readStoredPersona(): CompanionPersona | null {
   try {
     const raw = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "null") as Partial<CompanionPersona> | null;
-    if (!raw || typeof raw !== "object") return DEFAULT_PERSONA;
+    if (!raw || typeof raw !== "object") return null;
     const name = typeof raw.name === "string" && raw.name.trim() ? raw.name.trim().slice(0, MAX_NAME) : DEFAULT_PERSONA.name;
     const style = raw.style === "concise" || raw.style === "formal" || raw.style === "lively" ? raw.style : DEFAULT_PERSONA.style;
     return { name, style, docked: raw.docked !== false };
-  } catch { return DEFAULT_PERSONA; }
+  } catch { return null; }
+}
+
+/** Unavailable storage just means the defaults. */
+export function readPersona(): CompanionPersona {
+  return readStoredPersona() ?? DEFAULT_PERSONA;
 }
 
 export function writePersona(persona: CompanionPersona): void {

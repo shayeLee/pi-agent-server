@@ -13,7 +13,7 @@
 - HTTP/JSON API 与 Server-Sent Events；运行中可追加 `follow-up`、提升为 `steer` 或中止。
 - Pi 文本资源：`AGENTS.md` / `CLAUDE.md`、提示词模板与 skills（含 `~/.agents/skills`）按会话项目与服务 agentDir 自动发现。输入框支持 `@` 引用文件，以及 `/compact`、`/reload`、模板与 `skill:` 命令。
 - 默认 SQLite，可显式选择 PostgreSQL；对话保存为 Pi JSONL，同一请求重复提交返回已记录的结果。
-- 可选的「稿纸」风格 Web UI：账本式对话流、运行状态、统计栏与轨迹 Inspector，以及在空白会话迎接你、随运行与输入变化表情的灵动线描小猫。
+- 可选的「稿纸」风格 Web UI：账本式对话流、运行状态、统计栏与轨迹 Inspector，以及在空白会话迎接你（开场白由默认模型生成，设置 `PI_COMPANION_GREETING=off` 时只用本地句子）、随运行与输入变化表情的灵动线描小猫；它的名字、说话风格和是否收起由服务端按用户保存（迁移 v3）。
 
 ## 当前边界
 

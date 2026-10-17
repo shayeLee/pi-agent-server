@@ -22,10 +22,10 @@ describe("WP4A file_operations outbox（SQLite）", () => {
       await runSqliteMigrationsForTest(raw, { migrations: [migrationDefinitions[0]!] });
       raw.prepare("INSERT INTO projects (id, name, cwd, owner_key, created_at) VALUES (?, ?, ?, ?, ?)").run("kept", "P", "/p", "owner", 1);
       const result = await runSqliteMigrations(raw);
-      expect(result.appliedVersion).toBe(2);
+      expect(result.appliedVersion).toBe(migrationDefinitions.length - 1);
       expect(result.pending).toEqual([]);
       expect(raw.prepare("SELECT name FROM projects WHERE id = 'kept'").get()).toEqual({ name: "P" });
-      expect(raw.prepare("SELECT version FROM schema_migrations ORDER BY version").all()).toEqual([{ version: 0 }, { version: 1 }, { version: 2 }]);
+      expect(raw.prepare("SELECT version FROM schema_migrations ORDER BY version").all()).toEqual(migrationDefinitions.map(({ version }) => ({ version })));
       expect(raw.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'file_operations'").get()).toEqual({ name: "file_operations" });
     } finally {
       raw.close();

@@ -7,7 +7,8 @@ import { DEFAULT_PROJECT_ID } from "../../src/shared/project-identity.js";
 import { MockAgentAdapter } from "../../src/agent/mock-agent-adapter.js";
 import type { SessionCommandInput, SessionCommandResult } from "../../src/shared/commands.js";
 import { makeInitializedMemoryDb } from "../helpers/sqlite.js";
-import { makeTestIpAccess } from "../helpers/ip-access.js";
+import { makeTestIpAccess, USER_IP_A, USER_IP_B } from "../helpers/ip-access.js";
+import { KyselyCompanionPersonaRepository } from "../../src/storage/kysely-companion-persona-repository.js";
 
 class CommandAdapter extends MockAgentAdapter {
   failWith?: string;
@@ -71,5 +72,53 @@ describe("session command routes", () => {
       expect((await get(`/v1/projects/${DEFAULT_PROJECT_ID}/files?query=notes`)).json().entries).toEqual([{ path: "notes.md", kind: "file" }]);
       for (const url of ["/v1/projects/missing/commands", "/v1/projects/missing/files"]) expect((await get(url)).statusCode).toBe(404);
     } finally { await app.close(); }
+  });
+
+  it("writes the companion's opening line for a usable project and reports 503 when it cannot", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "pi-companion-http-"));
+    const { projects, sessions } = await makeInitializedMemoryDb({ cwd: dir });
+    const seen: unknown[] = [];
+    let fail = false;
+    const app = buildApp({ sessions, projects, defaultProjectCwd: dir, ipAccess: makeTestIpAccess(), createAdapter: async () => new MockAgentAdapter(),
+      listSessionCommands: async () => [{ name: "compact", source: "builtin", description: "" }, { name: "review", source: "prompt", description: "审查" }],
+      companionGreeter: { greet: async (input) => { seen.push(input); if (fail) throw new Error("down"); return { greeting: "早", hint: "试试 /review" }; } } });
+    const post = (url: string, payload: unknown) => app.inject({ method: "POST", url, remoteAddress: "10.0.0.1", headers: { "content-type": "application/json" }, payload: JSON.stringify(payload) });
+    const body = { persona: { name: "小派", style: "lively" }, dayPart: "morning", recent: { title: "修复登录", minutesAgo: 3 } };
+    try {
+      const ok = await post(`/v1/projects/${DEFAULT_PROJECT_ID}/companion/greeting`, body);
+      expect(ok.statusCode).toBe(200);
+      expect(ok.json()).toEqual({ greeting: "早", hint: "试试 /review" });
+      expect(seen[0]).toMatchObject({ projectId: DEFAULT_PROJECT_ID, persona: body.persona, recent: body.recent, commands: [{ name: "review", description: "审查" }] });
+      expect((await post(`/v1/projects/${DEFAULT_PROJECT_ID}/companion/greeting`, { ...body, dayPart: "teatime" })).statusCode).toBe(400);
+      expect((await post("/v1/projects/missing/companion/greeting", body)).statusCode).toBe(404);
+      fail = true;
+      const down = await post(`/v1/projects/${DEFAULT_PROJECT_ID}/companion/greeting`, body);
+      expect(down.statusCode).toBe(503);
+      expect(down.json().code).toBe("companion_unavailable");
+    } finally { await app.close(); }
+  });
+
+  it("keeps the companion's persona per caller, trimmed, and refuses to save without a store", async () => {
+    const { projects, sessions, kysely } = await makeInitializedMemoryDb();
+    const base = { sessions, projects, defaultProjectCwd: "/tmp", ipAccess: makeTestIpAccess(), createAdapter: async () => new MockAgentAdapter() };
+    const app = buildApp({ ...base, companionPersonas: new KyselyCompanionPersonaRepository(kysely) });
+    const bare = buildApp(base);
+    const call = (target: typeof app, method: "GET" | "PUT", remoteAddress: string, payload?: unknown) => target.inject({ method, url: "/v1/companion/persona", remoteAddress,
+      ...(payload === undefined ? {} : { headers: { "content-type": "application/json" }, payload: JSON.stringify(payload) }) });
+    try {
+      expect((await call(app, "GET", USER_IP_A)).json()).toEqual({ persona: null });
+      const saved = await call(app, "PUT", USER_IP_A, { name: " 派派 ", style: "formal", docked: false });
+      expect(saved.statusCode).toBe(200);
+      expect(saved.json()).toEqual({ persona: { name: "派派", style: "formal", docked: false } });
+      expect((await call(app, "GET", USER_IP_A)).json()).toEqual({ persona: { name: "派派", style: "formal", docked: false } });
+      expect((await call(app, "GET", USER_IP_B)).json()).toEqual({ persona: null });
+      for (const bad of [{ name: "   ", style: "formal", docked: true }, { name: "派派", style: "grumpy", docked: true }, { name: "派派", style: "formal" }]) {
+        expect((await call(app, "PUT", USER_IP_A, bad)).statusCode).toBe(400);
+      }
+      expect((await call(bare, "GET", USER_IP_A)).json()).toEqual({ persona: null });
+      const refused = await call(bare, "PUT", USER_IP_A, { name: "派派", style: "formal", docked: true });
+      expect(refused.statusCode).toBe(503);
+      expect(refused.json().code).toBe("companion_unavailable");
+    } finally { await app.close(); await bare.close(); }
   });
 });

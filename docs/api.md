@@ -31,6 +31,9 @@ Pi SDK 与 pi-ai 固定为 **1.1.0**；本次 SDK 升级无需数据库迁移（
 | `GET` | `/v1/sessions/:id/commands` | `/` 菜单：内置命令 `compact`、`reload`，以及从项目与服务 agentDir 发现的提示词模板和 `skill:<名字>`。直接读磁盘，不创建 runtime |
 | `GET` | `/v1/projects/:id/files?query=<optional>` | 新会话草稿（会话尚未创建）的 `@` 路径建议，规则同上，根目录为该项目当前的规范化目录；需要 `sessions:create` 权限，不可在该项目建会话或目录不可用时返回 `404` |
 | `GET` | `/v1/projects/:id/commands` | 新会话草稿的 `/` 菜单：只含提示词模板与 `skill:<名字>`，不含需要已有会话的 `compact`、`reload`；权限与 `404` 同上 |
+| `GET` | `/v1/companion/persona` | 调用者保存的数字人人设 `{ persona: { name, style, docked } \| null }`，未保存过时为 `null`；权限同 `sessions:create` |
+| `PUT` | `/v1/companion/persona` | 保存调用者的人设：`name` 1–12 个字且不能全是空白（存储时去掉首尾空白），`style` 为 `concise` / `lively` / `formal`，`docked` 为布尔值；返回 `{ persona }`。参数不合法返回 `400`；服务端未配置人设存储时返回 `503 companion_unavailable` |
+| `POST` | `/v1/projects/:id/companion/greeting` | 空白会话数字人的开场白：用默认模型，依据项目名、模板与 skill、时段和调用者最近的会话写两句话；按调用者和情境缓存约 30 分钟。未配置默认模型、`PI_COMPANION_GREETING=off` 或模型失败时返回 `503 companion_unavailable`，页面改用本地句子；权限与 `404` 同上 |
 | `POST` | `/v1/sessions/:id/commands` | 执行 `{ "command": "compact", "args"?: "总结要求" }` 或 `{ "command": "reload" }`，只能在会话空闲时执行（否则 `409`）。见下文「宿主命令」 |
 
 队列出队不代表任务完成或控制内容已消费。公开事件边界的队列同步可能延迟；GET 与队列变更会即时对照 SDK 当前驻留对象。变更使用原始 control ID 及 request/acknowledgement 身份。保证与限制见[控制队列](control-queues.md)。

@@ -109,7 +109,7 @@ describe("SQLite online backup core (WP3A)", () => {
   it("fails closed before encryption or publication for a missing, unknown, or checksum-mismatched source ledger (including dry-run)", async () => {
     for (const mutate of [
       (db: DatabaseSync) => db.exec("DROP TABLE schema_migrations"),
-      (db: DatabaseSync) => db.prepare("INSERT INTO schema_migrations VALUES (3, 'unknown-future', ?, 3)").run("b".repeat(64)),
+      (db: DatabaseSync) => db.prepare("INSERT INTO schema_migrations VALUES (?, 'unknown-future', ?, 3)").run(migrationDefinitions.length, "b".repeat(64)),
       (db: DatabaseSync) => db.prepare("UPDATE schema_migrations SET checksum = ? WHERE version = 0").run("0".repeat(64)),
       (db: DatabaseSync) => db.prepare("UPDATE schema_migrations SET checksum = ? WHERE version = 1").run("0".repeat(64)),
     ]) {
