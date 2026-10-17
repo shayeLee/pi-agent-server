@@ -137,7 +137,49 @@ it("keeps a real SDK session constrained by an explicit whitelist despite histor
 });
 
 it.each([
-  { tools: ["read"] }, { tools: [] }, { noTools: "all" as const }, { noTools: "builtin" as const },
+  { tools: [] }, { tools: ["read", "mcp__fixture__*"] }, { noTools: "all" as const }, { noTools: "builtin" as const },
 ])("preserves explicit host options unchanged: %j", config => {
   expect(resolveSdkToolConfig(config, ["bash"])).toEqual(config);
+});
+
+it("excludes MCP tools from an exact allowlist without mcp__ entries", () => {
+  expect(resolveSdkToolConfig({ tools: ["read", "read_mcp_resource"] }, ["bash"])).toEqual({
+    tools: ["read", "read_mcp_resource"],
+    excludeTools: ["mcp__*", "list_mcp_resources", "list_mcp_resource_templates"],
+  });
+});
+
+it.each([
+  { name: "without mcp__ entries", tools: ["read", "codemode"], registered: [] },
+  { name: "with an mcp__ entry", tools: ["read", "mcp__fixture__codemode"], registered: ["mcp__fixture__codemode"] },
+])("real SDK allowlist $name keeps only authorized MCP tools registered", async ({ tools, registered }) => {
+  const root = await mkdtemp(join(tmpdir(), "pi-tools-mcp-sdk-"));
+  const loader = new DefaultResourceLoader({
+    cwd: root, agentDir: root,
+    noExtensions: true, noSkills: true, noThemes: true, noPromptTemplates: true, noContextFiles: true,
+    extensionFactories: [pi => {
+      pi.on("session_start", () => {
+        for (const exposure of ["direct", "codemode", "deferred", "hidden"] as const) {
+          pi.registerTool(tool(`mcp__fixture__${exposure}`, { exposure }));
+        }
+        pi.registerTool(tool("list_mcp_resources", { exposure: "codemode" }));
+      });
+    }],
+  });
+  let session: Awaited<ReturnType<typeof createAgentSession>>["session"] | undefined;
+  try {
+    await loader.reload();
+    const runtime = await ModelRuntime.create({ credentials: new InMemoryCredentialStore(), modelsPath: null, refreshOnCreate: false });
+    ({ session } = await createAgentSession({
+      cwd: root, agentDir: root, resourceLoader: loader, modelRuntime: runtime,
+      settingsManager: SettingsManager.inMemory(), sessionManager: SessionManager.inMemory(root),
+      ...resolveSdkToolConfig({ tools }, undefined),
+    }));
+    await session.bindExtensions({ mode: "json" });
+    const mcpTools = session.getAllTools().map(entry => entry.name).filter(name => name.includes("mcp"));
+    expect(mcpTools).toEqual(registered);
+  } finally {
+    session?.dispose();
+    await rm(root, { recursive: true, force: true });
+  }
 });

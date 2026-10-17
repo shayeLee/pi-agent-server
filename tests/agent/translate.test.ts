@@ -102,6 +102,13 @@ describe("SDK 事件 → SSE 事件翻译（docs/pi-sdk-api.md §9）", () => {
         isError: true,
       });
     });
+
+    it("嵌套调用的 start/update/end 都透传 parentToolCallId", () => {
+      const nested = { toolCallId: "call-1/1", toolName: "mcp__github__search", parentToolCallId: "call-1" };
+      expect(translateSdkEvent({ type: "tool_execution_start", ...nested, args: {} })).toMatchObject({ type: "tool_start", parentToolCallId: "call-1" });
+      expect(translateSdkEvent({ type: "tool_execution_update", ...nested, args: {}, partialResult: "x" })).toMatchObject({ type: "tool_update", parentToolCallId: "call-1" });
+      expect(translateSdkEvent({ type: "tool_execution_end", ...nested, result: {}, isError: false })).toMatchObject({ type: "tool_end", parentToolCallId: "call-1" });
+    });
   });
 
   describe("状态与完成", () => {

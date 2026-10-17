@@ -6750,6 +6750,10 @@
               "toolCallId": {
                 "type": "string"
               },
+              "parentToolCallId": {
+                "type": "string",
+                "description": "Set on calls another tool (such as a codemode script) made."
+              },
               "toolName": {
                 "type": "string"
               },
@@ -6774,6 +6778,10 @@
               },
               "toolCallId": {
                 "type": "string"
+              },
+              "parentToolCallId": {
+                "type": "string",
+                "description": "Set on calls another tool (such as a codemode script) made."
               },
               "toolName": {
                 "type": "string"
@@ -6800,6 +6808,10 @@
               },
               "toolCallId": {
                 "type": "string"
+              },
+              "parentToolCallId": {
+                "type": "string",
+                "description": "Set on calls another tool (such as a codemode script) made."
               },
               "toolName": {
                 "type": "string"

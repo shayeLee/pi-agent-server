@@ -42,6 +42,8 @@ export type CompactionState = {
 
 /** Turn correlation; optional only for legacy/non-turn events. */
 export type SseRequestId = { readonly requestId?: string };
+/** Set on tool events of calls another tool (such as a codemode script) made. */
+export type SseParentToolCallId = { readonly parentToolCallId?: string };
 export type SseEvent =
   | NotificationEvent
   | ({ type: "compaction_start"; reason: CompactionReason; replay?: boolean } & SseRequestId)
@@ -55,9 +57,9 @@ export type SseEvent =
   | ({ type: "model_output_progress" } & ModelOutputProgress & SseRequestId)
   | ({ type: "text_delta"; text: string } & SseRequestId)
   | ({ type: "thinking_delta"; text: string } & SseRequestId)
-  | ({ type: "tool_start"; toolCallId: string; toolName: string; args: unknown } & SseRequestId)
-  | ({ type: "tool_update"; toolCallId: string; toolName: string; partialResult: unknown } & SseRequestId)
-  | ({ type: "tool_end"; toolCallId: string; toolName: string; result: unknown; isError: boolean; durationMs?: number | null } & SseRequestId)
+  | ({ type: "tool_start"; toolCallId: string; toolName: string; args: unknown } & SseParentToolCallId & SseRequestId)
+  | ({ type: "tool_update"; toolCallId: string; toolName: string; partialResult: unknown } & SseParentToolCallId & SseRequestId)
+  | ({ type: "tool_end"; toolCallId: string; toolName: string; result: unknown; isError: boolean; durationMs?: number | null } & SseParentToolCallId & SseRequestId)
   | ({ type: "status"; phase: "agent_start" | "turn_start"; execution?: import("../core/usage-snapshot.js").ExecutionSnapshot | null } & SseRequestId)
   | ({ type: "queued"; position?: number } & SseRequestId)
   | ({ type: "usage"; promptTokens: number | null; completionTokens: number | null; totalTokens: number | null; durationMs: number; ttftMs: number } & UsageSnapshot & SseRequestId)

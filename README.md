@@ -19,6 +19,7 @@ A long-running, session-based HTTP/SSE service built on the Pi Agent Runtime, wi
 
 - **Intranet, single instance**: public deployment and multiple instances come in later versions.
 - **All Pi tools are allowed by default**, including `bash`, `edit` and `write`. For read-only use set `TOOLS=read,ls,find,grep` and add filesystem / process isolation separately. See [configuration](docs/configuration.md).
+- **`bash` runs with the service's identity**: it inherits the service process's full environment (provider API keys included) and can read any file the service user can read. Granting `bash` means trusting every user with those credentials; true isolation requires not granting `bash`, or running it as a separate user / in a sandbox. With an explicit `TOOLS` allowlist, MCP tools are only authorized by `mcp__*` entries, also for calls made from inside codemode.
 - **Extensions and plugins must be enabled explicitly**: Pi extensions via `PI_EXTENSION_PATHS`, agent-server plugins via `PI_PLUGINS`; nothing loads when unset. Context files, prompt templates and skills are loaded automatically, and every project registered with the service is trusted for them.
 - **JSONL files are not cleaned up yet**: deleting a project or session keeps its JSONL files.
 - **Backups are local and encrypted**: off-site disaster recovery is still planned. See [backup and restore](docs/backup-restore.md).

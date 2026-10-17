@@ -1,23 +1,28 @@
 import { validateToolSelection } from "../application/ports/tool-authorization-policy-port.js";
+import { mcpExcludeTools } from "./mcp-tool-boundary.js";
 
 /** Translate the host's resolved policy using only public SDK options.
  * In default mode, seed the host SettingsManager.inMemory() defaults rather than Pi 1.3's
  * process-global settings. Modifiers leave custom/extension tools and dynamic activation
  * unrestricted; noTools:'builtin' prevents the SDK from adding its own defaults.
  * This is a session-creation snapshot: SDK defaultTools reload increments are not followed.
+ * An exact allowlist without `mcp__` entries also excludes MCP tools, which the SDK would otherwise
+ * keep registered for codemode and tool_search (docs/mcp-integration.md §6).
  */
 export function resolveSdkToolConfig(
   config: { readonly tools?: readonly string[]; readonly noTools?: "all" | "builtin" },
   defaultTools: readonly string[] | undefined,
-): { tools?: string[]; noTools?: "all" | "builtin" } {
+): { tools?: string[]; noTools?: "all" | "builtin"; excludeTools?: string[] } {
   validateResolvedToolSelection(config.tools);
   if (config.tools === undefined && config.noTools === undefined) {
     const names = defaultTools ?? ["read", "bash", "edit", "write"];
     // An empty exact list would become a whitelist; keep modifier mode even with no defaults.
     return { noTools: "builtin", tools: names.length ? names.map(name => `+${name}`) : ["-read"] };
   }
+  const excludeTools = config.tools !== undefined ? mcpExcludeTools(config.tools) : undefined;
   return {
     ...(config.tools !== undefined ? { tools: [...config.tools] } : {}),
+    ...(excludeTools ? { excludeTools } : {}),
     ...(config.noTools !== undefined ? { noTools: config.noTools } : {}),
   };
 }

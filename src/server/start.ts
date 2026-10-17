@@ -7,6 +7,7 @@
 import { CompanionGreeter, CompanionGreetingError, type CompanionCompletion } from "../application/companion-greeter.js";
 import { homedir } from "node:os";
 import { resolveHostToolSelection, resolveSdkToolConfig } from "../agent/tool-selection.js";
+import { createMcpToolBoundaryExtension } from "../agent/mcp-tool-boundary.js";
 import { readAppendSystemPromptFile } from "./system-prompt-file.js";
 import { frozenPromptBase } from "./frozen-system-prompt.js";
 import { createSessionCommandLister } from "./session-resources.js";
@@ -407,6 +408,22 @@ export async function startServer(config: StartConfig) {
   // 显式 provider 扩展：noExtensions 恒为 true（不自动发现），仅这些 additionalExtensionPaths
   // 会被加载；加载/注册/刷入 ModelRuntime 的完整语义见 provider-extensions.ts。
   // 服务内置且受控的协议兼容层；noExtensions 不会加载用户/项目扩展。
+  // all 在 SDK 边界用宿主默认工具快照 + modifiers，保留扩展/custom 与动态激活。
+  // 显式白名单不含 `mcp__` 条目时，resolveSdkToolConfig 追加 excludeTools 排除 MCP 工具；
+  // 非 all 模式另装 tool_call hook 兜底拦截未授权的 MCP 调用（含 codemode 嵌套调用），见 docs/mcp-integration.md §6。
+  const toolGrant = toolPolicyFromAllowlist(config.tools).resolve();
+  const allowedTools = toolGrant.kind === "allowlist"
+    ? resolveHostToolSelection(toolGrant.tools, SettingsManager.inMemory().getDefaultTools())!
+    : undefined;
+  const agentToolConfig = toolGrant.kind === "all"
+    ? {}
+    : allowedTools
+      ? { tools: allowedTools }
+      : { noTools: "all" as const };
+  const toolBoundaryExtensionFactories: InlineExtension[] = toolGrant.kind === "all"
+    ? []
+    : [createMcpToolBoundaryExtension(allowedTools ?? [])];
+
   const providerAdapterExtensionFactories: InlineExtension[] = [
     {
       name: "pi-agent-server-provider-adapters",
@@ -461,7 +478,7 @@ export async function startServer(config: StartConfig) {
       extensionCwd: cwd,
       agentDir,
       extensionPaths,
-      extensionFactories: providerAdapterExtensionFactories,
+      extensionFactories: [...providerAdapterExtensionFactories, ...toolBoundaryExtensionFactories],
       resources: { projectCwd: extra.resourceCwd, agentDir },
       ...(extra.systemPrompt !== undefined ? { systemPrompt: extra.systemPrompt } : {}),
       ...(extra.systemPromptOverride !== undefined
@@ -474,15 +491,6 @@ export async function startServer(config: StartConfig) {
         ? { appendSystemPromptText: extra.appendSystemPromptText }
         : {}),
     });
-
-  // all 在 SDK 边界用宿主默认工具快照 + modifiers，保留扩展/custom 与动态激活。
-  // 显式白名单保持原语义；SDK 的 MCP exposure 边界不在此收紧。
-  const toolGrant = toolPolicyFromAllowlist(config.tools).resolve();
-  const agentToolConfig = toolGrant.kind === "all"
-    ? {}
-    : toolGrant.kind === "allowlist"
-      ? { tools: resolveHostToolSelection(toolGrant.tools, SettingsManager.inMemory().getDefaultTools())! }
-      : { noTools: "all" as const };
 
   // 会话专属 loader 首次创建即完成 provider 扩展加载 + provider 注册刷入共享 ModelRuntime，
   // 因此默认模型/凭证与插件 mode 校验必须排在它之后（否则显式接入的 provider 不可见）。

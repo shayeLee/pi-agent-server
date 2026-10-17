@@ -16,7 +16,7 @@ Pi SDK 与 pi-ai 固定为 **1.1.0**；本次 SDK 升级无需数据库迁移（
 | `PATCH` / `DELETE` | `/v1/sessions/:id` | 重命名或逻辑删除会话 |
 | `PATCH` | `/v1/sessions/:id/config` | 修改模型/思考配置 |
 | `POST` | `/v1/sessions/:id/messages` | 提交提示词（必须提供 `requestId`） |
-| `GET` | `/v1/sessions/:id/events` | SSE；viewer 对无 live runtime 的会话收到 `204`。所有与 turn 相关的事件都携带产生它们的 `requestId`（`text_delta`、`thinking_delta`、`tool_start`、`tool_update`、`tool_end`、`status`、`usage`、`queued`、`error`、`completed`、`aborted`）。会话级 `steps_changed` 与 `subagents_changed`（合并发送，不带 `requestId`）通知客户端重新读取步骤与子代理 |
+| `GET` | `/v1/sessions/:id/events` | SSE；viewer 对无 live runtime 的会话收到 `204`。所有与 turn 相关的事件都携带产生它们的 `requestId`（`text_delta`、`thinking_delta`、`tool_start`、`tool_update`、`tool_end`、`status`、`usage`、`queued`、`error`、`completed`、`aborted`）。由其他工具（如 codemode 脚本）发起的嵌套调用，其 `tool_start`、`tool_update`、`tool_end` 另带 `parentToolCallId`。会话级 `steps_changed` 与 `subagents_changed`（合并发送，不带 `requestId`）通知客户端重新读取步骤与子代理 |
 | `POST` | `/v1/sessions/:id/steer` | 引导运行中的任务；带关联身份的请求返回空 `202`，消费由 SSE 确认，HTTP 准入不代表消费。见[消费确认](steering-confirmation.md) |
 | `POST` | `/v1/sessions/:id/follow-ups` | 排队追加 follow-up；带关联身份时准入返回空 `202`，旧版纯文本请求返回空 `204` |
 | `GET` | `/v1/sessions/:id/control-queue` | 读取驻留引导/追加项的权威快照 |

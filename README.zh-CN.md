@@ -19,6 +19,7 @@
 
 - **面向内网、单实例运行**：公网部署与多实例在后续版本完善。
 - **Pi 工具默认全部授权**：包括 `bash`、`edit`、`write`。只读请设置 `TOOLS=read,ls,find,grep`，并另行落实文件系统 / 进程隔离。见[配置](docs/configuration.md)。
+- **`bash` 以服务身份运行**：继承服务进程的完整环境变量（包括 provider API key），并能读取服务用户可读的任何文件。授予 `bash` 即等于把这些凭证交给所有用户；真正隔离需要不授予 `bash`，或让它以独立用户 / 在沙箱中运行。设置显式 `TOOLS` 白名单时，MCP 工具只由 `mcp__*` 条目授权，codemode 内发起的调用同样受限。
 - **扩展与插件需显式启用**：Pi 扩展用 `PI_EXTENSION_PATHS`，agent-server 插件用 `PI_PLUGINS`；不设置则不加载。上下文文件、提示词模板与 skills 自动加载，服务中登记的项目对这些资源一律视为受信任。
 - **JSONL 暂不自动清理**：删除项目或会话后，对应的 JSONL 文件仍保留。
 - **备份为本机加密备份**：异地容灾仍在规划中。见[备份与恢复](docs/backup-restore.md)。

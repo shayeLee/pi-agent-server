@@ -5,6 +5,11 @@
 import type { AgentSdkEvent, SseEvent } from "./events.js";
 import { toolDurationMs } from "../shared/tool-duration.js";
 
+/** 嵌套工具调用（如 codemode 脚本内的调用）携带父调用 id；顶层调用不带该字段。 */
+function parentOf(event: { parentToolCallId?: string }): { parentToolCallId?: string } {
+  return typeof event.parentToolCallId === "string" ? { parentToolCallId: event.parentToolCallId } : {};
+}
+
 export function translateSdkEvent(event: AgentSdkEvent): Exclude<SseEvent, { type: "notification" | "steering_consumed" | "control_queue" }> | null {
   switch (event.type) {
     case "message_update":
@@ -21,6 +26,7 @@ export function translateSdkEvent(event: AgentSdkEvent): Exclude<SseEvent, { typ
         toolCallId: event.toolCallId,
         toolName: event.toolName,
         args: event.args,
+        ...parentOf(event),
       };
     case "tool_execution_update":
       return {
@@ -28,6 +34,7 @@ export function translateSdkEvent(event: AgentSdkEvent): Exclude<SseEvent, { typ
         toolCallId: event.toolCallId,
         toolName: event.toolName,
         partialResult: event.partialResult,
+        ...parentOf(event),
       };
     case "tool_execution_end":
       return {
@@ -36,6 +43,7 @@ export function translateSdkEvent(event: AgentSdkEvent): Exclude<SseEvent, { typ
         toolName: event.toolName,
         result: event.result,
         isError: event.isError,
+        ...parentOf(event),
         ...(toolDurationMs(event.durationMs) !== undefined ? { durationMs: toolDurationMs(event.durationMs) } : {}),
       };
     case "compaction_start":

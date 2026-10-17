@@ -24,6 +24,8 @@ export type SdkMessageUpdateEvent = {
 export type SdkToolExecutionStartEvent = {
   type: "tool_execution_start";
   toolCallId: string;
+  /** 由其他工具（如 codemode 脚本）发起的嵌套调用才有。 */
+  parentToolCallId?: string;
   toolName: string;
   args: unknown;
 };
@@ -31,6 +33,8 @@ export type SdkToolExecutionStartEvent = {
 export type SdkToolExecutionUpdateEvent = {
   type: "tool_execution_update";
   toolCallId: string;
+  /** 由其他工具（如 codemode 脚本）发起的嵌套调用才有。 */
+  parentToolCallId?: string;
   toolName: string;
   args: unknown;
   partialResult: unknown;
@@ -39,6 +43,8 @@ export type SdkToolExecutionUpdateEvent = {
 export type SdkToolExecutionEndEvent = {
   type: "tool_execution_end";
   toolCallId: string;
+  /** 由其他工具（如 codemode 脚本）发起的嵌套调用才有。 */
+  parentToolCallId?: string;
   toolName: string;
   result: unknown;
   isError: boolean;
