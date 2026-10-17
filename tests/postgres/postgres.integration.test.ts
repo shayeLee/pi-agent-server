@@ -159,14 +159,14 @@ describePg("PostgreSQL 集成测试（PI_TEST_PG_URL 门控；随机 schema 隔�
   });
 
   describe("bootstrap：Manifest → PG DDL（表/列/FK/索引/无迁移表）", () => {
-    it("5 张表齐备（含 schema_migrations 基线 ledger），无 kysely_migration 表", async () => {
+    it("Manifest 声明的表与 schema_migrations ledger 齐备，无 kysely_migration 表", async () => {
       const tables = (
         await pool.query(
           `SELECT table_name FROM information_schema.tables WHERE table_schema = $1 ORDER BY table_name`,
           [schema],
         )
       ).rows.map((r) => r.table_name as string);
-      expect(tables).toEqual(["file_operations", "idempotency", "projects", "schema_migrations", "sessions"]);
+      expect(tables).toEqual([...schemaManifest.tables.map((table) => table.name), "schema_migrations"].sort());
       const migrationTables = (
         await pool.query(
           `SELECT count(*)::int AS n FROM information_schema.tables WHERE table_schema = $1 AND table_name LIKE 'kysely_%'`,
@@ -258,10 +258,10 @@ describePg("PostgreSQL 集成测试（PI_TEST_PG_URL 门控；随机 schema 隔�
       expect(col?.column_default).toContain(DEFAULT_PROJECT_ID);
     });
 
-    it("7 个显式业务索引 + schema_migrations 的 name UNIQUE 索引齐备，outbox key 与 conversation identity 唯一且 claim 非唯一，含 updated_at DESC；PK 自动索引被排除", async () => {
+    it("Manifest 显式业务索引 + schema_migrations 的 name UNIQUE 索引齐备，outbox key 与 conversation identity 唯一且 claim 非唯一，含 updated_at DESC；PK 自动索引被排除", async () => {
       // PostgreSQL 会为每个 PRIMARY KEY / UNIQUE 约束自动创建索引（如 projects_pkey、sessions_pkey、
       // idempotency_pk、schema_migrations_pkey）。这里仅查询 indisprimary = false 的非主键索引
-      // （PK 索引自动排除）。除 Manifest 显式声明的 7 个业务索引外，bootstrap 的 schema_migrations
+      // （PK 索引自动排除）。除 Manifest 显式声明的业务索引外，bootstrap 的 schema_migrations
       // 基线 ledger 的 name UNIQUE 约束也会生成一个非主键 UNIQUE索引（schema_migrations_name_key），
       // 它必须被纳入 —— 且除 outbox key（idx_file_operations_key）与 conversation identity
       // （idx_sessions_conversation）外是唯一的 UNIQUE 索引。
@@ -279,13 +279,14 @@ describePg("PostgreSQL 集成测试（PI_TEST_PG_URL 门控；随机 schema 隔�
           [schema],
         )
       ).rows as Array<{ indexname: string; indexdef: string; indisunique: boolean }>;
+      const manifestIndexes = (schemaManifest.tables as readonly TableManifest[]).flatMap((table) => table.indexes ?? []);
       const names = indexes.map((r) => r.indexname).sort();
-      expect(names).toEqual(
-        ["idx_file_operations_claim", "idx_file_operations_key", "idx_idempotency_created_at", "idx_projects_owner", "idx_sessions_conversation", "idx_sessions_owner_project", "idx_sessions_owner_updated", "schema_migrations_name_key"].sort(),
-      );
-      // 7 个 Manifest 业务索引中，仅 outbox key（idx_file_operations_key）与 conversation identity
-      // （idx_sessions_conversation）以及 ledger 的 name 约束索引是 UNIQUE，其余显式非唯一（无 unique: true）。
-      const uniqueIndexNames = new Set(["idx_file_operations_key", "idx_sessions_conversation", "schema_migrations_name_key"]);
+      expect(names).toEqual([...manifestIndexes.map((index) => index.name), "schema_migrations_name_key"].sort());
+      // UNIQUE 语义完全由 Manifest 的 unique: true 决定，外加 ledger 的 name 约束索引。
+      const uniqueIndexNames = new Set([...manifestIndexes.filter((index) => index.unique).map((index) => index.name), "schema_migrations_name_key"]);
+      expect(uniqueIndexNames.has("idx_file_operations_key")).toBe(true);
+      expect(uniqueIndexNames.has("idx_sessions_conversation")).toBe(true);
+      expect(uniqueIndexNames.has("idx_file_operations_claim")).toBe(false);
       for (const row of indexes) {
         expect(row.indisunique, `索引 ${row.indexname} unique 语义`).toBe(uniqueIndexNames.has(row.indexname));
       }
@@ -601,7 +602,7 @@ describePg("PostgreSQL 集成测试（PI_TEST_PG_URL 门控；随机 schema 隔�
         // legacy fail-closed 拒绝（不执行任何 ALTER/补列/建表/建索引），不存在旧「不兼容」文案。
         expect(message).toMatch(/managed tables exist without the migration ledger/);
         expect(message).toMatch(/legacy database/);
-        expect(message).toMatch(/apply the single baseline/);
+        expect(message).toMatch(/apply migrations/);
         // 失败路径内 destroy（释放 Pool）：可观测断言（pg-pool 硬错误）
         await expect(oldPool.query("SELECT 1")).rejects.toThrow(/Cannot use a pool after calling end on the pool/);
       } finally {
@@ -664,7 +665,7 @@ describePg("PostgreSQL 集成测试（PI_TEST_PG_URL 门控；随机 schema 隔�
         // 同样走 managed 表无 ledger 的 legacy fail-closed（旧「不兼容」文案不再出现）。
         expect(message).toMatch(/managed tables exist without the migration ledger/);
         expect(message).toMatch(/legacy database/);
-        expect(message).toMatch(/apply the single baseline/);
+        expect(message).toMatch(/apply migrations/);
         await expect(badPool.query("SELECT 1")).rejects.toThrow(/Cannot use a pool after calling end on the pool/);
       } finally {
         if (!(badPool as { ending?: boolean }).ending) await badPool.end();

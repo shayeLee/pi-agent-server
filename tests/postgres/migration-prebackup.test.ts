@@ -127,10 +127,10 @@ describeGate("WP3C real PostgreSQL pre-migration backup gate", () => {
       expect(manifest.status).toBe(0);
       const metadata = JSON.parse(manifest.stdout);
       expect(metadata.kind).toBe("pre-migration");
-      // The backup is taken from the canonical baseline, so its authenticated
-      // ledger is present and exactly the single-baseline row (v0).
+      // The backup is taken from the already-canonical schema, so its authenticated
+      // ledger is present and at the migration head.
       expect(metadata.migrationLedger.present).toBe(true);
-      expect(metadata.migrationLedger.appliedVersion).toBe(0);
+      expect(metadata.migrationLedger.appliedVersion).toBe(migrationDefinitions.at(-1)!.version);
       expect(metadata.migrationLedger.pending).toBe(0);
       const ledger = await pool.query(`SELECT version, name FROM ${ident(schema)}.schema_migrations ORDER BY version`);
       expect(ledger.rows).toEqual(migrationDefinitions.map(({ version, name }) => ({ version, name })));

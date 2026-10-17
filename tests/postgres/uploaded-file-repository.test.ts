@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { randomUUID } from "node:crypto";
 import { Pool } from "pg";
 import { assertRequiredPgTestEnvironment } from "../../scripts/pg-test-gate.js";
@@ -49,7 +49,8 @@ describePg("KyselyUploadedFileRepository (PostgreSQL)", () => {
   let store: KyselyUploadedFileRepository;
   let kysely: Awaited<ReturnType<typeof initializePostgresDatabase>>;
 
-  beforeAll(async () => {
+  // Quota sums span every owner/project in the schema, so each test gets its own schema.
+  beforeEach(async () => {
     schema = schemaName();
     admin = new Pool({ connectionString: pgUrl! });
     await admin.query(`CREATE SCHEMA ${schema}`);
@@ -58,7 +59,7 @@ describePg("KyselyUploadedFileRepository (PostgreSQL)", () => {
     store = new KyselyUploadedFileRepository(kysely, "postgres");
   });
 
-  afterAll(async () => {
+  afterEach(async () => {
     if (kysely) await kysely.destroy().catch(() => undefined);
     if (pool && !pool.ending) await pool.end().catch(() => undefined);
     if (admin) {
@@ -146,7 +147,7 @@ describePg("KyselyUploadedFileRepository (PostgreSQL)", () => {
     await expect(store.claimBatch({ ...claim, sessionId: wrongProjectSessionId })).rejects.toBeInstanceOf(UploadedFileClaimError);
 
     const unbound = await store.createReady({ ...payload, uploadKey: "unbound" });
-    await expect(store.claimBatch({ ...claim, fileIds: [unbound.fileId, "missing"] })).rejects.toBeInstanceOf(UploadedFileClaimError);
+    await expect(store.claimBatch({ ...claim, fileIds: [unbound.fileId, randomUUID()] })).rejects.toBeInstanceOf(UploadedFileClaimError);
     expect((await store.findById(unbound.fileId))?.sessionId).toBeNull();
   });
 

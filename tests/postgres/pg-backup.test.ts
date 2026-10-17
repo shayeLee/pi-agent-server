@@ -23,9 +23,16 @@ assertRequiredPgTestEnvironment("tests/postgres/pg-backup", pgUrl, true);
 const describeRealPgBackup = pgUrl && binaryGate.ok ? describe : describe.skip;
 const cleanups: string[] = [];
 
+// The managed fake catalog is a frozen historical prefix (through the uploaded-files
+// migration); latest-head/native fixtures are separate.
+const fakePrefixHead = migrationDefinitions.find((migration) => migration.name === "uploaded-files-and-idempotency-fingerprint")!;
+const fakePrefixTables = [...fakePrefixHead.manifest.tables.map((table) => table.name), "schema_migrations"];
+const migrationHead = migrationDefinitions.at(-1)!;
+const headTables = [...migrationHead.manifest.tables.map((table) => table.name), "schema_migrations"];
+const verifiedFakePrefix = async () => ({ version: fakePrefixHead.version, pending: 0 });
+
 function canonicalMigrationLedgerRows(): Array<{ version: number; name: string; checksum: string; applied_at: number }> {
-  // This fake catalog is a frozen v1 schema; latest-head/native fixtures are separate.
-  return migrationDefinitions.filter(migration => migration.version <= 1).map((migration) => ({ version: migration.version, name: migration.name, checksum: migrationChecksum(migration), applied_at: 1 }));
+  return migrationDefinitions.filter(migration => migration.version <= fakePrefixHead.version).map((migration) => ({ version: migration.version, name: migration.name, checksum: migrationChecksum(migration), applied_at: 1 }));
 }
 
 afterEach(() => { for (const root of cleanups.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -60,7 +67,7 @@ function fixture(): { root: string; dataDir: string; backupRoot: string; recipie
  * transaction-aware: the backup runs BEGIN (REPEATABLE READ, READ ONLY) →
  * identity/catalog queries → pg_export_snapshot() → pg_dump → COMMIT on this
  * single client. Every query is recorded for ordering assertions. The source
- * reports an authenticated frozen v1 migration prefix with an empty uploaded_files table.
+ * reports an authenticated frozen historical migration prefix with an empty uploaded_files table.
  */
 function sourceClient(f: ReturnType<typeof fixture>, schema = "app_schema", uploadedFiles: readonly Record<string, unknown>[] = [], nativeRows: readonly Record<string, unknown>[] = []): PgBackupClient & { readonly queries: string[] } {
   const queries: string[] = [];
@@ -80,7 +87,7 @@ function sourceClient(f: ReturnType<typeof fixture>, schema = "app_schema", uplo
       if (text === "SHOW server_version_num") return { rows: [{ server_version_num: "160004" } as unknown as T] };
       if (text.includes("information_schema.tables")) {
         const table = values?.[1];
-        return { rows: [{ present: table === "schema_migrations" || table === "sessions" || table === "file_operations" || table === "uploaded_files" } as unknown as T] };
+        return { rows: [{ present: typeof table === "string" && fakePrefixTables.includes(table) } as unknown as T] };
       }
       if (text.includes(`FROM "${schema}"."schema_migrations"`)) return { rows: (nativeRows.length ? migrationDefinitions.map(migration => ({ version: migration.version, name: migration.name, checksum: migrationChecksum(migration), applied_at: 1 })) : canonicalMigrationLedgerRows()) as unknown as readonly T[] };
       if (text.includes(`FROM "${schema}"."native_session_sources"`)) return { rows: nativeRows as unknown as readonly T[] };
@@ -154,7 +161,7 @@ async function productionBackup(f: ReturnType<typeof fixture>) {
     pgProcess: pgProcessAdapter,
     pgDumpBinary: controlledPgExecutable(f),
     pgRestoreBinary: controlledPgExecutable(f, "pg_restore"),
-}, async () => ({ version: 1, pending: 0 }));
+}, verifiedFakePrefix);
 }
 
 describe("PostgreSQL default physical-schema verify runs on the dump's snapshot connection", () => {
@@ -255,7 +262,7 @@ describe("PostgreSQL backup core fake-process safety (WP3B2)", () => {
     const f = fixture();
     const process = new FakePgProcess(false, "18.6");
     await expect(createPostgresBackupForTest({ storageDialect: "postgres", databaseUrl: "postgres://u:p@example.test/source_db", paths: backupPaths(f), age: fakeAge(), pgClient: sourceClient(f), pgProcess: process,
-}, async () => ({ version: 1, pending: 0 }))).rejects.toThrow(/client major 18, server major 16; install matching client/);
+}, verifiedFakePrefix)).rejects.toThrow(/client major 18, server major 16; install matching client/);
     expect(process.requests.map((request) => request.args[0])).toEqual(["--version"]);
     expect(existsSync(f.backupRoot)).toBe(false);
   });
@@ -268,7 +275,7 @@ describe("PostgreSQL backup core fake-process safety (WP3B2)", () => {
       return { code: 127, stdout: Buffer.alloc(0), stderr: Buffer.from("not found") };
     } };
     await expect(createPostgresBackupForTest({ storageDialect: "postgres", databaseUrl: "postgres://u:p@example.test/source_db", paths: backupPaths(f), age: fakeAge(), pgClient: sourceClient(f), pgProcess: missingRestore,
-}, async () => ({ version: 1, pending: 0 }))).rejects.toThrow(/pg_restore binary is unavailable/);
+}, verifiedFakePrefix)).rejects.toThrow(/pg_restore binary is unavailable/);
     expect(requests.map((request) => request.args[0])).toEqual(["--version", "--version"]);
 
     const mismatch: PgProcessAdapter = { async run(request) {
@@ -277,7 +284,7 @@ describe("PostgreSQL backup core fake-process safety (WP3B2)", () => {
       return { code: 0, stdout: Buffer.alloc(0), stderr: Buffer.alloc(0) };
     } };
     await expect(createPostgresBackupForTest({ storageDialect: "postgres", databaseUrl: "postgres://u:p@example.test/source_db", paths: backupPaths(f), age: fakeAge(), pgClient: sourceClient(f), pgProcess: mismatch,
-}, async () => ({ version: 1, pending: 0 }))).rejects.toThrow(/pg_restore.*client major 17, server major 16/);
+}, verifiedFakePrefix)).rejects.toThrow(/pg_restore.*client major 17, server major 16/);
   });
 
   it("validates the staged archive with pg_restore --list before publishing or encrypting", async () => {
@@ -285,7 +292,7 @@ describe("PostgreSQL backup core fake-process safety (WP3B2)", () => {
     let encryptCalls = 0;
     const age = { encrypt(bytes: Buffer): Buffer { encryptCalls++; return fakeAge().encrypt(bytes); } };
     await expect(createPostgresBackupForTest({ storageDialect: "postgres", databaseUrl: "postgres://u:p@example.test/source_db", paths: backupPaths(f), age, pgClient: sourceClient(f), pgProcess: pgProcessAdapter, pgDumpBinary: controlledPgExecutable(f), pgRestoreBinary: controlledPgExecutable(f, "pg_restore", "", 2),
-}, async () => ({ version: 1, pending: 0 }))).rejects.toThrow(/pg_restore failed/);
+}, verifiedFakePrefix)).rejects.toThrow(/pg_restore failed/);
     expect(encryptCalls).toBe(0);
     expect(!existsSync(f.backupRoot) || readdirSync(f.backupRoot).length === 0).toBe(true);
   });
@@ -296,7 +303,7 @@ describe("PostgreSQL backup core fake-process safety (WP3B2)", () => {
     const url = "postgresql://backup_user:source-password@example.test:5433/source_db";
     const dumpBinary = controlledPgExecutable(f);
     const result = await createPostgresBackupForTest({ storageDialect: "postgres", databaseUrl: url, paths: backupPaths(f), age: fakeAge(), pgClient: sourceClient(f), pgProcess: process.adapter, pgDumpBinary: dumpBinary, pgRestoreBinary: controlledPgExecutable(f, "pg_restore"),
-}, async () => ({ version: 1, pending: 0 }));
+}, verifiedFakePrefix);
     expect(result.manifest?.dialect).toBe("PostgreSQL");
     expect(result.manifest?.kind).toBe("postgresql");
     expect(result.manifest?.postgres).toMatchObject({ pgDumpVersion: "16.4" });
@@ -330,7 +337,7 @@ describe("PostgreSQL backup core fake-process safety (WP3B2)", () => {
     const source = sourceClient(f);
     const process = recordingProductionAdapter();
     const result = await createPostgresBackupForTest({ storageDialect: "postgres", databaseUrl: "postgres://u:p@example.test/source_db", paths: backupPaths(f), age: fakeAge(), pgClient: source, pgProcess: process.adapter, pgDumpBinary: controlledPgExecutable(f), pgRestoreBinary: controlledPgExecutable(f, "pg_restore"),
-}, async () => ({ version: 1, pending: 0 }));
+}, verifiedFakePrefix);
     expect(result.finalPath).toBeTruthy();
     // Same connection: BEGIN 必须先于一切 identity/catalog 查询；pg_export_snapshot
     // 在事务内、identity 复验之后；COMMIT 在 dump 成功之后。
@@ -369,7 +376,7 @@ describe("PostgreSQL backup core fake-process safety (WP3B2)", () => {
     };
     const process = recordingProductionAdapter();
     await expect(createPostgresBackupForTest({ storageDialect: "postgres", databaseUrl: "postgres://u:p@example.test/source_db", paths: backupPaths(f), age: fakeAge(), pgClient: noExport, pgProcess: process.adapter,
-}, async () => ({ version: 1, pending: 0 })))
+}, verifiedFakePrefix))
       .rejects.toThrow(/pg_export_snapshot\(\) failed/);
     expect(process.requests).toEqual([]); // identity 失败在工具预检之前：不 spawn 任何 pg 工具
     expect(existsSync(f.backupRoot)).toBe(false);
@@ -395,7 +402,7 @@ describe("PostgreSQL backup core fake-process safety (WP3B2)", () => {
       },
     };
     await expect(createPostgresBackupForTest({ storageDialect: "postgres", databaseUrl: "postgres://u:p@example.test/source_db", paths: backupPaths(f), age: fakeAge(), pgClient: emptyClient, pgProcess: process.adapter,
-}, async () => ({ version: 1, pending: 0 })))
+}, verifiedFakePrefix))
       .rejects.toThrow(/no usable snapshot id/);
     expect(existsSync(f.backupRoot)).toBe(false);
 
@@ -407,7 +414,7 @@ describe("PostgreSQL backup core fake-process safety (WP3B2)", () => {
       },
     };
     await expect(createPostgresBackupForTest({ storageDialect: "postgres", databaseUrl: "postgres://u:p@example.test/source_db", paths: backupPaths(f), age: fakeAge(), pgClient: beginFails, pgProcess: process.adapter,
-}, async () => ({ version: 1, pending: 0 })))
+}, verifiedFakePrefix))
       .rejects.toThrow(/snapshot transaction could not be started/);
     expect(existsSync(f.backupRoot)).toBe(false);
   });
@@ -416,7 +423,7 @@ describe("PostgreSQL backup core fake-process safety (WP3B2)", () => {
     const f = fixture();
     const source = sourceClient(f);
     const dumpFailed = createPostgresBackupForTest({ storageDialect: "postgres", databaseUrl: "postgres://u:p@example.test/source_db", paths: backupPaths(f), age: fakeAge(), pgClient: source, pgProcess: new FakePgProcess(true),
-}, async () => ({ version: 1, pending: 0 }));
+}, verifiedFakePrefix);
     await expect(dumpFailed).rejects.toThrow(/pg_dump failed/);
     expect(source.queries).toContain("ROLLBACK");
     expect(source.queries).not.toContain("COMMIT");
@@ -458,11 +465,11 @@ describe("PostgreSQL backup core fake-process safety (WP3B2)", () => {
   it("fails closed without publishing COMPLETE when pg_dump fails or times out", async () => {
     const f = fixture();
     const result = createPostgresBackupForTest({ storageDialect: "postgres", databaseUrl: "postgres://u:p@example.test/source_db", paths: backupPaths(f), age: fakeAge(), pgClient: sourceClient(f), pgProcess: new FakePgProcess(true),
-}, async () => ({ version: 1, pending: 0 }));
+}, verifiedFakePrefix);
     await expect(result).rejects.toThrow(/pg_dump failed/);
     expect(existsSync(f.backupRoot) && readdirSync(f.backupRoot).some((name) => name === "COMPLETE" || name.includes("staging"))).toBe(false);
     const timedOut = createPostgresBackupForTest({ storageDialect: "postgres", databaseUrl: "postgres://u:p@example.test/source_db", paths: backupPaths(f), age: fakeAge(), pgClient: sourceClient(f), pgProcess: { async run(request) { return request.args[0] === "--version" ? { code: 0, stdout: Buffer.from(`${path.basename(request.command)} (PostgreSQL) 16.4`), stderr: Buffer.alloc(0) } : { code: null, stdout: Buffer.alloc(0), stderr: Buffer.alloc(0) }; } },
-}, async () => ({ version: 1, pending: 0 }));
+}, verifiedFakePrefix);
     await expect(timedOut).rejects.toThrow(/pg_dump failed/);
     let encryptCalls = 0;
     const emptyAge = fakeAge();
@@ -471,7 +478,7 @@ describe("PostgreSQL backup core fake-process safety (WP3B2)", () => {
       decrypt: emptyAge.decrypt,
     };
     const emptyDump = createPostgresBackupForTest({ storageDialect: "postgres", databaseUrl: "postgres://u:p@example.test/source_db", paths: backupPaths(f), age: trackedAge, pgClient: sourceClient(f), pgProcess: pgProcessAdapter, pgDumpBinary: controlledPgExecutable(f, "pg_dump", ""),
-}, async () => ({ version: 1, pending: 0 }));
+}, verifiedFakePrefix);
     await expect(emptyDump).rejects.toThrow(/pg_dump output is empty/);
     expect(encryptCalls).toBe(0);
     expect(existsSync(f.backupRoot) && readdirSync(f.backupRoot).some((name) => name === "COMPLETE" || name.includes("staging"))).toBe(false);
@@ -489,7 +496,7 @@ describe("PostgreSQL backup core fake-process safety (WP3B2)", () => {
       },
     };
     await expect(createPostgresBackupForTest({ storageDialect: "postgres", databaseUrl: "postgres://u:p@example.test/source_db", paths: backupPaths(f), age: fakeAge(), pgClient: redirected, pgProcess: new FakePgProcess(),
-}, async () => ({ version: 1, pending: 0 })))
+}, verifiedFakePrefix))
       .rejects.toThrow(/does not match the URL database/);
     expect(existsSync(f.backupRoot)).toBe(false);
 
@@ -513,7 +520,7 @@ describe("PostgreSQL backup core fake-process safety (WP3B2)", () => {
     const degraded = await createPostgresBackupForTest({
       storageDialect: "postgres", databaseUrl: "postgres://u:p@example.test/source_db", paths: backupPaths(restricted), age: fakeAge(), pgClient: noClusterIdentity,
       pgProcess: pgProcessAdapter, pgDumpBinary: controlledPgExecutable(restricted), pgRestoreBinary: controlledPgExecutable(restricted, "pg_restore"),
-}, async () => ({ version: 1, pending: 0 }));
+}, verifiedFakePrefix);
     expect(degraded.manifest?.postgres.systemIdentifier).toBeNull();
     expect(degraded.manifest?.postgres.databaseOid).toBe("16384");
   });
@@ -521,9 +528,9 @@ describe("PostgreSQL backup core fake-process safety (WP3B2)", () => {
   it("rejects implicit SQLite selection and malformed URLs before connecting", async () => {
     const f = fixture();
     await expect(createPostgresBackupForTest({ storageDialect: "sqlite", databaseUrl: "postgres://u:p@example.test/source_db", paths: backupPaths(f), age: fakeAge(), pgClient: sourceClient(f), pgProcess: new FakePgProcess(),
-}, async () => ({ version: 1, pending: 0 }))).rejects.toThrow(/explicit PI_STORAGE_DIALECT/);
+}, verifiedFakePrefix)).rejects.toThrow(/explicit PI_STORAGE_DIALECT/);
     await expect(createPostgresBackupForTest({ storageDialect: "postgres", databaseUrl: "postgres://u:p@example.test", paths: backupPaths(f), age: fakeAge(), pgClient: sourceClient(f), pgProcess: new FakePgProcess(),
-}, async () => ({ version: 1, pending: 0 }))).rejects.toThrow(/database/);
+}, verifiedFakePrefix)).rejects.toThrow(/database/);
   });
 
   it("fails closed before pg_dump, encryption, publication, or dry-run success for missing, unknown, or altered source histories", async () => {
@@ -533,7 +540,7 @@ describe("PostgreSQL backup core fake-process safety (WP3B2)", () => {
     const cases: Array<(text: string, values: readonly unknown[] | undefined) => readonly Record<string, unknown>[]> = [
       (text) => text.includes("information_schema.tables") ? [{ present: false }] : [],
       (text) => text.includes('FROM "app_schema"."schema_migrations"')
-        ? [...rows, { version: 2, name: "unknown-future", checksum: "b".repeat(64), applied_at: 3 }]
+        ? [...rows, { version: migrationDefinitions.length, name: "unknown-future", checksum: "b".repeat(64), applied_at: 3 }]
         : [],
       (text) => text.includes('FROM "app_schema"."schema_migrations"')
         ? rows.map((row) => row.version === 0 ? { ...row, checksum: "0".repeat(64) } : row)
@@ -554,7 +561,7 @@ describe("PostgreSQL backup core fake-process safety (WP3B2)", () => {
         await expect(createPostgresBackupForTest({
           storageDialect: "postgres", databaseUrl: "postgres://u:p@example.test/source_db", paths: backupPaths(f),
           age: fakeAge(), pgClient: source, pgProcess: new FakePgProcess(), dryRun,
-}, async () => ({ version: 1, pending: 0 }))).rejects.toThrow(/migration ledger|migration history|canonical migration head/);
+}, verifiedFakePrefix)).rejects.toThrow(/migration ledger|migration history|canonical migration head/);
       }
       expect(existsSync(f.backupRoot)).toBe(false);
     }
@@ -566,7 +573,7 @@ describe("PostgreSQL backup core fake-process safety (WP3B2)", () => {
     await expect(createPostgresBackupForTest({
       storageDialect: "postgres", databaseUrl: "postgres://u:p@example.test/source_db", paths: backupPaths(f),
       age: fakeAge(), pgClient: sourceClient(f, "app_schema", [{ id: "upload-1" }]), pgProcess: process.adapter,
-    }, async () => ({ version: 1, pending: 0 }))).rejects.toThrow(/invalid uploaded_files metadata/);
+    }, verifiedFakePrefix)).rejects.toThrow(/invalid uploaded_files metadata/);
     expect(process.requests).toEqual([]);
     expect(existsSync(f.backupRoot)).toBe(false);
   });
@@ -586,7 +593,7 @@ describe("PostgreSQL backup core fake-process safety (WP3B2)", () => {
       databaseUrl: "postgres://u:source-password@example.test/source_db",
       paths: { ...backupPaths(f), uploadRoot }, age: fakeAge(), pgClient: sourceClient(f, "app_schema", [row]),
       pgProcess: pgProcessAdapter, pgDumpBinary: controlledPgExecutable(f), pgRestoreBinary: controlledPgExecutable(f, "pg_restore"),
-    }, async () => ({ version: 1, pending: 0 }));
+    }, verifiedFakePrefix);
     expect(backup.manifest?.format).toBe("pi-agent-server.backup-manifest.v2");
     expect(backup.manifest?.attachments).toHaveLength(1);
     const agentRoot = path.join(f.root, "agent-mount");
@@ -622,7 +629,7 @@ describe("PostgreSQL backup core fake-process safety (WP3B2)", () => {
       databaseUrl: "postgres://u:source-password@example.test/source_db",
       paths: { ...backupPaths(f), uploadRoot }, age: fakeAge(), pgClient: sourceClient(f, "app_schema", rows),
       pgProcess: adapter, pgDumpBinary: controlledPgExecutable(f), pgRestoreBinary: controlledPgExecutable(f, "pg_restore"),
-    }, async () => ({ version: 1, pending: 0 }));
+    }, verifiedFakePrefix);
     expect(inserted).toBe(true);
     expect(result.manifest?.format).toBe("pi-agent-server.backup-manifest.v1");
     expect(result.manifest?.attachments).toBeUndefined();
@@ -635,7 +642,7 @@ describe("PostgreSQL backup core fake-process safety (WP3B2)", () => {
     // pre-owner-transfer kind must reject public exactly like every other kind.
     for (const kind of [undefined, "postgresql", "pre-migration", "pre-owner-transfer"] as const) {
       await expect(createPostgresBackupForTest({ storageDialect: "postgres", databaseUrl: "postgres://u:p@example.test/source_db", paths: backupPaths(f), age: fakeAge(), backupKind: kind, pgClient: sourceClient(f, "public"), pgProcess: new FakePgProcess(),
-}, async () => ({ version: 1, pending: 0 }))).rejects.toThrow(/source schema is not an allowed non-public application schema/);
+}, verifiedFakePrefix)).rejects.toThrow(/source schema is not an allowed non-public application schema/);
     }
   });
 
@@ -652,7 +659,7 @@ describe("PostgreSQL backup core fake-process safety (WP3B2)", () => {
     const result = await createPostgresBackupForTest({
       storageDialect: "postgres", databaseUrl: "postgres://u:p@example.test/source_db", paths: backupPaths(f), age: fakeAge(),
       pgClient: missingClient, pgProcess: pgProcessAdapter, pgDumpBinary: controlledPgExecutable(f), pgRestoreBinary: controlledPgExecutable(f, "pg_restore"),
-}, async () => ({ version: 1, pending: 0 }));
+}, verifiedFakePrefix);
     expect(result.finalPath).toBeTruthy();
     expect(existsSync(path.join(result.finalPath!, "COMPLETE"))).toBe(true);
     expect(result.missingSessionReferences).toEqual([{ sessionId: "missing-session", path: "sessions/missing-session/history.jsonl", status: "missing" }]);
@@ -660,7 +667,7 @@ describe("PostgreSQL backup core fake-process safety (WP3B2)", () => {
     const dry = await createPostgresBackupForTest({
       storageDialect: "postgres", databaseUrl: "postgres://u:p@example.test/source_db", paths: backupPaths(f), age: fakeAge(),
       pgClient: missingClient, pgProcess: new FakePgProcess(), dryRun: true,
-}, async () => ({ version: 1, pending: 0 }));
+}, verifiedFakePrefix);
     expect(dry.dryRun).toBe(true);
     expect(dry.finalPath).toBeNull();
     expect(dry.missingSessionReferences).toHaveLength(1);
@@ -671,7 +678,7 @@ describe("PostgreSQL backup core fake-process safety (WP3B2)", () => {
     const result = await createPostgresBackupForTest({
       storageDialect: "postgres", databaseUrl: "postgres://u:p@example.test/source_db", paths: backupPaths(f), age: fakeAge(),
       pgClient: sourceClient(f), pgProcess: pgProcessAdapter, pgDumpBinary: controlledPgExecutable(f), pgRestoreBinary: controlledPgExecutable(f, "pg_restore"),
-}, async () => ({ version: 1, pending: 0 }));
+}, verifiedFakePrefix);
     expect(result.finalPath).toBeTruthy();
     expect(existsSync(path.join(result.finalPath!, "COMPLETE"))).toBe(true);
     expect(result.missingSessionReferences).toEqual([]);
@@ -696,7 +703,7 @@ interface FakeCatalogObject {
  */
 class FakeTargetDatabase implements PgRestoreClient {
   namespaces: string[] = ["public"];
-  readonly migrationVersion: number | null = 1;
+  readonly migrationVersion: number | null = fakePrefixHead.version;
   objects: FakeCatalogObject[] = [];
   /** Database-level objects: any row beyond the initdb baseline (empty set plus
    * the `plpgsql` extension) is a non-empty-target signal (event triggers,
@@ -716,13 +723,13 @@ class FakeTargetDatabase implements PgRestoreClient {
     readonly searchPath: string = '"$user", public',
     readonly user: string = "restore_user",
   ) {
-    // Historical managed mocks use v1; nativeSourceRows opts into the latest head.
+    // Historical managed mocks use the frozen prefix; nativeSourceRows opts into the latest head.
   }
 
   /** Mimic the catalog effect of restoring a `--schema=<app>` dump. */
   applyRestore(schema: string, extra: readonly FakeCatalogObject[] = []): void {
     this.namespaces = [...new Set([...this.namespaces, schema])];
-    const tables = ["schema_migrations", "idempotency", "projects", "sessions", "file_operations", "uploaded_files", ...(this.nativeSourceRows.length ? ["native_session_sources", "companion_personas"] : [])];
+    const tables = this.nativeSourceRows.length ? headTables : fakePrefixTables;
     this.objects = [
       ...this.objects,
       ...tables.map((name) => ({ schema, kind: "relation", name })),
@@ -746,7 +753,7 @@ class FakeTargetDatabase implements PgRestoreClient {
     }
     if (text.includes("nspname AS schema_name")) return { rows: this.namespaces.filter((name) => name !== "public").map((schema_name) => ({ schema_name }) as unknown as T) };
     if (text.includes("SELECT table_name FROM information_schema.tables")) {
-      const tables = ["schema_migrations", "idempotency", "projects", "sessions", "file_operations", "uploaded_files", ...(this.nativeSourceRows.length ? ["native_session_sources", "companion_personas"] : [])].sort();
+      const tables = [...(this.nativeSourceRows.length ? headTables : fakePrefixTables)].sort();
       return { rows: tables.map((table_name) => ({ table_name }) as unknown as T) };
     }
     if (/FROM "[A-Za-z_][A-Za-z0-9_]*"\."schema_migrations"/.test(text)) {
@@ -897,7 +904,7 @@ describe("PostgreSQL restore new-empty-target gate (fake catalog)", () => {
     const target = new FakeTargetDatabase("pi_restore_version_mismatch", f.session);
     const process = new FakeRestoreProcess(target, "app_schema", [], "18.6");
     const targetRoot = path.join(f.root, "target-version-mismatch");
-    await expect(restorePostgresBackup({ paths: { inputBackup: backup.finalPath!, targetRoot, ageIdentityFile: f.identity }, targetDatabaseUrl: "postgres://u:p@example.test/pi_restore_version_mismatch", safetyContract: POSTGRES_RESTORE_SAFETY_CONTRACT, age: fakeAge(), pgClient: target, pgProcess: process, verifyMigrations: async () => ({ version: 1, pending: 0 }) })).rejects.toThrow(/client major 18, server major 16; install matching client/);
+    await expect(restorePostgresBackup({ paths: { inputBackup: backup.finalPath!, targetRoot, ageIdentityFile: f.identity }, targetDatabaseUrl: "postgres://u:p@example.test/pi_restore_version_mismatch", safetyContract: POSTGRES_RESTORE_SAFETY_CONTRACT, age: fakeAge(), pgClient: target, pgProcess: process, verifyMigrations: verifiedFakePrefix })).rejects.toThrow(/client major 18, server major 16; install matching client/);
     expect(process.requests.map((request) => request.args[0])).toEqual(["--version"]);
     expect(existsSync(targetRoot)).toBe(false);
   });
@@ -921,7 +928,7 @@ describe("PostgreSQL restore new-empty-target gate (fake catalog)", () => {
     // The dump landed in the authenticated non-public schema; public stayed the bootstrap namespace.
     expect(harness.target.namespaces).toEqual(["public", "app_schema"]);
     expect(harness.target.objects.every((object) => object.schema === "app_schema")).toBe(true);
-    expect(result.report.target.schemaSummary.tableCount).toBe(6);
+    expect(result.report.target.schemaSummary.tableCount).toBe(fakePrefixTables.length);
     expect(existsSync(path.join(result.finalPath!, "sessions/session-1/history.jsonl"))).toBe(true);
   });
 
@@ -940,7 +947,7 @@ describe("PostgreSQL restore new-empty-target gate (fake catalog)", () => {
       targetDatabaseUrl: "postgres://u:target-password@example.test/pi_restore_public_anchor",
       safetyContract: POSTGRES_RESTORE_SAFETY_CONTRACT,
       age: fakeAge(), pgClient: target, pgProcess: process,
-      verifyMigrations: async () => ({ version: 1, pending: 0 }),
+      verifyMigrations: verifiedFakePrefix,
     })).rejects.toThrow(/authenticated PostgreSQL source schema public is not allowed/);
     expect(process.requests).toEqual([]);
     expect(existsSync(path.join(f.root, "target-public-anchor"))).toBe(false);
@@ -1194,7 +1201,7 @@ describe("PostgreSQL restore new-empty-target gate (fake catalog)", () => {
     const harness = fakeRestoreHarness(f, backup.finalPath!, "pi_restore_archive_empty_owner", { listOutput: emptyOwnerListing });
     const result = await harness.restore();
     expect(result.dryRun).toBe(false);
-    expect(result.report.target.schemaSummary.tableCount).toBe(6);
+    expect(result.report.target.schemaSummary.tableCount).toBe(fakePrefixTables.length);
     expect(harness.pgProcess.requests.some((request) => request.args[0] !== "--version" && request.args[0] !== "--list")).toBe(true);
   });
 
@@ -1230,7 +1237,7 @@ describe("PostgreSQL restore new-empty-target gate (fake catalog)", () => {
     const harness = fakeRestoreHarness(f, backup.finalPath!, "pi_restore_archive_real_multiword_tag", { listOutput: realListing });
     const result = await harness.restore();
     expect(result.dryRun).toBe(false);
-    expect(result.report.target.schemaSummary.tableCount).toBe(6);
+    expect(result.report.target.schemaSummary.tableCount).toBe(fakePrefixTables.length);
     expect(harness.pgProcess.requests.some((request) => request.args[0] !== "--version" && request.args[0] !== "--list")).toBe(true);
   });
 });
@@ -1241,12 +1248,12 @@ describe("PostgreSQL restore target safety (fake process)", () => {
     const backup = await productionBackup(f);
     const processAdapter = new FakeRestoreProcess(new FakeTargetDatabase("pi_restore_unused", f.session));
     const sourceTarget = new FakeTargetDatabase("source_db", f.session, "app_schema", "app_schema, public");
-    await expect(restorePostgresBackup({ paths: { inputBackup: backup.finalPath!, targetRoot: path.join(f.root, "target"), ageIdentityFile: f.identity }, targetDatabaseUrl: "postgres://u:p@example.test/source", safetyContract: POSTGRES_RESTORE_SAFETY_CONTRACT, age: fakeAge(), pgClient: sourceTarget, pgProcess: processAdapter, verifyMigrations: async () => ({ version: 1, pending: 0 }) })).rejects.toThrow(/matches the authenticated source/);
+    await expect(restorePostgresBackup({ paths: { inputBackup: backup.finalPath!, targetRoot: path.join(f.root, "target"), ageIdentityFile: f.identity }, targetDatabaseUrl: "postgres://u:p@example.test/source", safetyContract: POSTGRES_RESTORE_SAFETY_CONTRACT, age: fakeAge(), pgClient: sourceTarget, pgProcess: processAdapter, verifyMigrations: verifiedFakePrefix })).rejects.toThrow(/matches the authenticated source/);
     expect(processAdapter.requests).toEqual([]);
     const postgresDb = new FakeTargetDatabase("postgres", f.session);
-    await expect(restorePostgresBackup({ paths: { inputBackup: backup.finalPath!, targetRoot: path.join(f.root, "target-public"), ageIdentityFile: f.identity }, targetDatabaseUrl: "postgres://u:p@example.test/postgres", safetyContract: POSTGRES_RESTORE_SAFETY_CONTRACT, age: fakeAge(), pgClient: postgresDb, pgProcess: processAdapter, verifyMigrations: async () => ({ version: 1, pending: 0 }) })).rejects.toThrow(/pi_restore_/);
+    await expect(restorePostgresBackup({ paths: { inputBackup: backup.finalPath!, targetRoot: path.join(f.root, "target-public"), ageIdentityFile: f.identity }, targetDatabaseUrl: "postgres://u:p@example.test/postgres", safetyContract: POSTGRES_RESTORE_SAFETY_CONTRACT, age: fakeAge(), pgClient: postgresDb, pgProcess: processAdapter, verifyMigrations: verifiedFakePrefix })).rejects.toThrow(/pi_restore_/);
     const publicTarget = new FakeTargetDatabase("pi_restore_public", f.session, "public", "public");
-    await expect(restorePostgresBackup({ paths: { inputBackup: backup.finalPath!, targetRoot: path.join(f.root, "target-explicit-public"), ageIdentityFile: f.identity }, targetDatabaseUrl: "postgres://u:p@example.test/pi_restore_public", safetyContract: POSTGRES_RESTORE_SAFETY_CONTRACT, age: fakeAge(), pgClient: publicTarget, pgProcess: processAdapter, verifyMigrations: async () => ({ version: 1, pending: 0 }) })).rejects.toThrow(/schema public/);
+    await expect(restorePostgresBackup({ paths: { inputBackup: backup.finalPath!, targetRoot: path.join(f.root, "target-explicit-public"), ageIdentityFile: f.identity }, targetDatabaseUrl: "postgres://u:p@example.test/pi_restore_public", safetyContract: POSTGRES_RESTORE_SAFETY_CONTRACT, age: fakeAge(), pgClient: publicTarget, pgProcess: processAdapter, verifyMigrations: verifiedFakePrefix })).rejects.toThrow(/schema public/);
     expect(processAdapter.requests).toEqual([]);
   });
 
@@ -1255,7 +1262,7 @@ describe("PostgreSQL restore target safety (fake process)", () => {
     const backup = await productionBackup(f);
     const processAdapter = new FakeRestoreProcess(new FakeTargetDatabase("pi_restore_unused", f.session));
     const target = new FakeTargetDatabase("pi_restore_schema_collision", f.session, "app_schema", "app_schema, public");
-    await expect(restorePostgresBackup({ paths: { inputBackup: backup.finalPath!, targetRoot: path.join(f.root, "target-schema-collision"), ageIdentityFile: f.identity }, targetDatabaseUrl: "postgres://u:p@example.test/pi_restore_schema_collision", safetyContract: POSTGRES_RESTORE_SAFETY_CONTRACT, age: fakeAge(), pgClient: target, pgProcess: processAdapter, verifyMigrations: async () => ({ version: 1, pending: 0 }) })).rejects.toThrow(/matches the authenticated source schema/);
+    await expect(restorePostgresBackup({ paths: { inputBackup: backup.finalPath!, targetRoot: path.join(f.root, "target-schema-collision"), ageIdentityFile: f.identity }, targetDatabaseUrl: "postgres://u:p@example.test/pi_restore_schema_collision", safetyContract: POSTGRES_RESTORE_SAFETY_CONTRACT, age: fakeAge(), pgClient: target, pgProcess: processAdapter, verifyMigrations: verifiedFakePrefix })).rejects.toThrow(/matches the authenticated source schema/);
     expect(processAdapter.requests).toEqual([]);
   });
 
@@ -1263,21 +1270,21 @@ describe("PostgreSQL restore target safety (fake process)", () => {
     const f = fixture();
     const processAdapter = new FakeRestoreProcess(new FakeTargetDatabase("pi_restore_contract", f.session));
     const tamperedContract = { ...POSTGRES_RESTORE_SAFETY_CONTRACT, targetDatabasePrefix: "pi_unsafe_" } as unknown as typeof POSTGRES_RESTORE_SAFETY_CONTRACT;
-    await expect(restorePostgresBackup({ paths: { inputBackup: path.join(f.root, "backup"), targetRoot: path.join(f.root, "target-contract"), ageIdentityFile: f.identity }, targetDatabaseUrl: "postgres://u:p@example.test/pi_restore_contract", safetyContract: tamperedContract, age: fakeAge(), pgClient: new FakeTargetDatabase("pi_restore_contract", f.session), pgProcess: processAdapter, verifyMigrations: async () => ({ version: 1, pending: 0 }) })).rejects.toThrow(/canonical new-empty-database safety contract/);
+    await expect(restorePostgresBackup({ paths: { inputBackup: path.join(f.root, "backup"), targetRoot: path.join(f.root, "target-contract"), ageIdentityFile: f.identity }, targetDatabaseUrl: "postgres://u:p@example.test/pi_restore_contract", safetyContract: tamperedContract, age: fakeAge(), pgClient: new FakeTargetDatabase("pi_restore_contract", f.session), pgProcess: processAdapter, verifyMigrations: verifiedFakePrefix })).rejects.toThrow(/canonical new-empty-database safety contract/);
     expect(processAdapter.requests).toEqual([]);
     // Relaxing the empty-public bootstrap rule is a contract tamper, not an option.
     const relaxedContract = { ...POSTGRES_RESTORE_SAFETY_CONTRACT, allowEmptyDefaultPublicSchema: false } as unknown as typeof POSTGRES_RESTORE_SAFETY_CONTRACT;
-    await expect(restorePostgresBackup({ paths: { inputBackup: path.join(f.root, "backup"), targetRoot: path.join(f.root, "target-contract-relaxed"), ageIdentityFile: f.identity }, targetDatabaseUrl: "postgres://u:p@example.test/pi_restore_contract", safetyContract: relaxedContract, age: fakeAge(), pgClient: new FakeTargetDatabase("pi_restore_contract", f.session), pgProcess: processAdapter, verifyMigrations: async () => ({ version: 1, pending: 0 }) })).rejects.toThrow(/canonical new-empty-database safety contract/);
+    await expect(restorePostgresBackup({ paths: { inputBackup: path.join(f.root, "backup"), targetRoot: path.join(f.root, "target-contract-relaxed"), ageIdentityFile: f.identity }, targetDatabaseUrl: "postgres://u:p@example.test/pi_restore_contract", safetyContract: relaxedContract, age: fakeAge(), pgClient: new FakeTargetDatabase("pi_restore_contract", f.session), pgProcess: processAdapter, verifyMigrations: verifiedFakePrefix })).rejects.toThrow(/canonical new-empty-database safety contract/);
   });
 
-  it("runs an authenticated v1-head fake restore and reports the full migration schema", async () => {
+  it("runs an authenticated historical-prefix fake restore and reports the full migration schema", async () => {
     const f = fixture();
     const backup = await productionBackup(f);
     const harness = fakeRestoreHarness(f, backup.finalPath!, "pi_restore_v1");
     const result = await harness.restore();
-    expect(result.report.migration).toEqual({ version: 1, pending: 0 });
+    expect(result.report.migration).toEqual({ version: fakePrefixHead.version, pending: 0 });
     expect(result.report.counts.fileOperations).toBe(1);
-    expect(result.report.target.schemaSummary).toMatchObject({ tableCount: 6, migrationVersion: 1, foreignKeyViolations: 0 });
+    expect(result.report.target.schemaSummary).toMatchObject({ tableCount: fakePrefixTables.length, migrationVersion: fakePrefixHead.version, foreignKeyViolations: 0 });
     expect(harness.target.queries.some((text) => text.includes('"file_operations"'))).toBe(true);
   });
 
@@ -1300,10 +1307,14 @@ describe("PostgreSQL restore target safety (fake process)", () => {
       manifest.migrationLedger.checksums[1] = "0".repeat(64);
     }],
     ["unknown future version", (manifest: Record<string, any>) => {
-      manifest.migrationLedger.rows.push({ version: 2, name: "unknown-future", checksum: "b".repeat(64), applied_at: 2 });
-      manifest.migrationLedger.checksums.push("b".repeat(64));
-      manifest.migrationLedger.appliedCount = 3;
-      manifest.migrationLedger.appliedVersion = 2;
+      // A well-formed contiguous ledger: the full canonical history plus one version past the head.
+      manifest.migrationLedger.rows = [
+        ...migrationDefinitions.map((migration) => ({ version: migration.version, name: migration.name, checksum: migrationChecksum(migration), applied_at: 2 })),
+        { version: migrationDefinitions.length, name: "unknown-future", checksum: "b".repeat(64), applied_at: 2 },
+      ];
+      manifest.migrationLedger.checksums = manifest.migrationLedger.rows.map((row: { checksum: string }) => row.checksum);
+      manifest.migrationLedger.appliedCount = manifest.migrationLedger.rows.length;
+      manifest.migrationLedger.appliedVersion = migrationDefinitions.length;
     }],
   ])("rejects %s before PostgreSQL payload staging", async (_label, change) => {
     const f = fixture();
@@ -1328,10 +1339,10 @@ describe("PostgreSQL restore target safety (fake process)", () => {
     const backup = await productionBackup(f);
     const target = new FakeTargetDatabase("pi_restore_target", f.session);
     const processAdapter = new FakeRestoreProcess(target);
-    const result = await restorePostgresBackup({ paths: { inputBackup: backup.finalPath!, targetRoot: path.join(f.root, "target"), ageIdentityFile: f.identity }, targetDatabaseUrl: "postgres://u:target-password@example.test/pi_restore_target", safetyContract: POSTGRES_RESTORE_SAFETY_CONTRACT, age: fakeAge(), pgClient: target, pgProcess: processAdapter, verifyMigrations: async () => ({ version: 1, pending: 0 }) });
+    const result = await restorePostgresBackup({ paths: { inputBackup: backup.finalPath!, targetRoot: path.join(f.root, "target"), ageIdentityFile: f.identity }, targetDatabaseUrl: "postgres://u:target-password@example.test/pi_restore_target", safetyContract: POSTGRES_RESTORE_SAFETY_CONTRACT, age: fakeAge(), pgClient: target, pgProcess: processAdapter, verifyMigrations: verifiedFakePrefix });
     expect(result.report.dialect).toBe("PostgreSQL");
     expect(result.report.counts).toMatchObject({ projects: 1, sessions: 1, idempotencyRows: 1, jsonlFiles: 1, sessionHeaders: 1, invalidSessionHistories: 0, foreignKeyViolations: 0 });
-    expect(result.report.target.schemaSummary).toMatchObject({ identity: result.report.target.schemaIdentity, tableCount: 6, migrationVersion: 1, foreignKeyViolations: 0 });
+    expect(result.report.target.schemaSummary).toMatchObject({ identity: result.report.target.schemaIdentity, tableCount: fakePrefixTables.length, migrationVersion: fakePrefixHead.version, foreignKeyViolations: 0 });
     expect(target.updates[0]).toContain(path.basename(result.finalPath!));
     const restore = processAdapter.requests.find((request) => request.args[0] !== "--version" && request.args[0] !== "--list");
     expect(restore?.args).not.toContain("--schema=app_schema");
@@ -1353,11 +1364,11 @@ describe("PostgreSQL restore target safety (fake process)", () => {
     const backup = await createPostgresBackupForTest({
       storageDialect: "postgres", databaseUrl: "postgres://u:p@example.test/source_db", paths: backupPaths(f), age: fakeAge(),
       pgClient: missingSource, pgProcess: pgProcessAdapter, pgDumpBinary: controlledPgExecutable(f), pgRestoreBinary: controlledPgExecutable(f, "pg_restore"),
-}, async () => ({ version: 1, pending: 0 }));
+}, verifiedFakePrefix);
     expect(backup.manifest?.missingSessionReferences).toEqual([{ sessionId: "session-1", path: "sessions/session-1/history.jsonl", status: "missing" }]);
     const target = new FakeTargetDatabase("pi_restore_missing", f.session);
     const processAdapter = new FakeRestoreProcess(target);
-    const result = await restorePostgresBackup({ paths: { inputBackup: backup.finalPath!, targetRoot: path.join(f.root, "target-missing"), ageIdentityFile: f.identity }, targetDatabaseUrl: "postgres://u:target-password@example.test/pi_restore_missing", safetyContract: POSTGRES_RESTORE_SAFETY_CONTRACT, age: fakeAge(), pgClient: target, pgProcess: processAdapter, verifyMigrations: async () => ({ version: 1, pending: 0 }) });
+    const result = await restorePostgresBackup({ paths: { inputBackup: backup.finalPath!, targetRoot: path.join(f.root, "target-missing"), ageIdentityFile: f.identity }, targetDatabaseUrl: "postgres://u:target-password@example.test/pi_restore_missing", safetyContract: POSTGRES_RESTORE_SAFETY_CONTRACT, age: fakeAge(), pgClient: target, pgProcess: processAdapter, verifyMigrations: verifiedFakePrefix });
     expect(result.report.counts.missingSessionReferences).toBe(1);
     expect(result.report.counts.invalidSessionHistories).toBe(0);
     // NULL 更新（$1 只有 session id），绝无指向 finalPath 的路径写入。
@@ -1499,7 +1510,7 @@ describeRealPgBackup("real PostgreSQL pg_dump/pg_restore gate (WP3B2)", () => {
       await adminConnection.query(`CREATE DATABASE "${database}"`);
       setupPool = createPostgresPool(url);
       await setupPool.query(`CREATE SCHEMA "${schema}"`);
-      // Initialize through the full canonical migration history at v1.
+      // Initialize through the full canonical migration history.
       setupKysely = createPostgresKysely(setupPool);
       await runPostgresMigrations(setupKysely);
       await setupPool.query("INSERT INTO projects (id, name, cwd, owner_key, created_at) VALUES ($1,$2,$3,$4,$5)", ["00000000-0000-4000-8000-000000000031", "real", "/tmp/real-variant", "owner", 1]);
@@ -1548,7 +1559,7 @@ describeRealPgBackup("real PostgreSQL pg_dump/pg_restore gate (WP3B2)", () => {
       await setupPool.query(`CREATE SCHEMA "${schema}"`);
       setupKysely = createPostgresKysely(setupPool);
       await runPostgresMigrations(setupKysely);
-      // The canonical v1 ledger is correct, but the physical schema no longer
+      // The canonical head ledger is correct, but the physical schema no longer
       // matches the immutable manifest: a canonical index is missing.
       await setupPool.query(`DROP INDEX "${schema}".idx_projects_owner`);
       if (setupKysely) await setupKysely.destroy();
@@ -1587,7 +1598,7 @@ describeRealPgBackup("real PostgreSQL pg_dump/pg_restore gate (WP3B2)", () => {
       await setupPool.query(`CREATE SCHEMA "${schema}"`);
       setupKysely = createPostgresKysely(setupPool);
       await runPostgresMigrations(setupKysely);
-      // The canonical v1 ledger is correct, but an extra relation
+      // The canonical head ledger is correct, but an extra relation
       // / object beyond the manifest must be rejected (fail-closed) even though
       // every canonical table/column/index is intact.
       await setupPool.query(`CREATE TABLE "${schema}".extra_table (id BIGINT)`);
@@ -1633,9 +1644,9 @@ describeRealPgBackup("real PostgreSQL pg_dump/pg_restore gate (WP3B2)", () => {
     expect(dump?.args.join(" ")).not.toContain("postgres://");
   }, 180_000);
 
-  it.each([
-    ["authenticated v1 head", 1, 6, true],
-  ] as const)("restores real PostgreSQL %s without auto-migration and reports the head physical contract", async (_label, version, tableCount, hasOutbox) => {
+  it("restores real PostgreSQL at the authenticated migration head without auto-migration and reports the head physical contract", async () => {
+    const version = migrationHead.version;
+    const tableCount = headTables.length;
     const fixtureData = await realVariantSource();
     const targetDb = randomName("pi_restore_w4a_");
     const pool = await adminPool();
@@ -1651,10 +1662,8 @@ describeRealPgBackup("real PostgreSQL pg_dump/pg_restore gate (WP3B2)", () => {
       expect(restored.report.counts).toMatchObject({ projects: 1, sessions: 1, idempotencyRows: 1, fileOperations: 0 });
       expect(restored.report.target.schemaSummary).toMatchObject({ tableCount, migrationVersion: version, foreignKeyViolations: 0 });
       const tables = (await targetPool.query("SELECT table_name FROM information_schema.tables WHERE table_schema = $1 ORDER BY table_name", [fixtureData.schema])).rows.map((row) => row.table_name);
-      expect(tables.includes("file_operations")).toBe(hasOutbox);
-      expect(tables.includes("schema_migrations")).toBe(true);
-      expect(tables.includes("uploaded_files")).toBe(true);
-      // The restored v1 database is checked by this separate explicit operation;
+      expect(tables).toEqual([...headTables].sort());
+      // The restored head database is checked by this separate explicit operation;
       // at the current head it is a no-op that keeps the outbox empty.
       const migrationPool = createPostgresPool(databaseUrl(pgUrl!, targetDb, fixtureData.schema));
       const migrationKysely = createPostgresKysely(migrationPool);
@@ -1705,7 +1714,7 @@ describeRealPgBackup("real PostgreSQL pg_dump/pg_restore gate (WP3B2)", () => {
       expect(restored.report.counts).toMatchObject({ projects: 1, sessions: 1, idempotencyRows: 1, fileOperations: 0, jsonlFiles: 1, foreignKeyViolations: 0 });
       // The report points at the unique authenticated non-public schema, never at public.
       expect(restored.report.target.schemaIdentity).toBe(createHash("sha256").update(`${PG_IDENTITY_PREFIX_SCHEMA}\0${fixtureData.schema}`, "utf8").digest("hex"));
-      expect(restored.report.target.schemaSummary).toMatchObject({ tableCount: 6, migrationVersion: 1, foreignKeyViolations: 0 });
+      expect(restored.report.target.schemaSummary).toMatchObject({ tableCount: headTables.length, migrationVersion: migrationHead.version, foreignKeyViolations: 0 });
       const row = (await targetPool.query(`SELECT conversation_ref FROM "${fixtureData.schema}"."sessions" WHERE id = $1`, ["00000000-0000-4000-8000-000000000002"])).rows[0] as { conversation_ref: string };
       expect(row.conversation_ref).toContain(path.basename(restored.finalPath!));
       expect(readFileSync(path.join(restored.finalPath!, "projects/00000000-0000-4000-8000-000000000001/sessions/00000000-0000-4000-8000-000000000002/history.jsonl")).toString()).toContain("real-entry");
@@ -1721,7 +1730,7 @@ describeRealPgBackup("real PostgreSQL pg_dump/pg_restore gate (WP3B2)", () => {
       );
       expect(publicObjects.rows).toEqual([]);
       const schemaTables = await targetPool.query("SELECT table_name FROM information_schema.tables WHERE table_schema = $1 ORDER BY table_name", [fixtureData.schema]);
-      expect(schemaTables.rows.map((entry) => entry.table_name)).toEqual(["file_operations", "idempotency", "projects", "schema_migrations", "sessions", "uploaded_files"]);
+      expect(schemaTables.rows.map((entry) => entry.table_name)).toEqual([...headTables].sort());
     } finally {
       await targetPool.end().catch(() => undefined);
       await pool.query(`DROP DATABASE IF EXISTS "${targetDb}"`).catch(() => undefined);
