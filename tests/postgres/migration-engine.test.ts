@@ -55,7 +55,7 @@ async function isolated<T>(action: (pool: Pool, kysely: Kysely<DatabaseSchema>, 
 }
 
 const futureMigration = Object.freeze({
-  version: 2,
+  version: migrationDefinitions.length,
   name: "test-future",
   manifest: schemaManifest,
   physicalTypeMaps: { SQLite: SQLITE_PHYSICAL_TYPES, PostgreSQL: POSTGRES_PHYSICAL_TYPES },
@@ -67,7 +67,7 @@ const futureMigration = Object.freeze({
 });
 
 const futureFailure = Object.freeze({
-  version: 2,
+  version: migrationDefinitions.length,
   name: "test-failure",
   manifest: schemaManifest,
   physicalTypeMaps: { SQLite: SQLITE_PHYSICAL_TYPES, PostgreSQL: POSTGRES_PHYSICAL_TYPES },
@@ -134,14 +134,14 @@ describePg("Manifest-driven migration engine (real PostgreSQL)", () => {
     });
   });
 
-  it("upgrades a v0 ledger to v1 without losing existing idempotency rows", async () => {
+  it("upgrades a v0 ledger to the migration head without losing existing idempotency rows", async () => {
     await isolated(async (pool, kysely) => {
       await runPostgresMigrationsForTest(kysely, { migrations: [migrationDefinitions[0]!] });
       const sessionId = randomUUID();
       await pool.query("INSERT INTO idempotency (session_id, request_id, result, created_at) VALUES ($1, $2, $3, $4)", [sessionId, "legacy-request", '{"ok":true}', 5]);
 
       const result = await runPostgresMigrations(kysely);
-      expect(result.appliedVersion).toBe(1);
+      expect(result.appliedVersion).toBe(migrationDefinitions.at(-1)!.version);
       expect((await pool.query("SELECT session_id, request_id, result, created_at, fingerprint FROM idempotency")).rows).toEqual([
         { session_id: sessionId, request_id: "legacy-request", result: '{"ok":true}', created_at: 5, fingerprint: null },
       ]);
@@ -159,10 +159,9 @@ describePg("Manifest-driven migration engine (real PostgreSQL)", () => {
         const expectedTables = migrationDefinitions.at(-1)!.manifest.tables.map((table) => table.name).sort();
         const tables = await pool.query("SELECT table_name FROM information_schema.tables WHERE table_schema = current_schema() ORDER BY table_name");
         expect(tables.rows.map((row) => row.table_name)).toEqual([...expectedTables, "schema_migrations"].sort());
-        expect((await pool.query("SELECT version, name FROM schema_migrations ORDER BY version")).rows).toEqual([
-          { version: 0, name: "initial-schema" },
-          { version: 1, name: "uploaded-files-and-idempotency-fingerprint" },
-        ]);
+        expect((await pool.query("SELECT version, name FROM schema_migrations ORDER BY version")).rows).toEqual(
+          migrationDefinitions.map(({ version, name }) => ({ version, name })),
+        );
 
         const sessions = migrationDefinitions[0]!.manifest.tables.find((table) => table.name === "sessions")!;
         const projectIdDefault = sessions.columns.find((column) => column.name === "project_id")!.default;
@@ -177,14 +176,13 @@ describePg("Manifest-driven migration engine (real PostgreSQL)", () => {
     });
   });
 
-  it("applies v0 and v1 on an empty random schema and is idempotent", async () => {
+  it("applies every migration on an empty random schema and is idempotent", async () => {
     await isolated(async (pool, kysely) => {
       const first = await runPostgresMigrations(kysely);
-      expect(first.appliedVersion).toBe(1);
-      expect((await pool.query("SELECT version, name, length(checksum) AS n, pg_typeof(applied_at)::text AS t FROM schema_migrations ORDER BY version")).rows).toEqual([
-        { version: 0, name: "initial-schema", n: 64, t: "bigint" },
-        { version: 1, name: "uploaded-files-and-idempotency-fingerprint", n: 64, t: "bigint" },
-      ]);
+      expect(first.appliedVersion).toBe(migrationDefinitions.at(-1)!.version);
+      expect((await pool.query("SELECT version, name, checksum, pg_typeof(applied_at)::text AS t FROM schema_migrations ORDER BY version")).rows).toEqual(
+        migrationDefinitions.map((migration) => ({ version: migration.version, name: migration.name, checksum: migrationChecksum(migration), t: "bigint" })),
+      );
       expect((await runPostgresMigrations(kysely)).pending).toEqual([]);
     });
   });
@@ -193,16 +191,17 @@ describePg("Manifest-driven migration engine (real PostgreSQL)", () => {
     // An empty schema applies the complete migration head.
     await isolated(async (pool, kysely) => {
       const result = await runPostgresMigrations(kysely, { assertEmptySchema: true });
-      expect(result.appliedVersion).toBe(1);
+      expect(result.appliedVersion).toBe(migrationDefinitions.at(-1)!.version);
       expect(result.pending).toEqual([]);
-      expect((await pool.query("SELECT table_name FROM information_schema.tables WHERE table_schema = current_schema() ORDER BY table_name")).rows.map((row) => row.table_name)).toEqual(["file_operations", "idempotency", "projects", "schema_migrations", "sessions", "uploaded_files"]);
+      const headTables = [...migrationDefinitions.at(-1)!.manifest.tables.map((table) => table.name), "schema_migrations"].sort();
+      expect((await pool.query("SELECT table_name FROM information_schema.tables WHERE table_schema = current_schema() ORDER BY table_name")).rows.map((row) => row.table_name)).toEqual(headTables);
     });
 
     // An already-initialized schema (ledger present) refuses: bootstrap is strictly empty-only.
     await isolated(async (pool, kysely) => {
       await runPostgresMigrations(kysely);
       await expect(runPostgresMigrations(kysely, { assertEmptySchema: true })).rejects.toThrow(/non-empty PostgreSQL|user object/);
-      expect((await pool.query("SELECT count(*)::int AS n FROM schema_migrations")).rows[0]?.n).toBe(2);
+      expect((await pool.query("SELECT count(*)::int AS n FROM schema_migrations")).rows[0]?.n).toBe(migrationDefinitions.length);
     });
 
     // A standalone view (no base table) refuses: information_schema.tables would have missed it.
@@ -294,7 +293,7 @@ describePg("Manifest-driven migration engine (real PostgreSQL)", () => {
       "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY NOT NULL, name TEXT UNIQUE NOT NULL, checksum TEXT NOT NULL, applied_at INTEGER NOT NULL)",
       "CREATE TABLE schema_migrations (version INTEGER PRIMARY KEY NOT NULL, name TEXT UNIQUE NOT NULL, checksum TEXT NOT NULL, applied_at TEXT NOT NULL)",
       "CREATE TABLE schema_migrations (version BIGINT PRIMARY KEY NOT NULL, name TEXT UNIQUE NOT NULL, checksum TEXT NOT NULL, applied_at BIGINT NOT NULL); INSERT INTO schema_migrations VALUES (0, 'initial-schema', '" + migrationChecksum(migrationDefinitions[0]!) + "', 1)",
-      "CREATE TABLE schema_migrations (version BIGINT PRIMARY KEY NOT NULL, name TEXT NOT NULL UNIQUE, checksum TEXT NOT NULL, applied_at BIGINT NOT NULL); INSERT INTO schema_migrations VALUES (2, 'initial-schema', '" + migrationChecksum(migrationDefinitions[0]!) + "', 1)",
+      "CREATE TABLE schema_migrations (version BIGINT PRIMARY KEY NOT NULL, name TEXT NOT NULL UNIQUE, checksum TEXT NOT NULL, applied_at BIGINT NOT NULL); INSERT INTO schema_migrations VALUES (" + migrationDefinitions.length + ", 'initial-schema', '" + migrationChecksum(migrationDefinitions[0]!) + "', 1)",
     ];
     for (const ddl of cases) {
       await isolated(async (pool, kysely) => {
@@ -416,7 +415,7 @@ describePg("Manifest-driven migration engine (real PostgreSQL)", () => {
         const projects = new KyselyProjectRepository(initialized, pgConstraintErrorMapper);
         await projects.create({ id: "00000000-0000-4000-8000-000000000001", name: "kept", cwd: "/kept", ownerKey: "owner", createdAt: 1 });
         expect((await projects.get("00000000-0000-4000-8000-000000000001"))?.name).toBe("kept");
-        expect((await pool.query("SELECT count(*)::int AS n FROM schema_migrations")).rows[0]?.n).toBe(2);
+        expect((await pool.query("SELECT count(*)::int AS n FROM schema_migrations")).rows[0]?.n).toBe(migrationDefinitions.length);
       } finally {
         await initialized.destroy();
       }

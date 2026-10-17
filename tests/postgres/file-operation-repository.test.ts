@@ -87,7 +87,7 @@ function scopedUrl(schema: string): string {
       await runPostgresMigrationsForTest(isolated, { migrations: [migrationDefinitions[0]!] });
       await isolatedPool.query(`INSERT INTO projects (id, name, cwd, owner_key, created_at) VALUES ('00000000-0000-4000-8000-000000000001', 'kept', '/p', 'o', 1)`);
       await runPostgresMigrations(isolated);
-      expect((await isolatedPool.query("SELECT count(*)::int AS n FROM schema_migrations")).rows[0]?.n).toBe(1);
+      expect((await isolatedPool.query("SELECT count(*)::int AS n FROM schema_migrations")).rows[0]?.n).toBe(migrationDefinitions.length);
       expect((await isolatedPool.query("SELECT count(*)::int AS n FROM file_operations")).rows[0]?.n).toBe(0);
       expect((await isolatedPool.query("SELECT name FROM projects WHERE id = '00000000-0000-4000-8000-000000000001'")).rows[0]?.name).toBe("kept");
     } finally {
