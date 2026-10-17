@@ -1,8 +1,11 @@
 import { act, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { useState } from 'react';
-import { CompanionDock, CompanionWelcome, GREETING_WAIT_MS, useCompanionPersona, type CompanionPersonaSync, type CompanionWelcomeProps } from './Companion.js';
+import { BUBBLE_MS, CompanionDock, CompanionWelcome, GREETING_WAIT_MS, PENDING_SHOW_MS, PREFETCH_DELAY_MS, useCompanionPersona, usePrefetchGreeting,
+  type CompanionPersonaSync, type CompanionWelcomeProps } from './Companion.js';
+import { CompanionFigure } from './CompanionFigure.js';
 import { DEFAULT_PERSONA, readPersona, writePersona, type CompanionPersona } from './companion-lines.js';
+import type { RunStatus } from '../../hooks/useRunStatus.js';
 
 function Welcome() {
   const [persona, setPersona] = useState<CompanionPersona>(DEFAULT_PERSONA);
@@ -29,7 +32,6 @@ describe('companion', () => {
     const generateLines = vi.fn<NonNullable<CompanionWelcomeProps['generateLines']>>().mockResolvedValue({ greeting: '早呀，repo！', hint: '接着修登录吧' });
     render(<CompanionWelcome mood="idle" nodKey={0} persona={DEFAULT_PERSONA} onPersona={() => {}} projectId="p" projectName="repo"
       recent={{ title: '修登录', updatedAt: new Date(2026, 9, 16, 8, 30).getTime() }} now={() => new Date(2026, 9, 16, 9)} seed={1} generateLines={generateLines} />);
-    expect(screen.getByLabelText('正在想开场白')).toBeInTheDocument();
     expect(await screen.findByText('早呀，repo！')).toBeInTheDocument();
     expect(screen.getByText('接着修登录吧')).toBeInTheDocument();
     expect(generateLines).toHaveBeenCalledWith({ persona: { name: '小派', style: 'lively' }, dayPart: 'morning', recent: { title: '修登录', minutesAgo: 30 } });
@@ -55,24 +57,143 @@ describe('companion', () => {
       const generateLines = vi.fn(() => new Promise<never>(() => {}));
       render(<CompanionWelcome mood="idle" nodKey={0} persona={DEFAULT_PERSONA} onPersona={() => {}} projectId="p" projectName="repo"
         recent={undefined} now={() => new Date(2026, 9, 16, 9)} seed={1} generateLines={generateLines} />);
+      await act(async () => { vi.advanceTimersByTime(PENDING_SHOW_MS); });
       expect(screen.getByLabelText('正在想开场白')).toBeInTheDocument();
-      await act(async () => { vi.advanceTimersByTime(GREETING_WAIT_MS); });
+      await act(async () => { vi.advanceTimersByTime(GREETING_WAIT_MS - PENDING_SHOW_MS); });
       expect(generateLines).not.toHaveBeenCalled();
       expect(screen.queryByLabelText('正在想开场白')).not.toBeInTheDocument();
       expect(screen.getByText(/repo/)).toBeInTheDocument();
     } finally { vi.useRealTimers(); }
   });
 
+  it('shows it is thinking only after a moment, so a cached line never flashes the dots first', async () => {
+    vi.useFakeTimers();
+    try {
+      let resolve!: (value: { greeting: string; hint: string }) => void;
+      const { container } = render(<CompanionWelcome mood="idle" nodKey={0} persona={DEFAULT_PERSONA} onPersona={() => {}} projectId="p" projectName="repo"
+        recent={null} now={() => new Date(2026, 9, 16, 9)} seed={1} generateLines={() => new Promise(done => { resolve = done; })} />);
+      const figure = () => container.querySelector('.companion-figure')!;
+      await act(async () => { vi.advanceTimersByTime(PENDING_SHOW_MS - 1); });
+      expect(screen.queryByLabelText('正在想开场白')).not.toBeInTheDocument();
+      expect(figure()).toHaveAttribute('data-mood', 'idle');
+      await act(async () => { vi.advanceTimersByTime(1); });
+      expect(screen.getByLabelText('正在想开场白')).toBeInTheDocument();
+      expect(figure()).toHaveAttribute('data-mood', 'thinking');
+      await act(async () => { resolve({ greeting: '来啦', hint: '说吧' }); });
+      expect(screen.getByText('来啦')).toBeInTheDocument();
+      expect(figure()).toHaveAttribute('data-mood', 'idle');
+    } finally { vi.useRealTimers(); }
+  });
+
+  it('offers the project\'s templates and skills as names alone, with the description on hover', async () => {
+    const onQuickStart = vi.fn();
+    render(<CompanionWelcome mood="idle" nodKey={0} persona={DEFAULT_PERSONA} onPersona={() => {}} projectId="p" projectName="repo" recent={null}
+      loadCommands={async () => [{ name: 'review', source: 'prompt', description: 'Review a change' }, { name: 'skill:dws', source: 'skill', description: '' }]}
+      onQuickStart={onQuickStart} now={() => new Date(2026, 9, 16, 9)} seed={1} />);
+    const review = await screen.findByRole('button', { name: '/review' });
+    expect(review).toHaveAttribute('title', 'Review a change');
+    expect(screen.getByRole('button', { name: '/skill:dws' })).not.toHaveAttribute('title');
+    fireEvent.click(review);
+    expect(onQuickStart).toHaveBeenCalledWith('/review ');
+  });
+
+  it('draws a simpler face at docked size: bigger eyes, no blush, catchlights or nose', () => {
+    const { container, rerender } = render(<CompanionFigure mood="idle" size={128} alive={false} />);
+    const eyeWidth = () => Number(container.querySelector('.companion-eye ellipse')!.getAttribute('rx'));
+    const full = eyeWidth();
+    expect(container.querySelector('.companion-blush')).toBeInTheDocument();
+    expect(container.querySelector('.companion-shine')).toBeInTheDocument();
+    expect(container.querySelector('.companion-nose')).toBeInTheDocument();
+    rerender(<CompanionFigure mood="idle" size={44} alive={false} />);
+    expect(container.querySelector('.companion-figure')).toHaveAttribute('data-size', 'small');
+    expect(container.querySelector('.companion-blush')).not.toBeInTheDocument();
+    expect(container.querySelector('.companion-shine')).not.toBeInTheDocument();
+    expect(container.querySelector('.companion-nose')).not.toBeInTheDocument();
+    expect(eyeWidth()).toBeGreaterThan(full);
+  });
+
   it('docks with its mood on hover and can be sent away and called back', () => {
     const onPersona = vi.fn();
-    const { rerender } = render(<CompanionDock mood="working" nodKey={0} persona={DEFAULT_PERSONA} onPersona={onPersona} />);
+    const { rerender } = render(<CompanionDock mood="working" run="running" nodKey={0} persona={DEFAULT_PERSONA} onPersona={onPersona} />);
     const dock = screen.getByTestId('companion-dock');
     expect(dock).toHaveAttribute('title', '小派：埋头干活中！');
     fireEvent.click(dock);
     expect(onPersona).toHaveBeenCalledWith({ ...DEFAULT_PERSONA, docked: false });
-    rerender(<CompanionDock mood="working" nodKey={0} persona={{ ...DEFAULT_PERSONA, docked: false }} onPersona={onPersona} />);
+    rerender(<CompanionDock mood="working" run="running" nodKey={0} persona={{ ...DEFAULT_PERSONA, docked: false }} onPersona={onPersona} />);
     expect(screen.getByRole('button', { name: '叫回小派' })).toBeInTheDocument();
     expect(readPersona()).toEqual(DEFAULT_PERSONA);
+  });
+
+  describe('a word when a run ends', () => {
+    const Dock = ({ run, persona = DEFAULT_PERSONA }: { run: RunStatus['kind']; persona?: CompanionPersona }) =>
+      <CompanionDock mood="idle" run={run} nodKey={0} persona={persona} onPersona={() => {}} />;
+    const setVisibility = (state: DocumentVisibilityState) => Object.defineProperty(document, 'visibilityState', { configurable: true, get: () => state });
+    afterEach(() => { setVisibility('visible'); vi.useRealTimers(); });
+
+    it('says the run is done, in its own voice, for a few seconds', () => {
+      vi.useFakeTimers();
+      const { rerender } = render(<Dock run="running" />);
+      expect(screen.queryByTestId('companion-bubble')).not.toBeInTheDocument();
+      rerender(<Dock run="completed" />);
+      expect(screen.getByTestId('companion-bubble')).toHaveTextContent('搞定啦！快看看～');
+      act(() => { vi.advanceTimersByTime(BUBBLE_MS); });
+      expect(screen.queryByTestId('companion-bubble')).not.toBeInTheDocument();
+    });
+
+    it('says a run failed, but not that it was stopped', () => {
+      const { rerender } = render(<Dock run="running" persona={{ ...DEFAULT_PERSONA, style: 'concise' }} />);
+      rerender(<Dock run="failed" persona={{ ...DEFAULT_PERSONA, style: 'concise' }} />);
+      expect(screen.getByTestId('companion-bubble')).toHaveAttribute('data-kind', 'failed');
+      expect(screen.getByTestId('companion-bubble')).toHaveTextContent('失败了，看下错误。');
+      rerender(<Dock run="running" />);
+      expect(screen.queryByTestId('companion-bubble')).not.toBeInTheDocument();
+      rerender(<Dock run="aborted" />);
+      expect(screen.queryByTestId('companion-bubble')).not.toBeInTheDocument();
+    });
+
+    it('keeps quiet when the page is not in front, or when it has been sent away', () => {
+      setVisibility('hidden');
+      const { rerender } = render(<Dock run="running" />);
+      rerender(<Dock run="completed" />);
+      expect(screen.queryByTestId('companion-bubble')).not.toBeInTheDocument();
+      setVisibility('visible');
+      rerender(<Dock run="running" persona={{ ...DEFAULT_PERSONA, docked: false }} />);
+      rerender(<Dock run="completed" persona={{ ...DEFAULT_PERSONA, docked: false }} />);
+      expect(screen.queryByTestId('companion-bubble')).not.toBeInTheDocument();
+    });
+  });
+
+  describe('asking for the next welcome ahead of time', () => {
+    const at = () => new Date(2026, 9, 16, 9);
+    const recent = { title: '修登录', updatedAt: new Date(2026, 9, 16, 8, 30).getTime() };
+    afterEach(() => vi.useRealTimers());
+
+    it('asks once things are quiet, with what the blank page would send, and not again for the same moment', () => {
+      vi.useFakeTimers();
+      const generate = vi.fn(async () => ({ greeting: '早', hint: '好' }));
+      const { rerender } = renderHook(({ quiet, updatedAt }) => usePrefetchGreeting(generate, 'p', DEFAULT_PERSONA, { ...recent, updatedAt }, quiet, at),
+        { initialProps: { quiet: false, updatedAt: recent.updatedAt } });
+      act(() => { vi.advanceTimersByTime(PREFETCH_DELAY_MS * 2); });
+      expect(generate).not.toHaveBeenCalled();
+      rerender({ quiet: true, updatedAt: recent.updatedAt });
+      act(() => { vi.advanceTimersByTime(PREFETCH_DELAY_MS); });
+      expect(generate).toHaveBeenCalledTimes(1);
+      expect(generate).toHaveBeenCalledWith({ persona: { name: '小派', style: 'lively' }, dayPart: 'morning', recent: { title: '修登录', minutesAgo: 30 } });
+      // Still within the same hour as far as the cached line goes.
+      rerender({ quiet: true, updatedAt: recent.updatedAt + 10 * 60_000 });
+      act(() => { vi.advanceTimersByTime(PREFETCH_DELAY_MS); });
+      expect(generate).toHaveBeenCalledTimes(1);
+    });
+
+    it('does nothing without a way to ask, a project or the session list', () => {
+      vi.useFakeTimers();
+      const generate = vi.fn(async () => ({ greeting: '早', hint: '好' }));
+      renderHook(() => usePrefetchGreeting(generate, null, DEFAULT_PERSONA, recent, true, at));
+      renderHook(() => usePrefetchGreeting(generate, 'p', DEFAULT_PERSONA, undefined, true, at));
+      renderHook(() => usePrefetchGreeting(undefined, 'p', DEFAULT_PERSONA, recent, true, at));
+      act(() => { vi.advanceTimersByTime(PREFETCH_DELAY_MS * 2); });
+      expect(generate).not.toHaveBeenCalled();
+    });
   });
 
   describe('persona on the server', () => {

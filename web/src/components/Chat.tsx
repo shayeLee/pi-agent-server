@@ -15,7 +15,7 @@ import { SubagentLivePanel } from "./SubagentLivePanel.js";
 import type { LiveSubagent } from "../hooks/useLiveSubagents.js";
 import type { SessionConnection } from "../hooks/useSessionStream.js";
 import { EmptyState } from "./EmptyState.js";
-import { CompanionDock, CompanionWelcome, useCompanionPersona, type CompanionPersonaSync, type CompanionWelcomeProps } from "./companion/Companion.js";
+import { CompanionDock, CompanionWelcome, useCompanionPersona, usePrefetchGreeting, type CompanionPersonaSync, type CompanionWelcomeProps } from "./companion/Companion.js";
 import { useCompanion } from "./companion/companion-mood.js";
 import type { SubmissionState, SubmitOutcome, UnsentMessage } from "../attachment-state.js";
 
@@ -151,6 +151,9 @@ export function Chat({
   const [abortArmed, setAbortArmed] = useState(false);
   const companion = useCompanion(runStatus.kind);
   const [persona, setPersona] = useCompanionPersona(canCreateSession ? companionPersona : undefined);
+  // Inside a session, the next blank session's opening line is asked for while nothing runs.
+  const runQuiet = runStatus.kind !== "running" && runStatus.kind !== "submitting" && runStatus.kind !== "queued";
+  usePrefetchGreeting(session && canCreateSession ? companionGreeting : undefined, activeProjectId, persona, recentSession, runQuiet);
   const sectionRef = useRef<HTMLElement>(null);
   const quickStart = onDraftText ? (text: string) => {
     onDraftText(text);
@@ -367,7 +370,7 @@ export function Chat({
             searchFiles={searchFiles}
             onRunCommand={onRunCommand}
             onActivity={companion.signal}
-            perch={session && hasMessages ? <CompanionDock mood={companion.mood} nodKey={companion.nodKey} persona={persona} onPersona={setPersona} /> : undefined}
+            perch={session && hasMessages ? <CompanionDock mood={companion.mood} run={runStatus.kind} nodKey={companion.nodKey} persona={persona} onPersona={setPersona} /> : undefined}
             onConfigChange={onConfigChange}
           />
           {session && hasMessages && <StatsBar stats={stats} streamLost={streamLost} timeline={timeline} pending={streaming || queued} modelOutput={modelOutput} runProgress={runProgress} activeTools={activeTools} />}

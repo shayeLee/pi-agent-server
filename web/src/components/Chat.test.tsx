@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { act, render, screen, fireEvent, within } from "@testing-library/react";
 import { Chat } from "./Chat.js";
+import { PREFETCH_DELAY_MS } from "./companion/Companion.js";
 import type { SessionRecord, TimelineItem } from "pi-agent-server/client";
 
 const session: SessionRecord = {
@@ -350,6 +351,20 @@ describe("Chat（聊天区）", () => {
     expect(within(chips).getAllByRole("button").map(button => button.textContent)).toEqual([expect.stringContaining("/review")]);
     fireEvent.click(within(chips).getByRole("button"));
     expect(onDraftText).toHaveBeenCalledWith("/review ");
+  });
+
+  it("会话里的数字人：任务完成时说一句；没有任务在跑时提前要下一个空白会话的开场白", () => {
+    vi.useFakeTimers();
+    try {
+      const companionGreeting = vi.fn(async () => ({ greeting: "早", hint: "好" }));
+      const props = setup({ phase: "streaming", companionGreeting, recentSession: { title: "测试会话", updatedAt: 2000 } });
+      act(() => { vi.advanceTimersByTime(PREFETCH_DELAY_MS * 2); });
+      expect(companionGreeting).not.toHaveBeenCalled();
+      props.update({ phase: "completed" });
+      expect(screen.getByTestId("companion-bubble")).toBeInTheDocument();
+      act(() => { vi.advanceTimersByTime(PREFETCH_DELAY_MS); });
+      expect(companionGreeting).toHaveBeenCalledTimes(1);
+    } finally { vi.useRealTimers(); }
   });
 
   it("没有可用命令时不显示快捷入口", async () => {

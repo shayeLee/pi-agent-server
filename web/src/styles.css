@@ -3737,19 +3737,19 @@ div.shortcut-help { width: min(440px, calc(100vw - 32px)); max-height: 80vh; ove
 .companion-name { font-family: var(--font-mono); font-size: var(--fs-meta); color: var(--dim); }
 .companion-greeting { margin: 0; font-size: var(--fs-h2); line-height: 1.5; color: var(--ink); }
 .companion-hint { margin: 0; font-size: var(--fs-ui); line-height: 1.6; color: var(--body2); }
-/* While the model writes the line: three dots in the greeting's place, so nothing jumps after. */
+/* Room for one greeting line and one hint line from the start, so what is below stays put when the words arrive. */
+.companion-lines { display: flex; flex-direction: column; align-items: center; gap: var(--space-4); min-height: calc(var(--fs-h2) * 1.5 + var(--space-4) + var(--fs-ui) * 1.6); }
+/* While the model writes the line: three dots in the greeting's place. */
 .companion-pending { display: flex; justify-content: center; align-items: center; gap: 6px; min-height: 1.5em; }
 .companion-pending span { width: 6px; height: 6px; border-radius: var(--radius-pill); background: var(--dim); animation: companion-pending 1.2s ease-in-out infinite; }
 .companion-pending span:nth-child(2) { animation-delay: 0.15s; }
 .companion-pending span:nth-child(3) { animation-delay: 0.3s; }
 @keyframes companion-pending { 0%, 60%, 100% { opacity: 0.3; transform: translateY(0); } 30% { opacity: 1; transform: translateY(-3px); } }
 
-/* An even grid: a chip that wraps lines up under the first column instead of floating mid-row. */
-.companion-quick { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr)); gap: var(--space-8); width: 100%; }
-.companion-chip { display: inline-flex; align-items: baseline; gap: var(--space-8); max-width: 100%; min-width: 0; padding: 6px 10px; border: 1px solid var(--line); border-radius: var(--radius-control); background: none; color: var(--ink); cursor: pointer; text-align: left; }
-.companion-chip:hover { border-color: var(--ink); background: var(--hl); }
-.companion-chip-name { flex: none; font-family: var(--font-mono); font-size: var(--fs-step); }
-.companion-chip-detail { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-meta); color: var(--dim); }
+/* One centred row of names, like the words they put in the editor; the description is the tooltip. */
+.companion-quick { display: flex; flex-wrap: wrap; justify-content: center; gap: var(--space-8); max-width: 100%; }
+.companion-chip { max-width: 100%; overflow: hidden; padding: 2px 10px; border: 1px solid var(--line); border-radius: var(--radius-control); background: none; color: var(--body2); font-family: var(--font-mono); font-size: var(--fs-step); line-height: 1.6; white-space: nowrap; text-overflow: ellipsis; cursor: pointer; }
+.companion-chip:hover { border-color: var(--ink); color: var(--ink); background: var(--hl); }
 
 .companion-editor { display: flex; flex-wrap: wrap; justify-content: center; align-items: center; gap: var(--space-12); font-size: var(--fs-meta); color: var(--dim); }
 .companion-field { display: inline-flex; align-items: center; gap: var(--space-8); }
@@ -3768,6 +3768,13 @@ div.shortcut-help { width: min(440px, calc(100vw - 32px)); max-height: 80vh; ove
 /* At dock size the default line would render about a pixel wide and read as faint grey. */
 .companion-dock .companion-figure { stroke-width: 2.3; }
 .companion-dock-dot { width: 6px; height: 6px; border-radius: var(--radius-pill); background: var(--faint); }
+/* At small size the face has only eyes and mouth; their strokes thicken with the outline. */
+.companion-figure[data-size="small"] .companion-face path { stroke-width: 2; }
+/* For a moment after a run ends: a word to the cat's left at head height, pointing at it. */
+.companion-bubble { position: absolute; right: calc(100% + 4px); bottom: 14px; padding: 2px 8px; border: 1px solid var(--faint); border-radius: var(--radius-control); background: var(--card); color: var(--ink); font-size: var(--fs-meta); line-height: 1.6; white-space: nowrap; pointer-events: none; transform-origin: 100% 50%; animation: companion-bubble 3s ease-out both; }
+.companion-bubble[data-kind="failed"] { border-color: var(--err); }
+.companion-bubble::after { content: ""; position: absolute; top: 50%; right: -4px; width: 6px; height: 6px; margin-top: -3px; border-top: 1px solid; border-right: 1px solid; border-color: inherit; background: inherit; transform: rotate(45deg); }
+@keyframes companion-bubble { 0% { opacity: 0; transform: translateX(4px) scale(0.9); } 8%, 85% { opacity: 1; transform: none; } 100% { opacity: 0; transform: none; } }
 
 /* Paint: currentColor lines; the catchlight is the page showing through, the accent marks work and joy. */
 .companion-shine { fill: var(--companion-shine); }
@@ -3872,7 +3879,9 @@ div.shortcut-help { width: min(440px, calc(100vw - 32px)); max-height: 80vh; ove
 @media (prefers-reduced-motion: reduce) {
   .companion-figure *, .companion-figure[data-mood] .companion-eyes { animation: none !important; transition: none !important; }
   .companion-pending span { animation: none; opacity: 0.6; }
+  .companion-bubble { animation: none; }
 }
 @container chat (max-width: 640px) {
   .companion-greeting { font-size: var(--fs-body); }
+  .companion-lines { min-height: calc(var(--fs-body) * 1.5 + var(--space-4) + var(--fs-ui) * 1.6); }
 }

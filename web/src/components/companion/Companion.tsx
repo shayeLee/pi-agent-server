@@ -1,5 +1,6 @@
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type { CompanionGreeting, CompanionGreetingInput, SessionCommandInfo } from "pi-agent-server/client";
+import type { RunStatus } from "../../hooks/useRunStatus.js";
 import { zhCN } from "../../i18n/zh-CN.js";
 import { CompanionFigure } from "./CompanionFigure.js";
 import type { CompanionMood } from "./companion-mood.js";
@@ -8,6 +9,12 @@ import { dayPart, moodLine, normalizeName, openingLines, readPersona, readStored
 const QUICK_START_LIMIT = 3;
 /** How long the companion "thinks" before it speaks its own line instead; a late reply is dropped. */
 export const GREETING_WAIT_MS = 5000;
+/** A line that comes back sooner than this (a cached one) appears without the thinking dots flashing first. */
+export const PENDING_SHOW_MS = 400;
+/** How long the docked companion has to sit quietly before it asks for the next blank session's line. */
+export const PREFETCH_DELAY_MS = 2000;
+/** How long the docked companion's word on a finished run stays up. */
+export const BUBBLE_MS = 3000;
 const STYLES: CompanionStyle[] = ["concise", "lively", "formal"];
 
 /** Reads and writes the persona the server keeps for this person. */
@@ -106,32 +113,82 @@ export function CompanionWelcome({ mood, nodKey, persona, onPersona, projectId, 
   const generated = useGeneratedLines(generateLines, projectId, persona, recent, now);
   // The model's line when it came in time, otherwise ours; nothing while it is still thinking.
   const lines = generated.state === "ready" ? generated.lines : generated.state === "pending" ? null : local;
+  const thinking = useAfter(generated.state === "pending", PENDING_SHOW_MS);
 
   return <div className="companion-welcome" data-testid="companion-welcome">
     <div className="companion-stage">
       <button type="button" className="companion-avatar" data-mood={mood} aria-expanded={editing} aria-controls={editorId}
         aria-label={zhCN.companion.edit(persona.name)} title={zhCN.companion.edit(persona.name)} onClick={() => { boop(); setEditing(value => !value); }}>
-        <CompanionFigure mood={generated.state === "pending" && mood === "idle" ? "thinking" : mood} size={128} pulse={pulse} />
+        <CompanionFigure mood={thinking && mood === "idle" ? "thinking" : mood} size={128} pulse={pulse} />
       </button>
       <div className="companion-speech" aria-live="polite">
         <span className="companion-name">{persona.name}</span>
-        {lines ? <>
-          <p className="companion-greeting">{lines.greeting}</p>
-          <p className="companion-hint">{lines.hint}</p>
-        </> : generated.state === "pending" && <p className="companion-greeting companion-pending" aria-label={zhCN.companion.thinking}>
-          <span /><span /><span />
-        </p>}
+        {/* Holds the room of a greeting and a hint, so nothing below moves when the words arrive. */}
+        <div className="companion-lines">
+          {lines ? <>
+            <p className="companion-greeting">{lines.greeting}</p>
+            <p className="companion-hint">{lines.hint}</p>
+          </> : thinking && <p className="companion-greeting companion-pending" aria-label={zhCN.companion.thinking}>
+            <span /><span /><span />
+          </p>}
+        </div>
       </div>
     </div>
     {editing && <PersonaEditor id={editorId} persona={persona} onChange={onPersona} onDone={() => setEditing(false)} />}
     {onQuickStart && list && list.length > 0 && <div className="companion-quick" role="group" aria-label={zhCN.companion.quickStart}>
       {list.slice(0, QUICK_START_LIMIT).map(command => <button key={command.name} type="button" className="companion-chip"
-        title={command.description} onClick={() => onQuickStart(`/${command.name} `)}>
-        <span className="companion-chip-name">/{command.name}</span>
-        {command.description && <span className="companion-chip-detail">{command.description}</span>}
-      </button>)}
+        title={command.description || undefined} onClick={() => onQuickStart(`/${command.name} `)}>/{command.name}</button>)}
     </div>}
   </div>;
+}
+
+/** True once `on` has held for `ms`; false again as soon as it stops. */
+function useAfter(on: boolean, ms: number): boolean {
+  const [late, setLate] = useState(false);
+  useEffect(() => {
+    if (!on) return;
+    const timer = setTimeout(() => setLate(true), ms);
+    return () => { clearTimeout(timer); setLate(false); };
+  }, [on, ms]);
+  return on && late;
+}
+
+/** What the model is told about this moment; the blank page and the early ask send the same. */
+function greetingInput(persona: CompanionPersona, recent: { title: string; updatedAt: number } | null, at: Date): CompanionGreetingInput {
+  return {
+    persona: { name: persona.name, style: persona.style },
+    dayPart: dayPart(at.getHours()),
+    recent: recent ? { title: recent.title.slice(0, 200), minutesAgo: Math.max(0, Math.floor((at.getTime() - recent.updatedAt) / 60_000)) } : null,
+  };
+}
+
+/** The server caches a line per these recency buckets, so asking again inside one costs nothing. */
+function recencyBucket(minutes: number): string {
+  if (minutes < 60) return "m";
+  if (minutes < 24 * 60) return `h${Math.floor(minutes / 60)}`;
+  return `d${Math.floor(minutes / (24 * 60))}`;
+}
+
+/**
+ * Asks for the next blank session's line ahead of time while the person works in a session of
+ * the same project, so the server's cache already holds it when they open a blank one. Waits
+ * until no run is in flight and nothing has changed for PREFETCH_DELAY_MS, and asks at most
+ * once per situation; the reply itself is not kept here.
+ */
+export function usePrefetchGreeting(generate: CompanionWelcomeProps["generateLines"], projectId: string | null, persona: CompanionPersona,
+  recent: CompanionWelcomeProps["recent"], quiet: boolean, now: () => Date = () => new Date()) {
+  const asked = useRef(new Set<string>());
+  const at = now();
+  const input = generate && projectId && quiet && recent !== undefined ? greetingInput(persona, recent, at) : null;
+  const key = input ? JSON.stringify([projectId, input.persona, input.dayPart, input.recent && [input.recent.title, recencyBucket(input.recent.minutesAgo)]]) : null;
+  useEffect(() => {
+    if (!generate || !input || key === null || asked.current.has(key)) return;
+    const timer = setTimeout(() => {
+      asked.current.add(key);
+      generate(input).catch(() => undefined);
+    }, PREFETCH_DELAY_MS);
+    return () => clearTimeout(timer);
+  }, [key]);
 }
 
 type Generated = { state: "off" | "pending" | "fallback" } | { state: "ready"; lines: CompanionGreeting };
@@ -159,12 +216,8 @@ function useGeneratedLines(generate: CompanionWelcomeProps["generateLines"], pro
     let current = true;
     // A reply after the wait is dropped: the local line is already on screen.
     const settle = (value: Generated) => { if (current && expiredRef.current !== waitKey) setResult({ key, value }); };
-    const at = now();
-    generate({
-      persona: { name: persona.name, style: persona.style },
-      dayPart: dayPart(at.getHours()),
-      recent: recent ? { title: recent.title.slice(0, 200), minutesAgo: Math.max(0, Math.floor((at.getTime() - recent.updatedAt) / 60_000)) } : null,
-    }).then(lines => settle({ state: "ready", lines }), () => settle({ state: "fallback" }));
+    generate(greetingInput(persona, recent ?? null, now()))
+      .then(lines => settle({ state: "ready", lines }), () => settle({ state: "fallback" }));
     return () => { current = false; };
   }, [key]);
   if (waitKey === null) return { state: "off" };
@@ -190,9 +243,39 @@ function PersonaEditor({ id, persona, onChange, onDone }: { id: string; persona:
   </form>;
 }
 
-/** The companion docked beside the transcript: mood only, its words on hover, and it can be sent away. */
-export function CompanionDock({ mood, nodKey, persona, onPersona }: { mood: CompanionMood; nodKey: number; persona: CompanionPersona; onPersona: (persona: CompanionPersona) => void }) {
+function pageVisible(): boolean {
+  try { return document.visibilityState === "visible"; } catch { return true; }
+}
+
+/**
+ * How a run this page watched just ended, for BUBBLE_MS: only completed or failed (an abort is
+ * the person's own doing), and only if the page is in front when it ends — nothing is saved up
+ * for later. The next run, or another session, takes it down at once.
+ */
+function useRunBubble(run: RunStatus["kind"]): "completed" | "failed" | null {
+  const [bubble, setBubble] = useState<"completed" | "failed" | null>(null);
+  useEffect(() => {
+    if ((run !== "completed" && run !== "failed") || !pageVisible()) return;
+    setBubble(run);
+    const timer = setTimeout(() => setBubble(null), BUBBLE_MS);
+    return () => { clearTimeout(timer); setBubble(null); };
+  }, [run]);
+  return bubble;
+}
+
+/**
+ * The companion docked beside the transcript: mood only, its words on hover and, for a moment,
+ * on how a run ended; it can be sent away.
+ */
+export function CompanionDock({ mood, run, nodKey, persona, onPersona }: {
+  mood: CompanionMood;
+  run: RunStatus["kind"];
+  nodKey: number;
+  persona: CompanionPersona;
+  onPersona: (persona: CompanionPersona) => void;
+}) {
   const [pulse] = usePulse(nodKey);
+  const bubble = useRunBubble(run);
   if (!persona.docked) {
     return <button type="button" className="companion-dock is-away" data-testid="companion-dock" aria-label={zhCN.companion.show(persona.name)}
       title={zhCN.companion.show(persona.name)} onClick={() => onPersona({ ...persona, docked: true })}>
@@ -202,6 +285,10 @@ export function CompanionDock({ mood, nodKey, persona, onPersona }: { mood: Comp
   const line = moodLine(persona, mood);
   return <button type="button" className="companion-dock" data-testid="companion-dock" data-mood={mood}
     aria-label={`${line} ${zhCN.companion.hide(persona.name)}`} title={line} onClick={() => onPersona({ ...persona, docked: false })}>
+    {/* The run state badge already says this for assistive tech. */}
+    {bubble && <span className="companion-bubble" data-testid="companion-bubble" data-kind={bubble} aria-hidden="true">
+      {zhCN.companion.voices[persona.style].bubbles[bubble]}
+    </span>}
     <CompanionFigure mood={mood} size={44} pulse={pulse} />
   </button>;
 }

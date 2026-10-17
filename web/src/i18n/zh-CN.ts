@@ -4,6 +4,8 @@ type CompanionVoice = {
   commands: (count: number) => string;
   files: string;
   moods: Record<"idle" | "listening" | "curious" | "thinking" | "working" | "happy" | "sad" | "sleepy", string>;
+  /** What the docked companion says for a moment when a run it watched ends. */
+  bubbles: Record<"completed" | "failed", string>;
 };
 
 /** The companion's three voices (DESIGN.md §6.6): same facts, different temperament. */
@@ -21,6 +23,7 @@ const companionVoices: Record<"concise" | "lively" | "formal", CompanionVoice> =
     commands: count => `本项目有 ${count} 个模板 / skill，输入 / 查看。`,
     files: "输入 @ 引用项目文件。",
     moods: { idle: "待命。", listening: "在听。", curious: "选哪个？", thinking: "排队中。", working: "执行中。", happy: "完成。", sad: "没成功。", sleepy: "待机中。" },
+    bubbles: { completed: "完成了。", failed: "失败了，看下错误。" },
   },
   lively: {
     greetings: {
@@ -35,6 +38,7 @@ const companionVoices: Record<"concise" | "lively" | "formal", CompanionVoice> =
     commands: count => `这个项目藏着 ${count} 个模板和 skill，输入 / 就能翻出来～`,
     files: "想让我看哪个文件？输入 @ 就能挑。",
     moods: { idle: "我在这儿～", listening: "嗯嗯，我在听！", curious: "哪个好呢？", thinking: "马上就来…", working: "埋头干活中！", happy: "搞定啦！", sad: "呜，没成功…", sleepy: "有点困了…" },
+    bubbles: { completed: "搞定啦！快看看～", failed: "哎呀，出错了，看看？" },
   },
   formal: {
     greetings: {
@@ -49,6 +53,7 @@ const companionVoices: Record<"concise" | "lively" | "formal", CompanionVoice> =
     commands: count => `本项目提供 ${count} 个提示词模板与 skill，输入 / 即可选用。`,
     files: "如需引用项目文件，请输入 @ 选择。",
     moods: { idle: "随时待命。", listening: "正在聆听。", curious: "请选择。", thinking: "正在排队。", working: "正在处理。", happy: "已完成。", sad: "未能完成。", sleepy: "处于待机状态。" },
+    bubbles: { completed: "任务已完成，请查看。", failed: "任务未能完成，请查看错误。" },
   },
 };
 

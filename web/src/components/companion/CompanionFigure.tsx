@@ -4,6 +4,8 @@ import type { CompanionMood } from "./companion-mood.js";
 
 const star = (x: number, y: number, r: number) => `M${x} ${y - r}Q${x} ${y} ${x + r} ${y}Q${x} ${y} ${x} ${y + r}Q${x} ${y} ${x - r} ${y}Q${x} ${y} ${x} ${y - r}Z`;
 const SPARKLES = [star(7, 18, 2.4), star(58, 26, 2), star(54, 9, 1.5)];
+/** Below this size the face keeps only what still reads: bigger eyes and the mouth, no blush, catchlights or nose. */
+const SMALL_SIZE = 64;
 
 /**
  * One continuous outline: two rounded ears, no neck, a sitting body a touch wider than the
@@ -35,7 +37,8 @@ export function CompanionFigure({ mood, size, pulse = null, alive = true }: {
   const gaze = useGaze(ref, watching);
   const antic = useAntics(living && mood === "idle");
   const [gx, gy] = watching && gaze ? gaze : [0, 0];
-  return <svg ref={ref} className="companion-figure" data-mood={mood} data-antic={antic ?? undefined} width={size} height={size}
+  const small = size < SMALL_SIZE;
+  return <svg ref={ref} className="companion-figure" data-mood={mood} data-antic={antic ?? undefined} data-size={small ? "small" : undefined} width={size} height={size}
     viewBox="0 0 64 64" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"
     aria-hidden="true" focusable="false">
     {/* Remounting the group replays the one-shot reaction. */}
@@ -54,7 +57,7 @@ export function CompanionFigure({ mood, size, pulse = null, alive = true }: {
         <path className="companion-paw companion-paw-right" d="M33.4 58c0-2.7 1.4-4.2 3.2-4.2s3.2 1.5 3.2 4.2" />
         {/* The face turns a little toward the pointer, and the eyes a little more. */}
         <g className="companion-gaze" style={{ transform: `translate(${gx * 0.5}px, ${gy * 0.5}px)` }}>
-          <Face mood={mood} gaze={[gx * 0.6, gy * 0.6]} />
+          <Face mood={mood} gaze={[gx * 0.6, gy * 0.6]} small={small} />
         </g>
       </g>
     </g>
@@ -67,55 +70,63 @@ export function CompanionFigure({ mood, size, pulse = null, alive = true }: {
 }
 
 /** One open eye: a solid dot with a page-coloured catchlight, which is most of what makes it look alive. */
-function Eye({ x, y, scale = 1 }: { x: number; y: number; scale?: number }) {
+function Eye({ x, y, scale = 1, shine = true }: { x: number; y: number; scale?: number; shine?: boolean }) {
   const rx = 2.4 * scale, ry = 2.8 * scale;
   return <g className="companion-eye">
     <ellipse cx={x} cy={y} rx={rx} ry={ry} fill="currentColor" stroke="none" />
-    <circle className="companion-shine" cx={x - rx * 0.3} cy={y - ry * 0.4} r={rx * 0.42} stroke="none" />
-    <circle className="companion-shine" cx={x + rx * 0.35} cy={y + ry * 0.4} r={rx * 0.16} stroke="none" />
+    {shine && <>
+      <circle className="companion-shine" cx={x - rx * 0.3} cy={y - ry * 0.4} r={rx * 0.42} stroke="none" />
+      <circle className="companion-shine" cx={x + rx * 0.35} cy={y + ry * 0.4} r={rx * 0.16} stroke="none" />
+    </>}
   </g>;
 }
+
+/** How much bigger the open eyes are drawn at small size. */
+const SMALL_EYES = 1.3;
 
 const EYE_L = 25;
 const EYE_R = 39;
 const EYE_Y = 33.4;
-const NOSE = <path className="companion-nose" d="M31 36.1h2l-1 1.1Z" fill="currentColor" strokeWidth="0.8" />;
+const FULL_NOSE = <path className="companion-nose" d="M31 36.1h2l-1 1.1Z" fill="currentColor" strokeWidth="0.8" />;
 /** The cat's little "ω". */
 const MOUTH = <path d="M29.6 38.1c.7.9 1.7.9 2.4 0c.7.9 1.7.9 2.4 0" strokeWidth="1.4" />;
 /** Manga blush: three short strokes under each eye. */
-const BLUSH = <path className="companion-blush" d="M18.6 39.6l1.1-1.6M20.6 39.6l1.1-1.6M22.6 39.6l1.1-1.6M41.3 39.6l1.1-1.6M43.3 39.6l1.1-1.6M45.3 39.6l1.1-1.6" strokeWidth="1" />;
+const FULL_BLUSH = <path className="companion-blush" d="M18.6 39.6l1.1-1.6M20.6 39.6l1.1-1.6M22.6 39.6l1.1-1.6M41.3 39.6l1.1-1.6M43.3 39.6l1.1-1.6M45.3 39.6l1.1-1.6" strokeWidth="1" />;
 
-function Face({ mood, gaze: [gx, gy] }: { mood: CompanionMood; gaze: [number, number] }) {
+function Face({ mood, gaze: [gx, gy], small }: { mood: CompanionMood; gaze: [number, number]; small: boolean }) {
+  const grow = small ? SMALL_EYES : 1;
   const eyes = (left = 1, right = 1) => <g className="companion-eyes-gaze" style={{ transform: `translate(${gx}px, ${gy}px)` }}>
-    <g className="companion-eyes"><Eye x={EYE_L} y={EYE_Y} scale={left} /><Eye x={EYE_R} y={EYE_Y} scale={right} /></g>
+    <g className="companion-eyes"><Eye x={EYE_L} y={EYE_Y} scale={left * grow} shine={!small} /><Eye x={EYE_R} y={EYE_Y} scale={right * grow} shine={!small} /></g>
   </g>;
+  const blush = small ? null : FULL_BLUSH;
+  const nose = small ? null : FULL_NOSE;
   switch (mood) {
     case "happy":
       return <g className="companion-face" data-blush="strong">
-        {BLUSH}
+        {blush}
         <path d="M22.2 34.2c1-2.6 4.6-2.6 5.6 0M36.2 34.2c1-2.6 4.6-2.6 5.6 0" strokeWidth="2" />
-        {NOSE}
+        {nose}
         <path d="M29.4 38c.6 2.9 4.6 2.9 5.2 0Z" fill="currentColor" strokeWidth="1.2" />
       </g>;
     case "sad":
       return <g className="companion-face">
         <path d="M22 30.4l4.4-1.4M42 30.4l-4.4-1.4" strokeWidth="1.4" />
         {eyes(0.85, 0.85)}
-        {NOSE}
+        {nose}
         <path d="M30.2 39.6c1.1-1.1 2.5-1.1 3.6 0" strokeWidth="1.4" />
       </g>;
     case "sleepy":
       return <g className="companion-face">
-        {BLUSH}
+        {blush}
         <path d="M22.2 33.4c1 1.5 4.6 1.5 5.6 0M36.2 33.4c1 1.5 4.6 1.5 5.6 0" strokeWidth="2" />
-        {NOSE}
+        {nose}
         <ellipse cx="32" cy="39" rx="0.8" ry="1" fill="currentColor" stroke="none" />
       </g>;
     case "curious":
       return <g className="companion-face">
-        {BLUSH}
+        {blush}
         {eyes(1.18, 0.9)}
-        {NOSE}
+        {nose}
         <ellipse cx="32" cy="39.2" rx="1.1" ry="1.3" strokeWidth="1.3" />
       </g>;
     default: {
@@ -123,7 +134,7 @@ function Face({ mood, gaze: [gx, gy] }: { mood: CompanionMood; gaze: [number, nu
       const mouth = mood === "working" ? <path d="M30.6 38.5h2.8" strokeWidth="1.4" />
         : mood === "thinking" ? <path d="M29.8 38.8c.7-.7 1.5-.7 2.2 0s1.5.7 2.2 0" strokeWidth="1.3" />
         : MOUTH;
-      return <g className="companion-face">{mood === "working" ? null : BLUSH}{eyes()}{NOSE}{mouth}</g>;
+      return <g className="companion-face">{mood === "working" ? null : blush}{eyes()}{nose}{mouth}</g>;
     }
   }
 }
