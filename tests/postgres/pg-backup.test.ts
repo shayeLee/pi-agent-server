@@ -233,7 +233,7 @@ describe("PostgreSQL backup core fake-process safety (WP3B2)", () => {
     target.nativeSourceRows = [active, privateClaim, tombstone];
     const nativeRoot = path.join(f.root, "restored-native");
     await restorePostgresBackup({ paths: { inputBackup: backup.finalPath!, targetRoot: path.join(f.root, "restore-native"), ageIdentityFile: f.identity,
-      nativeSourceRoot: nativeRoot, nativeCwdMap: { [f.root]: f.root } }, targetDatabaseUrl: "postgres://u:p@example.test/pi_restore_native",
+      nativeSourceRoot: nativeRoot }, targetDatabaseUrl: "postgres://u:p@example.test/pi_restore_native",
       safetyContract: POSTGRES_RESTORE_SAFETY_CONTRACT, age: fakeAge(), pgClient: target, pgProcess: new FakeRestoreProcess(target),
       nativeRestoreCheckpoint(phase) {
         if (["linked", "renamed", "committed"].includes(phase)) {

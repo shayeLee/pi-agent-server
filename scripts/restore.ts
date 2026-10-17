@@ -66,8 +66,9 @@ async function main(): Promise<void> {
     ageIdentityFile: cli.ageIdentityFile,
     ...(process.env.PI_RESTORE_UPLOAD_AGENT_ROOT ? { uploadAgentRoot: process.env.PI_RESTORE_UPLOAD_AGENT_ROOT } : {}),
     ...(process.env.PI_RESTORE_NATIVE_SOURCE_ROOT ? { nativeSourceRoot: process.env.PI_RESTORE_NATIVE_SOURCE_ROOT } : {}),
-    ...(process.env.PI_RESTORE_NATIVE_CWD_MAP ? { nativeCwdMap: JSON.parse(process.env.PI_RESTORE_NATIVE_CWD_MAP) } : {}),
   };
+  // Removed: sessions always return to their original project path.
+  if (process.env.PI_RESTORE_NATIVE_CWD_MAP !== undefined) throw new Error("用法：PI_RESTORE_NATIVE_CWD_MAP 已移除；原生会话总是恢复到原项目路径，请取消该环境变量");
   if (cli.targetPgUrl !== undefined) {
     const result = await restorePostgresBackup({ paths, targetDatabaseUrl: cli.targetPgUrl, safetyContract: POSTGRES_RESTORE_SAFETY_CONTRACT, dryRun: cli.dryRun });
     console.log(JSON.stringify({ ...result.report, dryRun: result.dryRun }));

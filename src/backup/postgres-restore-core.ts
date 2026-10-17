@@ -56,7 +56,7 @@ import {
 } from "./postgres-backup-core.js";
 import type { PostgresBackupManifest, BackupFileRecord } from "./backup-core.js";
 
-import { validateNativeManifest, validateNativeSet, unauthorisedRestoreBinding, planNativeRestore, publishNativeRestore, recordNativeRestore, finalizeNativeRestore, type NativeRestorePhase, type NativeRestoreOptions, type NativeRestoreClaim } from "./native-payload.js";
+import { validateNativeManifest, validateNativeSet, unauthorisedRestoreBinding, planNativeRestore, nativeRestoreRoot, publishNativeRestore, recordNativeRestore, finalizeNativeRestore, type NativeRestorePhase, type NativeRestoreOptions, type NativeRestoreClaim } from "./native-payload.js";
 
 const RESTORE_DIR_PREFIX = "restore-";
 const SAFE_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -1193,7 +1193,8 @@ export async function restorePostgresBackup(options: PostgresRestoreOptions): Pr
       }
     }
 
-    const nativeClaims = planNativeRestore(manifest.nativeSessionSources, assembledRoot, options.paths);
+    const nativeClaims = planNativeRestore(manifest.nativeSessionSources, assembledRoot,
+      { nativeSourceRoot: nativeRestoreRoot(options.paths.nativeSourceRoot, resolved.target) });
     const publishNativeAndDrill = () => {
       if (existsSync(resolved.target)) safeDirectory(resolved.target, "target root");
       else { mkdirSync(resolved.target, { recursive: true, mode: 0o700 }); chmodSync(resolved.target, 0o700); targetCreated = true; }

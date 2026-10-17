@@ -100,9 +100,14 @@ export function captureNativePayloads(entries: readonly NativeBackupEntry[], sou
 }
 
 export interface NativeRestoreOptions {
+  /** Where restored native sessions go; defaults to `<target root>/native-sessions` (nativeRestoreRoot). */
   readonly nativeSourceRoot?: string;
-  /** Explicit identity mapping; bytes (including header.cwd) are never rewritten. */
-  readonly nativeCwdMap?: Readonly<Record<string, string>>;
+}
+
+/** Default native destination: inside the isolated restore target, never the live session directory. */
+export const NATIVE_RESTORE_DEFAULT_DIR = "native-sessions";
+export function nativeRestoreRoot(configured: string | undefined, canonicalTarget: string): string {
+  return configured ?? path.join(canonicalTarget, NATIVE_RESTORE_DEFAULT_DIR);
 }
 export interface NativeRestoreClaim { entry: NativeBackupEntry; target: string; binding: string; staged: string }
 
@@ -116,10 +121,10 @@ export function planNativeRestore(entries: readonly NativeBackupEntry[] | undefi
   if (!root || !path.isAbsolute(root) || path.resolve(root) !== root) fail("restore requires configured nativeSourceRoot");
   const claims = active.map(entry => {
     const original = JSON.parse(entry.binding) as NativeSourceBinding;
-    const mapped = options.nativeCwdMap?.[original.cwd];
-    if (mapped !== original.cwd) fail("restore requires validated identity cwd mapping (native bytes are not rewritten)");
-    const identity = canonicalCwdIdentity(mapped);
-    if (identity.cwd !== mapped) fail("restore cwd mapping is not canonical");
+    // Sessions return to the project they were taken from: bytes (including
+    // header.cwd) are never rewritten, so a project must exist at its original path.
+    const identity = canonicalCwdIdentity(original.cwd);
+    if (identity.cwd !== original.cwd) fail("native session project is not at its original canonical path");
     validateNativeRelative(entry.relativeSourcePath, identity.cwd);
     const target = path.join(root, entry.relativeSourcePath);
     // Probe every existing component; missing leaf/ancestors are fine, symlinks are not.
@@ -135,7 +140,7 @@ export function planNativeRestore(entries: readonly NativeBackupEntry[] | undefi
     const header = JSON.parse(bytes.subarray(0, bytes.indexOf(10)).toString("utf8"));
     // Backup accepts lexical cwd aliases such as /project/. after canonical
     // identity validation. Preserve those exact bytes on restore, but require
-    // the header directory to exist and identify the explicitly mapped cwd.
+    // the header directory to exist and identify the original project.
     const headerIdentity = typeof header.cwd === "string" && path.isAbsolute(header.cwd) ? canonicalCwdIdentity(header.cwd) : undefined;
     if (header.id !== entry.source_id || header.version !== 3 || header.type !== "session" ||
       !headerIdentity || headerIdentity.cwd !== identity.cwd || headerIdentity.dev !== identity.dev || headerIdentity.ino !== identity.ino) fail("native restored header differs from claim");

@@ -36,7 +36,7 @@ import { validateRestoredFileOperations } from "./restore-validation.js";
 import { snapshotUploadedRows, validateAttachmentSet, verifyAttachmentBlob } from "./attachment-payload.js";
 import type { BackupFileRecord, BackupManifest, BackupSourceRoots } from "./backup-core.js";
 
-import { validateNativeManifest, validateNativeSet, unauthorisedRestoreBinding, planNativeRestore, publishNativeRestore, recordNativeRestore, finalizeNativeRestore, type NativeRestorePhase, type NativeRestoreOptions, type NativeRestoreClaim, type NativeBackupEntry } from "./native-payload.js";
+import { validateNativeManifest, validateNativeSet, unauthorisedRestoreBinding, planNativeRestore, nativeRestoreRoot, publishNativeRestore, recordNativeRestore, finalizeNativeRestore, type NativeRestorePhase, type NativeRestoreOptions, type NativeRestoreClaim, type NativeBackupEntry } from "./native-payload.js";
 
 const AGE_TIMEOUT_MS = 60_000;
 const READ_CHUNK_SIZE = 64 * 1024;
@@ -943,7 +943,8 @@ export async function restoreSqliteBackup(options: RestoreOptions): Promise<Rest
       }
     }
 
-    const nativeClaims = planNativeRestore(manifest.nativeSessionSources, assembledRoot, options.paths);
+    const nativeClaims = planNativeRestore(manifest.nativeSessionSources, assembledRoot,
+      { nativeSourceRoot: nativeRestoreRoot(options.paths.nativeSourceRoot, resolved.target) });
     const included = new Set(records.keys());
     const remap = remapDatabase(database, finalPath, manifest, included, invalidHistories,
       agentBase ? path.join(agentBase, path.basename(finalPath), "uploads") : undefined, nativeClaims);

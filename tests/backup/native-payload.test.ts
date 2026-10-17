@@ -8,7 +8,7 @@ import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { createSqliteBackup } from "../../src/backup/backup-core.js";
 import { restoreSqliteBackup } from "../../src/backup/restore-core.js";
-import { snapshotNativeSources, validateNativeManifest, validateNativeSet, planNativeRestore, publishNativeRestore, NATIVE_RESTORE_RECORD } from "../../src/backup/native-payload.js";
+import { snapshotNativeSources, validateNativeManifest, validateNativeSet, planNativeRestore, publishNativeRestore, NATIVE_RESTORE_RECORD, NATIVE_RESTORE_DEFAULT_DIR } from "../../src/backup/native-payload.js";
 import { nativeProjectDirectory, readNativeSource } from "../../src/agent/native-session-source.js";
 import { canonicalCwdIdentity } from "../../src/core/native-session-policy.js";
 import { createCanonicalSqliteHead, createCanonicalSqlitePrefix, insertCanonicalSession } from "./sqlite-fixture.js";
@@ -45,7 +45,7 @@ function fixture(version = 2, separateSourceRoot = false) {
   const identity = path.join(root, "identity"); writeFileSync(identity, "fixture", { mode: 0o600 });
   const restoreRoot = path.join(root, "native-restored");
   return { root, dataDir, dbPath, source, bytes, relative, identity, restoreRoot,
-    restorePaths: { targetRoot: path.join(root, "restore"), ageIdentityFile: identity, nativeSourceRoot: restoreRoot, nativeCwdMap: { [root]: root } },
+    restorePaths: { targetRoot: path.join(root, "restore"), ageIdentityFile: identity, nativeSourceRoot: restoreRoot },
     paths: { dataDir, dbPath, nativeSourceRoot, backupRoot: path.join(root, "backups"), ageRecipientFile: recipient, authPath: path.join(root, "credential-not-read") } };
 }
 function forgeManifest(input: string, mutate: (manifest: any) => void) {
@@ -104,16 +104,22 @@ describe("native byte recovery bundles", () => {
       expect(String(db.prepare("SELECT binding FROM native_session_sources WHERE session_id='gone'").get()!.binding)).toContain('"sourceIno":-1');
     } finally { db.close(); }
   });
-  it("round-trips canonical cwd aliases without rewriting header bytes or permitting arbitrary offline maps", async () => {
+  it("round-trips canonical cwd aliases to the original project without rewriting header bytes", async () => {
     const f = fixture();
     const bytes = Buffer.from(f.bytes.toString().replace(`\"cwd\":\"${f.root}\"`, `\"cwd\":\"${f.root}/.\"`));
     writeFileSync(f.source, bytes);
     const backup = await createSqliteBackup({ paths: f.paths, age });
     rmSync(f.source);
-    await expect(restoreSqliteBackup({ paths: { ...f.restorePaths, inputBackup: backup.finalPath!, nativeCwdMap: { [f.root]: path.dirname(f.root) } }, age })).rejects.toThrow(/identity cwd mapping/);
     const restored = await restoreSqliteBackup({ paths: { ...f.restorePaths, inputBackup: backup.finalPath! }, age });
     expect(readFileSync(path.join(f.restoreRoot, f.relative))).toEqual(bytes);
     expect(existsSync(path.join(restored.finalPath!, NATIVE_RESTORE_RECORD))).toBe(false);
+  });
+  it("restores native sessions inside the target root when no native root is configured", async () => {
+    const f = fixture(); const backup = await createSqliteBackup({ paths: f.paths, age });
+    const { nativeSourceRoot: _unset, ...paths } = f.restorePaths;
+    await restoreSqliteBackup({ paths: { ...paths, inputBackup: backup.finalPath! }, age });
+    expect(readFileSync(path.join(realpathSync(f.restorePaths.targetRoot), NATIVE_RESTORE_DEFAULT_DIR, f.relative))).toEqual(f.bytes);
+    expect(existsSync(path.join(f.restoreRoot, f.relative))).toBe(false);
   });
   it("rolls back ordinary publication failures without changing the original source", async () => {
     const f = fixture(); const backup = await createSqliteBackup({ paths: f.paths, age });
