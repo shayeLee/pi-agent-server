@@ -106,6 +106,7 @@ export function projectMcpServerViews(
       enabled: isEnabled(server, setting), exposure: setting?.exposure ?? server.exposure,
       defaultExposure: server.exposure, maxExposure: server.maxExposure,
       hiddenTools: setting?.hiddenTools ?? [], adminOnly: server.adminOnly, updatedAt: setting?.updatedAt ?? null,
+      ...(server.oauth ? { oauthLabel: server.oauth.label } : {}),
     };
   });
   for (const setting of settings) {

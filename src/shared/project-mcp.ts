@@ -14,6 +14,8 @@ export interface ProjectMcpServer {
   readonly maxExposure?: McpExposure;
   readonly hiddenTools: readonly string[];
   readonly adminOnly?: boolean;
+  /** 需要每个用户用自己的账号授权时，是授权按钮上的名字（“连接 Linear”）；共享凭证的 server 没有。 */
+  readonly oauthLabel?: string;
   /** 调用者能否启用它：adminOnly server 只有 admin 能启用；停用不受此限。 */
   readonly canEnable?: boolean;
   /** 项目尚未设置时为 null，表示沿用目录默认值。 */

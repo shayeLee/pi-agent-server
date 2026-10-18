@@ -168,7 +168,7 @@ export class McpOAuthConnections {
     }
   }
 
-  /** 断开：尽量在对方撤销 refresh token 与 access token，然后删除本地凭证。撤销失败不阻止删除。 */
+  /** 断开：尽量在对方撤销 refresh token 与 access token（并行），然后删除本地凭证。撤销失败不阻止删除。 */
   async disconnect(ownerKey: string, serverName: string): Promise<boolean> {
     const credential = await this.#options.store.getCredential(ownerKey, serverName);
     if (!credential) return false;
@@ -177,9 +177,9 @@ export class McpOAuthConnections {
     if (server && credential.serverUrl === server.connection.url && typeof endpoint === "string" && isSecureEndpoint(endpoint)) {
       const client = await this.#provider(ownerKey, server, {}).clientInformation();
       if (client?.client_id === credential.clientId) {
-        for (const [token, hint] of [[credential.tokens.refresh_token, "refresh_token"], [credential.tokens.access_token, "access_token"]] as const) {
-          if (token) await this.#revoke(endpoint, client, token, hint);
-        }
+        // 两个撤销互不依赖，并行发出，断开不必等两次往返。
+        await Promise.all(([[credential.tokens.refresh_token, "refresh_token"], [credential.tokens.access_token, "access_token"]] as const)
+          .filter(([token]) => token).map(([token, hint]) => this.#revoke(endpoint, client, token!, hint)));
       }
     }
     return this.#options.store.deleteCredential(ownerKey, serverName);

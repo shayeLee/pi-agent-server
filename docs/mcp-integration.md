@@ -1,6 +1,6 @@
 # MCP 接入设计
 
-> 状态：P0、P1、P2 已实现（2026-10-17）；P3 的按用户凭证与 OAuth（以动态客户端注册为主）见第 13 节（设计稿，待审阅）。本文记录 pi-agent-server 接入 MCP（Model Context
+> 状态：P0、P1、P2 已实现（2026-10-17）；P3 的按用户凭证与 OAuth（以动态客户端注册为主）P3-0 至 P3-4 已实现（2026-10-18），见第 13 节。本文记录 pi-agent-server 接入 MCP（Model Context
 > Protocol）server 与 codemode 的方案、已确认的决策和分阶段计划。代码事实基于 Pi SDK
 > `@earendil-works/pi-coding-agent@1.3.0`。实现位于 `src/mcp/`、`src/agent/mcp-tool-boundary.ts`
 > 与 `src/storage/kysely-project-mcp-repository.ts`。
@@ -223,7 +223,7 @@ P2 实现说明：
 
 ## 13. P3：按用户凭证与 OAuth（设计稿）
 
-> 状态：设计稿（2026-10-18 改为以动态客户端注册为主），待审阅，未实现。范围只包括“每个用户用自己的身份连 MCP server”；目录热更新、按模型覆盖 exposure 不在本节。
+> 状态：2026-10-18 改为以动态客户端注册为主；P3-0 至 P3-4 已实现，P3-5（预注册客户端接 GitHub）未做。范围只包括“每个用户用自己的身份连 MCP server”；目录热更新、按模型覆盖 exposure 不在本节。
 
 ### 13.1 动机与原则
 
@@ -370,7 +370,7 @@ P3-2 实现说明（2026-10-18）：
 - 回调跳回 `<PI_PUBLIC_URL>/?mcp_oauth=<结果>&mcp_server=<名称>`，地址里不带 code、state 或 token。
 - 网络准入对 `GET /v1/mcp/oauth/callback` 免 Bearer token（浏览器整页跳回带不上），CIDR 准入与角色授权照旧；start、断开等其他路由仍要 token。
 - 注册被拒时，若回调地址是非本机的 http，提示配置 HTTPS（P3-0 中 Linear 的行为）。
-- 断开时按 RFC 7009 先撤销 refresh token、再撤销 access token，只发往 https（或本机）的撤销端点，失败不阻止删除。
+- 断开时按 RFC 7009 并行撤销 refresh token 与 access token，只发往 https（或本机）的撤销端点，失败不阻止删除。
 - 这些路由已可用，但 Web 面板（P3-4）还没有入口。
 
 ### 13.9 会话如何使用凭证
@@ -403,6 +403,13 @@ P3-3 实现说明（2026-10-18）：
 
 Web：项目 MCP 面板里 `oauth` server 多一行连接状态：“连接 Linear” / “已连接：someone@example.com · 断开”。项目是否启用这个 server 与用户是否连接相互独立：项目 owner 启用后，项目里的每个用户各自连接、各自使用自己的身份。
 
+P3-4 实现说明（2026-10-18）：
+
+- `GET /v1/projects/:id/mcp` 的每个 server 多一个 `oauthLabel`（需要个人授权时才有），viewer 也能看出哪些 server 用个人身份。
+- 面板：这类 server 带“个人授权”标记和一行连接状态（未连接 / 已连接：账号或连接时间），按钮“连接 <label>”与“断开”。连接时先记下当前页面路径（sessionStorage），再整页跳到授权页；viewer 读不到连接状态，显示“只有能运行会话的用户可以连接”。
+- 授权回来：`web/src/mcp-oauth-return.ts` 在路由读取地址之前去掉 `mcp_oauth`、`mcp_server`，回到原来的页面（只接受 `/` 与 `/p/...`），面板自动打开并显示结果。
+- 说明文字按目录内容显示：有共享凭证的 server 时说明共享身份，有个人授权的 server 时说明“只有你连接过的私有会话能用”。
+
 ### 13.11 分阶段计划与验收
 
 | 步骤 | 内容 | 验收 |
@@ -411,7 +418,7 @@ Web：项目 MCP 面板里 `oauth` server 多一行连接状态：“连接 Line
 | P3-1 存储与目录 | `oauth` 字段解析；迁移 v5；加密存储与仓储（SQLite、PostgreSQL）；DB 版 `OAuthClientProvider` | 已完成（2026-10-18），见第 13.8 节的实现说明 |
 | P3-2 授权流程 | `PI_PUBLIC_URL`；DCR 客户端缓存；start / callback / delete 路由；state、PKCE、`iss` 校验 | 已完成（2026-10-18），见第 13.8 节后的实现说明 |
 | P3-3 会话接入 | 按会话 owner 注入 `AuthProvider`；跨会话刷新锁；重新授权处理；共享会话排除 | 已完成（2026-10-18），见第 13.9 节的实现说明 |
-| P3-4 Web 与文档 | 面板连接状态；README 双语、`configuration.md`、`api.md`、OpenAPI | 端到端：浏览器连接 Linear → 新会话里 codemode 调 Linear 工具 |
+| P3-4 Web 与文档 | 面板连接状态；README 双语、`configuration.md`、`api.md`、OpenAPI | 已完成（2026-10-18），见上方实现说明 |
 | P3-5 预注册后备（可选） | 目录 `clientId` / `clientSecret`；GitHub 作为验证对象 | 不支持 DCR 的 server 可由部署者预注册后接入 |
 
 ### 13.12 待定问题

@@ -1,17 +1,32 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
-import { ApiError, type ProjectMcpServer, type ProjectMcpSettings } from "pi-agent-server/client";
+import { ApiError, type McpConnection, type ProjectMcpServer, type ProjectMcpSettings } from "pi-agent-server/client";
 import { ProjectMcpButton } from "./ProjectMcpPanel.js";
+import { captureMcpOAuthReturn, clearMcpOAuthReturn } from "../mcp-oauth-return.js";
 
 const docs: ProjectMcpServer = { name: "docs", status: "available", description: "Docs search", transport: "http", enabled: false,
   exposure: "codemode", defaultExposure: "codemode", maxExposure: "codemode", hiddenTools: [], adminOnly: false, canEnable: true, updatedAt: null };
 const admin: ProjectMcpServer = { ...docs, name: "admin", description: "Admin tools", transport: "stdio", maxExposure: "direct", adminOnly: true, canEnable: false };
 
-function setup(settings: ProjectMcpSettings, save = vi.fn()) {
-  const api = { getProjectMcp: vi.fn(async () => settings), saveProjectMcpServer: save };
+const linear: ProjectMcpServer = { ...docs, name: "linear", description: "Linear issues", oauthLabel: "Linear" };
+
+function setup(settings: ProjectMcpSettings, save = vi.fn(), connections: () => Promise<{ servers: McpConnection[] }> = async () => ({ servers: [] })) {
+  const api = {
+    getProjectMcp: vi.fn(async () => settings), saveProjectMcpServer: save,
+    listMcpConnections: vi.fn(connections),
+    startMcpOAuth: vi.fn(async () => ({ authorizationUrl: "https://auth.example.test/authorize?state=s" })),
+    disconnectMcp: vi.fn(async () => {}),
+  };
   render(<ProjectMcpButton api={api} projectId="p1" projectName="Demo" />);
   return { api, save };
 }
+
+afterEach(() => {
+  clearMcpOAuthReturn();
+  vi.unstubAllGlobals();
+  window.history.replaceState(null, "", "/");
+  window.sessionStorage.clear();
+});
 const row = (name: string) => screen.getAllByTestId("project-mcp-server").find(element => element.dataset.server === name)!;
 
 describe("ProjectMcpButton", () => {
@@ -64,5 +79,64 @@ describe("ProjectMcpButton", () => {
     for (const control of within(panel).getAllByRole("checkbox")) expect(control).toBeDisabled();
     expect(within(row("docs")).getByRole("combobox")).toBeDisabled();
     expect(row("gone").textContent).toContain("已从目录移除");
+  });
+
+  it("connects a personal server through the authorization page and remembers where the user was", async () => {
+    const assign = vi.fn();
+    vi.stubGlobal("location", { ...window.location, assign, pathname: "/p/p1/s/s1" });
+    const { api } = setup({ configured: true, canEdit: true, servers: [docs, linear] });
+    fireEvent.click(await screen.findByTestId("project-mcp-open"));
+    const row = within(screen.getByTestId("project-mcp-connection"));
+    expect(screen.getByTestId("project-mcp-panel").textContent).toContain("个人授权");
+    await waitFor(() => expect(row.getByText("你还没有连接 Linear。")).toBeTruthy());
+    fireEvent.click(row.getByRole("button", { name: "连接 Linear" }));
+    await waitFor(() => expect(assign).toHaveBeenCalledWith("https://auth.example.test/authorize?state=s"));
+    expect(api.startMcpOAuth).toHaveBeenCalledWith("linear");
+    expect(window.sessionStorage.getItem("pi.mcpOAuthReturnPath")).toBe("/p/p1/s/s1");
+  });
+
+  it("shows the connected account and disconnects", async () => {
+    let connected = true;
+    const { api } = setup({ configured: true, canEdit: true, servers: [linear] }, vi.fn(),
+      async () => ({ servers: [{ name: "linear", label: "Linear", connected, ...(connected ? { account: "me@example.com", connectedAt: 1 } : {}) }] }));
+    fireEvent.click(await screen.findByTestId("project-mcp-open"));
+    const row = within(screen.getByTestId("project-mcp-connection"));
+    await waitFor(() => expect(row.getByText("已连接：me@example.com")).toBeTruthy());
+    connected = false;
+    fireEvent.click(row.getByRole("button", { name: "断开" }));
+    await waitFor(() => expect(row.getByText("你还没有连接 Linear。")).toBeTruthy());
+    expect(api.disconnectMcp).toHaveBeenCalledWith("linear");
+  });
+
+  it("explains that viewers cannot connect", async () => {
+    setup({ configured: true, canEdit: false, servers: [linear] }, vi.fn(), async () => { throw new ApiError(403, "HTTP 403"); });
+    fireEvent.click(await screen.findByTestId("project-mcp-open"));
+    const row = within(screen.getByTestId("project-mcp-connection"));
+    await waitFor(() => expect(row.getByText("只有能运行会话的用户可以连接。")).toBeTruthy());
+    expect(row.queryByRole("button")).toBeNull();
+  });
+
+  it("opens with the result after returning from the authorization page, back on the original page", async () => {
+    window.sessionStorage.setItem("pi.mcpOAuthReturnPath", "/p/p1/s/s1");
+    window.history.replaceState(null, "", "/?mcp_oauth=connected&mcp_server=linear");
+    captureMcpOAuthReturn();
+    expect(window.location.pathname + window.location.search).toBe("/p/p1/s/s1");
+    setup({ configured: true, canEdit: true, servers: [linear] }, vi.fn(), async () => ({ servers: [{ name: "linear", label: "Linear", connected: true, connectedAt: 1 }] }));
+    const notice = await screen.findByTestId("project-mcp-returned");
+    expect(notice.getAttribute("role")).toBe("status");
+    expect(notice.textContent).toContain("已连接 Linear");
+    fireEvent.click(within(notice).getByRole("button", { name: "知道了" }));
+    expect(screen.queryByTestId("project-mcp-returned")).toBeNull();
+  });
+
+  it("reports a failed authorization and ignores a return path from elsewhere", async () => {
+    window.sessionStorage.setItem("pi.mcpOAuthReturnPath", "//evil.example.test/x");
+    window.history.replaceState(null, "", "/?mcp_oauth=denied&mcp_server=linear");
+    captureMcpOAuthReturn();
+    expect(window.location.pathname + window.location.search).toBe("/");
+    setup({ configured: true, canEdit: true, servers: [linear] });
+    const notice = await screen.findByTestId("project-mcp-returned");
+    expect(notice.getAttribute("role")).toBe("alert");
+    expect(notice.textContent).toContain("你在授权页取消了授权");
   });
 });

@@ -570,6 +570,7 @@ export const openapiV1 = {
         description: { type: "string" }, transport: { enum: ["stdio", "http"] }, enabled: { type: "boolean" },
         exposure: ref("McpExposure"), defaultExposure: ref("McpExposure"), maxExposure: ref("McpExposure"),
         hiddenTools: { type: "array", items: { type: "string" } },
+        oauthLabel: { type: "string", description: "Present when each user connects with their own account (see /v1/mcp/connections); the server then enters only the connected owner's private sessions." },
         adminOnly: { type: "boolean" },
         canEnable: { type: "boolean", description: "Whether the caller may enable it: adminOnly servers need admin. Disabling is always allowed to editors." },
         updatedAt: { type: ["integer", "null"], description: "null while the project uses the catalog defaults." },
