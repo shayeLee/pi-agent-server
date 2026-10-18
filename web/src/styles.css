@@ -442,6 +442,11 @@ textarea::placeholder {
   flex: none;
 }
 
+/* 搜索和 MCP 两个按钮靠右挨在一起，只让第一个把空白推到左边。 */
+.workbench-project-row > .workbench-search-toggle ~ .workbench-search-toggle {
+  margin-left: 0;
+}
+
 .select-menu.workbench-project-select,
 .workbench-project-row .workbench-project-select {
   position: static;
@@ -1566,6 +1571,11 @@ details[open] > summary > .details-chevron { transform: rotate(90deg); }
 .project-mcp-fields label { display: flex; flex-direction: column; gap: 4px; min-width: 0; font-size: var(--fs-meta); color: var(--dim); }
 .project-mcp-fields :is(select, input) { box-sizing: border-box; width: 100%; height: 32px; padding: 0 8px; border: 1px solid var(--line); border-radius: var(--radius-control); background: var(--bg); color: var(--ink); font: inherit; font-size: var(--fs-ui); }
 .project-mcp-fields :is(select, input):disabled { color: var(--dim); }
+.project-mcp-fields .icon-select { width: 100%; }
+.project-mcp-fields .icon-select select { padding-right: 28px; }
+/* 和旁边的输入框并排，箭头常显才认得出是下拉框；只读时不能改，不显示箭头。 */
+.project-mcp-fields .icon-select > .disclosure-chevron { opacity: 1; }
+.project-mcp-fields .icon-select:has(select:disabled) > .disclosure-chevron { opacity: 0; }
 .project-mcp-actions { display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
 .project-mcp-status { flex: 1; min-width: 0; font-size: var(--fs-meta); color: var(--dim); overflow-wrap: anywhere; }
 .project-mcp-error { color: var(--danger); }

@@ -3,6 +3,7 @@ import { formatDateTime } from "../i18n/format.js";
 import { useCallback, useEffect, useId, useState } from "react";
 import type { ApiClient, McpConnection, McpExposure, ProjectMcpServer, ProjectMcpSettings } from "pi-agent-server/client";
 import { Icon } from "./Icon.js";
+import { IconSelect } from "./IconSelect.js";
 import { Modal } from "./Modal.js";
 import { clearMcpOAuthReturn, peekMcpOAuthReturn, rememberMcpOAuthReturnPath, type McpOAuthReturn } from "../mcp-oauth-return.js";
 
@@ -179,10 +180,10 @@ function ServerRow({ api, projectId, server, canEdit, onSaved, connections, onCo
     {available && <div className="project-mcp-fields">
       <label>
         <span>{zhCN.projectMcp.exposure}</span>
-        <select value={draft.exposure} disabled={!editable} onChange={event => update({ exposure: event.target.value as Draft["exposure"] })}>
+        <IconSelect value={draft.exposure} disabled={!editable} onChange={event => update({ exposure: event.target.value as Draft["exposure"] })}>
           <option value="">{zhCN.projectMcp.defaultExposure(exposureLabel(server.defaultExposure))}</option>
           {options.map(exposure => <option key={exposure} value={exposure}>{exposureLabel(exposure)}</option>)}
-        </select>
+        </IconSelect>
       </label>
       <label>
         <span>{zhCN.projectMcp.hiddenTools}</span>
