@@ -362,7 +362,6 @@ P3-1 实现说明（2026-10-18）：
 - 存储：迁移 v5；`src/storage/kysely-mcp-oauth-repository.ts` 负责加解密，调用方只见明文记录；SQLite 与 PostgreSQL 跑同一组契约测试。
 - provider：`src/mcp/oauth-provider.ts` 的 `StoredMcpOAuthProvider` 实现 SDK 的 `OAuthClientProvider`，按“用户 × server”读写库。授权进行中的 state、verifier、发现结果放在调用方传入的 `pending` 里；会话里不传 `pending` 和 `onRedirect`，需要重新授权时抛 `McpOAuthAuthorizationRequiredError`。`invalid_grant` 时 SDK 让 provider 删掉这个用户的凭证，动态注册的客户端保留。
 - 用假授权服务器（`tests/mcp/oauth-provider.test.ts`）验证了：DCR、授权码换 token、`iss` 校验、401 后刷新并保存轮换的 refresh token、refresh token 失效后删除凭证、`PI_PUBLIC_URL` 变化后重新注册、预注册客户端不走 DCR。
-- 在 P3-3 之前，有 `oauth` 的 server 即使在项目里启用也**不进入会话**（`effectiveMcpServerEntries` 跳过），避免会话连上只得到 401。
 - 留给后续步骤：P3-2 的 start 要传 `skipRefresh: true`，否则已连接的用户再点“连接”时 SDK 会直接刷新而不跳转；P3-3 补跨会话刷新锁、到期前主动刷新，以及 owner 转移时删除旧 IP 的凭证（现在的 owner 转移只改 `projects` 与 `sessions`，不会搬运凭证，但也不会删除）。
 
 P3-2 实现说明（2026-10-18）：
@@ -372,7 +371,7 @@ P3-2 实现说明（2026-10-18）：
 - 网络准入对 `GET /v1/mcp/oauth/callback` 免 Bearer token（浏览器整页跳回带不上），CIDR 准入与角色授权照旧；start、断开等其他路由仍要 token。
 - 注册被拒时，若回调地址是非本机的 http，提示配置 HTTPS（P3-0 中 Linear 的行为）。
 - 断开时按 RFC 7009 先撤销 refresh token、再撤销 access token，只发往 https（或本机）的撤销端点，失败不阻止删除。
-- 这些路由已可用，但 Web 面板（P3-4）还没有入口；有 `oauth` 的 server 仍不进入会话（P3-3）。
+- 这些路由已可用，但 Web 面板（P3-4）还没有入口。
 
 ### 13.9 会话如何使用凭证
 
@@ -383,6 +382,13 @@ P3-2 实现说明（2026-10-18）：
 - 刷新：由 `adaptOAuthProvider` 在 401 时触发，同一 provider 的并发 401 共用一次刷新。同一用户可能同时开着多个会话，各有一个 provider 实例，所以宿主再按 `(ownerKey, serverName)` 加一把进程内锁，并在刷新前重新读库：别的会话已经换过 token 就直接用新的，避免用旧 refresh token 刷新导致轮换失效。
 - 需要重新授权（刷新失败、`McpOAuthAuthorizationRequiredError`）：删除本地凭证，工具调用返回错误“Linear 授权已失效，请在 MCP 面板重新连接”。会话本身不中断。
 - 生效时机沿用第 4.5 节：连接或断开只影响之后创建或恢复的会话。断开后，正在运行的会话下一次调用会因为找不到凭证而失败。
+
+P3-3 实现说明（2026-10-18）：
+
+- 会话上下文新增 `mcpCredentialOwner`：Web 管理的私有会话是 owner；共享会话和原生会话为 null（原生会话的 owner 不是授权依据）。资源加载器据此列出 owner 已连接的 oauth server（`McpOAuthConnections.connectedServers`），`effectiveMcpServerEntries` 只放行这些。
+- 宿主 transport 对 oauth server 一律使用会话 owner 的 `AuthProvider`（`src/mcp/session-oauth.ts`），拿不到就不连；其他 HTTP server 不带 authProvider，行为不变。
+- `AuthProvider` 包在 SDK 的 `adaptOAuthProvider` 外：每次请求从库里读 token；剩余不足 60 秒时主动刷新；刷新与 401 处理按“用户 × server”在进程内串行，并在锁里重读，所以同一用户的多个会话只刷新一次。授权失效（refresh token 被撤销）时 SDK 删除凭证，调用返回“<label> 授权已失效，请在 MCP 面板重新连接”。
+- owner 转移：离线工具约定只改 `projects`、`sessions` 两列，这里不改它。转移后会话属于新 IP，新 IP 没有凭证，oauth server 不会进入这些会话，不会冒用旧身份；旧 IP 的凭证留在库里，直到那个 IP 的用户断开，或授权失效后被删除。需要清理时由运维在旧 IP 上断开。
 
 ### 13.10 API 与 Web
 
@@ -404,7 +410,7 @@ Web：项目 MCP 面板里 `oauth` server 多一行连接状态：“连接 Line
 | P3-0 实测 | 用 SDK 的 `authorizeMcp` 写一个独立脚本，对 Linear 跑完整流程：发现 → DCR → 浏览器授权（本机 loopback 回调）→ 换 token → `initialize`、`tools/list`、一次只读工具调用 → 刷新 → 撤销。另外只做注册、不授权，测非 loopback `http` 回调地址是否被接受 | 已完成（2026-10-18），结果见第 13.2 节 |
 | P3-1 存储与目录 | `oauth` 字段解析；迁移 v5；加密存储与仓储（SQLite、PostgreSQL）；DB 版 `OAuthClientProvider` | 已完成（2026-10-18），见第 13.8 节的实现说明 |
 | P3-2 授权流程 | `PI_PUBLIC_URL`；DCR 客户端缓存；start / callback / delete 路由；state、PKCE、`iss` 校验 | 已完成（2026-10-18），见第 13.8 节后的实现说明 |
-| P3-3 会话接入 | 按会话 owner 注入 `AuthProvider`；跨会话刷新锁；重新授权处理；共享会话排除 | 未连接的用户看不到工具；A 的会话只用 A 的 token；两个会话同时刷新不丢授权；撤销授权后调用报可读错误 |
+| P3-3 会话接入 | 按会话 owner 注入 `AuthProvider`；跨会话刷新锁；重新授权处理；共享会话排除 | 已完成（2026-10-18），见第 13.9 节的实现说明 |
 | P3-4 Web 与文档 | 面板连接状态；README 双语、`configuration.md`、`api.md`、OpenAPI | 端到端：浏览器连接 Linear → 新会话里 codemode 调 Linear 工具 |
 | P3-5 预注册后备（可选） | 目录 `clientId` / `clientSecret`；GitHub 作为验证对象 | 不支持 DCR 的 server 可由部署者预注册后接入 |
 

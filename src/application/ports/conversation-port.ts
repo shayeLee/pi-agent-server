@@ -25,6 +25,11 @@ export type AgentSessionContext = {
   /** 创建会话时冻结的系统提示词；null/undefined 表示未记录（使用共享资源加载器）。 */
   readonly systemPrompt?: string | null;
   readonly isNewSession: boolean;
+  /**
+   * 会话可以使用谁的按用户 MCP 凭证（docs/mcp-integration.md §13.9）：Web 管理的私有会话是 owner；
+   * 共享或原生会话为 null/缺省，不使用任何人的凭证。
+   */
+  readonly mcpCredentialOwner?: string | null;
   readonly agentToolConfig: {
     readonly tools?: readonly string[];
     readonly noTools?: "all" | "builtin";

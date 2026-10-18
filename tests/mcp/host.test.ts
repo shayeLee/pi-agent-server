@@ -28,9 +28,10 @@ describe("createMcpHost with oauth servers", () => {
     expect(() => createMcpHost({ catalogFile, logPath })).toThrow(/PI_MCP_TOKEN_KEY_FILE/);
   });
 
-  it("loads the token key and keeps oauth servers out of sessions until per-user credentials are wired in", () => {
+  it("loads the token key and lets an oauth server into a session only for a connected owner", () => {
     const host = createMcpHost(files());
     expect(host.tokenCipher).toBeDefined();
     expect(effectiveMcpServerEntries(host.catalog, []).map(entry => entry.name)).toEqual(["docs"]);
+    expect(effectiveMcpServerEntries(host.catalog, [], new Set(["linear"])).map(entry => entry.name)).toEqual(["linear", "docs"]);
   });
 });

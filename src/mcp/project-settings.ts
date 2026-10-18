@@ -61,16 +61,19 @@ function clamp(exposure: McpExposure, limit: McpExposure): McpExposure {
 }
 
 /** 目录 + 项目设置 → 交给 SDK 的 server 配置；只含已启用的 server。占位符原样保留。 */
+/**
+ * 会话快照的 MCP server：目录 ∩ 项目设置。有 `oauth` 的 server 还要求会话 owner 已连接
+ * （`connectedOAuth` 里有它）；没连接或共享会话里，模型看不到它的工具（§13.9）。
+ */
 export function effectiveMcpServerEntries(
-  catalog: McpCatalog, settings: readonly ProjectMcpServerSetting[],
+  catalog: McpCatalog, settings: readonly ProjectMcpServerSetting[], connectedOAuth: ReadonlySet<string> = new Set(),
 ): McpServerEntry[] {
   const byName = new Map(settings.map(setting => [setting.serverName, setting]));
   const entries: McpServerEntry[] = [];
   for (const server of catalog.servers.values()) {
     const setting = byName.get(server.name);
     if (!isEnabled(server, setting)) continue;
-    // 按用户授权的 server 要等会话接入用户凭证（§13.9，P3-3）后才进入会话；在此之前连上也只会 401。
-    if (server.oauth) continue;
+    if (server.oauth && !connectedOAuth.has(server.name)) continue;
     // 项目选的 server 级 exposure 同时是目录工具级覆盖的上限，所以“整体收紧”不会被单个工具放宽。
     const exposure = setting?.exposure ?? server.exposure;
     const limit = setting?.exposure ?? server.maxExposure;

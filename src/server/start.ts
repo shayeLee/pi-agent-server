@@ -26,6 +26,7 @@ import {
   type InlineExtension,
   type McpServerEntry,
 } from "@earendil-works/pi-coding-agent";
+import type { AuthProvider } from "@earendil-works/pi-mcp";
 import type { FastifyInstance } from "fastify";
 import { buildApp } from "./app.js";
 import {
@@ -515,6 +516,8 @@ export async function startServer(config: StartConfig) {
       appendSystemPromptText?: string;
       /** 会话快照的 MCP server（目录 ∩ 项目设置）；探针与无 MCP 的会话不传。 */
       mcpServers?: readonly McpServerEntry[];
+      /** 会话 owner 连接 oauth server 用的凭证（§13.9）。 */
+      mcpAuthProviderFor?: (serverName: string) => AuthProvider | undefined;
     },
   ): Promise<DefaultResourceLoader> =>
     loadSessionResourceLoader(modelRuntime, {
@@ -525,7 +528,9 @@ export async function startServer(config: StartConfig) {
       extensionFactories: [
         ...providerAdapterExtensionFactories,
         ...toolBoundaryExtensionFactories,
-        ...(mcpHost && extra.mcpServers ? mcpHost.sessionExtensions(extra.mcpServers) : []),
+        ...(mcpHost && extra.mcpServers
+          ? mcpHost.sessionExtensions(extra.mcpServers, extra.mcpAuthProviderFor ? { authProviderFor: extra.mcpAuthProviderFor } : {})
+          : []),
       ],
       resources: { projectCwd: extra.resourceCwd, agentDir },
       ...(extra.systemPrompt !== undefined ? { systemPrompt: extra.systemPrompt } : {}),
@@ -739,13 +744,17 @@ export async function startServer(config: StartConfig) {
       : undefined;
     const createResourceLoader = async (request: PiResourceLoaderRequest) => {
       const frozen = request.systemPrompt;
-      // 项目 MCP 设置在 adapter 创建时快照：之后的修改只影响新建或恢复的会话（§4.5）。
+      // 项目 MCP 设置与用户的连接在 adapter 创建时快照：之后的修改只影响新建或恢复的会话（§4.5）。
+      // oauth server 只进入 owner 已连接的私有会话，并且只用这个 owner 的凭证（§13.9）。
+      const credentialOwner = mcpOAuth ? request.mcpCredentialOwner : null;
+      const connectedOAuth = mcpOAuth && credentialOwner ? await mcpOAuth.connectedServers(credentialOwner) : new Set<string>();
       const mcpServers = mcpHost && projectMcp
-        ? effectiveMcpServerEntries(mcpHost.catalog, await projectMcp.list(request.projectId))
+        ? effectiveMcpServerEntries(mcpHost.catalog, await projectMcp.list(request.projectId), connectedOAuth)
         : undefined;
       const loader = await createSessionResourceLoader({
         resourceCwd: request.projectCwd,
         ...(mcpServers ? { mcpServers } : {}),
+        ...(mcpOAuth && credentialOwner ? { mcpAuthProviderFor: (serverName: string) => mcpOAuth.sessionAuthProvider(credentialOwner, serverName) } : {}),
         ...(frozen === null
           ? unfrozenPromptOptions
           : { systemPromptOverride: () => frozenPromptBase(frozen) }),

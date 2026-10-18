@@ -4,7 +4,7 @@
 // 不使用 SDK 默认 transport：它会继承服务进程 env，并把 `${NAME}` / `!cmd` 当作环境变量与 shell 命令解析。
 
 import { resolve } from "node:path";
-import { StdioTransport, StreamableHttpTransport, type McpTransport } from "@earendil-works/pi-mcp";
+import { StdioTransport, StreamableHttpTransport, type AuthProvider, type McpTransport } from "@earendil-works/pi-mcp";
 import type { McpTransportFactory } from "@earendil-works/pi-coding-agent";
 import { resolveMcpPlaceholders, type McpCatalog, type McpSecrets } from "./catalog.js";
 
@@ -68,13 +68,15 @@ function resolveRecord(record: Readonly<Record<string, string>> | undefined, con
 
 /**
  * 按目录（而不是 SDK 传入的配置）建立连接：项目设置只改 exposure，连接参数始终以目录为准。
- * 不使用 SDK 的 OAuth authProvider：目录拒绝 oauth，HTTP 401 直接作为连接错误。
+ * 有 `oauth` 的 server 用 `authProviderFor` 给的会话 owner 凭证（§13.9）；拿不到就不连，
+ * 其他 HTTP server 不带 authProvider，401 直接作为连接错误。
  */
 export function createHostMcpTransportFactory(options: {
   catalog: McpCatalog;
   secrets: McpSecrets;
   limiter: StdioProcessLimiter;
   env?: NodeJS.ProcessEnv;
+  authProviderFor?: (serverName: string) => AuthProvider | undefined;
 }): McpTransportFactory {
   const baseEnv: Record<string, string> = {};
   for (const key of INHERITED_ENV) {
@@ -87,7 +89,11 @@ export function createHostMcpTransportFactory(options: {
     const context = { secrets: options.secrets, projectCwd: cwd };
     const connection = server.connection;
     if (connection.type === "http") {
-      return new StreamableHttpTransport({ url: connection.url, headers: resolveRecord(connection.headers, context) });
+      const headers = resolveRecord(connection.headers, context);
+      if (!server.oauth) return new StreamableHttpTransport({ url: connection.url, headers });
+      const authProvider = options.authProviderFor?.(server.name);
+      if (!authProvider) throw new Error(`MCP server "${server.name}" needs the session owner's ${server.oauth.label} authorization`);
+      return new StreamableHttpTransport({ url: connection.url, headers, authProvider });
     }
     return new LimitedStdioTransport({
       command: connection.command,

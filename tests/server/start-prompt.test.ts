@@ -56,7 +56,7 @@ async function inspect(config: Pick<StartConfig, "systemPrompt" | "appendSystemP
 }
 
 async function sessionPrompt(factory: PiAgentSessionFactoryOptions, cwd: string, frozen: string | null) {
-  const { loader } = await factory.createResourceLoader({ projectId: "test-project", projectCwd: cwd, systemPrompt: frozen }) as PiSessionResourceLoader;
+  const { loader } = await factory.createResourceLoader({ projectId: "test-project", projectCwd: cwd, systemPrompt: frozen, mcpCredentialOwner: null }) as PiSessionResourceLoader;
   const { session } = await createAgentSession({
     cwd, resourceLoader: loader, modelRuntime: factory.modelRuntime,
     sessionManager: SessionManager.inMemory(cwd), settingsManager: SettingsManager.inMemory(),
@@ -95,7 +95,7 @@ describe("PI_APPEND_SYSTEM composition", () => {
     rmSync(file);
     const frozen = await app.systemPromptResolver!.resolve(project);
     assertAppend(await sessionPrompt(factory, project, frozen), text);
-    const { loader } = await factory.createResourceLoader({ projectId: "test-project", projectCwd: project, systemPrompt: "OLD_FROZEN" }) as PiSessionResourceLoader;
+    const { loader } = await factory.createResourceLoader({ projectId: "test-project", projectCwd: project, systemPrompt: "OLD_FROZEN", mcpCredentialOwner: null }) as PiSessionResourceLoader;
     expect(loader.getSystemPrompt()).toBe("OLD_FROZEN");
     expect(loader.getAppendSystemPrompt()).toEqual([]);
   });
@@ -151,7 +151,7 @@ describe("PI_APPEND_SYSTEM composition", () => {
     // The frozen loader returns the snapshot minus its own cwd section, with no current append sources;
     // the SDK adds the session cwd back, so the session prompt equals the snapshot byte-for-byte.
     for (const frozen of [projectPrompt, "OLD_FROZEN_PROMPT", ""]) {
-      const { loader } = await factory.createResourceLoader({ projectId: "test-project", projectCwd: project, systemPrompt: frozen }) as PiSessionResourceLoader;
+      const { loader } = await factory.createResourceLoader({ projectId: "test-project", projectCwd: project, systemPrompt: frozen, mcpCredentialOwner: null }) as PiSessionResourceLoader;
       expect(loader.getSystemPrompt()).toBe(frozenPromptBase(frozen));
       expect(loader.getAppendSystemPrompt()).toEqual([]);
     }

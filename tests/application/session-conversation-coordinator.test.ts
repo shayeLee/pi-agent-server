@@ -251,6 +251,18 @@ describe("SessionConversationCoordinator", () => {
     expect(state.restoreContexts()[0]?.systemPrompt).toBe("恢复提示词");
   });
 
+  it("只让 Web 管理的私有会话使用 owner 的 MCP 凭证", async () => {
+    const sessions = new MemorySessions();
+    await sessions.create({ ...record("private"), ownerKey: "ip:10.0.0.1" });
+    await sessions.create({ ...record("shared"), ownerKey: "ip:10.0.0.1", visibility: "shared" });
+    await sessions.create({ ...record("native"), ownerKey: "ip:10.0.0.1", origin: "native" });
+    const state = setup(sessions, ["ref-private", "ref-shared", "ref-native"]);
+
+    for (const id of ["private", "shared", "native"]) await state.coordinator.createAdapter(id);
+
+    expect(state.prepareContexts().map(context => context.mcpCredentialOwner)).toEqual(["ip:10.0.0.1", null, null]);
+  });
+
   it("已冻结的追加快照在恢复时按字面量透传，绝不重新解析或重复追加", async () => {
     const frozen = "Pi 默认完整提示词\n\n插件追加片段";
     const sessions = new MemorySessions();

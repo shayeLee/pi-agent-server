@@ -207,6 +207,8 @@ export class SessionConversationCoordinator {
       thinkingLevel: record.thinkingLevel ?? (record.conversationRef === null ? this.defaultThinkingLevel ?? null : null),
       systemPrompt: record.systemPrompt,
       isNewSession: record.conversationRef === null,
+      // 共享会话允许多人继续；原生会话的 owner 不是授权依据。两者都不能用某个人的外部身份。
+      mcpCredentialOwner: record.visibility !== "shared" && record.origin !== "native" ? record.ownerKey : null,
       agentToolConfig: this.agentToolConfig,
     };
   }

@@ -8,7 +8,9 @@ import {
 } from "@earendil-works/pi-mcp/oauth";
 import type { McpFetch } from "@earendil-works/pi-mcp";
 import type { McpOAuthStorePort } from "../application/ports/mcp-oauth-store-port.js";
+import type { AuthProvider } from "@earendil-works/pi-mcp";
 import { MCP_OAUTH_CALLBACK_PATH } from "./oauth-callback-path.js";
+import { createSessionAuthProvider, KeyedLock } from "./session-oauth.js";
 import { resolveMcpPlaceholders, type McpCatalog, type McpSecrets } from "./catalog.js";
 import {
   isOAuthServer, mcpOAuthFlowOptions, StoredMcpOAuthProvider, type McpOAuthCatalogServer, type PendingMcpAuthorization,
@@ -75,6 +77,8 @@ export class McpOAuthConnections {
   readonly #now: () => number;
   /** state → 待处理授权。只在内存里：服务重启后进行中的授权失效，用户重新点一次即可。 */
   readonly #pending = new Map<string, PendingEntry>();
+  /** 同一用户同一 server 的刷新跨会话串行。 */
+  readonly #refreshLocks = new KeyedLock();
 
   constructor(options: McpOAuthConnectionsOptions) {
     this.#options = options;
@@ -97,6 +101,30 @@ export class McpOAuthConnections {
       });
     }
     return views;
+  }
+
+  /** 用户已连接（且凭证对应目录当前地址）的 oauth server 名称。 */
+  async connectedServers(ownerKey: string): Promise<Set<string>> {
+    const names = new Set<string>();
+    for (const credential of await this.#options.store.listCredentials(ownerKey)) {
+      const server = this.#server(credential.serverName);
+      if (server && credential.serverUrl === server.connection.url) names.add(server.name);
+    }
+    return names;
+  }
+
+  /** 会话里连接 oauth server 用的 AuthProvider；server 不是 oauth server 时为 undefined。 */
+  sessionAuthProvider(ownerKey: string, serverName: string): AuthProvider | undefined {
+    const server = this.#server(serverName);
+    if (!server) return undefined;
+    const secret = server.oauth.clientSecret;
+    return createSessionAuthProvider({
+      store: this.#options.store, ownerKey, server, redirectUrl: this.callbackUrl, locks: this.#refreshLocks,
+      clientName: this.#options.clientName ?? "pi-agent-server",
+      ...(secret ? { clientSecret: resolveMcpPlaceholders(secret, { secrets: this.#options.secrets, projectCwd: "" }) } : {}),
+      ...(this.#options.fetch ? { fetch: this.#options.fetch } : {}),
+      ...(this.#options.now ? { now: this.#options.now } : {}),
+    });
   }
 
   /** 发起授权，返回对方授权页地址。 */

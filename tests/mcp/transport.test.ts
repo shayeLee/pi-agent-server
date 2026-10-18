@@ -36,6 +36,15 @@ describe("createHostMcpTransportFactory", () => {
     expect(() => factory(entry("other"), "/projects/a", undefined)).toThrow(/not in the catalog/);
   });
 
+  it("connects oauth servers only with the session owner's auth provider", () => {
+    const oauthCatalog = parseMcpCatalog({ version: 1, servers: { linear: { url: "https://mcp.linear.app/mcp", description: "Linear", oauth: { label: "Linear" } } } });
+    const authProvider = { token: async () => "t" };
+    const withOwner = createHostMcpTransportFactory({ catalog: oauthCatalog, secrets, limiter: new StdioProcessLimiter(1), authProviderFor: name => name === "linear" ? authProvider : undefined });
+    expect((withOwner(entry("linear"), "/projects/a", undefined) as StreamableHttpTransport).options.authProvider).toBe(authProvider);
+    const withoutOwner = createHostMcpTransportFactory({ catalog: oauthCatalog, secrets, limiter: new StdioProcessLimiter(1) });
+    expect(() => withoutOwner(entry("linear"), "/projects/a", undefined)).toThrow(/needs the session owner's Linear authorization/);
+  });
+
   it("caps running stdio processes across sessions and frees the slot on close", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "pi-mcp-transport-"));
     const limiter = new StdioProcessLimiter(1);

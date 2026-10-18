@@ -4,6 +4,7 @@
 import {
   createCodemodeExtension, createMcpExtension, type InlineExtension, type McpServerEntry,
 } from "@earendil-works/pi-coding-agent";
+import type { AuthProvider } from "@earendil-works/pi-mcp";
 import { loadMcpCatalogFiles, type McpCatalog, type McpSecrets } from "./catalog.js";
 import { CodemodeGate, createCodemodeAdmissionExtension } from "./codemode-admission.js";
 import { loadMcpTokenKeyFile, type McpTokenCipher } from "./token-cipher.js";
@@ -28,8 +29,11 @@ export interface McpHost {
   readonly tokenCipher?: McpTokenCipher;
   readonly limiter: StdioProcessLimiter;
   readonly gate: CodemodeGate;
-  /** 会话的 MCP 相关扩展；没有启用的 server 时为空，会话行为与未接入 MCP 一致。 */
-  sessionExtensions(entries: readonly McpServerEntry[]): InlineExtension[];
+  /**
+   * 会话的 MCP 相关扩展；没有启用的 server 时为空，会话行为与未接入 MCP 一致。
+   * `authProviderFor` 给出会话 owner 连接 oauth server 用的凭证（§13.9）。
+   */
+  sessionExtensions(entries: readonly McpServerEntry[], options?: { authProviderFor?: (serverName: string) => AuthProvider | undefined }): InlineExtension[];
 }
 
 export function createMcpHost(options: McpHostOptions): McpHost {
@@ -46,12 +50,15 @@ export function createMcpHost(options: McpHostOptions): McpHost {
   const tokenCipher = options.tokenKeyFile ? loadMcpTokenKeyFile(options.tokenKeyFile) : undefined;
   const limiter = new StdioProcessLimiter(options.maxStdioProcesses ?? DEFAULT_MAX_STDIO_PROCESSES);
   const gate = new CodemodeGate();
-  const createTransport = createHostMcpTransportFactory({ catalog, secrets, limiter });
+
   return {
     catalog, secrets, ...(tokenCipher ? { tokenCipher } : {}), limiter, gate,
-    sessionExtensions(entries) {
+    sessionExtensions(entries, sessionOptions) {
       if (entries.length === 0) return [];
       const servers = [...entries];
+      const createTransport = createHostMcpTransportFactory({
+        catalog, secrets, limiter, ...(sessionOptions?.authProviderFor ? { authProviderFor: sessionOptions.authProviderFor } : {}),
+      });
       return [
         {
           name: "pi-agent-server-mcp",
@@ -60,8 +67,8 @@ export function createMcpHost(options: McpHostOptions): McpHost {
             loadConfig: () => ({ servers, errors: [], autoEnableCodemode: true }),
             createTransport,
             logPath: options.logPath,
-            // 服务端没有浏览器，也不支持 OAuth 登录；/mcp 的修改不落盘。
-            openUrl: () => { throw new Error("MCP OAuth sign-in is not supported by pi-agent-server"); },
+            // 服务端没有浏览器：用户在 Web 的 MCP 面板授权（§13.6），会话里不发起登录；/mcp 的修改不落盘。
+            openUrl: () => { throw new Error("MCP OAuth sign-in happens in the Web MCP panel, not inside a session"); },
             updateConfig: () => {},
           }),
         },

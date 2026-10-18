@@ -41,6 +41,8 @@ export type PiResourceLoaderRequest = {
   readonly projectCwd: string;
   /** 会话创建时冻结的系统提示词；null 表示未记录（宿主按项目 cwd 重新解析）。 */
   readonly systemPrompt: string | null;
+  /** 会话可以使用谁的按用户 MCP 凭证；null 表示谁的都不用（共享或原生会话）。 */
+  readonly mcpCredentialOwner: string | null;
 };
 
 /** 会话专属 loader 与其同一 ExtensionRuntime 的必需 EventBus（也承载 host identity）。 */
@@ -331,6 +333,7 @@ export class PiAgentSessionFactory implements AgentSessionFactory {
       projectId: context.projectId,
       projectCwd: context.projectCwd,
       systemPrompt: context.systemPrompt ?? null,
+      mcpCredentialOwner: context.mcpCredentialOwner ?? null,
     });
   }
 
