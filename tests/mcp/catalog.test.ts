@@ -26,9 +26,31 @@ describe("parseMcpCatalog", () => {
     });
   });
 
+  it("parses oauth servers: DCR by default, pre-registered client as fallback", () => {
+    const parsed = catalog({
+      linear: { url: "https://mcp.linear.app/mcp", description: "Linear", oauth: { label: " Linear ", scope: "read" } },
+      github: {
+        url: "https://api.githubcopilot.com/mcp/", headers: { "X-MCP-Readonly": "true" }, description: "GitHub",
+        oauth: { label: "GitHub", clientId: "Iv23abc", clientSecret: "${secret:DOCS_TOKEN}", authorizationServerMetadataUrl: "http://127.0.0.1:9000/meta" },
+      },
+    });
+    expect(parsed.servers.get("linear")?.oauth).toEqual({ label: "Linear", scope: "read" });
+    expect(parsed.servers.get("github")?.oauth).toEqual({
+      label: "GitHub", clientId: "Iv23abc", clientSecret: "${secret:DOCS_TOKEN}", authorizationServerMetadataUrl: "http://127.0.0.1:9000/meta",
+    });
+    expect(parsed.servers.get("github")?.connection).toEqual({ type: "http", url: "https://api.githubcopilot.com/mcp/", headers: { "X-MCP-Readonly": "true" } });
+  });
+
   it.each([
     [{ a: { command: "x" } }, /description is required/],
-    [{ a: { command: "x", description: "d", oauth: {} } }, /unknown field "oauth"/],
+    [{ a: { command: "x", description: "d", oauth: { label: "X" } } }, /only supported for HTTP servers/],
+    [{ a: { url: "https://x", description: "d", oauth: {} } }, /oauth.label is required/],
+    [{ a: { url: "https://x", description: "d", oauth: { label: "X", flow: "device" } } }, /unknown oauth field "flow"/],
+    [{ a: { url: "https://x", description: "d", headers: { authorization: "Bearer ${secret:DOCS_TOKEN}" }, oauth: { label: "X" } } }, /must not set an Authorization header/],
+    [{ a: { url: "https://x", description: "d", oauth: { label: "X", clientSecret: "${secret:DOCS_TOKEN}" } } }, /clientSecret requires oauth.clientId/],
+    [{ a: { url: "https://x", description: "d", oauth: { label: "X", clientId: "c", clientSecret: "plain" } } }, /must be a \$\{secret:NAME\} reference/],
+    [{ a: { url: "https://x", description: "d", oauth: { label: "X", clientId: "c", clientSecret: "${secret:MISSING}" } } }, /does not define/],
+    [{ a: { url: "https://x", description: "d", oauth: { label: "X", authorizationServerMetadataUrl: "http://auth.example.com/meta" } } }, /https URL/],
     [{ a: { url: "https://x", description: "d", auth: { provider: "p" } } }, /unknown field "auth"/],
     [{ a: { command: "x", description: "d", enabled: false } }, /unknown field "enabled"/],
     [{ a: { command: "x", description: "d", env: { K: "${HOME}" } } }, /unsupported placeholder/],

@@ -1,4 +1,4 @@
-// 运行时 Schema Manifest —— projects / sessions / idempotency / file_operations / uploaded_files / native_session_sources / companion_personas / project_mcp_servers 表、列、逻辑类型、
+// 运行时 Schema Manifest —— projects / sessions / idempotency / file_operations / uploaded_files / native_session_sources / companion_personas / project_mcp_servers / mcp_oauth_clients / user_mcp_credentials 表、列、逻辑类型、
 // nullable、default、主键、外键、索引的**唯一手工声明来源**。
 //
 // 设计要点：
@@ -571,7 +571,7 @@ export const companionPersonasSchemaManifest = defineSchema([
 ]);
 
 /** v4: project MCP settings; rows reference catalog servers by name and follow their project on delete. */
-export const schemaManifest = defineSchema([
+export const projectMcpServersSchemaManifest = defineSchema([
   ...companionPersonasSchemaManifest.tables,
   {
     name: "project_mcp_servers",
@@ -594,6 +594,47 @@ export const schemaManifest = defineSchema([
         onDelete: "cascade",
       },
     ],
+    indexes: [],
+  },
+]);
+
+/**
+ * v5: per-user MCP OAuth (docs/mcp-integration.md §13.8). Dynamically registered clients belong to the
+ * deployment, one per catalog server; credentials belong to a caller. Secrets are AES-GCM ciphertext.
+ * Rows reference catalog servers by name and have no foreign keys.
+ */
+export const schemaManifest = defineSchema([
+  ...projectMcpServersSchemaManifest.tables,
+  {
+    name: "mcp_oauth_clients",
+    columns: [
+      { name: "server_name", type: "text", nullable: false },
+      { name: "server_url", type: "text", nullable: false },
+      { name: "redirect_url", type: "text", nullable: false },
+      { name: "client", type: "text", nullable: false },
+      { name: "registered_at", type: "integer", nullable: false },
+    ],
+    primaryKey: { columns: ["server_name"] },
+    foreignKeys: [],
+    indexes: [],
+  },
+  {
+    name: "user_mcp_credentials",
+    columns: [
+      { name: "owner_key", type: "text", nullable: false },
+      { name: "server_name", type: "text", nullable: false },
+      { name: "server_url", type: "text", nullable: false },
+      { name: "client_id", type: "text", nullable: false },
+      { name: "account_label", type: "text", nullable: true },
+      { name: "tokens", type: "text", nullable: false },
+      { name: "expires_at", type: "integer", nullable: true },
+      { name: "scope", type: "text", nullable: true },
+      { name: "discovery", type: "json", nullable: true },
+      { name: "created_at", type: "integer", nullable: false },
+      { name: "updated_at", type: "integer", nullable: false },
+    ],
+    primaryKey: { columns: ["owner_key", "server_name"] },
+    foreignKeys: [],
     indexes: [],
   },
 ]);

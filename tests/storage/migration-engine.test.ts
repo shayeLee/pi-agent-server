@@ -82,9 +82,10 @@ describe("Manifest-driven migration engine (SQLite, single baseline)", () => {
         { version: 2, name: "native-shared-sessions", n: 64 },
         { version: 3, name: "companion-personas", n: 64 },
         { version: 4, name: "project-mcp-servers", n: 64 },
+        { version: 5, name: "user-mcp-oauth", n: 64 },
       ]);
       const names = (db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all() as Array<{ name: string }>).map((row) => row.name);
-      expect(names).toEqual(["companion_personas", "file_operations", "idempotency", "native_session_sources", "project_mcp_servers", "projects", "schema_migrations", "sessions", "uploaded_files"]);
+      expect(names).toEqual(["companion_personas", "file_operations", "idempotency", "mcp_oauth_clients", "native_session_sources", "project_mcp_servers", "projects", "schema_migrations", "sessions", "uploaded_files", "user_mcp_credentials"]);
       expect(db.prepare("PRAGMA table_info(idempotency)").all()).toEqual(expect.arrayContaining([expect.objectContaining({ name: "fingerprint", type: "TEXT", notnull: 0 })]));
       db.prepare("INSERT INTO projects (id, name, cwd, owner_key, created_at) VALUES (?, ?, ?, ?, ?)").run(
         "data-project", "Data", "/data", "owner", 1,
@@ -184,7 +185,7 @@ describe("Manifest-driven migration engine (SQLite, single baseline)", () => {
     try {
       await runSqliteMigrations(initialized);
       await expect(runSqliteMigrations(initialized, { assertEmptySchema: true })).rejects.toThrow(/non-empty SQLite|user object/);
-      expect(migrationDefinitions.map(({ version }) => version)).toEqual([0, 1, 2, 3, 4]);
+      expect(migrationDefinitions.map(({ version }) => version)).toEqual([0, 1, 2, 3, 4, 5]);
       expect(initialized.prepare("SELECT count(*) AS n FROM schema_migrations").get()).toEqual({ n: migrationDefinitions.length });
     } finally {
       initialized.close();

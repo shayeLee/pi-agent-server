@@ -121,6 +121,7 @@ const app = await startServer({
   // MCP 接入（docs/mcp-integration.md）：未设置目录时不加载 MCP 与 codemode。
   mcpCatalogFile: process.env.PI_MCP_CATALOG_FILE || undefined,
   mcpSecretsFile: process.env.PI_MCP_SECRETS_FILE || undefined,
+  mcpTokenKeyFile: process.env.PI_MCP_TOKEN_KEY_FILE || undefined,
   mcpMaxStdioProcesses: parsePositiveInteger("PI_MCP_MAX_STDIO_PROCESSES", process.env.PI_MCP_MAX_STDIO_PROCESSES),
   codemodeTimeoutMs: parsePositiveInteger("PI_CODEMODE_TIMEOUT_MS", process.env.PI_CODEMODE_TIMEOUT_MS),
   codemodeQueueWaitMs: parsePositiveInteger("PI_CODEMODE_QUEUE_WAIT_MS", process.env.PI_CODEMODE_QUEUE_WAIT_MS),

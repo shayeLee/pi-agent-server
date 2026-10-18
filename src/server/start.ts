@@ -188,6 +188,8 @@ export type StartConfig = {
   mcpCatalogFile?: string;
   /** 目录中 `${secret:NAME}` 的取值文件（PI_MCP_SECRETS_FILE，绝对路径，权限 0600）。 */
   mcpSecretsFile?: string;
+  /** 用户 MCP OAuth 凭证的加密密钥文件（PI_MCP_TOKEN_KEY_FILE，绝对路径，权限 0600）。 */
+  mcpTokenKeyFile?: string;
   /** 全服务同时运行的 MCP stdio 进程上限（PI_MCP_MAX_STDIO_PROCESSES，默认 32）。 */
   mcpMaxStdioProcesses?: number;
   /** codemode 脚本超时上限（PI_CODEMODE_TIMEOUT_MS，默认 120000）。 */
@@ -356,6 +358,7 @@ export async function startServer(config: StartConfig) {
     ? createMcpHost({
         catalogFile: config.mcpCatalogFile,
         ...(config.mcpSecretsFile ? { secretsFile: config.mcpSecretsFile } : {}),
+        ...(config.mcpTokenKeyFile ? { tokenKeyFile: config.mcpTokenKeyFile } : {}),
         ...(config.mcpMaxStdioProcesses !== undefined ? { maxStdioProcesses: config.mcpMaxStdioProcesses } : {}),
         ...(config.codemodeTimeoutMs !== undefined ? { codemodeTimeoutMs: config.codemodeTimeoutMs } : {}),
         ...(config.codemodeQueueWaitMs !== undefined ? { codemodeQueueWaitMs: config.codemodeQueueWaitMs } : {}),
@@ -363,6 +366,7 @@ export async function startServer(config: StartConfig) {
       })
     : undefined;
   if (!mcpHost && config.mcpSecretsFile) throw new Error("PI_MCP_SECRETS_FILE requires PI_MCP_CATALOG_FILE");
+  if (!mcpHost && config.mcpTokenKeyFile) throw new Error("PI_MCP_TOKEN_KEY_FILE requires PI_MCP_CATALOG_FILE");
   // 在任何异步初始化之前固定文件快照；不随项目 cwd 变化重新读取。
   const appendFileText = readAppendSystemPromptFile(config.appendSystemPromptFile);
   const appendSystemPromptText = [config.appendSystemPrompt, appendFileText]

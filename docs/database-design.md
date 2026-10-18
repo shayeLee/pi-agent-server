@@ -4,7 +4,7 @@
 
 ## 1. Schema 与 migration
 
-当前 head 是 **v4**，不是单独的 v0 baseline、v1、v2 或 v3：
+当前 head 是 **v5**，不是单独的 v0 baseline、v1、v2、v3 或 v4：
 
 | 版本 | 不可变快照 | 增量内容 |
 | --- | --- | --- |
@@ -12,11 +12,12 @@
 | v1 `uploaded-files-and-idempotency-fingerprint` | `uploadedFilesSchemaManifest` | uploaded_files；idempotency.fingerprint |
 | v2 `native-shared-sessions` | `nativeSessionsSchemaManifest` | sessions.visibility/origin；native_session_sources |
 | v3 `companion-personas` | `companionPersonasSchemaManifest` | companion_personas |
-| v4 `project-mcp-servers` | `schemaManifest` | project_mcp_servers |
+| v4 `project-mcp-servers` | `projectMcpServersSchemaManifest` | project_mcp_servers |
+| v5 `user-mcp-oauth` | `schemaManifest` | mcp_oauth_clients、user_mcp_credentials |
 
-`src/storage/migration-manifest.ts` 固化每个版本的 schema、两方言 canonical operations、物理类型映射与 dataTransform，checksum 对这些 descriptor 内容作稳定序列化后取 SHA-256，不只是 DDL 文本 hash。v0–v3 不随当前 head 改写；`binding.private` 是可选 JSON 标记，不新增 migration 或改变 v2 checksum。
+`src/storage/migration-manifest.ts` 固化每个版本的 schema、两方言 canonical operations、物理类型映射与 dataTransform，checksum 对这些 descriptor 内容作稳定序列化后取 SHA-256，不只是 DDL 文本 hash。v0–v4 不随当前 head 改写；`binding.private` 是可选 JSON 标记，不新增 migration 或改变 v2 checksum。
 
-完全空库以 `--bootstrap-baseline --bootstrap-confirm CONFIRMED` 建立完整 v0→v1→v2→v3→v4 head；已有已认证前缀以 pre-backup → `--apply` → `--verify` 升级。无 ledger、未知版本或 checksum 不匹配均拒绝采用；服务启动只 verify，不自动迁移。restore 校验包所携历史前缀，不自动升级到 head。命令见 [Operations](operations.md) 与 [Backup and restore](backup-restore.md#5-migration-建立与前置备份)。
+完全空库以 `--bootstrap-baseline --bootstrap-confirm CONFIRMED` 建立完整 v0→v1→v2→v3→v4→v5 head；已有已认证前缀以 pre-backup → `--apply` → `--verify` 升级。无 ledger、未知版本或 checksum 不匹配均拒绝采用；服务启动只 verify，不自动迁移。restore 校验包所携历史前缀，不自动升级到 head。命令见 [Operations](operations.md) 与 [Backup and restore](backup-restore.md#5-migration-建立与前置备份)。
 
 Manifest 对 PK/FK/索引列引用作编译期检查，运行期复查唯一性、类型、声明顺序等并深冻结。逻辑类型映射：
 
@@ -42,6 +43,8 @@ Manifest 对 PK/FK/索引列引用作编译期检查，运行期复查唯一性�
 | native_session_sources | source_path/source_id、session/project、binding JSON、deleted 墓碑 | source_path 主键；source_id 与 session_id 各自唯一；无 FK，删除保留墓碑 |
 | companion_personas | 空白会话数字人的名字、说话风格、是否收起与更新时间，每个调用者一行 | owner_key 主键；无 FK；读到未知风格视为未设置 |
 | project_mcp_servers | 项目对 MCP 目录 server 的启用状态、exposure 覆盖、隐藏的工具（JSON 数组）与最后修改者 | `(project_id, server_name)` 主键；project_id → projects CASCADE，随项目删除；owner 转移不改 project_id，设置随项目走；读到未知 exposure 视为未设置 |
+| mcp_oauth_clients | 向 MCP 授权服务器动态注册的客户端，属于部署：注册时的 server 地址、回调地址、客户端信息（密文）、注册时间 | server_name 主键；无 FK；server 地址或回调地址变化后不再使用，下次授权重新注册 |
+| user_mcp_credentials | 用户对 MCP server 的 OAuth 授权：server 地址、client_id、显示用账号名、token（密文 JSON）、过期时间、scope、发现结果缓存（JSON）、连接与更新时间 | `(owner_key, server_name)` 主键；无 FK；server 地址变化后不再使用；密文附加数据绑定主键，挪到别的行解不开 |
 
 sessions 的模型、thinking、system_prompt、capability_versions 与 conversation_ref 可空；visibility/origin 非空且默认 private/managed。owner/updated_at 与 owner/project 索引支持列表，排序为 updated_at DESC、id DESC。
 

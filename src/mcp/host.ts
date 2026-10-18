@@ -4,13 +4,16 @@
 import {
   createCodemodeExtension, createMcpExtension, type InlineExtension, type McpServerEntry,
 } from "@earendil-works/pi-coding-agent";
-import { loadMcpCatalogFiles, type McpCatalog } from "./catalog.js";
+import { loadMcpCatalogFiles, type McpCatalog, type McpSecrets } from "./catalog.js";
 import { CodemodeGate, createCodemodeAdmissionExtension } from "./codemode-admission.js";
+import { loadMcpTokenKeyFile, type McpTokenCipher } from "./token-cipher.js";
 import { createHostMcpTransportFactory, DEFAULT_MAX_STDIO_PROCESSES, StdioProcessLimiter } from "./transport.js";
 
 export interface McpHostOptions {
   readonly catalogFile: string;
   readonly secretsFile?: string;
+  /** 用户 OAuth 凭证的加密密钥（PI_MCP_TOKEN_KEY_FILE）；目录里有 oauth server 时必填。 */
+  readonly tokenKeyFile?: string;
   readonly maxStdioProcesses?: number;
   readonly codemodeTimeoutMs?: number;
   readonly codemodeQueueWaitMs?: number;
@@ -20,6 +23,9 @@ export interface McpHostOptions {
 
 export interface McpHost {
   readonly catalog: McpCatalog;
+  readonly secrets: McpSecrets;
+  /** 目录里有 oauth server 时才有。 */
+  readonly tokenCipher?: McpTokenCipher;
   readonly limiter: StdioProcessLimiter;
   readonly gate: CodemodeGate;
   /** 会话的 MCP 相关扩展；没有启用的 server 时为空，会话行为与未接入 MCP 一致。 */
@@ -35,11 +41,14 @@ export function createMcpHost(options: McpHostOptions): McpHost {
     catalogFile: options.catalogFile,
     ...(options.secretsFile ? { secretsFile: options.secretsFile } : {}),
   });
+  const hasOAuth = [...catalog.servers.values()].some(server => server.oauth !== undefined);
+  if (hasOAuth && !options.tokenKeyFile) throw new Error("MCP catalog has oauth servers, which need PI_MCP_TOKEN_KEY_FILE");
+  const tokenCipher = options.tokenKeyFile ? loadMcpTokenKeyFile(options.tokenKeyFile) : undefined;
   const limiter = new StdioProcessLimiter(options.maxStdioProcesses ?? DEFAULT_MAX_STDIO_PROCESSES);
   const gate = new CodemodeGate();
   const createTransport = createHostMcpTransportFactory({ catalog, secrets, limiter });
   return {
-    catalog, limiter, gate,
+    catalog, secrets, ...(tokenCipher ? { tokenCipher } : {}), limiter, gate,
     sessionExtensions(entries) {
       if (entries.length === 0) return [];
       const servers = [...entries];

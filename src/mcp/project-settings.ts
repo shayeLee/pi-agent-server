@@ -69,6 +69,8 @@ export function effectiveMcpServerEntries(
   for (const server of catalog.servers.values()) {
     const setting = byName.get(server.name);
     if (!isEnabled(server, setting)) continue;
+    // 按用户授权的 server 要等会话接入用户凭证（§13.9，P3-3）后才进入会话；在此之前连上也只会 401。
+    if (server.oauth) continue;
     // 项目选的 server 级 exposure 同时是目录工具级覆盖的上限，所以“整体收紧”不会被单个工具放宽。
     const exposure = setting?.exposure ?? server.exposure;
     const limit = setting?.exposure ?? server.maxExposure;

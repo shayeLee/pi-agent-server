@@ -19,9 +19,26 @@ export type McpCatalogConnection =
   | { readonly type: "stdio"; readonly command: string; readonly args?: readonly string[]; readonly env?: Readonly<Record<string, string>>; readonly cwd?: string }
   | { readonly type: "http"; readonly url: string; readonly headers?: Readonly<Record<string, string>> };
 
+/**
+ * 按用户授权的 HTTP server（docs/mcp-integration.md §13.4）。默认动态注册客户端；
+ * 写了 clientId 时改用部署者预注册的客户端。
+ */
+export interface McpCatalogOAuth {
+  /** 面板按钮上的名字（“连接 Linear”）。 */
+  readonly label: string;
+  /** 申请的 scope；不写时由 SDK 从 401 挑战或资源元数据里取。 */
+  readonly scope?: string;
+  readonly clientId?: string;
+  /** 只能是 `${secret:NAME}`，连接时替换。 */
+  readonly clientSecret?: string;
+  readonly authorizationServerMetadataUrl?: string;
+}
+
 export interface McpCatalogServer {
   readonly name: string;
   readonly connection: McpCatalogConnection;
+  /** 只有 HTTP server 可以有；有它时凭证只来自用户授权。 */
+  readonly oauth?: McpCatalogOAuth;
   readonly description: string;
   readonly exposure: McpExposure;
   readonly maxExposure: McpExposure;
@@ -43,7 +60,9 @@ const SECRET_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const PLACEHOLDER = /\$\{([^}]*)\}/g;
 const COMMON_KEYS = ["type", "description", "exposure", "maxExposure", "toolExposure", "timeout", "adminOnly", "defaultEnabled"];
 const STDIO_KEYS = [...COMMON_KEYS, "command", "args", "env", "cwd"];
-const HTTP_KEYS = [...COMMON_KEYS, "url", "headers"];
+const HTTP_KEYS = [...COMMON_KEYS, "url", "headers", "oauth"];
+const OAUTH_KEYS = ["label", "scope", "clientId", "clientSecret", "authorizationServerMetadataUrl"];
+const SECRET_REFERENCE = /^\$\{secret:([A-Za-z_][A-Za-z0-9_]*)\}$/;
 const MAX_FILE_BYTES = 1024 * 1024;
 
 function fail(message: string): never {
@@ -81,12 +100,48 @@ function checkPlaceholders(value: string, what: string, secrets: McpSecrets, all
   }
 }
 
+/** https，或 loopback 上的 http（与 SDK 对授权端点的要求一致）。 */
+function isSecureUrl(value: string): boolean {
+  if (!URL.canParse(value)) return false;
+  const url = new URL(value);
+  return url.protocol === "https:" || (url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname));
+}
+
+function parseOAuth(raw: unknown, where: string, secrets: McpSecrets): McpCatalogOAuth {
+  if (!isRecord(raw)) fail(`${where}: oauth must be an object`);
+  for (const key of Object.keys(raw)) {
+    if (!OAUTH_KEYS.includes(key)) fail(`${where}: unknown oauth field "${key}"`);
+  }
+  if (typeof raw.label !== "string" || raw.label.trim() === "") fail(`${where}: oauth.label is required`);
+  for (const key of ["scope", "clientId"] as const) {
+    if (raw[key] !== undefined && (typeof raw[key] !== "string" || raw[key].trim() === "")) fail(`${where}: oauth.${key} must be a non-empty string`);
+  }
+  if (typeof raw.clientId === "string" && raw.clientId.includes("${")) fail(`${where}: oauth.clientId is public and must not use placeholders`);
+  if (raw.clientSecret !== undefined) {
+    if (raw.clientId === undefined) fail(`${where}: oauth.clientSecret requires oauth.clientId`);
+    const match = typeof raw.clientSecret === "string" ? SECRET_REFERENCE.exec(raw.clientSecret) : null;
+    if (!match) fail(`${where}: oauth.clientSecret must be a \${secret:NAME} reference`);
+    if (!secrets.has(match[1]!)) fail(`${where}: oauth.clientSecret references secret "${match[1]}", which the secrets file does not define`);
+  }
+  if (raw.authorizationServerMetadataUrl !== undefined && (typeof raw.authorizationServerMetadataUrl !== "string" || !isSecureUrl(raw.authorizationServerMetadataUrl))) {
+    fail(`${where}: oauth.authorizationServerMetadataUrl must be an https URL (http only on loopback)`);
+  }
+  return {
+    label: raw.label.trim(),
+    ...(typeof raw.scope === "string" ? { scope: raw.scope.trim() } : {}),
+    ...(typeof raw.clientId === "string" ? { clientId: raw.clientId.trim() } : {}),
+    ...(typeof raw.clientSecret === "string" ? { clientSecret: raw.clientSecret } : {}),
+    ...(typeof raw.authorizationServerMetadataUrl === "string" ? { authorizationServerMetadataUrl: raw.authorizationServerMetadataUrl } : {}),
+  };
+}
+
 function parseServer(name: string, raw: unknown, secrets: McpSecrets): McpCatalogServer {
   if (!SERVER_NAME.test(name)) fail(`invalid server name "${name}" (use letters, digits, "_" and "-")`);
   if (!isRecord(raw)) fail(`server "${name}" must be an object`);
   const where = `server "${name}"`;
   const isHttp = raw.type === "http" || (raw.type === undefined && "url" in raw);
   if (raw.type !== undefined && raw.type !== "stdio" && raw.type !== "http") fail(`${where}: type must be "stdio" or "http"`);
+  if (!isHttp && "oauth" in raw) fail(`${where}: oauth is only supported for HTTP servers`);
   const allowed = isHttp ? HTTP_KEYS : STDIO_KEYS;
   for (const key of Object.keys(raw)) {
     if (!allowed.includes(key)) fail(`${where}: unknown field "${key}"`);
@@ -112,6 +167,7 @@ function parseServer(name: string, raw: unknown, secrets: McpSecrets): McpCatalo
   }
 
   let connection: McpCatalogConnection;
+  let oauth: McpCatalogOAuth | undefined;
   if (isHttp) {
     if (typeof raw.url !== "string" || !URL.canParse(raw.url) || !/^https?:$/.test(new URL(raw.url).protocol)) {
       fail(`${where}: url must be an http or https URL`);
@@ -120,6 +176,11 @@ function parseServer(name: string, raw: unknown, secrets: McpSecrets): McpCatalo
     const headers = raw.headers === undefined ? undefined : stringRecord(raw.headers, `${where} headers`);
     for (const [key, value] of Object.entries(headers ?? {})) checkPlaceholders(value, `${where} header "${key}"`, secrets, false);
     connection = { type: "http", url: raw.url, ...(headers ? { headers } : {}) };
+    if (raw.oauth !== undefined) {
+      oauth = parseOAuth(raw.oauth, where, secrets);
+      // 两种凭证二选一：用户以为在用自己的身份时，不能悄悄带着共享 token。
+      if (Object.keys(headers ?? {}).some(key => key.toLowerCase() === "authorization")) fail(`${where}: oauth servers must not set an Authorization header`);
+    }
   } else {
     if (typeof raw.command !== "string" || raw.command.trim() === "") fail(`${where}: stdio servers need a command (HTTP servers need a url)`);
     if (raw.command.includes("${")) fail(`${where}: command must not contain placeholders`);
@@ -136,7 +197,7 @@ function parseServer(name: string, raw: unknown, secrets: McpSecrets): McpCatalo
     };
   }
   return {
-    name, connection, description: raw.description.trim(), exposure, maxExposure, toolExposure,
+    name, connection, ...(oauth ? { oauth } : {}), description: raw.description.trim(), exposure, maxExposure, toolExposure,
     ...(typeof raw.timeout === "number" ? { timeout: raw.timeout } : {}),
     adminOnly: raw.adminOnly === true,
     defaultEnabled: raw.defaultEnabled === true,
@@ -166,7 +227,7 @@ export function parseMcpCatalog(raw: unknown, secrets: McpSecrets = new Map()): 
 }
 
 /** 读取受限的配置文件：必须是绝对路径、普通文件（不跟随符号链接），且不超过 1 MiB。 */
-function readConfigFile(path: string, what: string, privateFile: boolean): string {
+export function readConfigFile(path: string, what: string, privateFile: boolean): string {
   if (!isAbsolute(path)) throw new Error(`${what} must be an absolute path`);
   let stat;
   try { stat = lstatSync(path); }

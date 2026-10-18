@@ -46,6 +46,7 @@ export PI_ALLOWED_CLIENT_CIDRS=127.0.0.0/8,10.0.0.0/8
 | `PI_PLUGINS` | 未设置 | 逗号分隔的显式加载、受信任同进程 ESM specifier；可以是包名，也可以是构建产物入口的绝对路径（裸机部署用后者，因为 `pnpm link` 在重建 `node_modules` 后不保留）；不扫描目录或 `.pi` |
 | `PI_MCP_CATALOG_FILE` | 未设置 | MCP 全局目录，绝对路径的严格 JSON（格式见 [MCP 接入方案](mcp-integration.md) §4.1）。未设置时不加载 MCP 与 codemode；格式、字段或引用错误拒绝启动。服务从不读取任何 `mcp.json` |
 | `PI_MCP_SECRETS_FILE` | 未设置 | 目录中 `${secret:NAME}` 的取值：绝对路径的 JSON 对象，权限必须是 `0600`（或更严）。密钥只注入 MCP 子进程 env 与 HTTP header，不进入服务进程环境变量。需同时设置 `PI_MCP_CATALOG_FILE` |
+| `PI_MCP_TOKEN_KEY_FILE` | 未设置 | 用户 MCP OAuth 凭证的加密密钥：绝对路径、权限 `0600` 的文本文件，内容为 32 字节随机数的 base64（`openssl rand -base64 32`）。目录里有带 `oauth` 的 server 时必须设置，否则拒绝启动；需同时设置 `PI_MCP_CATALOG_FILE`。数据库与备份里只有密文，换密钥后已有凭证读不出来，用户需重新授权（[MCP 接入方案](mcp-integration.md) §13.8） |
 | `PI_MCP_MAX_STDIO_PROCESSES` | `32` | 全服务同时运行的 MCP stdio 进程上限。每个会话为它启用的每个 stdio server 启动一个进程；达到上限时该会话的这个 server 连接失败，不影响会话本身 |
 | `PI_CODEMODE_TIMEOUT_MS` | `120000` | codemode 脚本的超时上限：脚本没有声明时注入，声明更长时钳到此值（最大 2147483647） |
 | `PI_CODEMODE_QUEUE_WAIT_MS` | `60000` | 全服务最多同时运行 2 个 codemode 脚本，其余排队；等待超过此值后这次调用被拒绝并返回可读原因 |
