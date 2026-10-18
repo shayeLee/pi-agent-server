@@ -92,6 +92,8 @@ export type ServerDeps = {
     readonly catalog: import("../mcp/catalog.js").McpCatalog;
     readonly store: import("../application/ports/project-mcp-store-port.js").ProjectMcpStorePort;
   };
+  /** 按用户 MCP OAuth（docs/mcp-integration.md §13）；目录里没有 oauth server 时缺省。 */
+  mcpOAuth?: Pick<import("../mcp/oauth-connections.js").McpOAuthConnections, "list" | "start" | "complete" | "disconnect" | "returnUrl">;
   /** 生产组合根注入的通用会话存储 registry；用于未实例化会话的只读导出。 */
   conversationStorage?: ConversationStorageRegistry;
   nativeSessions?: import("../application/ports/native-session-port.js").NativeSessionPort;
@@ -830,6 +832,38 @@ export function buildApp(deps: ServerDeps): FastifyInstance {
         const views = withEnableCapability(projectMcpServerViews(deps.projectMcp.catalog, await deps.projectMcp.store.list(id)), true, isAdmin);
         return { server: views.find(view => view.name === name) };
       });
+    // 按用户 MCP OAuth（docs/mcp-integration.md §13.10）：每个用户用自己的身份连接目录里的 oauth server。
+    // 回调由对方授权页整页跳回，浏览器带不上 Bearer token，网络准入对这一个路径免 token；
+    // state 一次性、10 分钟过期、只有发起授权的同一调用者能用。
+    const mcpOAuthMissing = (reply: FastifyReply) =>
+      reply.code(404).send({ statusCode: 404, error: "Not Found", code: "mcp_oauth_not_configured", message: "服务没有需要用户授权的 MCP server" });
+    api.get("/mcp/connections", { exposeHeadRoute: false, ...requirePermission("mcp:connect") }, async (request, reply) =>
+      reply.header("cache-control", "private, no-store").send({ servers: deps.mcpOAuth ? await deps.mcpOAuth.list(ownerKeyOf(request)) : [] }));
+    api.post<{ Params: { name: string } }>("/mcp/servers/:name/oauth/start", { ...requirePermission("mcp:connect") }, async (request, reply) => {
+      if (!deps.mcpOAuth) return mcpOAuthMissing(reply);
+      const result = await deps.mcpOAuth.start(ownerKeyOf(request), request.params.name);
+      if ("authorizationUrl" in result) return reply.header("cache-control", "no-store").send(result);
+      if (result.code === "unknown_server") return reply.code(404).send({ statusCode: 404, error: "Not Found", code: "mcp_unknown_server", message: result.message });
+      return reply.code(502).send({ statusCode: 502, error: "Bad Gateway", code: `mcp_oauth_${result.code}`, message: result.message });
+    });
+    api.get<{ Querystring: { code?: string; state?: string; iss?: string; error?: string } }>("/mcp/oauth/callback",
+      { exposeHeadRoute: false, ...requirePermission("mcp:connect") }, async (request, reply) => {
+        if (!deps.mcpOAuth) return mcpOAuthMissing(reply);
+        const pick = (key: "code" | "state" | "iss" | "error") => typeof request.query[key] === "string" ? request.query[key] : undefined;
+        const query = { code: pick("code"), state: pick("state"), iss: pick("iss"), error: pick("error") };
+        const result = await deps.mcpOAuth.complete(ownerKeyOf(request), Object.fromEntries(Object.entries(query).filter(([, value]) => value !== undefined)));
+        const target = new URL(deps.mcpOAuth.returnUrl);
+        target.searchParams.set("mcp_oauth", result.ok ? "connected" : result.reason);
+        if (result.server) target.searchParams.set("mcp_server", result.server);
+        return reply.header("cache-control", "no-store").header("referrer-policy", "no-referrer").redirect(target.href, 302);
+      });
+    api.delete<{ Params: { name: string } }>("/mcp/servers/:name/connection", { ...requirePermission("mcp:connect") }, async (request, reply) => {
+      if (!deps.mcpOAuth) return mcpOAuthMissing(reply);
+      if (!(await deps.mcpOAuth.disconnect(ownerKeyOf(request), request.params.name))) {
+        return reply.code(404).send({ statusCode: 404, error: "Not Found", code: "mcp_not_connected", message: "没有连接这个 MCP server" });
+      }
+      return reply.code(204).send();
+    });
     // The companion's persona follows the caller; only people who can start sessions meet it.
     // Without a store it reads as unset and a save is refused, so the page keeps it per browser.
     api.get("/companion/persona", { exposeHeadRoute: false, ...requirePermission("sessions:create") },

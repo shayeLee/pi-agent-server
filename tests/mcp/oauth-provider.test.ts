@@ -14,67 +14,10 @@ import { McpTokenCipher } from "../../src/mcp/token-cipher.js";
 import { initializeDatabase } from "../../src/storage/bootstrap.js";
 import type { DatabaseSchema } from "../../src/storage/db-schema.js";
 import { KyselyMcpOAuthRepository } from "../../src/storage/kysely-mcp-oauth-repository.js";
+import { FakeAuthorizationServer, ISSUER, MCP } from "../fixtures/fake-oauth-server.js";
 
-const MCP = "https://mcp.example.test/mcp";
-const ISSUER = "https://auth.example.test";
 const OWNER = "ip:10.0.0.1";
 const REDIRECT = "https://pi.example.test/v1/mcp/oauth/callback";
-
-/** 一台最小的授权服务器：发现、动态注册、授权码换 token、刷新（轮换 refresh token）。 */
-class FakeAuthorizationServer {
-  registrations: Array<Record<string, unknown>> = [];
-  tokenRequests: URLSearchParams[] = [];
-  codes = new Map<string, { clientId: string }>();
-  refreshTokens = new Map<string, number>();
-  issued = 0;
-
-  idToken(claims: Record<string, unknown>) {
-    return `e30.${Buffer.from(JSON.stringify(claims)).toString("base64url")}.sig`;
-  }
-
-  fetch = async (input: string | URL, init?: RequestInit): Promise<Response> => {
-    const url = new URL(input);
-    const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
-    if (url.href === "https://mcp.example.test/.well-known/oauth-protected-resource/mcp") {
-      return json({ resource: MCP, authorization_servers: [ISSUER], scopes_supported: ["read", "write"] });
-    }
-    if (url.href === `${ISSUER}/.well-known/oauth-authorization-server`) {
-      return json({
-        issuer: ISSUER, authorization_endpoint: `${ISSUER}/authorize`, token_endpoint: `${ISSUER}/token`,
-        registration_endpoint: `${ISSUER}/register`, response_types_supported: ["code"], code_challenge_methods_supported: ["S256"],
-        grant_types_supported: ["authorization_code", "refresh_token"], token_endpoint_auth_methods_supported: ["none", "client_secret_post"],
-        authorization_response_iss_parameter_supported: true,
-      });
-    }
-    if (url.href === `${ISSUER}/register` && init?.method === "POST") {
-      const body = JSON.parse(String(init.body)) as Record<string, unknown>;
-      this.registrations.push(body);
-      return json({ ...body, client_id: `dcr-${this.registrations.length}` }, 201);
-    }
-    if (url.href === `${ISSUER}/token` && init?.method === "POST") {
-      const params = new URLSearchParams(String(init.body));
-      this.tokenRequests.push(params);
-      if (params.get("grant_type") === "authorization_code") {
-        const code = this.codes.get(params.get("code") ?? "");
-        if (!code || code.clientId !== params.get("client_id")) return json({ error: "invalid_grant", error_description: "bad code" }, 400);
-        return json(this.#tokens({ id_token: this.idToken({ email: "someone@example.com" }) }));
-      }
-      if (params.get("grant_type") === "refresh_token") {
-        const refresh = params.get("refresh_token") ?? "";
-        if (!this.refreshTokens.delete(refresh)) return json({ error: "invalid_grant", error_description: "revoked" }, 400);
-        return json(this.#tokens());
-      }
-    }
-    return new Response("not found", { status: 404 });
-  };
-
-  #tokens(extra: Record<string, unknown> = {}) {
-    this.issued++;
-    const refresh = `rt-${this.issued}`;
-    this.refreshTokens.set(refresh, this.issued);
-    return { access_token: `at-${this.issued}`, token_type: "bearer", expires_in: 3600, refresh_token: refresh, ...extra };
-  }
-}
 
 function catalogServer(oauth: Record<string, unknown> = { label: "Example", scope: "read" }): McpOAuthCatalogServer {
   const secrets = new Map([["EXAMPLE_SECRET", "s3cret"]]);

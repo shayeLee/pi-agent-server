@@ -365,6 +365,15 @@ P3-1 实现说明（2026-10-18）：
 - 在 P3-3 之前，有 `oauth` 的 server 即使在项目里启用也**不进入会话**（`effectiveMcpServerEntries` 跳过），避免会话连上只得到 401。
 - 留给后续步骤：P3-2 的 start 要传 `skipRefresh: true`，否则已连接的用户再点“连接”时 SDK 会直接刷新而不跳转；P3-3 补跨会话刷新锁、到期前主动刷新，以及 owner 转移时删除旧 IP 的凭证（现在的 owner 转移只改 `projects` 与 `sessions`，不会搬运凭证，但也不会删除）。
 
+P3-2 实现说明（2026-10-18）：
+
+- `src/mcp/oauth-connections.ts` 的 `McpOAuthConnections`：start 时以 `skipRefresh: true` 调 `authorizeMcp`，截下授权地址，把 `{ 发起者, server, state, verifier, 发现结果 }` 放进内存待处理表（10 分钟过期，每个用户保留最近 5 个，全服务最多 1000 个）。callback 只接受发起者本人、未过期的 state，用过即删；别的调用者拿到 state 既用不了，也不能把它作废。
+- 回调跳回 `<PI_PUBLIC_URL>/?mcp_oauth=<结果>&mcp_server=<名称>`，地址里不带 code、state 或 token。
+- 网络准入对 `GET /v1/mcp/oauth/callback` 免 Bearer token（浏览器整页跳回带不上），CIDR 准入与角色授权照旧；start、断开等其他路由仍要 token。
+- 注册被拒时，若回调地址是非本机的 http，提示配置 HTTPS（P3-0 中 Linear 的行为）。
+- 断开时按 RFC 7009 先撤销 refresh token、再撤销 access token，只发往 https（或本机）的撤销端点，失败不阻止删除。
+- 这些路由已可用，但 Web 面板（P3-4）还没有入口；有 `oauth` 的 server 仍不进入会话（P3-3）。
+
 ### 13.9 会话如何使用凭证
 
 - 连接仍按会话建立（第 8 节）。会话快照时，对有 `oauth` 的 server：
@@ -394,7 +403,7 @@ Web：项目 MCP 面板里 `oauth` server 多一行连接状态：“连接 Line
 |---|---|---|
 | P3-0 实测 | 用 SDK 的 `authorizeMcp` 写一个独立脚本，对 Linear 跑完整流程：发现 → DCR → 浏览器授权（本机 loopback 回调）→ 换 token → `initialize`、`tools/list`、一次只读工具调用 → 刷新 → 撤销。另外只做注册、不授权，测非 loopback `http` 回调地址是否被接受 | 已完成（2026-10-18），结果见第 13.2 节 |
 | P3-1 存储与目录 | `oauth` 字段解析；迁移 v5；加密存储与仓储（SQLite、PostgreSQL）；DB 版 `OAuthClientProvider` | 已完成（2026-10-18），见第 13.8 节的实现说明 |
-| P3-2 授权流程 | `PI_PUBLIC_URL`；DCR 客户端缓存；start / callback / delete 路由；state、PKCE、`iss` 校验 | 他人 IP 拿到 state 也无法完成回调；过期或重放的 state 被拒绝；`PI_PUBLIC_URL` 变化后自动重新注册；回调响应和日志里没有 token |
+| P3-2 授权流程 | `PI_PUBLIC_URL`；DCR 客户端缓存；start / callback / delete 路由；state、PKCE、`iss` 校验 | 已完成（2026-10-18），见第 13.8 节后的实现说明 |
 | P3-3 会话接入 | 按会话 owner 注入 `AuthProvider`；跨会话刷新锁；重新授权处理；共享会话排除 | 未连接的用户看不到工具；A 的会话只用 A 的 token；两个会话同时刷新不丢授权；撤销授权后调用报可读错误 |
 | P3-4 Web 与文档 | 面板连接状态；README 双语、`configuration.md`、`api.md`、OpenAPI | 端到端：浏览器连接 Linear → 新会话里 codemode 调 Linear 工具 |
 | P3-5 预注册后备（可选） | 目录 `clientId` / `clientSecret`；GitHub 作为验证对象 | 不支持 DCR 的 server 可由部署者预注册后接入 |

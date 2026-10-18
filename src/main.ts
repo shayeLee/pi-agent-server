@@ -9,6 +9,7 @@
 
 import { startServer, type DataMode, type StorageDialect } from "./server/start.js";
 import { parseIpAccessEnv } from "./core/ip-access-config.js";
+import { parsePublicUrl } from "./mcp/oauth-connections.js";
 import { loadIpAccessPolicy } from "./core/ip-access-policy-file.js";
 import {
   DEPRECATED_EXTENSION_PATHS_ENV_WARNING,
@@ -47,6 +48,10 @@ if (extensionPathsEnv.deprecatedAliasUsed) {
   process.stderr.write(`${DEPRECATED_EXTENSION_PATHS_ENV_WARNING}\n`);
 }
 const extensionPaths = extensionPathsEnv.paths;
+// 非 loopback 的 http 回调地址会被多数 OAuth 授权服务器拒绝（docs/mcp-integration.md §13.6）；无效值留给启动时报错。
+if (process.env.PI_PUBLIC_URL && URL.canParse(process.env.PI_PUBLIC_URL) && parsePublicUrl(process.env.PI_PUBLIC_URL).insecure) {
+  process.stderr.write("警告：PI_PUBLIC_URL 是非本机的 http 地址，多数 MCP 授权服务器只接受 https 或本机回调地址，用户可能无法完成授权\n");
+}
 
 // PI_DEFAULT_MODEL="provider/modelId"；模型 id 可包含斜杠，仅第一个斜杠分隔 provider。
 function parseDefaultModel(value: string | undefined): { provider: string; id: string } | undefined {
@@ -122,6 +127,8 @@ const app = await startServer({
   mcpCatalogFile: process.env.PI_MCP_CATALOG_FILE || undefined,
   mcpSecretsFile: process.env.PI_MCP_SECRETS_FILE || undefined,
   mcpTokenKeyFile: process.env.PI_MCP_TOKEN_KEY_FILE || undefined,
+  publicUrl: process.env.PI_PUBLIC_URL || undefined,
+  mcpOAuthClientName: process.env.PI_MCP_OAUTH_CLIENT_NAME?.trim() || undefined,
   mcpMaxStdioProcesses: parsePositiveInteger("PI_MCP_MAX_STDIO_PROCESSES", process.env.PI_MCP_MAX_STDIO_PROCESSES),
   codemodeTimeoutMs: parsePositiveInteger("PI_CODEMODE_TIMEOUT_MS", process.env.PI_CODEMODE_TIMEOUT_MS),
   codemodeQueueWaitMs: parsePositiveInteger("PI_CODEMODE_QUEUE_WAIT_MS", process.env.PI_CODEMODE_QUEUE_WAIT_MS),

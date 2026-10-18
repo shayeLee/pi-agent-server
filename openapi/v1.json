@@ -1308,6 +1308,306 @@
         "description": "Request bodies use Fastify's AJV baseline: declared types are coerced (`coerceTypes: 'array'`,\nso numbers, booleans, and single-element arrays are accepted where a string is declared) and\nundeclared fields are silently stripped (`removeAdditional: true` combined with\n`additionalProperties: false`) instead of returning 400. A 400 therefore reports a missing\nrequired field or a value that cannot be coerced/constrained, never a wrong scalar type or an\nunknown field."
       }
     },
+    "/v1/mcp/connections": {
+      "get": {
+        "operationId": "listMcpConnections",
+        "security": [
+          {
+            "IpAdmission": []
+          },
+          {
+            "IpAdmission": [],
+            "BearerAuth": []
+          }
+        ],
+        "x-pi-rbac": {
+          "permission": "mcp:connect",
+          "roles": [
+            "admin",
+            "user"
+          ]
+        },
+        "responses": {
+          "200": {
+            "description": "The caller's connection to every catalog server that needs per-user authorization; empty without such servers.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "servers"
+                  ],
+                  "properties": {
+                    "servers": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/McpConnection"
+                      }
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer token required for this admitted IP profile.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "IP admission or RBAC denied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/mcp/servers/{name}/oauth/start": {
+      "post": {
+        "operationId": "startMcpOAuth",
+        "security": [
+          {
+            "IpAdmission": []
+          },
+          {
+            "IpAdmission": [],
+            "BearerAuth": []
+          }
+        ],
+        "x-pi-rbac": {
+          "permission": "mcp:connect",
+          "roles": [
+            "admin",
+            "user"
+          ]
+        },
+        "responses": {
+          "200": {
+            "description": "Open authorizationUrl in the same tab. The authorization server redirects back to /v1/mcp/oauth/callback, which returns to the Web UI. The pending authorization expires after 10 minutes.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "authorizationUrl"
+                  ],
+                  "properties": {
+                    "authorizationUrl": {
+                      "type": "string",
+                      "format": "uri"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer token required for this admitted IP profile.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "IP admission or RBAC denied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No per-user MCP server is configured (code mcp_oauth_not_configured), or the name is not one (code mcp_unknown_server).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "The authorization server refused client registration (code mcp_oauth_registration_rejected; for example it accepts only https redirect URIs) or cannot be reached (code mcp_oauth_authorization_unavailable).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/v1/mcp/oauth/callback": {
+      "get": {
+        "operationId": "completeMcpOAuth",
+        "security": [
+          {
+            "IpAdmission": []
+          }
+        ],
+        "x-pi-rbac": {
+          "permission": "mcp:connect",
+          "roles": [
+            "admin",
+            "user"
+          ]
+        },
+        "responses": {
+          "302": {
+            "description": "Back to the Web UI with mcp_oauth=connected, or a reason (expired, denied, issuer_mismatch, server_changed, exchange_failed), and mcp_server when known. The state is single-use and only completes for the caller that started it."
+          },
+          "403": {
+            "description": "IP admission or RBAC denied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No per-user MCP server is configured (code mcp_oauth_not_configured).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "code",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "iss",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "error",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/v1/mcp/servers/{name}/connection": {
+      "delete": {
+        "operationId": "disconnectMcp",
+        "security": [
+          {
+            "IpAdmission": []
+          },
+          {
+            "IpAdmission": [],
+            "BearerAuth": []
+          }
+        ],
+        "x-pi-rbac": {
+          "permission": "mcp:connect",
+          "roles": [
+            "admin",
+            "user"
+          ]
+        },
+        "responses": {
+          "204": {
+            "description": "Disconnected. The tokens are revoked at the authorization server when it supports revocation; failures there do not block the removal."
+          },
+          "401": {
+            "description": "Bearer token required for this admitted IP profile.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "IP admission or RBAC denied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No per-user MCP server is configured (code mcp_oauth_not_configured), or the caller is not connected (code mcp_not_connected).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
     "/v1/companion/persona": {
       "get": {
         "operationId": "getCompanionPersona",
@@ -5607,6 +5907,38 @@
           "deferred",
           "hidden"
         ]
+      },
+      "McpConnection": {
+        "type": "object",
+        "required": [
+          "name",
+          "label",
+          "connected"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "connected": {
+            "type": "boolean"
+          },
+          "account": {
+            "type": "string",
+            "description": "External account name, when the authorization server provides one."
+          },
+          "connectedAt": {
+            "type": "integer",
+            "description": "Milliseconds since the epoch."
+          },
+          "expiresAt": {
+            "type": "integer",
+            "description": "Access token expiry in milliseconds since the epoch; tokens are refreshed automatically."
+          }
+        },
+        "additionalProperties": false
       },
       "CompanionGreeting": {
         "type": "object",

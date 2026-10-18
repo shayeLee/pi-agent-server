@@ -70,6 +70,8 @@ import { KyselyProjectRepository } from "../storage/kysely-project-repository.js
 import { KyselyIdempotencyRepository } from "../storage/kysely-idempotency-repository.js";
 import { KyselyCompanionPersonaRepository } from "../storage/kysely-companion-persona-repository.js";
 import { KyselyProjectMcpRepository } from "../storage/kysely-project-mcp-repository.js";
+import { KyselyMcpOAuthRepository } from "../storage/kysely-mcp-oauth-repository.js";
+import { McpOAuthConnections, parsePublicUrl } from "../mcp/oauth-connections.js";
 import { createMcpHost } from "../mcp/host.js";
 import { effectiveMcpServerEntries } from "../mcp/project-settings.js";
 import { KyselyUploadedFileRepository } from "../storage/kysely-uploaded-file-repository.js";
@@ -188,6 +190,13 @@ export type StartConfig = {
   mcpCatalogFile?: string;
   /** 目录中 `${secret:NAME}` 的取值文件（PI_MCP_SECRETS_FILE，绝对路径，权限 0600）。 */
   mcpSecretsFile?: string;
+  /**
+   * 用户在浏览器里访问本服务的地址（PI_PUBLIC_URL），用来拼 MCP OAuth 回调地址；
+   * 目录里有 oauth server 时必填（docs/mcp-integration.md §13.6）。
+   */
+  publicUrl?: string;
+  /** 动态注册 MCP OAuth 客户端时的 client_name（PI_MCP_OAUTH_CLIENT_NAME，默认 pi-agent-server）。 */
+  mcpOAuthClientName?: string;
   /** 用户 MCP OAuth 凭证的加密密钥文件（PI_MCP_TOKEN_KEY_FILE，绝对路径，权限 0600）。 */
   mcpTokenKeyFile?: string;
   /** 全服务同时运行的 MCP stdio 进程上限（PI_MCP_MAX_STDIO_PROCESSES，默认 32）。 */
@@ -367,6 +376,8 @@ export async function startServer(config: StartConfig) {
     : undefined;
   if (!mcpHost && config.mcpSecretsFile) throw new Error("PI_MCP_SECRETS_FILE requires PI_MCP_CATALOG_FILE");
   if (!mcpHost && config.mcpTokenKeyFile) throw new Error("PI_MCP_TOKEN_KEY_FILE requires PI_MCP_CATALOG_FILE");
+  const publicUrl = config.publicUrl ? parsePublicUrl(config.publicUrl).url : undefined;
+  if (mcpHost?.tokenCipher && !publicUrl) throw new Error("MCP catalog has oauth servers, which need PI_PUBLIC_URL for the authorization callback");
   // 在任何异步初始化之前固定文件快照；不随项目 cwd 变化重新读取。
   const appendFileText = readAppendSystemPromptFile(config.appendSystemPromptFile);
   const appendSystemPromptText = [config.appendSystemPrompt, appendFileText]
@@ -720,6 +731,12 @@ export async function startServer(config: StartConfig) {
      * 加载 cwd，因此同一扩展模块整进程只求值一次、工厂函数每会话重跑一次。
      */
     const projectMcp = mcpHost ? new KyselyProjectMcpRepository(kysely) : undefined;
+    const mcpOAuth = mcpHost?.tokenCipher && publicUrl
+      ? new McpOAuthConnections({
+          catalog: mcpHost.catalog, secrets: mcpHost.secrets, store: new KyselyMcpOAuthRepository(kysely, mcpHost.tokenCipher), publicUrl,
+          ...(config.mcpOAuthClientName ? { clientName: config.mcpOAuthClientName } : {}),
+        })
+      : undefined;
     const createResourceLoader = async (request: PiResourceLoaderRequest) => {
       const frozen = request.systemPrompt;
       // 项目 MCP 设置在 adapter 创建时快照：之后的修改只影响新建或恢复的会话（§4.5）。
@@ -823,6 +840,7 @@ export async function startServer(config: StartConfig) {
       : {}),
     companionPersonas,
     ...(mcpHost && projectMcp ? { projectMcp: { catalog: mcpHost.catalog, store: projectMcp } } : {}),
+    ...(mcpOAuth ? { mcpOAuth } : {}),
     idempotencyRepo,
     uploads,
     serverEpoch: randomUUID(),

@@ -158,6 +158,20 @@ export class ApiClient {
     return this.request("PUT", `/v1/projects/${encodeURIComponent(projectId)}/mcp/servers/${encodeURIComponent(name)}`, input);
   }
 
+  /** 调用者对需要用户授权的 MCP server 的连接状态。 */
+  listMcpConnections(): Promise<{ servers: import("../shared/project-mcp.js").McpConnection[] }> {
+    return this.request("GET", "/v1/mcp/connections");
+  }
+
+  /** 发起授权；页面随后整页跳转到返回的 authorizationUrl，完成后回到 Web 首页并带上 mcp_oauth 结果。 */
+  startMcpOAuth(name: string): Promise<{ authorizationUrl: string }> {
+    return this.request("POST", `/v1/mcp/servers/${encodeURIComponent(name)}/oauth/start`);
+  }
+
+  disconnectMcp(name: string): Promise<void> {
+    return this.request("DELETE", `/v1/mcp/servers/${encodeURIComponent(name)}/connection`, undefined, "void");
+  }
+
   listModels(): Promise<{
     models: ModelInfo[];
     thinkingLevels: string[];

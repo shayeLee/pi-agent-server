@@ -64,6 +64,7 @@ export type RoutePermission =
   | "projects:delete"
   | "projects:mcp-read"
   | "projects:mcp-write"
+  | "mcp:connect"
   | "sessions:list"
   | "sessions:create"
   | "sessions:delete"
@@ -106,6 +107,8 @@ export const ROUTE_PERMISSIONS: Record<RoutePermission, readonly IpRole[]> = Obj
   "projects:delete": frozenRoles("admin", "user"),
   // 项目 MCP 设置：owner 隔离由路由处理；adminOnly server 与默认项目另需 admin。
   "projects:mcp-write": frozenRoles("admin", "user"),
+  // 用户用自己的身份连接 MCP server（OAuth）；viewer 不能运行会话，连接没有意义。
+  "mcp:connect": frozenRoles("admin", "user"),
   "sessions:create": frozenRoles("admin", "user"),
   "sessions:delete": frozenRoles("admin", "user"),
   "sessions:update": frozenRoles("admin", "user"),

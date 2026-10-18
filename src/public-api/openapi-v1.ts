@@ -34,6 +34,10 @@ export const PUBLIC_API_OPERATIONS = [
   ["/v1/projects/{id}/companion/greeting", "post", "sessions:create"],
   ["/v1/projects/{id}/mcp", "get", "projects:mcp-read"],
   ["/v1/projects/{id}/mcp/servers/{name}", "put", "projects:mcp-write"],
+  ["/v1/mcp/connections", "get", "mcp:connect"],
+  ["/v1/mcp/servers/{name}/oauth/start", "post", "mcp:connect"],
+  ["/v1/mcp/oauth/callback", "get", "mcp:connect"],
+  ["/v1/mcp/servers/{name}/connection", "delete", "mcp:connect"],
   ["/v1/companion/persona", "get", "sessions:create"],
   ["/v1/companion/persona", "put", "sessions:create"],
   ["/v1/files", "post", "files:upload"],
@@ -127,6 +131,7 @@ const roles: Record<Permission, readonly string[]> = {
   "projects:delete": ["admin", "user"],
   "projects:mcp-read": ["admin", "user", "viewer"],
   "projects:mcp-write": ["admin", "user"],
+  "mcp:connect": ["admin", "user"],
   "files:upload": ["admin", "user"],
   "sessions:list": ["admin", "user", "viewer"],
   "sessions:create": ["admin", "user"],
@@ -290,6 +295,35 @@ export const openapiV1 = {
         "403": error(403, "Enabling an adminOnly server (code mcp_admin_only) or changing the default project (code mcp_default_project) needs admin."),
         "404": error(404, "Project not found, no MCP catalog (code mcp_not_configured), or a server not in the catalog (code mcp_unknown_server)."),
       }, { parameters: [id, { name: "name", in: "path", required: true, schema: { type: "string" } }], requestBody: request(ref("ProjectMcpServerInput")), ...requestValidation }),
+    },
+    "/v1/mcp/connections": {
+      get: operation("listMcpConnections", "mcp:connect", {
+        "200": { description: "The caller's connection to every catalog server that needs per-user authorization; empty without such servers.", ...json({ type: "object", required: ["servers"], properties: { servers: { type: "array", items: ref("McpConnection") } }, additionalProperties: false }) },
+      }),
+    },
+    "/v1/mcp/servers/{name}/oauth/start": {
+      post: operation("startMcpOAuth", "mcp:connect", {
+        "200": { description: "Open authorizationUrl in the same tab. The authorization server redirects back to /v1/mcp/oauth/callback, which returns to the Web UI. The pending authorization expires after 10 minutes.", ...json({ type: "object", required: ["authorizationUrl"], properties: { authorizationUrl: { type: "string", format: "uri" } }, additionalProperties: false }) },
+        "404": error(404, "No per-user MCP server is configured (code mcp_oauth_not_configured), or the name is not one (code mcp_unknown_server)."),
+        "502": error(502, "The authorization server refused client registration (code mcp_oauth_registration_rejected; for example it accepts only https redirect URIs) or cannot be reached (code mcp_oauth_authorization_unavailable)."),
+      }, { parameters: [{ name: "name", in: "path", required: true, schema: { type: "string" } }] }),
+    },
+    "/v1/mcp/oauth/callback": {
+      get: (() => {
+        // 对方授权页整页跳回，浏览器带不上 Bearer token：只做 IP 准入，靠一次性 state 绑定发起者。
+        const callback = operation("completeMcpOAuth", "mcp:connect", {
+          "302": { description: "Back to the Web UI with mcp_oauth=connected, or a reason (expired, denied, issuer_mismatch, server_changed, exchange_failed), and mcp_server when known. The state is single-use and only completes for the caller that started it." },
+          "404": error(404, "No per-user MCP server is configured (code mcp_oauth_not_configured)."),
+        }, { parameters: ["code", "state", "iss", "error"].map(name => ({ name, in: "query", required: false, schema: { type: "string" } })) });
+        const { "401": _unused, ...responses } = callback.responses as Record<string, unknown>;
+        return { ...callback, security: ipOnlySecurity, responses };
+      })(),
+    },
+    "/v1/mcp/servers/{name}/connection": {
+      delete: operation("disconnectMcp", "mcp:connect", {
+        "204": { description: "Disconnected. The tokens are revoked at the authorization server when it supports revocation; failures there do not block the removal." },
+        "404": error(404, "No per-user MCP server is configured (code mcp_oauth_not_configured), or the caller is not connected (code mcp_not_connected)."),
+      }, { parameters: [{ name: "name", in: "path", required: true, schema: { type: "string" } }] }),
     },
     "/v1/companion/persona": {
       get: operation("getCompanionPersona", "sessions:create", {
@@ -546,6 +580,12 @@ export const openapiV1 = {
         hiddenTools: { type: "array", maxItems: 256, items: { type: "string", minLength: 1, maxLength: 128, pattern: "^[^*\\s]+$" }, description: "Exact tool names, as the server offers them, to hide in this project." },
       }, additionalProperties: false },
       McpExposure: { enum: ["direct", "codemode", "deferred", "hidden"] },
+      McpConnection: { type: "object", required: ["name", "label", "connected"], properties: {
+        name: { type: "string" }, label: { type: "string" }, connected: { type: "boolean" },
+        account: { type: "string", description: "External account name, when the authorization server provides one." },
+        connectedAt: { type: "integer", description: "Milliseconds since the epoch." },
+        expiresAt: { type: "integer", description: "Access token expiry in milliseconds since the epoch; tokens are refreshed automatically." },
+      }, additionalProperties: false },
       CompanionGreeting: { type: "object", required: ["greeting", "hint"], properties: { greeting: { type: "string" }, hint: { type: "string" } }, additionalProperties: false },
       SessionCommandInput: { type: "object", required: ["command"], properties: { command: { enum: ["compact", "reload"] }, args: { type: "string", maxLength: 4000, description: "compact: optional summary instructions." } }, additionalProperties: false },
       SessionCommandResult: { oneOf: [

@@ -36,6 +36,7 @@ import {
   type IpAccessResolveInput,
 } from "../core/ip-access-policy.js";
 import type { UserIdentity } from "../core/user-identity.js";
+import { MCP_OAUTH_CALLBACK_PATH } from "../mcp/oauth-callback-path.js";
 
 /** 注入 request.access 的访问画像（public：无 token hashes，可进日志/契约层）。 */
 export type AccessProfile = IpAccessProfilePublic;
@@ -55,8 +56,8 @@ export type Admission = (request: FastifyRequest) => AdmissionResult;
 
 /**
  * token gate 覆盖范围（WP5D-3 reviewer 语义）：
- * - /v1 默认全部路径：tokenRequired 画像必须出示绑定该 IP 的 Bearer token；唯一例外是
- *   ONEV 严格内容寻址、只含组件库公开字节的 runtime.js/runtime.css GET；
+ * - /v1 默认全部路径：tokenRequired 画像必须出示绑定该 IP 的 Bearer token；例外是
+ *   ONEV 严格内容寻址、只含组件库公开字节的 runtime.js/runtime.css GET，以及 MCP OAuth 回调 GET；
  * - /metrics：运维面，实际 GET/非预检 OPTIONS 同样要求 token（role 为 admin/operator）；
  * - /health、/readyz：纯存活/就绪探针，永不需要 token（任意 admitted IP/role）。
  * 合规 CORS 预检在所有路径上免 token。
@@ -68,6 +69,9 @@ function isTokenGatedUrl(rawUrl: string): boolean {
   // only content-addressed, hash-verified public library bytes; CIDR admission and read-role
   // RBAC still apply. Prototype HTML, generated code, sessions, and unknown paths stay gated.
   if (ONEV_IMMUTABLE_RUNTIME.test(path)) return false;
+  // MCP OAuth 回调由对方授权页整页跳回，浏览器无法附带 Bearer token。它只消费发起者本人
+  // （带 token 调用 start 的同一 IP）拿到的一次性 state，CIDR 准入与角色授权照旧（§13.6）。
+  if (path === MCP_OAUTH_CALLBACK_PATH) return false;
   return path === "/v1" || path.startsWith("/v1/") || path === "/metrics";
 }
 
