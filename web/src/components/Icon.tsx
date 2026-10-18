@@ -12,6 +12,7 @@ const paths = {
   inspector: "M4 3h16a1 1 0 0 1 1 1v16a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1ZM15 3v18",
   download: "M12 3v12m-5-5 5 5 5-5M4 15v6h16v-6",
   info: "M12 3a9 9 0 1 1 0 18 9 9 0 0 1 0-18ZM12 11v5M12 8h.01",
+  settings: "M4 6h9M17 6h3M15 4v4M4 12h3M11 12h9M9 10v4M4 18h11M19 18h1M17 16v4",
 } as const;
 export type IconName = keyof typeof paths | SourceIconName | "dot";
 /** Compatibility facade; mapping is owned by the pure tool metadata registry. */

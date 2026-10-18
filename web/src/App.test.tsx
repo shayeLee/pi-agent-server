@@ -66,6 +66,10 @@ const mocks = vi.hoisted(() => {
     }
   }
 
+  // 服务端是否配置了 MCP 目录（决定“设置”菜单里有没有 MCP 服务）。
+  let projectMcpConfigured = false;
+  function setProjectMcpConfigured(v: boolean): void { projectMcpConfigured = v; }
+
   // 项目列表主动失败（模拟 GET /v1/projects 报错）
   let projectsFailure: Error | null = null;
   function setProjectsFail(v: boolean | Error): void {
@@ -136,7 +140,7 @@ const mocks = vi.hoisted(() => {
     createProject = vi.fn((name: string, cwd: string) =>
       Promise.resolve({ id: "new-project", name, cwd, isDefault: false }),
     );
-    getProjectMcp = vi.fn(() => Promise.resolve({ configured: false, canEdit: false, servers: [] }));
+    getProjectMcp = vi.fn(() => Promise.resolve({ configured: projectMcpConfigured, canEdit: false, servers: [] }));
     saveProjectMcpServer = vi.fn();
     deleteSession = vi.fn();
     deleteProject = vi.fn((id: string) => {
@@ -232,6 +236,7 @@ const mocks = vi.hoisted(() => {
     resetProjects,
     setProjectListPending,
     setProjectsFail,
+    setProjectMcpConfigured,
     deferSessionsFor,
     releaseDeferredSessions,
     resetDeferredSessions,
@@ -267,6 +272,7 @@ beforeEach(() => {
   mocks.resetProjects();
   mocks.setProjectListPending(false);
   mocks.setProjectsFail(false);
+  mocks.setProjectMcpConfigured(false);
   mocks.resetDeferredSessions();
 });
 
@@ -296,7 +302,20 @@ describe("App（顶层流程）", () => {
     expect(screen.queryByText("会话")).not.toBeInTheDocument();
     expect(screen.getByTestId("project-select")).toBeVisible();
     expect(screen.getByRole("button", { name: "打开工作区导航" })).toBeInTheDocument();
-    expect(screen.getByTestId("theme-toggle")).toHaveAttribute("aria-label", "主题");
+    expect(screen.getByTestId("settings-toggle")).toHaveAttribute("aria-label", "设置");
+  });
+  it("服务没配置 MCP 时，设置菜单里只有主题", async () => {
+    await enterIntranet();
+    fireEvent.keyDown(screen.getByTestId("settings-toggle"), { key: "ArrowDown" });
+    expect(await screen.findByRole("menuitemradio", { name: "跟随系统" })).toBeInTheDocument();
+    expect(screen.queryByRole("menuitem", { name: "MCP 服务" })).toBeNull();
+  });
+  it("服务配置了 MCP 时，设置菜单里的 MCP 服务打开当前项目的面板", async () => {
+    mocks.setProjectMcpConfigured(true);
+    await enterIntranet();
+    fireEvent.keyDown(screen.getByTestId("settings-toggle"), { key: "ArrowDown" });
+    fireEvent.click(await screen.findByRole("menuitem", { name: "MCP 服务" }));
+    expect(await screen.findByTestId("project-mcp-panel")).toBeInTheDocument();
   });
   it("图片追加结果未知时仅原会话精确确认才清除原草稿与图片", async () => {
     const inst = await enterChat();
@@ -406,7 +425,7 @@ describe("App（顶层流程）", () => {
     try {
       render(<App />);
       const app = screen.getByTestId("app");
-      const toggle = screen.getByTestId("theme-toggle");
+      const toggle = screen.getByTestId("settings-toggle");
       const openMenu = async () => {
         fireEvent.keyDown(toggle, { key: "ArrowDown" });
         await screen.findByRole("menuitemradio", { name: "跟随系统" });
@@ -431,7 +450,7 @@ describe("App（顶层流程）", () => {
       matches = false;
       act(() => listeners.forEach((listener) => listener({ matches, media: "(prefers-color-scheme: dark)" } as MediaQueryListEvent)));
       expect(app).toHaveAttribute("data-theme", "light");
-      expect(toggle).toHaveAttribute("aria-label", "主题");
+      expect(toggle).toHaveAttribute("aria-label", "设置");
       await choose("深色");
       expect(localStorage.getItem(themePreferenceKey())).toBe("dark");
       expect(app).toHaveAttribute("data-theme", "dark");
@@ -475,7 +494,7 @@ describe("App（顶层流程）", () => {
     }) });
     try {
       const first = render(<App />);
-      fireEvent.keyDown(screen.getByTestId("theme-toggle"), { key: "ArrowDown" });
+      fireEvent.keyDown(screen.getByTestId("settings-toggle"), { key: "ArrowDown" });
       fireEvent.click(await screen.findByRole("menuitemradio", { name: { light: "浅色", dark: "深色", system: "跟随系统" }[mode] }));
       expect(localStorage.getItem(themePreferenceKey())).toBe(mode);
       first.unmount();
@@ -484,7 +503,7 @@ describe("App（顶层流程）", () => {
       const expected = mode === "system" ? (matches ? "dark" : "light") : mode;
       expect(screen.getByTestId("app")).toHaveAttribute("data-theme", expected);
       expect(document.documentElement).toHaveAttribute("data-theme", expected);
-      fireEvent.keyDown(screen.getByTestId("theme-toggle"), { key: "ArrowDown" });
+      fireEvent.keyDown(screen.getByTestId("settings-toggle"), { key: "ArrowDown" });
       expect(await screen.findByRole("menuitemradio", { name: { light: "浅色", dark: "深色", system: "跟随系统" }[mode] })).toHaveAttribute("aria-checked", "true");
       matches = !matches;
       act(() => listeners.forEach(listener => listener({ matches } as MediaQueryListEvent)));
@@ -500,7 +519,7 @@ describe("App（顶层流程）", () => {
     const write = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => { throw new Error("quota"); });
     try {
       render(<App />);
-      fireEvent.keyDown(screen.getByTestId("theme-toggle"), { key: "ArrowDown" });
+      fireEvent.keyDown(screen.getByTestId("settings-toggle"), { key: "ArrowDown" });
       expect(await screen.findByRole("menuitemradio", { name: "跟随系统" })).toHaveAttribute("aria-checked", "true");
       fireEvent.click(screen.getByRole("menuitemradio", { name: "深色" }));
       expect(screen.getByTestId("app")).toHaveAttribute("data-theme", "dark");
@@ -514,7 +533,7 @@ describe("App（顶层流程）", () => {
     try {
       render(<App />);
       expect(screen.getByTestId("app")).toHaveAttribute("data-theme", "light");
-      expect(screen.getByTestId("theme-toggle")).toHaveAttribute("aria-label", "主题");
+      expect(screen.getByTestId("settings-toggle")).toHaveAttribute("aria-label", "设置");
     } finally {
       Object.defineProperty(window, "matchMedia", { configurable: true, value: originalMatchMedia });
     }
@@ -621,7 +640,7 @@ describe("App（顶层流程）", () => {
     fireEvent.click(screen.getByTestId("inspector-tab-events"));
     const events = screen.getByTestId("event-log").textContent;
     expect(events).toContain("event fixture");
-    fireEvent.keyDown(screen.getByTestId("theme-toggle"), { key: "ArrowDown" });
+    fireEvent.keyDown(screen.getByTestId("settings-toggle"), { key: "ArrowDown" });
     expect(await screen.findByRole("menuitemradio", { name: "跟随系统" })).toBeInTheDocument();
     expect(screen.getByTestId("event-log").textContent).toBe(events);
     expect(mocks.instances[0].getSessionSteps).toHaveBeenCalledTimes(1);

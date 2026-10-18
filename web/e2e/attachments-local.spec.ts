@@ -91,7 +91,7 @@ test("Reading-first local fixture: file upload, explicit first send, theme and p
   expect(uploads).toBe(1);
   expect(messages).toEqual([expect.objectContaining({ prompt: "阅读这个文件", fileIds: [fileId] })]);
   expect(JSON.stringify(messages)).not.toContain("/private/fixture/file");
-  await page.getByTestId("theme-toggle").click();
+  await page.getByTestId("settings-toggle").click();
   await page.getByRole("menuitemradio", { name: "浅色" }).click();
   await expect(page.getByTestId("app")).toHaveAttribute("data-theme", "light");
   await page.screenshot({ path: "/tmp/reading-first-actual/attachment-sent-light.png", fullPage: true });

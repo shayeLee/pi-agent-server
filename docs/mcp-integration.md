@@ -197,7 +197,7 @@ P2 实现说明：
 - 实时：`src/client/chat-state.ts` 把带 `parentToolCallId` 的事件记到所属卡片的 `nested` 上，不新增时间线条目。嵌套调用再发起的调用（父 ID 是某个嵌套 ID）记到同一张卡片。找不到所属卡片时退回为独立卡片。父调用结束时仍在运行的嵌套调用标为 `unfinished`，记录标为不完整。
 - 回放：导出的 `tool_result` 行新增可选 `nestedCalls`（形状同 SDK 的 `NestedToolCalls`，参数经过与工具参数相同的脱敏），Web 历史投影把它还原成同一个 `nested` 字段，所以实时与刷新后显示同一个列表。耗时来源不同：实时取 `tool_end.durationMs`，回放取 SDK 记录的耗时，两者可能差几毫秒。
 - 卡片：任何带嵌套调用的工具卡片标题都以“内部调用 N 次”开头，展开后在结果下方显示折叠列表（状态、工具名、耗时、错误摘要、参数过大未记录的说明）。codemode 的脚本默认折叠，展开后按 JavaScript 高亮。
-- 面板：侧栏项目行在服务配置了目录时显示“MCP 服务”按钮。每个 server 一张表单（启用、提供方式、禁用的工具），单独保存。GET 返回的每个 server 带 `canEnable`，调用者不能启用的 `adminOnly` server 开关置灰；viewer 和非 admin 看共享的默认项目时整个面板只读。
+- 面板：服务配置了目录时，侧栏底部的“设置”菜单（与主题选项在一起）多出“MCP 服务”一项，打开当前项目的面板。每个 server 一张表单（启用、提供方式、禁用的工具），单独保存。GET 返回的每个 server 带 `canEnable`，调用者不能启用的 `adminOnly` server 开关置灰；viewer 和非 admin 看共享的默认项目时整个面板只读。
 
 ## 11. 分阶段计划
 

@@ -401,7 +401,7 @@ test('project menu semantics, keyboard selection and create cancellation', async
 });
 
 async function chooseTheme(page: import('@playwright/test').Page, name: string) {
-  await page.getByTestId('theme-toggle').click();
+  await page.getByTestId('settings-toggle').click();
   await page.getByRole('menuitemradio', { name, exact: true }).click();
 }
 

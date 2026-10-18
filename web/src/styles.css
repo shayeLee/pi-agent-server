@@ -336,7 +336,7 @@ textarea::placeholder {
   flex: none;
 }
 
-.theme-toggle {
+.settings-toggle {
   flex: none;
   display: flex; align-items: center;
   margin: auto var(--space-16) var(--space-16);
@@ -348,21 +348,21 @@ textarea::placeholder {
   background: transparent;
 }
 
-.app-shell.sidebar-collapsed .theme-toggle span { display: none; }
+.app-shell.sidebar-collapsed .settings-toggle span { display: none; }
 .session-date-group { padding: 9px 16px 7px; list-style: none; }
 .session-date-group:first-child { padding-top: 0; }
-.theme-toggle:hover {
+.settings-toggle:hover {
   border-color: var(--accent);
 }
 
-.app-shell.sidebar-collapsed .theme-toggle {
+.app-shell.sidebar-collapsed .settings-toggle {
   margin: auto auto var(--space-16);
 }
 
 /* Match the stats-summary center: 16px footer inset + 14px half-row. */
 @media (min-width: 1180px) and (min-height: 481px) {
-  .theme-toggle,
-  .app-shell.sidebar-collapsed .theme-toggle { margin-bottom: 8px; }
+  .settings-toggle,
+  .app-shell.sidebar-collapsed .settings-toggle { margin-bottom: 8px; }
 }
 
 .new-session,
@@ -440,11 +440,6 @@ textarea::placeholder {
 .workbench-project-row > .workbench-search-toggle {
   margin-left: auto;
   flex: none;
-}
-
-/* 搜索和 MCP 两个按钮靠右挨在一起，只让第一个把空白推到左边。 */
-.workbench-project-row > .workbench-search-toggle ~ .workbench-search-toggle {
-  margin-left: 0;
 }
 
 .select-menu.workbench-project-select,
@@ -2900,11 +2895,11 @@ details[open] > summary > .details-chevron { transform: rotate(90deg); }
     justify-content: space-between;
   }
 
-  .app-shell.sidebar-collapsed.mobile-sidebar-open .theme-toggle span {
+  .app-shell.sidebar-collapsed.mobile-sidebar-open .settings-toggle span {
     display: block;
   }
 
-  .app-shell.mobile-sidebar-open .theme-toggle {
+  .app-shell.mobile-sidebar-open .settings-toggle {
     margin: auto var(--space-16) var(--space-16);
     align-self: flex-start;
   }
@@ -3663,8 +3658,9 @@ details[open] > summary > .details-chevron { transform: rotate(90deg); }
 .session-details { display: flex; flex-direction: column; gap: 2px; padding: 6px 8px; font-family: var(--font-mono); font-size: var(--fs-tag); font-weight: 400; color: var(--dim); }
 .session-menu-danger { color: var(--err); }
 
-.theme-toggle { font-family: var(--font-mono); font-size: var(--fs-meta); color: var(--dim); gap: 8px; min-height: 32px; margin-bottom: 8px; }
-.theme-toggle:hover { color: var(--ink); }
+.settings-toggle { font-family: var(--font-mono); font-size: var(--fs-meta); color: var(--dim); gap: 8px; min-height: 32px; margin-bottom: 8px; }
+.settings-toggle:hover { color: var(--ink); }
+.settings-menu-label { font-weight: 400; font-size: var(--fs-meta); color: var(--dim); }
 .sidebar-hints { flex: none; margin: 8px 16px 0; font-family: var(--font-mono); font-size: var(--fs-tag); color: var(--faint); }
 .app-shell.sidebar-collapsed:not(.mobile-sidebar-open) .sidebar-hints { display: none; }
 

@@ -8,7 +8,7 @@ test('single theme entry: keyboard, system changes, collapsed rail and mobile re
   await page.emulateMedia({ colorScheme: 'light', reducedMotion: 'reduce' });
   await page.setViewportSize({ width: 1536, height: 1024 });
   await page.goto('/');
-  const trigger = page.getByTestId('theme-toggle');
+  const trigger = page.getByTestId('settings-toggle');
   const app = page.getByTestId('app');
   const system = page.getByRole('menuitemradio', { name: '跟随系统', exact: true });
   const open = async () => {

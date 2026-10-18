@@ -219,7 +219,7 @@ test('full App uses authoritative queue, CRUD identity, drain removal and accept
   await expect(page.getByTestId('abort-button')).toBeVisible();
   await expect(page.locator('.composer-runtime-controls')).toHaveCount(0);
   await page.screenshot({path:info.outputPath('app-reference-desktop-light.png')});
-  await page.getByTestId('theme-toggle').click();
+  await page.getByTestId('settings-toggle').click();
   await page.getByRole('menuitemradio', { name: '深色', exact: true }).click();
   await page.screenshot({path:info.outputPath('app-reference-desktop-dark.png')});
   await page.setViewportSize({width:390,height:844});
@@ -228,7 +228,7 @@ test('full App uses authoritative queue, CRUD identity, drain removal and accept
   await expect(page.getByTestId('abort-button')).toBeInViewport({ ratio: 1 });
   await page.screenshot({animations:'disabled',path:info.outputPath('app-reference-mobile-dark.png')});
   await page.getByRole('button',{name:'打开工作区导航'}).click();
-  await page.getByTestId('theme-toggle').click();
+  await page.getByTestId('settings-toggle').click();
   await page.getByRole('menuitemradio', { name: '浅色', exact: true }).click();
   await page.keyboard.press('Escape');
   await page.waitForTimeout(250);

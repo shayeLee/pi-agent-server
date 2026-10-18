@@ -105,7 +105,7 @@ test("通用参数优先、真实快照替换、手动键盘折叠保留、明�
     for (const width of [1400, 390]) {
       await page.setViewportSize({ width: 1400, height: 1000 });
       if (await page.getByTestId("app").getAttribute("data-theme") !== theme) {
-        await page.getByTestId("theme-toggle").click();
+        await page.getByTestId("settings-toggle").click();
         await page.getByRole("menuitemradio", { name: theme === "dark" ? "深色" : "浅色", exact: true }).click();
       }
       await expect(page.getByTestId("app")).toHaveAttribute("data-theme", theme);

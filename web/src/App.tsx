@@ -8,13 +8,13 @@ import { Icon } from "./components/Icon.js";
 import { useWebAppController } from "./hooks/useWebAppController.js";
 import { SessionList } from "./components/SessionList.js";
 import { ProjectSwitcher } from "./components/ProjectSwitcher.js";
-import { ProjectMcpButton } from "./components/ProjectMcpPanel.js";
+import { useProjectMcp } from "./components/ProjectMcpPanel.js";
 import type { TraceNavigation } from "./components/step-navigation.js";
 import { Chat } from "./components/Chat.js";
 import { Inspector, type InspectorTab } from "./components/Inspector.js";
 import { useSessionInspection } from "./hooks/useSessionInspection.js";
 import { zhCN } from "./i18n/zh-CN.js";
-import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuRadioGroup, DropdownMenuRadioItem } from "./components/ui/dropdown-menu.js";
+import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator } from "./components/ui/dropdown-menu.js";
 import { CommandPalette, ShortcutHelp, type Command } from "./components/CommandPalette.js";
 import { useGlobalShortcuts } from "./hooks/useGlobalShortcuts.js";
 
@@ -212,6 +212,8 @@ export default function App() {
     },
   };
   useGlobalShortcuts(shortcutHandlers);
+  const projectMcp = useProjectMcp({ api: controller.api, projectId: controller.activeProjectId,
+    projectName: controller.projects?.find(project => project.id === controller.activeProjectId)?.name ?? zhCN.project.defaultProject });
   const themeLabels: Record<ThemeMode, string> = { light: zhCN.sidebar.lightMode, dark: zhCN.sidebar.darkMode, system: zhCN.sidebar.followSystem };
   const commands: Command[] = [
     ...(canCreateSession ? [{ id: "new", group: zhCN.palette.groupActions, label: zhCN.sidebar.newSession, hint: "N", run: newSession }] : []),
@@ -220,6 +222,7 @@ export default function App() {
     { id: "sidebar", group: zhCN.palette.groupView, label: zhCN.palette.toggleSidebar, hint: "⌘B", run: toggleSidebar },
     ...(["light", "dark", "system"] as ThemeMode[]).map(mode => ({ id: `theme-${mode}`, group: zhCN.palette.groupTheme,
       label: `${zhCN.sidebar.themeMenu}：${themeLabels[mode]}${mode === themeMode ? " ✓" : ""}`, run: () => applyThemeMode(mode) })),
+    ...(projectMcp.available ? [{ id: "mcp", group: zhCN.palette.groupSettings, label: zhCN.projectMcp.open, run: projectMcp.openPanel }] : []),
     ...(activeSession ? [{ id: "copy-id", group: zhCN.palette.groupActions, label: zhCN.palette.copySessionId, run: () => { void navigator.clipboard?.writeText(activeSession.id); } }] : []),
     ...(controller.projects ?? []).map(project => ({ id: `project-${project.id}`, group: zhCN.palette.groupProjects,
       label: `${project.name}${project.id === controller.activeProjectId ? " ✓" : ""}`, run: () => controller.selectProject(project.id) })),
@@ -314,18 +317,24 @@ export default function App() {
         </div>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <button type="button" className="theme-toggle" data-testid="theme-toggle" aria-label={zhCN.sidebar.themeMenu}>
-              <Icon name={theme === "dark" ? "moon" : "sun"} /><span>{zhCN.sidebar.themeMenu}：{themeLabels[themeMode]}</span>
+            <button type="button" className="settings-toggle" data-testid="settings-toggle" aria-label={zhCN.sidebar.settings} title={zhCN.sidebar.settings}>
+              <Icon name="settings" /><span>{zhCN.sidebar.settings}</span>
             </button>
           </DropdownMenuTrigger>
-          <DropdownMenuContent side="top" align="start" aria-label={zhCN.sidebar.themeMenu}>
+          <DropdownMenuContent side="top" align="start" aria-label={zhCN.sidebar.settings}>
+            <DropdownMenuLabel className="settings-menu-label">{zhCN.sidebar.themeMenu}</DropdownMenuLabel>
             <DropdownMenuRadioGroup value={themeMode} onValueChange={(value) => applyThemeMode(value as ThemeMode)}>
               <DropdownMenuRadioItem value="light">{zhCN.sidebar.lightMode}</DropdownMenuRadioItem>
               <DropdownMenuRadioItem value="dark">{zhCN.sidebar.darkMode}</DropdownMenuRadioItem>
               <DropdownMenuRadioItem value="system">{zhCN.sidebar.followSystem}</DropdownMenuRadioItem>
             </DropdownMenuRadioGroup>
+            {projectMcp.available && <>
+              <DropdownMenuSeparator />
+              <DropdownMenuItem data-testid="project-mcp-open" onSelect={projectMcp.openPanel}>{zhCN.projectMcp.open}</DropdownMenuItem>
+            </>}
           </DropdownMenuContent>
         </DropdownMenu>
+        {projectMcp.dialog}
         {controller.projects === null || controller.activeProjectId === null ? (
           controller.projectsError || controller.loadError ? (
             <div className="project-error" role="alert" data-testid="projects-error">
@@ -370,8 +379,7 @@ export default function App() {
                   activeId={controller.activeProjectId!}
                   onSelect={(id) => { closeMobileSidebar(); controller.selectProject(id); }}
                   onCreate={controller.createProject}
-                >{searchToggle}<ProjectMcpButton api={controller.api} projectId={controller.activeProjectId!}
-                    projectName={controller.projects?.find(project => project.id === controller.activeProjectId)?.name ?? zhCN.project.defaultProject} /></ProjectSwitcher>}
+                >{searchToggle}</ProjectSwitcher>}
                   sessions={controller.sessions ?? []}
                   activeId={controller.activeSessionId}
                   onSelect={(id) => { closeMobileSidebar(); controller.selectSession(id); }}

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { ApiError, type McpConnection, type ProjectMcpServer, type ProjectMcpSettings } from "pi-agent-server/client";
 import { zhCN } from "../i18n/zh-CN.js";
-import { ProjectMcpButton } from "./ProjectMcpPanel.js";
+import { useProjectMcp } from "./ProjectMcpPanel.js";
 import { captureMcpOAuthReturn, clearMcpOAuthReturn } from "../mcp-oauth-return.js";
 
 const docs: ProjectMcpServer = { name: "docs", status: "available", description: "Docs search", transport: "http", enabled: false,
@@ -18,8 +18,14 @@ function setup(settings: ProjectMcpSettings, save = vi.fn(), connections: () => 
     startMcpOAuth: vi.fn(async () => ({ authorizationUrl: "https://auth.example.test/authorize?state=s" })),
     disconnectMcp: vi.fn(async () => {}),
   };
-  render(<ProjectMcpButton api={api} projectId="p1" projectName="Demo" />);
+  render(<Entry api={api} />);
   return { api, save };
+}
+
+/** 代替侧栏“设置”菜单里的那一项。 */
+function Entry({ api }: { api: Parameters<typeof useProjectMcp>[0]["api"] }) {
+  const mcp = useProjectMcp({ api, projectId: "p1", projectName: "Demo" });
+  return <>{mcp.available && <button type="button" data-testid="project-mcp-open" onClick={mcp.openPanel}>MCP</button>}{mcp.dialog}</>;
 }
 
 afterEach(() => {
@@ -30,7 +36,7 @@ afterEach(() => {
 });
 const row = (name: string) => screen.getAllByTestId("project-mcp-server").find(element => element.dataset.server === name)!;
 
-describe("ProjectMcpButton", () => {
+describe("useProjectMcp", () => {
   it("stays hidden when the server has no MCP catalog", async () => {
     const { api } = setup({ configured: false, canEdit: false, servers: [] });
     await waitFor(() => expect(api.getProjectMcp).toHaveBeenCalledWith("p1"));

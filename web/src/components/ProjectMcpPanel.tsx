@@ -1,8 +1,7 @@
 import { zhCN } from "../i18n/zh-CN.js";
 import { formatDateTime } from "../i18n/format.js";
-import { useCallback, useEffect, useId, useState } from "react";
+import { useCallback, useEffect, useId, useState, type ReactNode } from "react";
 import type { ApiClient, McpConnection, McpExposure, ProjectMcpServer, ProjectMcpSettings } from "pi-agent-server/client";
-import { Icon } from "./Icon.js";
 import { IconSelect } from "./IconSelect.js";
 import { Modal } from "./Modal.js";
 import { clearMcpOAuthReturn, peekMcpOAuthReturn, rememberMcpOAuthReturnPath, type McpOAuthReturn } from "../mcp-oauth-return.js";
@@ -17,10 +16,13 @@ const rank = (exposure: McpExposure) => exposure === "direct" ? 2 : exposure ===
 const exposureLabel = (exposure: McpExposure | undefined) => exposure ? zhCN.projectMcp.exposures[exposure] ?? exposure : "";
 
 /**
- * 项目的 MCP server 设置入口。服务未配置目录、项目不可见或读取失败时不显示入口，
- * 这样没接 MCP 的部署看不到任何变化。从授权页回来时自动打开并显示结果。
+ * 项目的 MCP server 设置，入口在侧栏底部的“设置”菜单里。服务未配置目录、项目不可见或读取失败时
+ * `available` 为 false，菜单不显示这一项，这样没接 MCP 的部署看不到任何变化。
+ * 从授权页回来时自动打开面板并显示结果。
  */
-export function ProjectMcpButton({ api, projectId, projectName }: { api: McpApi; projectId: string; projectName: string }) {
+export function useProjectMcp({ api, projectId, projectName }: { api: McpApi; projectId: string | null; projectName: string }): {
+  available: boolean; openPanel: () => void; dialog: ReactNode;
+} {
   const [settings, setSettings] = useState<ProjectMcpSettings | null>(null);
   const [connections, setConnections] = useState<Connections>(null);
   const [open, setOpen] = useState(false);
@@ -31,6 +33,7 @@ export function ProjectMcpButton({ api, projectId, projectName }: { api: McpApi;
     let current = true;
     setSettings(null);
     setOpen(false);
+    if (projectId === null) return;
     api.getProjectMcp(projectId).then(result => {
       if (!current) return;
       setSettings(result);
@@ -41,17 +44,14 @@ export function ProjectMcpButton({ api, projectId, projectName }: { api: McpApi;
   }, [api, projectId]);
   const personal = settings?.servers.some(server => server.oauthLabel) ?? false;
   useEffect(() => { if (personal) void refreshConnections(); }, [personal, refreshConnections]);
-  if (!settings?.configured) return null;
+  const openPanel = useCallback(() => setOpen(true), []);
+  if (!settings?.configured || projectId === null) return { available: false, openPanel, dialog: null };
   const close = () => { setOpen(false); setReturned(null); clearMcpOAuthReturn(); };
-  return <>
-    <button type="button" className="workbench-search-toggle" data-testid="project-mcp-open"
-      aria-label={zhCN.projectMcp.open} title={zhCN.projectMcp.open} onClick={() => setOpen(true)}><Icon name="tool" /></button>
-    <Modal open={open} onClose={close} title={zhCN.projectMcp.title(projectName)} className="project-mcp-dialog">
-      {returned && <ReturnNotice returned={returned} settings={settings} onDismiss={() => { setReturned(null); clearMcpOAuthReturn(); }} />}
-      <ProjectMcpPanel api={api} projectId={projectId} settings={settings} connections={connections} onConnectionsChanged={refreshConnections}
-        onSaved={server => setSettings(previous => previous && { ...previous, servers: previous.servers.map(row => row.name === server.name ? server : row) })} />
-    </Modal>
-  </>;
+  return { available: true, openPanel, dialog: <Modal open={open} onClose={close} title={zhCN.projectMcp.title(projectName)} className="project-mcp-dialog">
+    {returned && <ReturnNotice returned={returned} settings={settings} onDismiss={() => { setReturned(null); clearMcpOAuthReturn(); }} />}
+    <ProjectMcpPanel api={api} projectId={projectId} settings={settings} connections={connections} onConnectionsChanged={refreshConnections}
+      onSaved={server => setSettings(previous => previous && { ...previous, servers: previous.servers.map(row => row.name === server.name ? server : row) })} />
+  </Modal> };
 }
 
 function ReturnNotice({ returned, settings, onDismiss }: { returned: McpOAuthReturn; settings: ProjectMcpSettings; onDismiss: () => void }) {
