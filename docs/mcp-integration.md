@@ -197,7 +197,7 @@ P2 实现说明：
 - 实时：`src/client/chat-state.ts` 把带 `parentToolCallId` 的事件记到所属卡片的 `nested` 上，不新增时间线条目。嵌套调用再发起的调用（父 ID 是某个嵌套 ID）记到同一张卡片。找不到所属卡片时退回为独立卡片。父调用结束时仍在运行的嵌套调用标为 `unfinished`，记录标为不完整。
 - 回放：导出的 `tool_result` 行新增可选 `nestedCalls`（形状同 SDK 的 `NestedToolCalls`，参数经过与工具参数相同的脱敏），Web 历史投影把它还原成同一个 `nested` 字段，所以实时与刷新后显示同一个列表。耗时来源不同：实时取 `tool_end.durationMs`，回放取 SDK 记录的耗时，两者可能差几毫秒。
 - 卡片：任何带嵌套调用的工具卡片标题都以“内部调用 N 次”开头，展开后在结果下方显示折叠列表（状态、工具名、耗时、错误摘要、参数过大未记录的说明）。codemode 的脚本默认折叠，展开后按 JavaScript 高亮。
-- 面板：侧栏项目行在服务配置了目录时显示“MCP 服务”按钮。每个 server 一张表单（启用、提供方式、隐藏的工具），单独保存。GET 返回的每个 server 带 `canEnable`，调用者不能启用的 `adminOnly` server 开关置灰；viewer 和非 admin 看共享的默认项目时整个面板只读。
+- 面板：侧栏项目行在服务配置了目录时显示“MCP 服务”按钮。每个 server 一张表单（启用、提供方式、禁用的工具），单独保存。GET 返回的每个 server 带 `canEnable`，调用者不能启用的 `adminOnly` server 开关置灰；viewer 和非 admin 看共享的默认项目时整个面板只读。
 
 ## 11. 分阶段计划
 
@@ -354,7 +354,7 @@ DCR 注册出来的客户端属于**这个部署**，不属于某个用户：所
 
 - 备份随数据库保存密文，恢复时还需要同一份密钥文件，否则这些凭证不可用，用户重新授权即可。
 - 用户在面板点“断开”时删除这一行，并在元数据有 `revocation_endpoint` 时尽量撤销 refresh token 和 access token（RFC 7009，各发一次）。P3-0 中 Linear 撤销 refresh token 后，已签发的 access token 仍可用，所以两种都要撤销。撤销失败不阻止删除。
-- 目录里删掉 server 后，这一行保留但不再使用，面板标为“已从目录移除”，用户可以删除。
+- 目录里删掉 server 后，这一行保留但不再使用，面板标为“管理员已移除这个 server”，用户可以删除。
 
 P3-1 实现说明（2026-10-18）：
 

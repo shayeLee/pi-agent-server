@@ -180,14 +180,14 @@ function ServerRow({ api, projectId, server, canEdit, onSaved, connections, onCo
     {available && <div className="project-mcp-fields">
       <label>
         <span>{zhCN.projectMcp.exposure}</span>
-        <IconSelect value={draft.exposure} disabled={!editable} onChange={event => update({ exposure: event.target.value as Draft["exposure"] })}>
+        <IconSelect value={draft.exposure} disabled={!editable} title={zhCN.projectMcp.exposureHint} onChange={event => update({ exposure: event.target.value as Draft["exposure"] })}>
           <option value="">{zhCN.projectMcp.defaultExposure(exposureLabel(server.defaultExposure))}</option>
           {options.map(exposure => <option key={exposure} value={exposure}>{exposureLabel(exposure)}</option>)}
         </IconSelect>
       </label>
       <label>
         <span>{zhCN.projectMcp.hiddenTools}</span>
-        <input value={draft.hiddenTools} disabled={!editable} placeholder={editable ? zhCN.projectMcp.hiddenToolsHint : undefined} title={zhCN.projectMcp.hiddenToolsHint}
+        <input value={draft.hiddenTools} disabled={!editable} placeholder={editable ? zhCN.projectMcp.hiddenToolsHint : undefined} title={zhCN.projectMcp.hiddenToolsTitle}
           onChange={event => update({ hiddenTools: event.target.value })} />
       </label>
     </div>}

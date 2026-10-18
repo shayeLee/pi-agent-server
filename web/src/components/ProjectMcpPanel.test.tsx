@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { ApiError, type McpConnection, type ProjectMcpServer, type ProjectMcpSettings } from "pi-agent-server/client";
+import { zhCN } from "../i18n/zh-CN.js";
 import { ProjectMcpButton } from "./ProjectMcpPanel.js";
 import { captureMcpOAuthReturn, clearMcpOAuthReturn } from "../mcp-oauth-return.js";
 
@@ -78,7 +79,7 @@ describe("ProjectMcpButton", () => {
     expect(within(panel).queryByRole("button", { name: "保存" })).toBeNull();
     for (const control of within(panel).getAllByRole("checkbox")) expect(control).toBeDisabled();
     expect(within(row("docs")).getByRole("combobox")).toBeDisabled();
-    expect(row("gone").textContent).toContain("已从目录移除");
+    expect(row("gone").textContent).toContain(zhCN.projectMcp.missing);
   });
 
   it("connects a personal server through the authorization page and remembers where the user was", async () => {
