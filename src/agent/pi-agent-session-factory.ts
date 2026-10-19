@@ -49,6 +49,8 @@ export type PiResourceLoaderRequest = {
 export type PiSessionResourceLoader = {
   readonly loader: ResourceLoader;
   readonly failbackLifecycleSource: FailbackLifecycleSource;
+  /** loader 创建时给会话定下的 MCP server 现在已经不对了。 */
+  readonly isOutdated?: () => Promise<boolean>;
 };
 
 export type PiAgentSessionFactoryOptions = {
@@ -308,6 +310,7 @@ export class PiAgentSessionFactory implements AgentSessionFactory {
       (provider, modelId) => this.modelRuntime.getModel(provider, modelId),
       sessionLoader.failbackLifecycleSource,
     );
+    if (sessionLoader.isOutdated) adapter.isOutdated = sessionLoader.isOutdated;
     // Test doubles intentionally model only the adapter surface. Real SDK sessions always bind once.
     try {
       if (sdkSession.bindExtensions) {

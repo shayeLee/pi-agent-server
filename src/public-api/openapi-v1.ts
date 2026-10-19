@@ -295,7 +295,7 @@ export const openapiV1 = {
     },
     "/v1/projects/{id}/mcp/servers/{name}": {
       put: operation("saveProjectMcpServer", "projects:mcp-write", {
-        "200": { description: "Saved. Only sessions created or resumed afterwards use it.", ...json({ type: "object", required: ["server"], properties: { server: ref("ProjectMcpServer") }, additionalProperties: false }) },
+        "200": { description: "Saved. Sessions use it from their next message; a reply in progress is not affected.", ...json({ type: "object", required: ["server"], properties: { server: ref("ProjectMcpServer") }, additionalProperties: false }) },
         "400": error(400, "Exposure above the catalog maxExposure, or invalid hiddenTools."),
         "403": error(403, "Enabling an adminOnly server (code mcp_admin_only) or changing the default project (code mcp_default_project) needs admin."),
         "404": error(404, "Project not found, no MCP catalog (code mcp_not_configured), or a server not in the catalog (code mcp_unknown_server)."),
@@ -308,7 +308,7 @@ export const openapiV1 = {
     },
     "/v1/mcp/shared/{name}": {
       put: operation("saveSharedMcpServer", "mcp:admin", {
-        "200": { description: "Saved to mcp.json. Fields the form does not cover are kept; a masked value keeps the value in the file. New or resumed sessions use it.", ...json(ref("SharedMcpList")) },
+        "200": { description: "Saved to mcp.json. Fields the form does not cover are kept; a masked value keeps the value in the file. Sessions use it from their next message.", ...json(ref("SharedMcpList")) },
         "400": error(400, "Invalid name or settings this server cannot use (code mcp_config_invalid), or mcp.json itself is unreadable."),
         "409": error(409, "mcp.json changed since the hash was read (code mcp_config_changed); reload and try again."),
       }, { parameters: [{ name: "name", in: "path", required: true, schema: { type: "string" } }], requestBody: request(ref("SharedMcpServerInput")), ...requestValidation }),

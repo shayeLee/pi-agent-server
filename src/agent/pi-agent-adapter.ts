@@ -55,6 +55,8 @@ export type SdkImageContent = {
 /** 真实 Pi SDK AgentSession 的最小结构（与方法签名对齐，便于 fake 测试与类型隔离）。 */
 export type AgentSessionLike = {
   prompt(text: string, options?: { images?: SdkImageContent[] }): Promise<void>;
+  /** 用来在 dispose 前发出 session_shutdown（Pi 的 dispose 自己不发）。 */
+  readonly extensionRunner?: { hasHandlers(eventType: string): boolean; emit(event: { type: "session_shutdown"; reason: "reload" }): Promise<unknown> };
   readonly isStreaming?: boolean;
   sendCustomMessage?(message: ExtensionCustomMessage, options: { deliverAs: "followUp"; triggerTurn: true }): Promise<void>;
   steer(text: string, images?: SdkImageContent[]): Promise<unknown>;
@@ -103,7 +105,13 @@ export type AgentSessionLike = {
 /** 按 provider + modelId 取模型（Model 结构隔离，避免 SDK 类型入接口）。 */
 export type GetModel = (provider: string, modelId: string) => unknown;
 
+/** dispose 时等扩展处理 session_shutdown 的上限。 */
+const SESSION_SHUTDOWN_LIMIT_MS = 5000;
+
 export class PiAgentAdapter implements AgentAdapter {
+  /** 由会话工厂接上资源加载器的检查；没有时视为不会过期。 */
+  isOutdated?: () => Promise<boolean>;
+
   constructor(
     private readonly session: AgentSessionLike,
     private readonly getModel?: GetModel,
@@ -705,8 +713,32 @@ export class PiAgentAdapter implements AgentAdapter {
     this.requestErrorListeners.clear();
     this.consumedSteering.clear();
     this.clearResponseMeasurement();
-    this.session.dispose();
+    this.disposeSession();
     if (!this.pendingControls.size && !this.pendingLegacyInputs) this.restorePublicQueueBoundary();
+  }
+
+  /**
+   * Pi 的 `AgentSession.dispose()` 不发 session_shutdown，扩展收不到关闭通知：MCP 扩展的 stdio 子进程和连接
+   * 会一直留着。先发 session_shutdown，等扩展收尾（最多 5 秒）再 dispose。
+   * reason 用 reload 而不是 quit：服务端释放 adapter 不等于会话结束，之后还会恢复；收到 quit 的扩展会清掉
+   * 会话的持久状态（例如 model-failback 的模型封禁记录）。MCP 扩展不看 reason，照样关闭连接。
+   */
+  private disposeSession(): void {
+    const runner = this.session.extensionRunner;
+    let shutdown: Promise<unknown> | undefined;
+    try {
+      if (runner?.hasHandlers("session_shutdown")) shutdown = runner.emit({ type: "session_shutdown", reason: "reload" });
+    } catch { /* 收尾失败不影响释放 */ }
+    if (!shutdown) {
+      this.session.dispose();
+      return;
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const limit = new Promise<void>(resolve => { timer = setTimeout(resolve, SESSION_SHUTDOWN_LIMIT_MS); timer.unref?.(); });
+    void Promise.race([shutdown.catch(() => {}), limit]).finally(() => {
+      clearTimeout(timer);
+      this.session.dispose();
+    });
   }
 
   subscribe(listener: (event: AgentSdkEvent) => void): () => void {

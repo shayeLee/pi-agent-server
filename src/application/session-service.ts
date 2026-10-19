@@ -575,6 +575,9 @@ export class SessionService {
     const added = latest === undefined;
     if (added) this.requestFingerprints.set(key, fingerprint);
     try {
+      // 会话该用的 MCP server 变了：空闲时在这条消息前重建 adapter（docs/mcp-integration.md §4.5）。
+      // 原生会话持有可撤销的文件绑定，同时打开两份有风险，仍要等服务重启。
+      if (owned.origin !== "native") await this.deps.registry.refreshIfOutdated(id, owned.ownerKey);
       const entry = await this.findEntry(ownerKey, id);
       if (!entry) {
         if (added) this.requestFingerprints.delete(key);

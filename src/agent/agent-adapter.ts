@@ -96,6 +96,12 @@ export interface AgentAdapter {
   /** O(1) event-driven durable loop/turn snapshot. */
   getExecutionSnapshot?(): import("../core/usage-snapshot.js").ExecutionSnapshot;
 
+  /**
+   * 创建之后，会话该用的 MCP server 变了（项目设置、共享 mcp.json、用户的连接）。会话空闲时，
+   * 宿主在下一条消息前用同一份对话记录重建 adapter（docs/mcp-integration.md §4.5）。
+   */
+  isOutdated?(): Promise<boolean>;
+
   /** 释放底层会话资源（退订监听、dispose SDK session）；删除会话/关闭时调用。 */
   dispose(): void;
 }

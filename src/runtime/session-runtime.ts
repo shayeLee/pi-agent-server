@@ -276,6 +276,25 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
     ) ?? (() => {});
   }
 
+  /**
+   * 没有任何进行中、排队或在后台跑的工作：这时换掉 adapter 不会打断什么。
+   * 后台子代理还在跑、通知还没送达、控制队列里还有消息，都不算空闲。
+   */
+  isQuiescent(): boolean {
+    if (this.disposed || this.poisoned || this.aborting || this.taskState !== "idle" || this.currentTaskId !== null) return false;
+    if (this.pending.size > 0 || this.inFlightSubmits.size > 0 || this.command !== null || this.turnWaiters.size > 0) return false;
+    if (this.failbackAttemptId !== null || this.notificationPosts.size > 0 || this.releaseNotifications.length > 0) return false;
+    if (this.adapter.isSdkStreaming?.()) return false;
+    if ((this.adapter.getControlQueueItems?.() ?? []).length > 0) return false;
+    return !(this.adapter.getSubagents?.(this.sessionId).runs.some(run => run.status === "running") ?? false);
+  }
+
+  /** adapter 用的 MCP server 已经不是现在该用的了；检查失败按没过期处理，不影响发消息。 */
+  async isAdapterOutdated(): Promise<boolean> {
+    if (!this.adapter.isOutdated) return false;
+    try { return await this.adapter.isOutdated(); } catch { return false; }
+  }
+
   /** 释放资源：退订事件 + 释放并发槽位/清理排队 + dispose 底层 adapter（幂等，重复调用安全）。 */
   dispose(): void {
     if (this.disposed) return;

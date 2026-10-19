@@ -9,4 +9,8 @@ export interface RuntimeLifecyclePort {
   dispose(): void;
   /** 清理过期的幂等记录（内存），返回清理条数。 */
   pruneIdempotency(before: number): number;
+  /** 没有进行中、排队或后台的工作，换掉 adapter 不会打断什么。 */
+  isQuiescent(): boolean;
+  /** adapter 用的 MCP server 已经不是现在该用的了。 */
+  isAdapterOutdated(): Promise<boolean>;
 }

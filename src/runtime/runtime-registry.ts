@@ -142,11 +142,11 @@ export class RuntimeRegistry {
     if (this.deleted.has(sessionId)) {
       throw new SessionDeletedError(sessionId);
     }
-    const existing = this.sessions.get(sessionId);
-    if (existing) return existing;
-
+    // 先看在途的创建或替换（refreshIfOutdated）：替换期间新的请求要等新 runtime。
     const inFlight = this.pending.get(sessionId);
     if (inFlight) return inFlight;
+    const existing = this.sessions.get(sessionId);
+    if (existing) return existing;
 
     const promise = this.create(sessionId, ownerKey);
     this.pending.set(sessionId, promise);
@@ -165,9 +165,47 @@ export class RuntimeRegistry {
     }
   }
 
+  /**
+   * 会话空闲而 adapter 已过期（会话该用的 MCP server 变了）时，换一个新 runtime，事件总线沿用：
+   * 对话记录在存储里，新 adapter 从那里恢复，SSE 连接和事件游标都不受影响。
+   * 先建新的再换：建不成就继续用旧的；建好时会话已经开始了别的工作，就丢掉新的，下次再试。
+   */
+  async refreshIfOutdated(sessionId: string, ownerKey: string): Promise<void> {
+    const entry = this.sessions.get(sessionId);
+    const replaceable = () => this.sessions.get(sessionId) === entry && !this.pending.has(sessionId) &&
+      !this.deleted.has(sessionId) && entry!.runtime.isQuiescent();
+    if (!entry || !replaceable() || !(await entry.runtime.isAdapterOutdated()) || !replaceable()) return;
+    const replacement = (async (): Promise<ManagedSessionEntry> => {
+      let runtime: SessionRuntime;
+      try {
+        runtime = await this.createRuntime(sessionId, ownerKey, entry.events);
+      } catch {
+        return entry;
+      }
+      if (this.sessions.get(sessionId) !== entry || this.deleted.has(sessionId) || !entry.runtime.isQuiescent()) {
+        runtime.dispose();
+        return entry;
+      }
+      const replaced = { runtime, events: entry.events };
+      this.sessions.set(sessionId, replaced);
+      entry.runtime.dispose();
+      return replaced;
+    })();
+    this.pending.set(sessionId, replacement);
+    try {
+      await replacement;
+    } finally {
+      if (this.pending.get(sessionId) === replacement) this.pending.delete(sessionId);
+    }
+  }
+
   private async create(sessionId: string, ownerKey: string): Promise<ManagedSessionEntry> {
     const events = new SessionEventBus();
-    const runtime = new SessionRuntime({
+    return { runtime: await this.createRuntime(sessionId, ownerKey, events), events };
+  }
+
+  private async createRuntime(sessionId: string, ownerKey: string, events: SessionEventBus): Promise<SessionRuntime> {
+    return new SessionRuntime({
       sessionId,
       ownerKey,
       concurrency: this.concurrency,
@@ -178,7 +216,6 @@ export class RuntimeRegistry {
       // 会话运行时的所有输出事件写入该会话独占的事件总线（SSE 缓冲/分发）
       onEvent: (event) => events.push(event),
     });
-    return { runtime, events };
   }
 
   /** 删除会话：写入永久墓碑、中止在途任务、释放 adapter 资源并移除 runtime/事件总线。 */

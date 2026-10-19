@@ -739,17 +739,20 @@ export async function startServer(config: StartConfig) {
           ...(config.mcpOAuthClientName ? { clientName: config.mcpOAuthClientName } : {}),
         })
       : undefined;
+    // oauth server 只进入 owner 已连接的私有会话，并且只用这个 owner 的凭证（§13.9）。
+    // mcp.json 里没有可用的 server 时不查库，会话也不加载 MCP 与 codemode。
+    const sessionMcp = async (request: PiResourceLoaderRequest) => {
+      const mcpCatalog = mcpHost.catalog.snapshot();
+      if (mcpCatalog.servers.size === 0) return { credentialOwner: null, mcp: undefined, signature: "[]" };
+      const credentialOwner = mcpOAuth ? request.mcpCredentialOwner : null;
+      const connectedOAuth = mcpOAuth && credentialOwner ? await mcpOAuth.connectedServers(credentialOwner) : new Set<string>();
+      const servers = effectiveMcpServerEntries(mcpCatalog, await projectMcp.list(request.projectId), connectedOAuth);
+      return { credentialOwner, mcp: { catalog: mcpCatalog, servers }, signature: JSON.stringify(servers) };
+    };
     const createResourceLoader = async (request: PiResourceLoaderRequest) => {
       const frozen = request.systemPrompt;
-      // 项目 MCP 设置与用户的连接在 adapter 创建时快照：之后的修改只影响新建或恢复的会话（§4.5）。
-      // oauth server 只进入 owner 已连接的私有会话，并且只用这个 owner 的凭证（§13.9）。
-      // mcp.json 里没有可用的 server 时不查库，会话也不加载 MCP 与 codemode。
-      const mcpCatalog = mcpHost.catalog.snapshot();
-      const credentialOwner = mcpOAuth && mcpCatalog.servers.size > 0 ? request.mcpCredentialOwner : null;
-      const connectedOAuth = mcpOAuth && credentialOwner ? await mcpOAuth.connectedServers(credentialOwner) : new Set<string>();
-      const mcp = mcpCatalog.servers.size > 0
-        ? { catalog: mcpCatalog, servers: effectiveMcpServerEntries(mcpCatalog, await projectMcp.list(request.projectId), connectedOAuth) }
-        : undefined;
+      // 项目 MCP 设置与用户的连接在 adapter 创建时快照（§4.5）；之后变了，会话空闲时在下一条消息前重建 adapter。
+      const { credentialOwner, mcp, signature } = await sessionMcp(request);
       const loader = await createSessionResourceLoader({
         resourceCwd: request.projectCwd,
         ...(mcp ? { mcp } : {}),
@@ -758,7 +761,10 @@ export async function startServer(config: StartConfig) {
           ? unfrozenPromptOptions
           : { systemPromptOverride: () => frozenPromptBase(frozen) }),
       });
-      return { loader, failbackLifecycleSource: getProviderExtensionEventBus(loader) };
+      return {
+        loader, failbackLifecycleSource: getProviderExtensionEventBus(loader),
+        isOutdated: async () => (await sessionMcp(request)).signature !== signature,
+      };
     };
     const piFactory = new PiAgentSessionFactory({
       modelRuntime,

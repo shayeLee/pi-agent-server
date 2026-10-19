@@ -1214,7 +1214,7 @@
         },
         "responses": {
           "200": {
-            "description": "Saved. Only sessions created or resumed afterwards use it.",
+            "description": "Saved. Sessions use it from their next message; a reply in progress is not affected.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1382,7 +1382,7 @@
         },
         "responses": {
           "200": {
-            "description": "Saved to mcp.json. Fields the form does not cover are kept; a masked value keeps the value in the file. New or resumed sessions use it.",
+            "description": "Saved to mcp.json. Fields the form does not cover are kept; a masked value keeps the value in the file. Sessions use it from their next message.",
             "content": {
               "application/json": {
                 "schema": {

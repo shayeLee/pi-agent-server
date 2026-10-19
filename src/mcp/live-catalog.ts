@@ -1,5 +1,5 @@
 // 运行中的目录（docs/mcp-integration.md §14.2）：agentDir 下 Pi 的全局 mcp.json。
-// 每次读取目录时检查文件的修改时间和大小，变了就重新解析，所以 `pi mcp add` 之后新建或恢复的会话
+// 每次读取目录时检查文件的修改时间和大小，变了就重新解析，所以 `pi mcp add` 之后的会话
 // 不用重启服务就能用上。解析失败时继续用上一次读成功的内容。
 
 import { readFileSync, statSync, type Stats } from "node:fs";
