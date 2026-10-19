@@ -4,9 +4,11 @@ import { useCallback, useEffect, useId, useState, type ReactNode } from "react";
 import type { ApiClient, McpConnection, McpExposure, ProjectMcpServer, ProjectMcpSettings } from "pi-agent-server/client";
 import { IconSelect } from "./IconSelect.js";
 import { Modal } from "./Modal.js";
+import { SharedMcpPanel } from "./SharedMcpPanel.js";
 import { clearMcpOAuthReturn, peekMcpOAuthReturn, rememberMcpOAuthReturnPath, type McpOAuthReturn } from "../mcp-oauth-return.js";
 
-type McpApi = Pick<ApiClient, "getProjectMcp" | "saveProjectMcpServer" | "listMcpConnections" | "startMcpOAuth" | "disconnectMcp">;
+type McpApi = Pick<ApiClient, "getProjectMcp" | "saveProjectMcpServer" | "listMcpConnections" | "startMcpOAuth" | "disconnectMcp"
+  | "getSharedMcp" | "saveSharedMcpServer" | "removeSharedMcpServer">;
 /** null：调用者不能连接（viewer）或服务没有需要个人授权的 server。 */
 type Connections = readonly McpConnection[] | null;
 
@@ -27,6 +29,14 @@ export function useProjectMcp({ api, projectId, projectName }: { api: McpApi; pr
   const [connections, setConnections] = useState<Connections>(null);
   const [open, setOpen] = useState(false);
   const [returned, setReturned] = useState<McpOAuthReturn | null>(null);
+  /** admin 能管理共享 MCP，面板顶部多一个“共享 MCP”标签。 */
+  const [canManageShared, setCanManageShared] = useState(false);
+  const [tab, setTab] = useState<"project" | "shared">("project");
+  useEffect(() => {
+    let current = true;
+    api.getSharedMcp().then(result => { if (current) setCanManageShared(result.canEdit); }, () => {});
+    return () => { current = false; };
+  }, [api]);
   const refreshConnections = useCallback(() => api.listMcpConnections().then(
     result => setConnections(result.servers), () => setConnections(null)), [api]);
   useEffect(() => {
@@ -38,19 +48,32 @@ export function useProjectMcp({ api, projectId, projectName }: { api: McpApi; pr
       if (!current) return;
       setSettings(result);
       const back = peekMcpOAuthReturn();
-      if (result.configured && back) { setReturned(back); setOpen(true); }
+      if (result.configured && back) { setReturned(back); setTab("project"); setOpen(true); }
     }, () => {});
     return () => { current = false; };
+  }, [api, projectId]);
+  /** 共享 MCP 改了之后，本项目的列表跟着变。 */
+  const refreshSettings = useCallback(() => {
+    if (projectId !== null) api.getProjectMcp(projectId).then(setSettings, () => {});
   }, [api, projectId]);
   const personal = settings?.servers.some(server => server.oauthLabel) ?? false;
   useEffect(() => { if (personal) void refreshConnections(); }, [personal, refreshConnections]);
   const openPanel = useCallback(() => setOpen(true), []);
   if (!settings?.configured || projectId === null) return { available: false, openPanel, dialog: null };
-  const close = () => { setOpen(false); setReturned(null); clearMcpOAuthReturn(); };
+  const close = () => { setOpen(false); setReturned(null); setTab("project"); clearMcpOAuthReturn(); };
+  const showShared = canManageShared && tab === "shared";
   return { available: true, openPanel, dialog: <Modal open={open} onClose={close} title={zhCN.projectMcp.title(projectName)} className="project-mcp-dialog">
-    {returned && <ReturnNotice returned={returned} settings={settings} onDismiss={() => { setReturned(null); clearMcpOAuthReturn(); }} />}
-    <ProjectMcpPanel api={api} projectId={projectId} settings={settings} connections={connections} onConnectionsChanged={refreshConnections}
-      onSaved={server => setSettings(previous => previous && { ...previous, servers: previous.servers.map(row => row.name === server.name ? server : row) })} />
+    {canManageShared && <div className="project-mcp-tabs" role="tablist">
+      {(["project", "shared"] as const).map(id => <button key={id} type="button" role="tab" aria-selected={tab === id} data-testid={`project-mcp-tab-${id}`}
+        className={`project-mcp-tab${tab === id ? " is-active" : ""}`} onClick={() => setTab(id)}>{zhCN.projectMcp.tabs[id]}</button>)}
+    </div>}
+    {showShared
+      ? <SharedMcpPanel api={api} onChanged={refreshSettings} />
+      : <>
+        {returned && <ReturnNotice returned={returned} settings={settings} onDismiss={() => { setReturned(null); clearMcpOAuthReturn(); }} />}
+        <ProjectMcpPanel api={api} projectId={projectId} settings={settings} connections={connections} onConnectionsChanged={refreshConnections}
+          onSaved={server => setSettings(previous => previous && { ...previous, servers: previous.servers.map(row => row.name === server.name ? server : row) })} />
+      </>}
   </Modal> };
 }
 
@@ -60,7 +83,7 @@ function ReturnNotice({ returned, settings, onDismiss }: { returned: McpOAuthRet
   const text = ok ? zhCN.projectMcp.returned.connected(label) : zhCN.projectMcp.returned.failed[returned.result] ?? zhCN.projectMcp.returned.unknown;
   return <div className={`project-mcp-returned${ok ? "" : " project-mcp-error"}`} role={ok ? "status" : "alert"} data-testid="project-mcp-returned">
     <span>{text}</span>
-    <button type="button" className="project-mcp-link" onClick={onDismiss}>{zhCN.projectMcp.dismiss}</button>
+    <button type="button" className="project-mcp-action" onClick={onDismiss}>{zhCN.projectMcp.dismiss}</button>
   </div>;
 }
 
@@ -68,26 +91,31 @@ export function ProjectMcpPanel({ api, projectId, settings, connections = null, 
   api: McpApi; projectId: string; settings: ProjectMcpSettings; connections?: Connections;
   onConnectionsChanged?: () => Promise<void>; onSaved: (server: ProjectMcpServer) => void;
 }) {
-  const personal = settings.servers.some(server => server.oauthLabel);
-  const shared = settings.servers.some(server => server.status === "available" && !server.oauthLabel);
+  const available = settings.servers.filter(server => server.status === "available");
+  const missing = settings.servers.filter(server => server.status !== "available");
   return <div className="project-mcp" data-testid="project-mcp-panel">
-    <p className="project-mcp-note">{zhCN.projectMcp.intro}</p>
-    {shared && <p className="project-mcp-note">{zhCN.projectMcp.sharedIdentity}</p>}
-    {personal && <p className="project-mcp-note">{zhCN.projectMcp.personalIdentity}</p>}
-    {!settings.canEdit && <p className="project-mcp-note project-mcp-readonly" role="note">{zhCN.projectMcp.readOnly}</p>}
-    {settings.servers.length === 0
-      ? <p className="project-mcp-note">{zhCN.projectMcp.empty}</p>
-      : <ul className="project-mcp-servers">
-        {settings.servers.map(server => <li key={server.name}>
-          <ServerRow api={api} projectId={projectId} server={server} canEdit={settings.canEdit} onSaved={onSaved}
-            connections={connections} onConnectionsChanged={onConnectionsChanged} />
-        </li>)}
+    <p className="project-mcp-intro">{zhCN.projectMcp.intro}</p>
+    {!settings.canEdit && <p className="project-mcp-intro" role="note"><span className="project-mcp-tag">{zhCN.projectMcp.readOnlyTag}</span>{zhCN.projectMcp.readOnly}</p>}
+    {available.length === 0
+      ? <p className="project-mcp-empty">{zhCN.projectMcp.empty}</p>
+      : <ul className="project-mcp-list">
+        {available.map(server => <ServerRow key={server.name} api={api} projectId={projectId} server={server} canEdit={settings.canEdit} onSaved={onSaved}
+          connections={connections} onConnectionsChanged={onConnectionsChanged} />)}
       </ul>}
+    {missing.length > 0 && <section className="project-mcp-removed" aria-label={zhCN.projectMcp.removed}>
+      <h3 className="project-mcp-tag">{zhCN.projectMcp.removed}</h3>
+      <ul className="project-mcp-list">
+        {missing.map(server => <li key={server.name} className="project-mcp-row" data-testid="project-mcp-server" data-server={server.name}>
+          <div className="project-mcp-head"><span className="project-mcp-name">{server.name}</span></div>
+          <p className="project-mcp-desc">{zhCN.projectMcp.missing}</p>
+        </li>)}
+      </ul>
+    </section>}
   </div>;
 }
 
-/** 个人授权 server 的连接状态与“连接 / 断开”。连接会整页跳到对方授权页。 */
-function ConnectionRow({ api, server, connections, onChanged }: { api: McpApi; server: ProjectMcpServer & { oauthLabel: string }; connections: Connections; onChanged: () => Promise<void> }) {
+/** 个人账号 server 的连接状态与“连接 / 断开”。连接会整页跳到对方授权页。 */
+function ConnectionLine({ api, server, connections, onChanged }: { api: McpApi; server: ProjectMcpServer & { oauthLabel: string }; connections: Connections; onChanged: () => Promise<void> }) {
   const [state, setState] = useState<{ kind: "idle" | "connecting" | "disconnecting" } | { kind: "error"; message: string }>({ kind: "idle" });
   const connection = connections?.find(row => row.name === server.name);
   const label = server.oauthLabel;
@@ -116,94 +144,118 @@ function ConnectionRow({ api, server, connections, onChanged }: { api: McpApi; s
       ? connection.account ? zhCN.projectMcp.connection.connectedAs(connection.account)
         : zhCN.projectMcp.connection.connectedAt(formatDateTime(connection.connectedAt ?? Date.now()))
       : zhCN.projectMcp.connection.notConnected(label);
-  return <div className="project-mcp-connection" data-testid="project-mcp-connection">
-    <span className="project-mcp-connection-status">{status}</span>
+  return <div className="project-mcp-line" data-testid="project-mcp-connection">
+    <span className="project-mcp-key">{zhCN.projectMcp.account}</span>
+    <span className={`project-mcp-value${connection?.connected ? "" : " project-mcp-muted"}`}>{status}</span>
     {connections !== null && (connection?.connected
-      ? <button type="button" className="project-mcp-link" disabled={state.kind === "disconnecting"} onClick={() => void disconnect()}>
+      ? <button type="button" className="project-mcp-action" disabled={state.kind === "disconnecting"} onClick={() => void disconnect()}>
         {state.kind === "disconnecting" ? zhCN.projectMcp.connection.disconnecting : zhCN.projectMcp.connection.disconnect}</button>
-      : <button type="button" className="project-mcp-save" disabled={state.kind === "connecting"} onClick={() => void connect()}>
+      : <button type="button" className="project-mcp-action project-mcp-primary" disabled={state.kind === "connecting"} onClick={() => void connect()}>
         {state.kind === "connecting" ? zhCN.projectMcp.connection.connecting : zhCN.projectMcp.connection.connect(label)}</button>)}
-    {state.kind === "error" && <span className="project-mcp-status project-mcp-error" role="alert">{zhCN.projectMcp.connection.failed(state.message)}</span>}
+    {state.kind === "error" && <span className="project-mcp-error" role="alert">{zhCN.projectMcp.connection.failed(state.message)}</span>}
   </div>;
 }
 
-type Draft = { enabled: boolean; exposure: McpExposure | ""; hiddenTools: string };
-const draftOf = (server: ProjectMcpServer): Draft => ({
+type Setting = { enabled: boolean; exposure: McpExposure | ""; hiddenTools: readonly string[] };
+const settingOf = (server: ProjectMcpServer): Setting => ({
   enabled: server.enabled,
   exposure: server.updatedAt !== null && server.exposure && server.exposure !== server.defaultExposure ? server.exposure : "",
-  hiddenTools: server.hiddenTools.join(", "),
+  hiddenTools: server.hiddenTools,
 });
 const parseTools = (text: string) => [...new Set(text.split(/[\s,，]+/).filter(Boolean))];
 
+/** 每项改动立即保存；失败时回到服务端的值并说明原因。 */
 function ServerRow({ api, projectId, server, canEdit, onSaved, connections, onConnectionsChanged }: {
   api: McpApi; projectId: string; server: ProjectMcpServer; canEdit: boolean; onSaved: (server: ProjectMcpServer) => void;
   connections: Connections; onConnectionsChanged: () => Promise<void>;
 }) {
   const id = useId();
-  const [draft, setDraft] = useState(() => draftOf(server));
+  const saved = settingOf(server);
+  const [pending, setPending] = useState<Setting | null>(null);
   const [state, setState] = useState<{ kind: "idle" | "saving" | "saved" } | { kind: "error"; message: string }>({ kind: "idle" });
-  useEffect(() => { setDraft(draftOf(server)); }, [server]);
-  const available = server.status === "available";
-  const editable = canEdit && available;
-  const initial = draftOf(server);
-  const dirty = draft.enabled !== initial.enabled || draft.exposure !== initial.exposure || parseTools(draft.hiddenTools).join(",") !== parseTools(initial.hiddenTools).join(",");
-  const update = (patch: Partial<Draft>) => { setDraft(previous => ({ ...previous, ...patch })); setState({ kind: "idle" }); };
+  const [editingTools, setEditingTools] = useState<string | null>(null);
+  const current = pending ?? saved;
+  const busy = state.kind === "saving";
   const options = EXPOSURES.filter(exposure => !server.maxExposure || rank(exposure) <= rank(server.maxExposure));
 
-  async function save() {
+  async function save(patch: Partial<Setting>) {
+    const next = { ...current, ...patch };
+    setPending(next);
     setState({ kind: "saving" });
     try {
-      const { server: saved } = await api.saveProjectMcpServer(projectId, server.name, {
-        enabled: draft.enabled, exposure: draft.exposure === "" ? null : draft.exposure, hiddenTools: parseTools(draft.hiddenTools),
+      const { server: result } = await api.saveProjectMcpServer(projectId, server.name, {
+        enabled: next.enabled, exposure: next.exposure === "" ? null : next.exposure, hiddenTools: [...next.hiddenTools],
       });
-      onSaved(saved);
+      onSaved(result);
       setState({ kind: "saved" });
+      return true;
     } catch (error) {
       setState({ kind: "error", message: errorMessage(error) });
+      return false;
+    } finally {
+      setPending(null);
     }
   }
+  async function saveTools() {
+    if (editingTools === null) return;
+    const tools = parseTools(editingTools);
+    if (tools.join(",") === current.hiddenTools.join(",") || await save({ hiddenTools: tools })) setEditingTools(null);
+  }
 
-  return <form className={`project-mcp-server${available ? "" : " project-mcp-missing"}`} data-testid="project-mcp-server" data-server={server.name} aria-labelledby={`${id}-name`}
-    onSubmit={event => { event.preventDefault(); if (editable && dirty) void save(); }}>
-    <div className="project-mcp-server-head">
-      <label className="project-mcp-toggle">
-        <input type="checkbox" checked={draft.enabled} disabled={!editable || (!draft.enabled && !server.canEnable)}
-          onChange={event => update({ enabled: event.target.checked })} aria-describedby={`${id}-desc`} />
-        <span id={`${id}-name`} className="project-mcp-server-name">{server.name}</span>
-      </label>
-      {server.transport && <span className="project-mcp-badge">{server.transport}</span>}
-      {server.adminOnly && <span className="project-mcp-badge">{zhCN.projectMcp.adminOnly}</span>}
-      {server.oauthLabel && <span className="project-mcp-badge">{zhCN.projectMcp.personal}</span>}
+  const identity = server.oauthLabel ? zhCN.projectMcp.personal : zhCN.projectMcp.shared;
+  return <li className={`project-mcp-row${current.enabled ? " is-enabled" : ""}`} data-testid="project-mcp-server" data-server={server.name}>
+    <div className="project-mcp-head">
+      <input id={`${id}-on`} type="checkbox" className="project-mcp-check" checked={current.enabled} aria-describedby={`${id}-desc`}
+        disabled={!canEdit || busy || (!current.enabled && !server.canEnable)} onChange={event => void save({ enabled: event.target.checked })} />
+      <label htmlFor={`${id}-on`} className="project-mcp-name">{server.name}</label>
+      <span className="project-mcp-meta">
+        {server.transport}
+        <span title={server.oauthLabel ? zhCN.projectMcp.personalIdentity : zhCN.projectMcp.sharedIdentity}> · {identity}</span>
+        {server.adminOnly && <> · {zhCN.projectMcp.adminOnly}</>}
+      </span>
     </div>
-    <p id={`${id}-desc`} className="project-mcp-server-desc">{available ? server.description : zhCN.projectMcp.missing}</p>
-    {available && server.oauthLabel && <ConnectionRow api={api} server={{ ...server, oauthLabel: server.oauthLabel }} connections={connections} onChanged={onConnectionsChanged} />}
-    {available && <div className="project-mcp-fields">
-      <label>
-        <span>{zhCN.projectMcp.exposure}</span>
-        <IconSelect value={draft.exposure} disabled={!editable} title={zhCN.projectMcp.exposureHint} onChange={event => update({ exposure: event.target.value as Draft["exposure"] })}>
+    <p id={`${id}-desc`} className="project-mcp-desc">{server.description}</p>
+    {server.changed && !current.enabled && <p className="project-mcp-desc project-mcp-changed" role="note">{zhCN.projectMcp.changed}</p>}
+    {current.enabled && <div className="project-mcp-line">
+      <label className="project-mcp-key" htmlFor={`${id}-exposure`} title={zhCN.projectMcp.exposureHint}>{zhCN.projectMcp.exposure}</label>
+      {canEdit
+        ? <IconSelect id={`${id}-exposure`} value={current.exposure} disabled={busy} title={zhCN.projectMcp.exposureHint}
+          onChange={event => void save({ exposure: event.target.value as Setting["exposure"] })}>
           <option value="">{zhCN.projectMcp.defaultExposure(exposureLabel(server.defaultExposure))}</option>
           {options.map(exposure => <option key={exposure} value={exposure}>{exposureLabel(exposure)}</option>)}
         </IconSelect>
-      </label>
-      <label>
-        <span>{zhCN.projectMcp.hiddenTools}</span>
-        <input value={draft.hiddenTools} disabled={!editable} placeholder={editable ? zhCN.projectMcp.hiddenToolsHint : undefined} title={zhCN.projectMcp.hiddenToolsTitle}
-          onChange={event => update({ hiddenTools: event.target.value })} />
-      </label>
+        : <span className="project-mcp-value">{current.exposure ? exposureLabel(current.exposure) : zhCN.projectMcp.defaultExposure(exposureLabel(server.defaultExposure))}</span>}
     </div>}
-    {editable && <div className="project-mcp-actions">
-      <span className={`project-mcp-status${state.kind === "error" ? " project-mcp-error" : ""}`} role="status">
-        {state.kind === "saved" ? zhCN.projectMcp.saved : state.kind === "error" ? zhCN.projectMcp.saveFailed(state.message) : ""}
-      </span>
-      <button type="submit" className="project-mcp-save" disabled={!dirty || state.kind === "saving"}>
-        {state.kind === "saving" ? zhCN.projectMcp.saving : zhCN.projectMcp.save}
-      </button>
+    {current.enabled && <div className="project-mcp-line">
+      <label className="project-mcp-key" htmlFor={`${id}-tools`} title={zhCN.projectMcp.hiddenToolsTitle}>{zhCN.projectMcp.hiddenTools}</label>
+      {editingTools !== null
+        ? <>
+          <input id={`${id}-tools`} className="project-mcp-input" value={editingTools} autoFocus disabled={busy} placeholder={zhCN.projectMcp.hiddenToolsHint}
+            onChange={event => setEditingTools(event.target.value)}
+            onKeyDown={event => {
+              if (event.key === "Enter") { event.preventDefault(); void saveTools(); }
+              // Esc 只取消编辑，不关闭整个面板。
+              if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); setEditingTools(null); }
+            }} />
+          <button type="button" className="project-mcp-action project-mcp-primary" disabled={busy} onClick={() => void saveTools()}>{zhCN.projectMcp.save}</button>
+          <button type="button" className="project-mcp-action" disabled={busy} onClick={() => setEditingTools(null)}>{zhCN.projectMcp.cancel}</button>
+        </>
+        : <>
+          <span className={`project-mcp-value project-mcp-tools${current.hiddenTools.length ? "" : " project-mcp-muted"}`}>
+            {current.hiddenTools.length ? current.hiddenTools.join(", ") : zhCN.projectMcp.noHiddenTools}
+          </span>
+          {canEdit && <button type="button" className="project-mcp-action" disabled={busy} onClick={() => setEditingTools(current.hiddenTools.join(", "))}>{zhCN.projectMcp.edit}</button>}
+        </>}
     </div>}
-  </form>;
+    {server.oauthLabel && <ConnectionLine api={api} server={{ ...server, oauthLabel: server.oauthLabel }} connections={connections} onChanged={onConnectionsChanged} />}
+    <p className={`project-mcp-status${state.kind === "error" ? " project-mcp-error" : ""}`} role="status">
+      {state.kind === "saving" ? zhCN.projectMcp.saving : state.kind === "saved" ? zhCN.projectMcp.saved : state.kind === "error" ? zhCN.projectMcp.saveFailed(state.message) : ""}
+    </p>
+  </li>;
 }
 
 /** ApiError 的 message 是 `HTTP 403: {json}`；优先取服务端给出的说明。 */
-function errorMessage(error: unknown): string {
+export function errorMessage(error: unknown): string {
   const text = error instanceof Error ? error.message : String(error);
   const body = text.replace(/^HTTP \d+: /, "");
   try {
