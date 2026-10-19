@@ -372,6 +372,7 @@ describe("Schema Manifest 契约：Manifest → SQLite bootstrap DDL 等价（�
       { version: 3, name: "companion-personas" },
       { version: 4, name: "project-mcp-servers" },
       { version: 5, name: "user-mcp-oauth" },
+      { version: 6, name: "project-mcp-server-identity" },
     ]);
     // 无版本化迁移痕迹（本方案没有 Migrator，不应创建迁移簿记表）
     expect(

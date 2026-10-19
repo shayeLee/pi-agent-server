@@ -148,7 +148,7 @@ export class ApiClient {
     return this.request("DELETE", `/v1/projects/${id}`);
   }
 
-  /** 项目的 MCP server 设置；服务未配置目录时 configured 为 false。 */
+  /** 项目的 MCP server 设置；configured 始终为 true。 */
   getProjectMcp(projectId: string): Promise<import("../shared/project-mcp.js").ProjectMcpSettings> {
     return this.request("GET", `/v1/projects/${encodeURIComponent(projectId)}/mcp`);
   }
@@ -156,6 +156,20 @@ export class ApiClient {
   /** 修改只影响之后创建或恢复的会话。 */
   saveProjectMcpServer(projectId: string, name: string, input: import("../shared/project-mcp.js").ProjectMcpServerInput): Promise<{ server: import("../shared/project-mcp.js").ProjectMcpServer }> {
     return this.request("PUT", `/v1/projects/${encodeURIComponent(projectId)}/mcp/servers/${encodeURIComponent(name)}`, input);
+  }
+
+  /** 共享 MCP（Pi 的全局 mcp.json）；admin 另外拿到打码后的表单、文件 hash 和读取错误。 */
+  getSharedMcp(): Promise<import("../shared/shared-mcp.js").SharedMcpList> {
+    return this.request("GET", "/v1/mcp/shared");
+  }
+
+  /** 新增或修改一项（admin）；hash 对不上时 409，说明文件在别处被改过。 */
+  saveSharedMcpServer(name: string, input: import("../shared/shared-mcp.js").SharedMcpServerInput): Promise<import("../shared/shared-mcp.js").SharedMcpList> {
+    return this.request("PUT", `/v1/mcp/shared/${encodeURIComponent(name)}`, input);
+  }
+
+  removeSharedMcpServer(name: string, hash: string): Promise<import("../shared/shared-mcp.js").SharedMcpList> {
+    return this.request("DELETE", `/v1/mcp/shared/${encodeURIComponent(name)}?hash=${encodeURIComponent(hash)}`);
   }
 
   /** 调用者对需要用户授权的 MCP server 的连接状态。 */

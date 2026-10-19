@@ -1,20 +1,25 @@
-// MCP 宿主组合（docs/mcp-integration.md）：启动时读取目录，按会话生成 MCP / codemode 扩展。
-// 未配置 PI_MCP_CATALOG_FILE 时不创建，会话不加载任何 MCP 或 codemode 扩展。
+// MCP 宿主组合（docs/mcp-integration.md）：读取 Pi 的全局 mcp.json，按会话生成 MCP / codemode 扩展。
+// 会话没有启用任何 server 时不加载 MCP 与 codemode 扩展，行为与未接入 MCP 一致。
 
 import {
   createCodemodeExtension, createMcpExtension, type InlineExtension, type McpServerEntry,
 } from "@earendil-works/pi-coding-agent";
 import type { AuthProvider } from "@earendil-works/pi-mcp";
-import { loadMcpCatalogFiles, type McpCatalog, type McpSecrets } from "./catalog.js";
+import type { McpCatalog } from "./catalog.js";
 import { CodemodeGate, createCodemodeAdmissionExtension } from "./codemode-admission.js";
+import { LiveMcpCatalog } from "./live-catalog.js";
 import { loadMcpTokenKeyFile, type McpTokenCipher } from "./token-cipher.js";
 import { createHostMcpTransportFactory, DEFAULT_MAX_STDIO_PROCESSES, StdioProcessLimiter } from "./transport.js";
 
 export interface McpHostOptions {
-  readonly catalogFile: string;
-  readonly secretsFile?: string;
-  /** 用户 OAuth 凭证的加密密钥（PI_MCP_TOKEN_KEY_FILE）；目录里有 oauth server 时必填。 */
+  /** Pi 的全局 mcp.json：`<agentDir>/mcp.json`（§14.2）。 */
+  readonly piConfigPath: string;
+  /** 用户 OAuth 凭证的加密密钥（PI_MCP_TOKEN_KEY_FILE）；没有时 mcp.json 里的 oauth server 不可用。 */
   readonly tokenKeyFile?: string;
+  /** 配置了 PI_PUBLIC_URL：oauth server 还需要它才能让用户授权。 */
+  readonly publicUrlConfigured?: boolean;
+  /** mcp.json 读取失败或有项用不了时的提示。 */
+  readonly warn?: (message: string) => void;
   readonly maxStdioProcesses?: number;
   readonly codemodeTimeoutMs?: number;
   readonly codemodeQueueWaitMs?: number;
@@ -23,17 +28,18 @@ export interface McpHostOptions {
 }
 
 export interface McpHost {
-  readonly catalog: McpCatalog;
-  readonly secrets: McpSecrets;
-  /** 目录里有 oauth server 时才有。 */
+  /** 运行中的目录：mcp.json 改了会跟着变；会话建连前先取快照。 */
+  readonly catalog: LiveMcpCatalog;
+  /** 配置了 PI_MCP_TOKEN_KEY_FILE 时才有。 */
   readonly tokenCipher?: McpTokenCipher;
   readonly limiter: StdioProcessLimiter;
   readonly gate: CodemodeGate;
   /**
    * 会话的 MCP 相关扩展；没有启用的 server 时为空，会话行为与未接入 MCP 一致。
+   * `catalog` 是算出 `entries` 的那份快照，连接参数从它取，避免期间 mcp.json 被改。
    * `authProviderFor` 给出会话 owner 连接 oauth server 用的凭证（§13.9）。
    */
-  sessionExtensions(entries: readonly McpServerEntry[], options?: { authProviderFor?: (serverName: string) => AuthProvider | undefined }): InlineExtension[];
+  sessionExtensions(catalog: McpCatalog, entries: readonly McpServerEntry[], options?: { authProviderFor?: (serverName: string) => AuthProvider | undefined }): InlineExtension[];
 }
 
 export function createMcpHost(options: McpHostOptions): McpHost {
@@ -41,29 +47,28 @@ export function createMcpHost(options: McpHostOptions): McpHost {
   if (options.codemodeTimeoutMs !== undefined && !(Number.isSafeInteger(options.codemodeTimeoutMs) && options.codemodeTimeoutMs > 0 && options.codemodeTimeoutMs <= 2_147_483_647)) {
     throw new Error("PI_CODEMODE_TIMEOUT_MS must be a positive integer up to 2147483647");
   }
-  const { catalog, secrets } = loadMcpCatalogFiles({
-    catalogFile: options.catalogFile,
-    ...(options.secretsFile ? { secretsFile: options.secretsFile } : {}),
-  });
-  const hasOAuth = [...catalog.servers.values()].some(server => server.oauth !== undefined);
-  if (hasOAuth && !options.tokenKeyFile) throw new Error("MCP catalog has oauth servers, which need PI_MCP_TOKEN_KEY_FILE");
   const tokenCipher = options.tokenKeyFile ? loadMcpTokenKeyFile(options.tokenKeyFile) : undefined;
+  const catalog = new LiveMcpCatalog({
+    piConfigPath: options.piConfigPath,
+    context: { env: process.env, oauthEnabled: tokenCipher !== undefined && options.publicUrlConfigured === true },
+    ...(options.warn ? { warn: options.warn } : {}),
+  });
   const limiter = new StdioProcessLimiter(options.maxStdioProcesses ?? DEFAULT_MAX_STDIO_PROCESSES);
   const gate = new CodemodeGate();
 
   return {
-    catalog, secrets, ...(tokenCipher ? { tokenCipher } : {}), limiter, gate,
-    sessionExtensions(entries, sessionOptions) {
+    catalog, ...(tokenCipher ? { tokenCipher } : {}), limiter, gate,
+    sessionExtensions(snapshot, entries, sessionOptions) {
       if (entries.length === 0) return [];
       const servers = [...entries];
       const createTransport = createHostMcpTransportFactory({
-        catalog, secrets, limiter, ...(sessionOptions?.authProviderFor ? { authProviderFor: sessionOptions.authProviderFor } : {}),
+        catalog: snapshot, limiter, ...(sessionOptions?.authProviderFor ? { authProviderFor: sessionOptions.authProviderFor } : {}),
       });
       return [
         {
           name: "pi-agent-server-mcp",
           factory: createMcpExtension({
-            // 只用宿主合成的配置：不读 ~/.pi/agent/mcp.json、<agentDir>/mcp.json 或项目 .pi/mcp.json。
+            // 只用宿主合成的配置：SDK 自己不读任何 mcp.json（全局 mcp.json 由宿主解析后并入目录，项目 .pi/mcp.json 从不读）。
             loadConfig: () => ({ servers, errors: [], autoEnableCodemode: true }),
             createTransport,
             logPath: options.logPath,

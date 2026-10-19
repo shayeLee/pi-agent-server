@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Kysely } from "kysely";
-import { parseMcpCatalog } from "../../src/mcp/catalog.js";
+import { catalogOf } from "./catalog-fixture.js";
 import { McpOAuthConnections } from "../../src/mcp/oauth-connections.js";
 import { KeyedLock, McpReauthorizationRequiredError } from "../../src/mcp/session-oauth.js";
 import { McpTokenCipher } from "../../src/mcp/token-cipher.js";
@@ -12,7 +12,7 @@ import { KyselyMcpOAuthRepository } from "../../src/storage/kysely-mcp-oauth-rep
 import { FakeAuthorizationServer, ISSUER, MCP } from "../fixtures/fake-oauth-server.js";
 
 const A = "ip:10.0.0.1";
-const catalog = parseMcpCatalog({ version: 1, servers: { example: { url: MCP, description: "Example", oauth: { label: "Example", scope: "read" } } } });
+const catalog = catalogOf({ example: { url: MCP, description: "Example", oauth: { scope: "read" }, piAgentServer: { label: "Example" } } });
 const unauthorized = (token: string | undefined, fetch: FakeAuthorizationServer["fetch"]) =>
   ({ response: new Response("", { status: 401 }), serverUrl: new URL(MCP), fetch, ...(token !== undefined ? { token } : {}) });
 
@@ -44,7 +44,7 @@ describe("session auth provider", () => {
     store = new KyselyMcpOAuthRepository(kysely, new McpTokenCipher(randomBytes(32)));
     auth = new FakeAuthorizationServer();
     now = 1_000_000;
-    connections = new McpOAuthConnections({ catalog, secrets: new Map(), store, publicUrl: "https://pi.example.test", fetch: auth.fetch, now: () => now });
+    connections = new McpOAuthConnections({ catalog, store, publicUrl: "https://pi.example.test", fetch: auth.fetch, now: () => now });
     const started = await connections.start(A, "example");
     if (!("authorizationUrl" in started)) throw new Error(started.message);
     const url = new URL(started.authorizationUrl);

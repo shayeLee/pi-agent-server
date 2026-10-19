@@ -1,5 +1,6 @@
 // 项目级 MCP 设置（docs/mcp-integration.md §4.2–4.5）：只能引用目录里的 server，只能收紧。
 
+import { createHash } from "node:crypto";
 import type { McpServerConfig, McpServerEntry } from "@earendil-works/pi-coding-agent";
 import { exposureRank, MCP_EXPOSURES, type McpCatalog, type McpCatalogServer, type McpExposure } from "./catalog.js";
 
@@ -13,6 +14,8 @@ export interface ProjectMcpServerSetting {
   readonly hiddenTools: readonly string[];
   readonly updatedAt: number;
   readonly updatedBy: string;
+  /** 设置时 server 的身份（mcpServerIdentity）；v6 之前写入的行为 null，按一致处理。 */
+  readonly serverIdentity: string | null;
 }
 
 export interface ProjectMcpSettingInput {
@@ -51,7 +54,26 @@ export function validateProjectMcpSetting(
   return null;
 }
 
+/**
+ * server 的身份：HTTP 是地址，stdio 是命令、参数和 cwd（§14.3）。mcp.json 里同名的一项换成别的地址或命令时，
+ * 项目之前的设置不再生效，要 owner 重新确认；只改 header、env、说明等不算换了 server。存哈希，不存原文。
+ */
+export function mcpServerIdentity(server: McpCatalogServer): string {
+  const connection = server.connection;
+  const parts = connection.type === "http"
+    ? ["http", connection.url]
+    : ["stdio", connection.command, connection.args ?? [], connection.cwd ?? null];
+  return createHash("sha256").update(JSON.stringify(parts)).digest("hex");
+}
+
+/** 设置是为另一个同名 server 做的。 */
+function isStale(server: McpCatalogServer, setting: ProjectMcpServerSetting | undefined): boolean {
+  return setting?.serverIdentity != null && setting.serverIdentity !== mcpServerIdentity(server);
+}
+
+/** 设置过期时一律不启用，连 defaultEnabled 也不算：换过的 server 要 owner 重新确认。 */
 function isEnabled(server: McpCatalogServer, setting: ProjectMcpServerSetting | undefined): boolean {
+  if (isStale(server, setting)) return false;
   return setting ? setting.enabled : server.defaultEnabled;
 }
 
@@ -82,7 +104,8 @@ export function effectiveMcpServerEntries(
     for (const tool of setting?.hiddenTools ?? []) toolExposure[tool] = "hidden";
     const config = {
       ...server.connection,
-      description: server.description,
+      // mcp.json 里可以不写说明，这时交给 SDK 用 server 自己的 instructions。
+      ...(server.description ? { description: server.description } : {}),
       exposure,
       ...(Object.keys(toolExposure).length > 0 ? { toolExposure } : {}),
       ...(server.timeout !== undefined ? { timeout: server.timeout } : {}),
@@ -106,6 +129,7 @@ export function projectMcpServerViews(
       enabled: isEnabled(server, setting), exposure: setting?.exposure ?? server.exposure,
       defaultExposure: server.exposure, maxExposure: server.maxExposure,
       hiddenTools: setting?.hiddenTools ?? [], adminOnly: server.adminOnly, updatedAt: setting?.updatedAt ?? null,
+      ...(isStale(server, setting) ? { changed: true } : {}),
       ...(server.oauth ? { oauthLabel: server.oauth.label } : {}),
     };
   });

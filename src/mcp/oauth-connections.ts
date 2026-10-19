@@ -11,7 +11,7 @@ import type { McpOAuthStorePort } from "../application/ports/mcp-oauth-store-por
 import type { AuthProvider } from "@earendil-works/pi-mcp";
 import { MCP_OAUTH_CALLBACK_PATH } from "./oauth-callback-path.js";
 import { createSessionAuthProvider, KeyedLock } from "./session-oauth.js";
-import { resolveMcpPlaceholders, type McpCatalog, type McpSecrets } from "./catalog.js";
+import { resolveMcpPlaceholders, type McpCatalog } from "./catalog.js";
 import {
   isOAuthServer, mcpOAuthFlowOptions, StoredMcpOAuthProvider, type McpOAuthCatalogServer, type PendingMcpAuthorization,
 } from "./oauth-provider.js";
@@ -59,7 +59,6 @@ interface PendingEntry {
 
 export interface McpOAuthConnectionsOptions {
   readonly catalog: McpCatalog;
-  readonly secrets: McpSecrets;
   readonly store: McpOAuthStorePort;
   /** parsePublicUrl 的结果。 */
   readonly publicUrl: string;
@@ -121,7 +120,7 @@ export class McpOAuthConnections {
     return createSessionAuthProvider({
       store: this.#options.store, ownerKey, server, redirectUrl: this.callbackUrl, locks: this.#refreshLocks,
       clientName: this.#options.clientName ?? "pi-agent-server",
-      ...(secret ? { clientSecret: resolveMcpPlaceholders(secret, { secrets: this.#options.secrets, projectCwd: "" }) } : {}),
+      ...(secret ? { clientSecret: resolveMcpPlaceholders(secret, { projectCwd: "" }) } : {}),
       ...(this.#options.fetch ? { fetch: this.#options.fetch } : {}),
       ...(this.#options.now ? { now: this.#options.now } : {}),
     });
@@ -201,7 +200,7 @@ export class McpOAuthConnections {
     return new StoredMcpOAuthProvider({
       store: this.#options.store, ownerKey, server, redirectUrl: this.callbackUrl,
       clientName: this.#options.clientName ?? "pi-agent-server",
-      ...(secret ? { clientSecret: resolveMcpPlaceholders(secret, { secrets: this.#options.secrets, projectCwd: "" }) } : {}),
+      ...(secret ? { clientSecret: resolveMcpPlaceholders(secret, { projectCwd: "" }) } : {}),
       ...(this.#options.now ? { now: this.#options.now } : {}),
       ...extra,
     });

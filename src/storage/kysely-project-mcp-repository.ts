@@ -28,6 +28,7 @@ export class KyselyProjectMcpRepository implements ProjectMcpStorePort {
       hiddenTools: hiddenTools(row.hidden_tools),
       updatedAt: Number(row.updated_at),
       updatedBy: row.updated_by,
+      serverIdentity: row.server_identity,
     }));
   }
 
@@ -38,6 +39,7 @@ export class KyselyProjectMcpRepository implements ProjectMcpStorePort {
       hidden_tools: JSON.stringify(setting.hiddenTools),
       updated_at: setting.updatedAt,
       updated_by: setting.updatedBy,
+      server_identity: setting.serverIdentity,
     };
     const exists = async () => (await this.db.selectFrom("projects").select("id").where("id", "=", projectId).executeTakeFirst()) !== undefined;
     if (!(await exists())) return false;

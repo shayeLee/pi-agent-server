@@ -5,17 +5,17 @@ import { describe, expect, it } from "vitest";
 import { buildApp } from "../../src/server/app.js";
 import { MockAgentAdapter } from "../../src/agent/mock-agent-adapter.js";
 import { DEFAULT_PROJECT_ID } from "../../src/shared/project-identity.js";
-import { parseMcpCatalog } from "../../src/mcp/catalog.js";
+import { catalogOf } from "../mcp/catalog-fixture.js";
 import { KyselyProjectMcpRepository } from "../../src/storage/kysely-project-mcp-repository.js";
 import { makeInitializedMemoryDb } from "../helpers/sqlite.js";
 import { makePolicy, makeTestIpAccess, USER_IP_A, USER_IP_B } from "../helpers/ip-access.js";
 
 const ADMIN_IP = "10.0.0.9";
 const VIEWER_IP = "10.0.0.8";
-const catalog = parseMcpCatalog({ version: 1, servers: {
-  docs: { url: "https://docs.example.com/mcp", description: "Docs", maxExposure: "codemode" },
-  admin: { command: "admin-mcp", description: "Admin tools", adminOnly: true },
-} });
+const catalog = catalogOf({
+  docs: { url: "https://docs.example.com/mcp", description: "Docs" },
+  admin: { command: "admin-mcp", description: "Admin tools", piAgentServer: { adminOnly: true } },
+});
 
 async function setup(withMcp = true) {
   const dir = mkdtempSync(path.join(tmpdir(), "pi-project-mcp-http-"));

@@ -1,6 +1,6 @@
 # MCP 接入设计
 
-> 状态：P0、P1、P2 已实现（2026-10-17）；P3 的按用户凭证与 OAuth（以动态客户端注册为主）P3-0 至 P3-4 已实现（2026-10-18），见第 13 节。本文记录 pi-agent-server 接入 MCP（Model Context
+> 状态：P0、P1、P2 已实现（2026-10-17）；P3 的按用户凭证与 OAuth（以动态客户端注册为主）P3-0 至 P3-4 已实现（2026-10-18），见第 13 节；P3-6（共享 MCP 改用 Pi 的 mcp.json、个人 MCP）见第 14 节，其中 P3-6a 已实现。本文记录 pi-agent-server 接入 MCP（Model Context
 > Protocol）server 与 codemode 的方案、已确认的决策和分阶段计划。代码事实基于 Pi SDK
 > `@earendil-works/pi-coding-agent@1.3.0`。实现位于 `src/mcp/`、`src/agent/mcp-tool-boundary.ts`
 > 与 `src/storage/kysely-project-mcp-repository.ts`。
@@ -50,6 +50,8 @@
 ## 4. 配置模型
 
 ### 4.1 全局目录（管理员）
+
+> 2026-10-18 起本节的目录文件 `PI_MCP_CATALOG_FILE` 与第 7 节的密钥文件 `PI_MCP_SECRETS_FILE` 已移除，共享 MCP 改为 Pi 的全局 `mcp.json`，见第 14.2 节。本节保留作为字段语义的说明。
 
 由 `PI_MCP_CATALOG_FILE` 指定绝对路径的严格 JSON 文件；未设置时不加载 MCP 与 codemode 扩展，行为与现在完全一致。
 格式错误、未知字段或相对路径都阻止启动。
@@ -165,7 +167,7 @@ codemode 扩展配置：`mode: "on"`（内置工具保持声明），`models: fa
 
 ## 7. 凭证
 
-- MCP 密钥放在 `PI_MCP_SECRETS_FILE`（绝对路径、权限 `0600` 的严格 JSON，启动时校验权限），通过 `${secret:NAME}` 引用。密钥只注入给 MCP 子进程的 env 和 HTTP header，**不写入服务进程的 `process.env`**。
+- （已移除，见第 14.2 节；现在凭证写成 `mcp.json` 里的环境变量 `${NAME}`。）MCP 密钥放在 `PI_MCP_SECRETS_FILE`（绝对路径、权限 `0600` 的严格 JSON，启动时校验权限），通过 `${secret:NAME}` 引用。密钥只注入给 MCP 子进程的 env 和 HTTP header，**不写入服务进程的 `process.env`**。
 - 目录中的凭证是**共享身份**：所有启用该 server 的用户在外部系统中都表现为同一身份。管理员只应把对全体用户安全的 server 放进目录，高权限 token 的写操作用 `toolExposure: hidden` 去掉。
 - **已知限制**：`bash` 子进程继承完整 `process.env`，并以服务进程用户运行。在 all 模式或授予 `bash` 的部署中，用户可以读取服务进程可读的任何文件，包括密钥文件；provider API key 等现有环境变量也已经可读。真正的凭证隔离需要不授予 `bash`，或者让 `bash` 运行在独立用户或沙箱中。这项风险需写入 README 的“Current boundaries”（中英双语同步）。
 
@@ -197,7 +199,7 @@ P2 实现说明：
 - 实时：`src/client/chat-state.ts` 把带 `parentToolCallId` 的事件记到所属卡片的 `nested` 上，不新增时间线条目。嵌套调用再发起的调用（父 ID 是某个嵌套 ID）记到同一张卡片。找不到所属卡片时退回为独立卡片。父调用结束时仍在运行的嵌套调用标为 `unfinished`，记录标为不完整。
 - 回放：导出的 `tool_result` 行新增可选 `nestedCalls`（形状同 SDK 的 `NestedToolCalls`，参数经过与工具参数相同的脱敏），Web 历史投影把它还原成同一个 `nested` 字段，所以实时与刷新后显示同一个列表。耗时来源不同：实时取 `tool_end.durationMs`，回放取 SDK 记录的耗时，两者可能差几毫秒。
 - 卡片：任何带嵌套调用的工具卡片标题都以“内部调用 N 次”开头，展开后在结果下方显示折叠列表（状态、工具名、耗时、错误摘要、参数过大未记录的说明）。codemode 的脚本默认折叠，展开后按 JavaScript 高亮。
-- 面板：服务配置了目录时，侧栏底部的“设置”菜单（与主题选项在一起）多出“MCP 服务”一项，打开当前项目的面板。每个 server 一张表单（启用、提供方式、禁用的工具），单独保存。GET 返回的每个 server 带 `canEnable`，调用者不能启用的 `adminOnly` server 开关置灰；viewer 和非 admin 看共享的默认项目时整个面板只读。
+- 面板：服务配置了目录时，侧栏底部的“设置”菜单（与主题选项在一起）多出“MCP 服务”一项，打开当前项目的面板。每个 server 一行，以分隔线隔开：勾选启用，启用后才显示提供方式与禁用的工具；每项改动立即保存，失败时回到服务端的值并显示原因。GET 返回的每个 server 带 `canEnable`，调用者不能启用的 `adminOnly` server 开关置灰；viewer 和非 admin 看共享的默认项目时整个面板只读。
 
 ## 11. 分阶段计划
 
@@ -427,3 +429,192 @@ P3-4 实现说明（2026-10-18）：
 - 管理员是否需要“查看 / 吊销所有用户的连接”的入口。
 - 同一 IP 多人共享的场景下，是否需要在连接时额外确认（例如显示“这台机器上的其他人也会用你的身份”）。
 - GitHub（P3-5）选 GitHub App 还是 OAuth App，以及是否由项目维护一个公共应用走 Device Flow，等做到时再定。
+
+## 14. P3-6：共享 MCP 用 Pi 的 mcp.json，个人 MCP 在 Web 上自己加（设计稿）
+
+> 状态：2026-10-18 设计稿；P3-6a（读取 mcp.json）、P3-6b（admin 在 Web 上修改）已实现。2026-10-19 决定个人 MCP（P3-6c 起）先不做。
+
+### 14.1 已确认的决定
+
+1. **共享 MCP** 就是 Pi TUI 用的那份全局配置 `<agentDir>/mcp.json`（默认 `~/.pi/agent/mcp.json`）。
+   - 管理员可以在终端里用 `pi mcp add/remove`、TUI 的 `/mcp` 修改，也可以在 Web 上修改。
+   - Web 上只有 admin 能改，其他人只能看。
+2. **个人 MCP** 存在服务器数据库里，按用户（ownerKey，即 IP 身份）隔离。
+   - 每个用户在 Web 上增删自己的 server。
+   - 只有本人的私有会话能用，别人看不到也用不到。
+   - 不做“在用户自己电脑上运行 MCP”。那需要本地助手和转发通道，代价大，以后确有需要再单独设计。
+
+### 14.2 共享 MCP：读取 Pi 的 mcp.json
+
+**读取方式**
+- 服务总是读取 agentDir 下的 `mcp.json`，不需要开关；文件不存在就没有共享 MCP。**只读这一个全局文件**。
+- 项目目录里的 `.pi/mcp.json` 永远不读，因为会话里的模型能写项目目录，读它等于让模型给自己加 server。
+- Pi TUI 自己的 OAuth 凭证 `<agentDir>/mcp-auth.json` 也不读，那是 TUI 使用者本人的身份。
+
+**旧的目录文件**
+- `PI_MCP_CATALOG_FILE` 与 `PI_MCP_SECRETS_FILE` 已移除，还设置着会拒绝启动，提示改用 `mcp.json`。
+- 迁移时把目录里的每一项照第 14.2 节的字段对照写进 `mcp.json`：`adminOnly`、`maxExposure`、`defaultEnabled` 和 `oauth.label` 放进 `piAgentServer`；`${secret:NAME}` 改成环境变量 `${NAME}`。server 名称和地址不变，已有的项目设置和用户授权继续有效。
+
+**热更新**
+- 每次给会话做快照时（第 4.5 节）检查文件的修改时间和大小，变了就重新读。所以 `pi mcp add` 之后，新建或恢复的会话就能用上，不用重启服务。
+- 文件解析失败时继续用上一次读成功的内容，写日志，并在管理员面板显示错误。
+- 服务启动时文件就无效：共享 MCP 为空，服务照常启动。
+- 正在运行的会话不受影响，与第 4.5 节相同。
+
+**字段对照**
+
+| `mcp.json` 字段 | 在本服务里的含义 |
+|---|---|
+| `command` / `args` / `env` / `cwd` | stdio server，规则同第 8 节（子进程只继承白名单环境变量）。相对 `cwd` 按项目 cwd 解析 |
+| `url` / `headers` | HTTP server |
+| 值里的 `${NAME}` | 从服务进程的环境变量取值，与 Pi 一致。另外支持 `${PROJECT_CWD}`（args、env、cwd） |
+| 值里的 `!cmd` | **不支持**：这一项标为“仅 TUI 可用”，不进入会话。避免每个会话启动时在服务器上执行 shell 命令 |
+| `oauth` | 每个用户在 Web 面板里用自己的账号授权，沿用第 13 节的流程：`scope`、`clientId`、`clientSecret`、`authServerMetadataUrl` 照用；`callbackPort`、`callbackUrl`、`clientRegistration: "cimd"` 只对 TUI 有意义，Web 忽略 |
+| 没有 `oauth`，也没有 `Authorization` header 的 HTTP server | 匿名连接。Pi TUI 遇到 401 会自动走 OAuth，Web 不会，而是返回连接错误，提示管理员在这一项里加 `"oauth": {}` |
+| `auth.provider` | **不支持**：它会把 TUI 使用者的模型登录 token 发给所有用户。这一项标为“仅 TUI 可用” |
+| `enabled: false` | 全局停用，所有项目都不连 |
+| `exposure` / `toolExposure` / `description` / `timeout` | 含义不变。没有 `description` 时用 server 自己返回的 instructions，再没有就用名字 |
+| 本服务专用字段 | 放在每一项的 `piAgentServer` 对象里：`adminOnly`、`maxExposure`、`defaultEnabled`、`label`（OAuth 按钮上的名字）。已核实 Pi 1.3.0 的 `validateMcpServerConfig` 会保留未知字段，`/mcp` 改写文件时也保留其他内容，所以 TUI 不受影响 |
+
+另外两点：
+- `mcp.json` 里的 server 会同时出现在管理员自己的 TUI 会话里，这正是“共享”的含义。
+- 项目级设置（第 4.2 节的 `project_mcp_servers`）按 server 名称引用，来源换成 `mcp.json` 不影响；同名换成另一个 server 时的处理见第 14.3 节（迁移 v6）。
+
+P3-6a 实现说明（2026-10-18）：
+
+- `src/mcp/pi-config.ts` 把 `mcp.json` 逐项转换成目录 server，用不了的项连同原因记进 `unavailable`，其他项照常使用。只有整个文件的形状不对时才算读取失败。
+- 值的写法按 Pi 的规则转换：`$NAME`、`${NAME}` 写成 `${env:NAME}`，连接时从服务进程环境变量取值；`$$`、`$!` 是转义。读取时环境变量没设置，这一项就标为不可用。`command`、`args`、`cwd` 与 Pi 一样只展开 `~`，`args` 和 `cwd` 另外允许 `${PROJECT_CWD}`。
+- 没写 `piAgentServer.maxExposure` 时，上限取 `exposure` 与 `toolExposure` 里最宽的那个，所以在 Pi 里能用的设置在这里照样能用。
+- 没写 `description` 时，不给 SDK 传说明，由 SDK 使用 server 自己的 instructions。
+- `src/mcp/live-catalog.ts` 的 `LiveMcpCatalog`：每次读取目录时比较文件的 inode、大小和修改时间，变了才重新解析。解析失败时保留上一次的内容，记下错误并用 `console.warn` 提示（不回显文件内容）。文件不存在就当作没有 server。
+- 会话在 adapter 创建时取目录快照（`snapshot()`），用同一份快照算出启用的 server 并建立连接，期间文件被改也不会对不上。
+- `mcp.json` 里带 `oauth` 的 server 需要 `PI_MCP_TOKEN_KEY_FILE` 和 `PI_PUBLIC_URL`，缺一个就标为不可用，不阻止启动。
+- 同日去掉了开关和旧的目录文件：服务总是读取 `mcp.json`；`PI_MCP_CATALOG_FILE`、`PI_MCP_SECRETS_FILE` 及其解析代码删除，还设置着就拒绝启动。
+
+### 14.3 共享 MCP：admin 在 Web 上修改
+
+**权限**：新增 `mcp:admin`，只有 admin 有；看列表用 `mcp:read`。其他角色能看到列表（名称、说明、类型、提供方式），看不到连接参数。
+
+**表单字段**
+- 名称、类型（HTTP / stdio）、地址和 header，或命令、参数、环境变量、cwd。
+- 说明、默认提供方式、上限、仅管理员可启用、默认启用、超时、OAuth（scope）。
+
+**写文件**
+- 先写临时文件再改名，保留文件里的其他内容和缩进。新建的文件权限为 `0600`。
+- **防止覆盖别处的修改**：GET 返回文件内容的 hash，保存时带上它。文件在此期间被 TUI 或手工改过，就返回 409：“配置文件已在别处修改，请刷新后再改”。
+
+**凭证显示**
+- header 和 env 的值在 API 里一律打码返回。保存时值没改（还是打码的样子）就保留原值。
+- 表单提示优先写环境变量 `${NAME}`，不要把明文 token 写进文件。
+
+**stdio 的风险**：通过 Web 添加 stdio server，等于在服务器上执行任意命令。只给 admin，与 admin 本来就能在会话里用 `bash` 的权限相当。审计日志记录谁在什么时候改了哪一项。
+
+P3-6b 实现说明（2026-10-19）：
+
+- 权限：`mcp:read`（admin、user、viewer）看列表，`mcp:admin`（只有 admin）增删改。非 admin 只看到能用的 server，不看不能用的项和原因。
+- `src/mcp/shared-config.ts`：
+  - 只改表单管得到的字段（`url`、`headers`、`command`、`args`、`env`、`cwd`、`description`、`exposure`、`timeout`、`enabled`、`oauth.scope`，以及 `piAgentServer` 的 `adminOnly`、`defaultEnabled`、`maxExposure`）。`toolExposure`、`oauth.clientId`、`piAgentServer.label`、Pi 自己的字段等原样保留，表单里列出它们的名字。换了传输方式时清掉另一种的字段。
+  - 写入前用本服务的解析规则检查这一项：名称、和其他项只差 `-`/`_`、`exposure` 超过上限、`!命令`、`auth.provider` 等都拒绝（400）。只缺环境变量的项照样保存，列表里标为不可用，方便先写配置再补环境变量。
+  - hash 是文件内容的 SHA-256，文件不存在时是 `absent`。同一进程里的写入排队；和 TUI 同时写仍有极小的窗口，接受这个风险。
+  - 新文件权限 `0600`；已有文件保持原来的权限。`mcp.json` 是符号链接时不改（改名会把链接换成普通文件）。
+  - 打码规则：值是空的，或只是一个环境变量引用（可带一个前缀词，如 `Bearer ${TOKEN}`），照原样显示；其余显示为 `••••••`，传回 `••••••` 表示保留原值，新加的键不能是打码值。
+- 审计：保存和删除各写一条日志（`mcpShared: { action, name }`），带请求的 `subjectHash`，不记录 IP。
+- Web：admin 打开“MCP 服务”面板时多一个“共享 MCP”标签，列表按文件顺序；编辑在行内展开表单；删除要再点一次确认；409 时提示刷新。改动后“本项目”标签的列表跟着刷新。
+- **server 身份（迁移 v6）**：`mcp.json` 随时能把同一个名字换成另一个 server（`pi mcp add docs --url 新地址` 直接替换同名项）。项目设置因此多存一列 `server_identity`，是保存时 HTTP 地址，或 stdio 命令、参数、cwd 的 SHA-256。和当前同名 server 对不上时，项目设置不生效（连 `defaultEnabled` 也不算），面板提示“换成了另一个 server”，owner 重新勾选后恢复。只改 header、env、说明等不算换了 server。v6 之前的行没有身份，视为一致。
+- OAuth 凭证本来就记着 server 地址，地址变了不会继续用，不需要改。
+
+### 14.4 个人 MCP
+
+**开关**
+- `PI_MCP_PERSONAL_SERVERS=true` 打开，默认关闭。需要 `PI_MCP_TOKEN_KEY_FILE`。
+- 可选的 `PI_MCP_PERSONAL_ALLOWED_HOSTS`：域名白名单，逗号分隔，支持 `*.` 前缀，例如 `*.linear.app,mcp.notion.com`。不设置就不限制域名，但下面的地址拦截始终生效。
+
+**存储**：迁移 v6，新表 `user_mcp_servers`，SQLite 与 PostgreSQL 同步。
+
+| 列 | 说明 |
+|---|---|
+| `owner_key` | 用户（IP 身份） |
+| `name` | 同一用户内唯一，规则同 Pi 的 server 名称 |
+| `url` | 必须是 `https` |
+| `description` | 可空，空时用 server 返回的 instructions |
+| `exposure` | 默认 `codemode`，可选 `codemode`、`deferred`、`hidden`（是否开放 `direct` 见第 14.8 节） |
+| `hidden_tools` | 同第 4.2 节 |
+| `enabled` | 是否启用 |
+| `auth_kind` | `none`、`header`、`oauth` |
+| `headers` | 用户填的 header（如 `Authorization: Bearer …`），整体加密，做法同第 13.8 节，附加数据绑定 `(owner_key, name)`。API 只返回 header 名称和“已设置” |
+| `oauth` | `{ scope? }`，`auth_kind` 为 `oauth` 时使用 |
+| `created_at` / `updated_at` | 审计字段 |
+
+主键 `(owner_key, name)`。每个用户最多 20 个。
+
+**会话里怎么用**
+- 只进入会话 owner 本人的私有会话：用第 13.9 节的 `mcpCredentialOwner` 判断。共享会话和原生会话一律不进。
+- 对本人的所有项目生效，不按项目单独启用（第一版）。
+- `TOOLS` 白名单和第 6 节的兜底拦截照常生效。
+- **重名处理**
+  - 保存时，名称不能和共享 MCP 重名。
+  - 管理员之后加了同名的共享 server，以共享的为准。个人的那项标为“与共享 MCP 重名，已停用”，用户改名即可恢复。
+
+**个人 OAuth**
+- 沿用第 13 节的 provider 和刷新锁，凭证仍存 `user_mcp_credentials`。
+- server 名称前加 `user:` 前缀，和共享 server 分开。
+- 动态注册的客户端表 `mcp_oauth_clients` 现在按 server 名称做主键。个人 server 的名称在不同用户之间可能重复、地址也可能不同，所以个人 server 的注册记录改用 `(server_url, redirect_url)` 区分。
+
+**网络防护（防止借服务器访问内网，SSRF）**，同样适用于个人 server 的 OAuth 发现、注册、换 token 和撤销请求：
+- 只允许 `https`。
+- 连接前解析域名，任一解析结果属于以下范围就拒绝：
+  - 本机地址
+  - 私有地址（RFC 1918、`fc00::/7`）
+  - 链路本地地址（含 `169.254.169.254`）
+  - `100.64.0.0/10`
+  - 组播、未指定地址
+  - IPv4 映射的 IPv6 地址
+- **固定解析结果**：实际连接用检查过的那个 IP（自定义 `lookup`），防止域名重新绑定（DNS rebinding）。
+- 不跟随重定向。
+- 拦截时返回可读原因：“这个地址指向内网或本机，个人 MCP 不允许连接”。
+
+**其他**
+- 权限：新增 `mcp:personal`，`user` 与 `admin` 可用，viewer 不可用。
+- owner 转移不搬运个人 MCP，规则与第 13.3 节相同。
+- 备份随数据库保存密文。
+
+### 14.5 Web
+
+设置 → MCP 服务的面板分成三块：
+
+1. **本项目**：现有的项目设置，对共享 MCP 按项目启用和收紧。
+2. **共享 MCP**：所有人能看到列表。admin 看到“添加 / 编辑 / 删除”，并能看到配置文件的读取错误。
+3. **我的 MCP**：个人 server 的增删改、启用开关，以及连接状态（OAuth 的“连接 / 断开”沿用 P3-4 的样式）。
+
+### 14.6 API
+
+| 方法 | 路径 | 权限 | 说明 |
+|---|---|---|---|
+| `GET` | `/v1/mcp/shared` | `mcp:read` | 共享 MCP 列表。admin 额外拿到打码后的连接参数、文件 hash 和读取错误 |
+| `PUT` | `/v1/mcp/shared/:name` | `mcp:admin` | 新增或替换一项，请求带文件 hash |
+| `DELETE` | `/v1/mcp/shared/:name?hash=` | `mcp:admin` | 删除一项，请求带文件 hash |
+| `GET` | `/v1/mcp/personal` | `mcp:personal` | 我的 MCP 列表（header 只给名称） |
+| `PUT` | `/v1/mcp/personal/:name` | `mcp:personal` | 新增或修改，保存前做地址检查 |
+| `DELETE` | `/v1/mcp/personal/:name` | `mcp:personal` | 删除，同时删除对应的 OAuth 凭证并尽量撤销 |
+| `POST` | `/v1/mcp/personal/:name/test` | `mcp:personal` | 试连一次（`initialize` + `tools/list`），返回工具数或错误 |
+
+个人 OAuth 的 start、callback、断开复用第 13.10 节的路由。server 名称写成 `user:<name>`，服务端只在调用者本人的个人 server 里查找。
+
+### 14.7 分阶段计划与验收
+
+| 步骤 | 内容 | 验收 |
+|---|---|---|
+| P3-6a 读取 mcp.json | 总是读取 `mcp.json`；字段对照；`piAgentServer` 扩展字段；热更新；移除目录文件与密钥文件 | `pi mcp add` 之后新建会话能用，不用重启；文件写坏时继续用上次读成功的内容；`!cmd`、`auth.provider` 项不进入会话；不读项目 `.pi/mcp.json` 和 `mcp-auth.json` |
+| P3-6b admin Web 修改 | `mcp:admin`；共享 MCP 的 API；原子写入与 hash 冲突检查；打码 | 非 admin 改不了；TUI 改过文件后 Web 保存返回 409；打码值保存后原值不变 |
+| P3-6c 个人 MCP | 迁移 v6；仓储加密；API；地址拦截；会话接入 | 内网、本机、元数据地址和重新绑定都被拒；只进入本人私有会话；与共享重名时以共享为准 |
+| P3-6d 个人 OAuth | 复用第 13 节；`user:` 前缀；注册客户端按地址区分 | 两个用户同名、不同地址的个人 server 各自授权互不影响 |
+| P3-6e Web 与文档 | 面板三块；README 双语、`configuration.md`、`api.md`、OpenAPI | 端到端：admin 加共享 server，用户加个人 server，各自在会话里调用成功 |
+
+### 14.8 待定问题
+
+2026-10-18 先按保守的做法定下，以后有需要再放开：
+
+- 个人 MCP 不允许 `direct`，上限是 `codemode`。
+- 个人 MCP 不按项目启用，对本人的所有私有会话生效。
+- `PI_MCP_CATALOG_FILE` 不保留：用户决定直接移除，共享 MCP 只有 `mcp.json` 一个来源。
+- 共享 MCP 不支持 `!cmd`，含 `!cmd` 的项标为“仅 TUI 可用”。

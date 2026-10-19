@@ -263,7 +263,7 @@ Migration CLI 有两条互斥路径：
 
 ### 5.1 完全空目标建立 canonical 迁移 head
 
-完全空 SQLite DB 或完全空 non-public/non-system PostgreSQL schema，须离线建立完整的 v0→v1→v2→v3→v4→v5 head：
+完全空 SQLite DB 或完全空 non-public/non-system PostgreSQL schema，须离线建立完整的 v0→v1→v2→v3→v4→v5→v6 head：
 
 ```bash
 pnpm migrate -- --bootstrap-baseline --bootstrap-confirm CONFIRMED
@@ -273,7 +273,7 @@ pnpm migrate -- --bootstrap-baseline --bootstrap-confirm CONFIRMED
 
 ### 5.2 已有 canonical 前缀的增量 apply
 
-`--apply` 将已有已认证 v0、v0→v1、v0→v1→v2、v0→v1→v2→v3 或 v0→v1→v2→v3→v4 前缀增量迁移到当前 v5 head（v3 只新增 `companion_personas` 表，v4 只新增 `project_mcp_servers` 表，v5 只新增 `mcp_oauth_clients` 与 `user_mcp_credentials` 表）。正式顺序为 **pre-backup → apply → verify**：
+`--apply` 将已有已认证 v0、v0→v1、v0→v1→v2、v0→v1→v2→v3、v0→v1→v2→v3→v4 或 v0→v1→v2→v3→v4→v5 前缀增量迁移到当前 v6 head（v3 只新增 `companion_personas` 表，v4 只新增 `project_mcp_servers` 表，v5 只新增 `mcp_oauth_clients` 与 `user_mcp_credentials` 表，v6 只给 `project_mcp_servers` 加一个可空列 `server_identity`）。正式顺序为 **pre-backup → apply → verify**：
 
 1. 在窗口前用最近可用备份完成隔离恢复演练；
 2. 停服务并独立确认无 writer；
@@ -304,7 +304,7 @@ pnpm restore -- restore \
 - 先在明确隔离的新目标上执行，禁止覆盖源数据库、正式 schema 或正式 `DATA_DIR`。
 - SQLite restore 写入新的绝对 target root；PostgreSQL restore 需要明确的 disposable empty database/schema，拒绝 `public` 和系统 schema。
 - **跨主机源元数据（仅 SQLite）**：manifest 的 `sourceRoots` 是备份主机记录的元数据，只用于与 target 的重叠校验，恢复时从不写入。因此这三个已认证源引用允许包含 symlink 分量（例如 Linux `/home/<user>/...` 在 macOS 上经由 `/home` 系统 symlink 别名解析），并在词法（lexical）与物理（physical，realpath）两种形态下与 target 双向比对，任一重叠即 fail-fast。源引用仍拒绝非绝对路径、NUL 字节和 `.`/`..` 分量；最近存在的祖先只允许 ENOENT 继续上溯，dangling symlink、symlink loop、权限失败或 ENOTDIR 一律 fail-closed。input/target/identity 仍执行严格的无 symlink 祖先策略。该放宽仅限 SQLite；PostgreSQL restore 保持原有严格策略。
-- restore 不自动迁移；包须携带已认证 v0、v0→v1、v0→v1→v2、v0→v1→v2→v3、v0→v1→v2→v3→v4 或 v0→v1→v2→v3→v4→v5 前缀，未知、错序或不匹配的 ledger 在解密/staging 前 fail-fast。含上传文件元数据却缺原件的 v1 包不可恢复；v2 包逐项校验加密原件，源库文件缺失或不稳定时拒绝发布。完全空目标可用于隔离 restore；`--bootstrap-baseline` 不创建 pre-backup，也不生成可恢复的 backup package。
+- restore 不自动迁移；包须携带已认证 v0、v0→v1、v0→v1→v2、v0→v1→v2→v3、v0→v1→v2→v3→v4、v0→v1→v2→v3→v4→v5 或 v0→v1→v2→v3→v4→v5→v6 前缀，未知、错序或不匹配的 ledger 在解密/staging 前 fail-fast。含上传文件元数据却缺原件的 v1 包不可恢复；v2 包逐项校验加密原件，源库文件缺失或不稳定时拒绝发布。完全空目标可用于隔离 restore；`--bootstrap-baseline` 不创建 pre-backup，也不生成可恢复的 backup package。
 - 用户的 MCP OAuth 凭证（v5）在库里只有 AES-GCM 密文，备份包不含 `PI_MCP_TOKEN_KEY_FILE`。恢复后用同一份密钥文件，这些凭证才能继续用；密钥丢失时凭证读不出来，用户在面板重新授权即可，不影响恢复本身。
 - age identity 由运维在执行时提供。一次成功解密和恢复演练是“私钥可用”的必要证据。
 - 目标 missing/invalid-as-empty 语义见 §2，恢复行为以该表为准。

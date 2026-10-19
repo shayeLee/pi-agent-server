@@ -61,7 +61,9 @@ import { BUILTIN_SESSION_COMMANDS } from "./session-resources.js";
 import { ATTACHMENT_MAX_BYTES } from "../attachments/file-policy.js";
 import { UploadService } from "../application/upload-service.js";
 import { CompanionGreetingError, type CompanionGreeter } from "../application/companion-greeter.js";
-import { projectMcpServerViews, validateProjectMcpSetting, type ProjectMcpServerView, type ProjectMcpSettingInput } from "../mcp/project-settings.js";
+import { applySharedMcpForm, SharedMcpConfigError, sharedMcpList, validateSharedMcpEntry } from "../mcp/shared-config.js";
+import type { SharedMcpServerInput } from "../shared/shared-mcp.js";
+import { mcpServerIdentity, projectMcpServerViews, validateProjectMcpSetting, type ProjectMcpServerView, type ProjectMcpSettingInput } from "../mcp/project-settings.js";
 
 export type ServerDeps = {
   sessions: SessionStorePort;
@@ -87,10 +89,15 @@ export type ServerDeps = {
   companionGreeter?: Pick<CompanionGreeter, "greet">;
   /** Keeps the companion's persona per caller; without it the page keeps the persona per browser. */
   companionPersonas?: import("../application/ports/companion-persona-store-port.js").CompanionPersonaStorePort;
-  /** MCP 目录与项目设置；未配置 PI_MCP_CATALOG_FILE 时缺省，项目 MCP 接口返回未配置。 */
+  /** MCP 目录与项目设置；缺省时项目 MCP 接口返回未配置（测试用）。 */
   projectMcp?: {
     readonly catalog: import("../mcp/catalog.js").McpCatalog;
     readonly store: import("../application/ports/project-mcp-store-port.js").ProjectMcpStorePort;
+  };
+  /** 共享 MCP，即 Pi 的全局 mcp.json（docs/mcp-integration.md §14.3）：所有人能看列表，admin 能增删改。 */
+  sharedMcp?: {
+    readonly file: import("../mcp/shared-config.js").SharedMcpConfigFile;
+    readonly catalog: import("../mcp/live-catalog.js").LiveMcpCatalog;
   };
   /** 按用户 MCP OAuth（docs/mcp-integration.md §13）；目录里没有 oauth server 时缺省。 */
   mcpOAuth?: Pick<import("../mcp/oauth-connections.js").McpOAuthConnections, "list" | "start" | "complete" | "disconnect" | "returnUrl">;
@@ -223,6 +230,36 @@ const PROJECT_MCP_SERVER_BODY_SCHEMA = {
     hiddenTools: { type: "array", maxItems: 256, items: { type: "string", minLength: 1, maxLength: 128, pattern: "^[^*\\s]+$" } },
   },
   required: ["enabled"], additionalProperties: false,
+} as const;
+const MCP_EXPOSURE_SCHEMA = { type: "string", enum: ["direct", "codemode", "deferred", "hidden"] } as const;
+const STRING_MAP_SCHEMA = { type: "object", maxProperties: 64, additionalProperties: { type: "string", maxLength: 8192 } } as const;
+const SHARED_MCP_SERVER_BODY_SCHEMA = {
+  type: "object",
+  properties: {
+    hash: { type: "string", minLength: 1, maxLength: 128 },
+    server: {
+      type: "object",
+      properties: {
+        transport: { type: "string", enum: ["http", "stdio"] },
+        url: { type: "string", maxLength: 2048 },
+        headers: STRING_MAP_SCHEMA,
+        command: { type: "string", maxLength: 4096 },
+        args: { type: "array", maxItems: 256, items: { type: "string", maxLength: 8192 } },
+        env: STRING_MAP_SCHEMA,
+        cwd: { type: "string", maxLength: 4096 },
+        description: { type: "string", maxLength: 4000 },
+        exposure: MCP_EXPOSURE_SCHEMA,
+        maxExposure: MCP_EXPOSURE_SCHEMA,
+        adminOnly: { type: "boolean" },
+        defaultEnabled: { type: "boolean" },
+        timeout: { type: "number", exclusiveMinimum: 0, maximum: 86400 },
+        enabled: { type: "boolean" },
+        oauth: { anyOf: [{ type: "object", properties: { scope: { type: "string", maxLength: 1000 } }, additionalProperties: false }, { type: "null" }] },
+      },
+      required: ["transport"], additionalProperties: false,
+    },
+  },
+  required: ["hash", "server"], additionalProperties: false,
 } as const;
 const SESSION_COMMAND_BODY_SCHEMA = {
   type: "object",
@@ -820,18 +857,70 @@ export function buildApp(deps: ServerDeps): FastifyInstance {
         if (id === DEFAULT_PROJECT_ID && !isAdmin) {
           return reply.code(403).send({ statusCode: 403, error: "Forbidden", code: "mcp_default_project", message: "默认项目由所有用户共享，只有管理员能修改其 MCP 设置" });
         }
-        const error = validateProjectMcpSetting(deps.projectMcp.catalog, name, request.body, isAdmin);
+        // 校验和记下身份用同一份内容，期间 mcp.json 被改也对得上。
+        const catalog = { servers: deps.projectMcp.catalog.servers };
+        const error = validateProjectMcpSetting(catalog, name, request.body, isAdmin);
         if (error?.code === "unknown_server") return reply.code(404).send({ statusCode: 404, error: "Not Found", code: "mcp_unknown_server", message: "目录中没有这个 MCP server" });
         if (error?.code === "admin_only") return reply.code(403).send({ statusCode: 403, error: "Forbidden", code: "mcp_admin_only", message: "这个 MCP server 只有管理员能启用" });
         if (error) return reply.code(400).send({ statusCode: 400, error: "Bad Request", message: error.message });
         const saved = await deps.projectMcp.store.put(id, {
           serverName: name, enabled: request.body.enabled, exposure: request.body.exposure ?? null,
           hiddenTools: [...new Set(request.body.hiddenTools ?? [])], updatedAt: Date.now(), updatedBy: ownerKey,
+          serverIdentity: mcpServerIdentity(catalog.servers.get(name)!),
         });
         if (!saved) return NOT_FOUND(reply);
-        const views = withEnableCapability(projectMcpServerViews(deps.projectMcp.catalog, await deps.projectMcp.store.list(id)), true, isAdmin);
+        const views = withEnableCapability(projectMcpServerViews(catalog, await deps.projectMcp.store.list(id)), true, isAdmin);
         return { server: views.find(view => view.name === name) };
       });
+    // 共享 MCP（docs/mcp-integration.md §14.3）：Pi 的全局 mcp.json。所有人能看列表；admin 能增删改，
+    // 并拿到打码后的连接参数。写入要带 GET 给的文件 hash，文件在别处改过就返回 409。
+    const sharedMcpMissing = (reply: FastifyReply) =>
+      reply.code(404).send({ statusCode: 404, error: "Not Found", code: "mcp_not_configured", message: "服务未配置 MCP" });
+    const sharedMcpError = (reply: FastifyReply, error: unknown) => {
+      if (!(error instanceof SharedMcpConfigError)) throw error;
+      if (error.code === "conflict") return reply.code(409).send({ statusCode: 409, error: "Conflict", code: "mcp_config_changed", message: error.message });
+      if (error.code === "unknown_server") return reply.code(404).send({ statusCode: 404, error: "Not Found", code: "mcp_unknown_server", message: error.message });
+      return reply.code(400).send({ statusCode: 400, error: "Bad Request", code: "mcp_config_invalid", message: error.message });
+    };
+    api.get("/mcp/shared", { exposeHeadRoute: false, ...requirePermission("mcp:read") }, async (request, reply) => {
+      if (!deps.sharedMcp) return sharedMcpMissing(reply);
+      return reply.header("cache-control", "private, no-store")
+        .send(sharedMcpList(deps.sharedMcp.file, deps.sharedMcp.catalog, request.access.role === "admin"));
+    });
+    api.put<{ Params: { name: string }; Body: SharedMcpServerInput }>("/mcp/shared/:name",
+      { schema: { body: SHARED_MCP_SERVER_BODY_SCHEMA }, ...requirePermission("mcp:admin") }, async (request, reply) => {
+        if (!deps.sharedMcp) return sharedMcpMissing(reply);
+        const { name } = request.params;
+        let created = false;
+        try {
+          await deps.sharedMcp.file.update(request.body.hash, servers => {
+            created = !(name in servers);
+            const entry = applySharedMcpForm(servers[name], request.body.server);
+            validateSharedMcpEntry(name, entry, Object.keys(servers));
+            servers[name] = entry;
+          });
+        } catch (error) {
+          return sharedMcpError(reply, error);
+        }
+        request.log.info({ mcpShared: { action: created ? "add" : "update", name } }, "shared MCP server saved");
+        return reply.header("cache-control", "private, no-store").send(sharedMcpList(deps.sharedMcp.file, deps.sharedMcp.catalog, true));
+      });
+    api.delete<{ Params: { name: string }; Querystring: { hash?: string } }>("/mcp/shared/:name", { ...requirePermission("mcp:admin") }, async (request, reply) => {
+      if (!deps.sharedMcp) return sharedMcpMissing(reply);
+      const { name } = request.params;
+      const hash = request.query.hash;
+      if (!hash) return reply.code(400).send({ statusCode: 400, error: "Bad Request", code: "mcp_config_invalid", message: "缺少 hash" });
+      try {
+        await deps.sharedMcp.file.update(hash, servers => {
+          if (!(name in servers)) throw new SharedMcpConfigError("unknown_server", "mcp.json 里没有这个 server");
+          delete servers[name];
+        });
+      } catch (error) {
+        return sharedMcpError(reply, error);
+      }
+      request.log.info({ mcpShared: { action: "remove", name } }, "shared MCP server removed");
+      return reply.header("cache-control", "private, no-store").send(sharedMcpList(deps.sharedMcp.file, deps.sharedMcp.catalog, true));
+    });
     // 按用户 MCP OAuth（docs/mcp-integration.md §13.10）：每个用户用自己的身份连接目录里的 oauth server。
     // 回调由对方授权页整页跳回，浏览器带不上 Bearer token，网络准入对这一个路径免 token；
     // state 一次性、10 分钟过期、只有发起授权的同一调用者能用。

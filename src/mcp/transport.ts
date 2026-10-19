@@ -1,12 +1,12 @@
 // MCP 连接（docs/mcp-integration.md §7、§8）。
 // SDK 的 McpClient 对每个 transport 单独 initialize，所以无法让多个会话共用同一个 MCP 会话；
 // 这里按会话建连，但对 stdio 进程设全局上限，并让子进程只拿到最小环境变量 + 目录声明的变量。
-// 不使用 SDK 默认 transport：它会继承服务进程 env，并把 `${NAME}` / `!cmd` 当作环境变量与 shell 命令解析。
+// 不使用 SDK 默认 transport：它会继承服务进程 env，并执行 `!cmd`；`${NAME}` 由 pi-config.ts 转成 `${env:NAME}` 后在这里替换。
 
 import { resolve } from "node:path";
 import { StdioTransport, StreamableHttpTransport, type AuthProvider, type McpTransport } from "@earendil-works/pi-mcp";
 import type { McpTransportFactory } from "@earendil-works/pi-coding-agent";
-import { resolveMcpPlaceholders, type McpCatalog, type McpSecrets } from "./catalog.js";
+import { resolveMcpPlaceholders, type McpCatalog } from "./catalog.js";
 
 /** 子进程从服务进程继承的最小环境变量集合（不含任何凭证）。 */
 const INHERITED_ENV = ["PATH", "HOME", "LANG", "LC_ALL", "TMPDIR", "TZ"] as const;
@@ -60,7 +60,7 @@ class LimitedStdioTransport extends StdioTransport {
   }
 }
 
-function resolveRecord(record: Readonly<Record<string, string>> | undefined, context: { secrets: McpSecrets; projectCwd: string }): Record<string, string> {
+function resolveRecord(record: Readonly<Record<string, string>> | undefined, context: { projectCwd: string; env?: NodeJS.ProcessEnv }): Record<string, string> {
   const resolved: Record<string, string> = {};
   for (const [key, value] of Object.entries(record ?? {})) resolved[key] = resolveMcpPlaceholders(value, context);
   return resolved;
@@ -73,7 +73,6 @@ function resolveRecord(record: Readonly<Record<string, string>> | undefined, con
  */
 export function createHostMcpTransportFactory(options: {
   catalog: McpCatalog;
-  secrets: McpSecrets;
   limiter: StdioProcessLimiter;
   env?: NodeJS.ProcessEnv;
   authProviderFor?: (serverName: string) => AuthProvider | undefined;
@@ -86,7 +85,7 @@ export function createHostMcpTransportFactory(options: {
   return (entry, cwd): McpTransport => {
     const server = options.catalog.servers.get(entry.name);
     if (!server) throw new Error(`MCP server "${entry.name}" is not in the catalog`);
-    const context = { secrets: options.secrets, projectCwd: cwd };
+    const context = { projectCwd: cwd, ...(options.env ? { env: options.env } : {}) };
     const connection = server.connection;
     if (connection.type === "http") {
       const headers = resolveRecord(connection.headers, context);

@@ -5,7 +5,7 @@ import {
   adaptOAuthProvider, authorizeMcp, McpOAuthAuthorizationRequiredError, OAuthIssuerMismatchError,
 } from "@earendil-works/pi-mcp/oauth";
 import type { Kysely } from "kysely";
-import { parseMcpCatalog } from "../../src/mcp/catalog.js";
+import { catalogOf } from "./catalog-fixture.js";
 import {
   isOAuthServer, mcpOAuthFlowOptions, StoredMcpOAuthProvider,
   type McpOAuthCatalogServer, type PendingMcpAuthorization,
@@ -19,9 +19,8 @@ import { FakeAuthorizationServer, ISSUER, MCP } from "../fixtures/fake-oauth-ser
 const OWNER = "ip:10.0.0.1";
 const REDIRECT = "https://pi.example.test/v1/mcp/oauth/callback";
 
-function catalogServer(oauth: Record<string, unknown> = { label: "Example", scope: "read" }): McpOAuthCatalogServer {
-  const secrets = new Map([["EXAMPLE_SECRET", "s3cret"]]);
-  const server = parseMcpCatalog({ version: 1, servers: { example: { url: MCP, description: "Example", oauth } } }, secrets).servers.get("example")!;
+function catalogServer(oauth: Record<string, unknown> = { scope: "read" }): McpOAuthCatalogServer {
+  const server = catalogOf({ example: { url: MCP, description: "Example", oauth, piAgentServer: { label: "Example" } } }, { EXAMPLE_SECRET: "s3cret" }).servers.get("example")!;
   if (!isOAuthServer(server)) throw new Error("not an oauth server");
   return server;
 }
@@ -120,13 +119,13 @@ describe("StoredMcpOAuthProvider", () => {
 
   it("ignores credentials stored for another server URL", async () => {
     await connect();
-    const moved = parseMcpCatalog({ version: 1, servers: { example: { url: "https://mcp.example.test/v2/mcp", description: "Example", oauth: { label: "Example" } } } })
+    const moved = catalogOf({ example: { url: "https://mcp.example.test/v2/mcp", description: "Example", oauth: {}, piAgentServer: { label: "Example" } } })
       .servers.get("example")!;
     expect(await provider(moved as McpOAuthCatalogServer).tokens()).toBeUndefined();
   });
 
   it("uses a pre-registered client without dynamic registration", async () => {
-    const server = catalogServer({ label: "Example", clientId: "preset", clientSecret: "${secret:EXAMPLE_SECRET}" });
+    const server = catalogServer({ clientId: "preset", clientSecret: "${EXAMPLE_SECRET}" });
     const pending: PendingMcpAuthorization = {};
     let authorizationUrl: URL | undefined;
     await authorizeMcp(provider(server, { pending, clientSecret: "s3cret", onRedirect: url => { authorizationUrl = url; } }), { ...mcpOAuthFlowOptions(server), fetch: auth.fetch });

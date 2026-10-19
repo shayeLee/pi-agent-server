@@ -382,6 +382,7 @@ describe("public host API v1 contract", () => {
       "POST /v1/sessions/{id}/messages",
       "POST /v1/sessions/{id}/steer",
       "PUT /v1/companion/persona",
+      "PUT /v1/mcp/shared/{name}",
       "PUT /v1/projects/{id}/mcp/servers/{name}",
     ]);
     for (const [label, operation] of ajvBodyOperations) {

@@ -603,7 +603,7 @@ export const projectMcpServersSchemaManifest = defineSchema([
  * deployment, one per catalog server; credentials belong to a caller. Secrets are AES-GCM ciphertext.
  * Rows reference catalog servers by name and have no foreign keys.
  */
-export const schemaManifest = defineSchema([
+export const userMcpOAuthSchemaManifest = defineSchema([
   ...projectMcpServersSchemaManifest.tables,
   {
     name: "mcp_oauth_clients",
@@ -637,4 +637,23 @@ export const schemaManifest = defineSchema([
     foreignKeys: [],
     indexes: [],
   },
+]);
+
+/**
+ * v6: project MCP settings remember which server they were made for (docs/mcp-integration.md §14.3).
+ * mcp.json can replace a server under the same name; a setting whose identity no longer matches stops
+ * applying until the project owner confirms it again. Rows written before v6 have no identity.
+ */
+const v5Tables = userMcpOAuthSchemaManifest.tables;
+export const schemaManifest = defineSchema([
+  v5Tables[0], v5Tables[1], v5Tables[2], v5Tables[3], v5Tables[4], v5Tables[5], v5Tables[6],
+  {
+    ...v5Tables[7],
+    columns: [
+      ...v5Tables[7].columns,
+      { name: "server_identity", type: "text", nullable: true },
+    ],
+  },
+  v5Tables[8],
+  v5Tables[9],
 ]);

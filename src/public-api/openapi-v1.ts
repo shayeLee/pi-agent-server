@@ -34,6 +34,9 @@ export const PUBLIC_API_OPERATIONS = [
   ["/v1/projects/{id}/companion/greeting", "post", "sessions:create"],
   ["/v1/projects/{id}/mcp", "get", "projects:mcp-read"],
   ["/v1/projects/{id}/mcp/servers/{name}", "put", "projects:mcp-write"],
+  ["/v1/mcp/shared", "get", "mcp:read"],
+  ["/v1/mcp/shared/{name}", "put", "mcp:admin"],
+  ["/v1/mcp/shared/{name}", "delete", "mcp:admin"],
   ["/v1/mcp/connections", "get", "mcp:connect"],
   ["/v1/mcp/servers/{name}/oauth/start", "post", "mcp:connect"],
   ["/v1/mcp/oauth/callback", "get", "mcp:connect"],
@@ -132,6 +135,8 @@ const roles: Record<Permission, readonly string[]> = {
   "projects:mcp-read": ["admin", "user", "viewer"],
   "projects:mcp-write": ["admin", "user"],
   "mcp:connect": ["admin", "user"],
+  "mcp:read": ["admin", "user", "viewer"],
+  "mcp:admin": ["admin"],
   "files:upload": ["admin", "user"],
   "sessions:list": ["admin", "user", "viewer"],
   "sessions:create": ["admin", "user"],
@@ -284,7 +289,7 @@ export const openapiV1 = {
     },
     "/v1/projects/{id}/mcp": {
       get: operation("getProjectMcp", "projects:mcp-read", {
-        "200": { description: "The MCP catalog servers with this project's settings. configured is false when the server has no PI_MCP_CATALOG_FILE. canEdit says whether the caller may change them (the shared default project needs admin).", ...json({ type: "object", required: ["configured", "canEdit", "servers"], properties: { configured: { type: "boolean" }, canEdit: { type: "boolean" }, servers: { type: "array", items: ref("ProjectMcpServer") } }, additionalProperties: false }) },
+        "200": { description: "The shared MCP servers (Pi's global mcp.json) with this project's settings. configured is always true and kept for older clients. canEdit says whether the caller may change them (the shared default project needs admin).", ...json({ type: "object", required: ["configured", "canEdit", "servers"], properties: { configured: { type: "boolean" }, canEdit: { type: "boolean" }, servers: { type: "array", items: ref("ProjectMcpServer") } }, additionalProperties: false }) },
         "404": error(404, "Project not found."),
       }, { parameters: [id] }),
     },
@@ -295,6 +300,24 @@ export const openapiV1 = {
         "403": error(403, "Enabling an adminOnly server (code mcp_admin_only) or changing the default project (code mcp_default_project) needs admin."),
         "404": error(404, "Project not found, no MCP catalog (code mcp_not_configured), or a server not in the catalog (code mcp_unknown_server)."),
       }, { parameters: [id, { name: "name", in: "path", required: true, schema: { type: "string" } }], requestBody: request(ref("ProjectMcpServerInput")), ...requestValidation }),
+    },
+    "/v1/mcp/shared": {
+      get: operation("listSharedMcpServers", "mcp:read", {
+        "200": { description: "The shared MCP servers, in the order of Pi's global mcp.json. Others see the usable servers only; admins also see unusable ones with a reason, the form values (header and env values masked) and the file hash to send back when saving.", ...json(ref("SharedMcpList")) },
+      }),
+    },
+    "/v1/mcp/shared/{name}": {
+      put: operation("saveSharedMcpServer", "mcp:admin", {
+        "200": { description: "Saved to mcp.json. Fields the form does not cover are kept; a masked value keeps the value in the file. New or resumed sessions use it.", ...json(ref("SharedMcpList")) },
+        "400": error(400, "Invalid name or settings this server cannot use (code mcp_config_invalid), or mcp.json itself is unreadable."),
+        "409": error(409, "mcp.json changed since the hash was read (code mcp_config_changed); reload and try again."),
+      }, { parameters: [{ name: "name", in: "path", required: true, schema: { type: "string" } }], requestBody: request(ref("SharedMcpServerInput")), ...requestValidation }),
+      delete: operation("removeSharedMcpServer", "mcp:admin", {
+        "200": { description: "Removed from mcp.json. Project settings for it are kept and shown as removed.", ...json(ref("SharedMcpList")) },
+        "400": error(400, "Missing hash, or mcp.json is unreadable (code mcp_config_invalid)."),
+        "404": error(404, "No server with this name in mcp.json (code mcp_unknown_server)."),
+        "409": error(409, "mcp.json changed since the hash was read (code mcp_config_changed)."),
+      }, { parameters: [{ name: "name", in: "path", required: true, schema: { type: "string" } }, { name: "hash", in: "query", required: true, schema: { type: "string" } }] }),
     },
     "/v1/mcp/connections": {
       get: operation("listMcpConnections", "mcp:connect", {
@@ -574,6 +597,7 @@ export const openapiV1 = {
         adminOnly: { type: "boolean" },
         canEnable: { type: "boolean", description: "Whether the caller may enable it: adminOnly servers need admin. Disabling is always allowed to editors." },
         updatedAt: { type: ["integer", "null"], description: "null while the project uses the catalog defaults." },
+        changed: { type: "boolean", description: "The project's setting was made for an earlier server of the same name (another URL or command); it does not apply until saved again." },
       }, additionalProperties: false },
       ProjectMcpServerInput: { type: "object", required: ["enabled"], properties: {
         enabled: { type: "boolean" },
@@ -581,6 +605,35 @@ export const openapiV1 = {
         hiddenTools: { type: "array", maxItems: 256, items: { type: "string", minLength: 1, maxLength: 128, pattern: "^[^*\\s]+$" }, description: "Exact tool names, as the server offers them, to hide in this project." },
       }, additionalProperties: false },
       McpExposure: { enum: ["direct", "codemode", "deferred", "hidden"] },
+      SharedMcpServerConfig: { type: "object", required: ["transport"], properties: {
+        transport: { enum: ["http", "stdio"] }, url: { type: "string" },
+        headers: { type: "object", additionalProperties: { type: "string" }, description: "Values are masked as •••••• unless they only reference environment variables; send a masked value back to keep it." },
+        command: { type: "string" }, args: { type: "array", items: { type: "string" } },
+        env: { type: "object", additionalProperties: { type: "string" }, description: "Masked like headers." },
+        cwd: { type: "string" }, description: { type: "string" },
+        exposure: ref("McpExposure"), maxExposure: ref("McpExposure"),
+        adminOnly: { type: "boolean" }, defaultEnabled: { type: "boolean" },
+        timeout: { type: "number", exclusiveMinimum: 0, description: "Seconds per request." },
+        enabled: { type: "boolean", description: "false disables it everywhere, Pi TUI included." },
+        oauth: { oneOf: [{ type: "object", properties: { scope: { type: "string" } }, additionalProperties: false }, { type: "null" }], description: "Each user connects with their own account (HTTP only)." },
+      }, additionalProperties: false },
+      SharedMcpServer: { type: "object", required: ["name", "status"], properties: {
+        name: { type: "string" }, status: { enum: ["available", "unavailable"] },
+        reason: { type: "string", description: "Admins only: why the server cannot be used." },
+        transport: { enum: ["http", "stdio"] }, description: { type: "string" }, exposure: ref("McpExposure"),
+        adminOnly: { type: "boolean" }, oauth: { type: "boolean" },
+        config: { ...ref("SharedMcpServerConfig"), description: "Admins only." },
+        otherFields: { type: "array", items: { type: "string" }, description: "Admins only: fields the form does not cover; saving keeps them." },
+      }, additionalProperties: false },
+      SharedMcpList: { type: "object", required: ["canEdit", "servers"], properties: {
+        canEdit: { type: "boolean" }, servers: { type: "array", items: ref("SharedMcpServer") },
+        file: { type: "object", required: ["path", "hash"], description: "Admins only.", properties: {
+          path: { type: "string" }, hash: { type: "string" }, error: { type: "string", description: "The file cannot be read; sessions keep using what was read before." },
+        }, additionalProperties: false },
+      }, additionalProperties: false },
+      SharedMcpServerInput: { type: "object", required: ["hash", "server"], properties: {
+        hash: { type: "string", description: "file.hash from GET /v1/mcp/shared." }, server: ref("SharedMcpServerConfig"),
+      }, additionalProperties: false },
       McpConnection: { type: "object", required: ["name", "label", "connected"], properties: {
         name: { type: "string" }, label: { type: "string" }, connected: { type: "boolean" },
         account: { type: "string", description: "External account name, when the authorization server provides one." },

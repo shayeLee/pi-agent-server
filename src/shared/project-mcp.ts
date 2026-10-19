@@ -20,10 +20,12 @@ export interface ProjectMcpServer {
   readonly canEnable?: boolean;
   /** 项目尚未设置时为 null，表示沿用目录默认值。 */
   readonly updatedAt: number | null;
+  /** 项目的设置是为之前同名的另一个 server（地址或命令不同）做的，现在不生效，要重新启用。 */
+  readonly changed?: boolean;
 }
 
 export interface ProjectMcpSettings {
-  /** 服务未配置 PI_MCP_CATALOG_FILE 时为 false。 */
+  /** 始终为 true，只为兼容旧客户端保留。 */
   readonly configured: boolean;
   readonly canEdit: boolean;
   readonly servers: readonly ProjectMcpServer[];

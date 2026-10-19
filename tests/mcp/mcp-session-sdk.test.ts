@@ -1,6 +1,6 @@
 // Real SDK session with the host's MCP wiring: catalog → project settings → stdio transport →
 // MCP + codemode extensions. An offline faux model asks codemode to call the fixture's tool.
-import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createFauxCore, fauxAssistantMessage, fauxToolCall, InMemoryCredentialStore } from "@earendil-works/pi-ai";
@@ -22,22 +22,21 @@ let root: string;
 beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), "pi-mcp-session-"));
   process.env.PI_MCP_TEST_SENTINEL = "service-only";
+  process.env.PI_MCP_TEST_FIXTURE_TOKEN = "from-env";
 });
 afterEach(() => {
   delete process.env.PI_MCP_TEST_SENTINEL;
+  delete process.env.PI_MCP_TEST_FIXTURE_TOKEN;
   rmSync(root, { recursive: true, force: true });
 });
 
 async function runSession(tools: readonly string[] | undefined) {
-  const catalogFile = join(root, "catalog.json");
-  const secretsFile = join(root, "secrets.json");
-  writeFileSync(secretsFile, JSON.stringify({ FIXTURE_TOKEN: "from-secrets" }));
-  chmodSync(secretsFile, 0o600);
-  writeFileSync(catalogFile, JSON.stringify({ version: 1, servers: { fixture: {
-    command: process.execPath, args: [FIXTURE, "${PROJECT_CWD}"], env: { FIXTURE_TOKEN: "${secret:FIXTURE_TOKEN}" }, description: "Test fixture",
+  const piConfigPath = join(root, "mcp.json");
+  writeFileSync(piConfigPath, JSON.stringify({ mcpServers: { fixture: {
+    command: process.execPath, args: [FIXTURE, "${PROJECT_CWD}"], env: { FIXTURE_TOKEN: "${PI_MCP_TEST_FIXTURE_TOKEN}" }, description: "Test fixture",
   } } }));
-  const host = createMcpHost({ catalogFile, secretsFile, logPath: join(root, "mcp.log"), maxStdioProcesses: 2 });
-  const entries = effectiveMcpServerEntries(host.catalog, [{ serverName: "fixture", enabled: true, exposure: null, hiddenTools: [], updatedAt: 1, updatedBy: "ip:1" }]);
+  const host = createMcpHost({ piConfigPath, logPath: join(root, "mcp.log"), maxStdioProcesses: 2 });
+  const entries = effectiveMcpServerEntries(host.catalog, [{ serverName: "fixture", enabled: true, exposure: null, hiddenTools: [], updatedAt: 1, updatedBy: "ip:1", serverIdentity: null }]);
 
   const faux = createFauxCore({ provider: "faux-mcp", models: [{ id: "m", name: "offline", reasoning: false, contextWindow: 8192, maxTokens: 512 }] });
   faux.setResponses([
@@ -50,7 +49,7 @@ async function runSession(tools: readonly string[] | undefined) {
     extensionFactories: [
       pi => pi.registerProvider("faux-mcp", { api: faux.api, baseUrl: "http://127.0.0.1:1", apiKey: "offline", models: faux.models, streamSimple: faux.streamSimple }),
       ...(tools ? [createMcpToolBoundaryExtension(tools)] : []),
-      ...host.sessionExtensions(entries),
+      ...host.sessionExtensions(host.catalog.snapshot(), entries),
     ],
   });
   const { session } = await createAgentSession({
@@ -75,10 +74,10 @@ async function runSession(tools: readonly string[] | undefined) {
   }
 }
 
-it("runs a codemode script that calls an MCP tool with catalog secrets and a minimal environment", async () => {
+it("runs a codemode script that calls an MCP tool with a token from the service environment and nothing else inherited", async () => {
   const { text, isError, events, host } = await runSession(undefined);
   expect(isError).toBe(false);
-  expect(text).toContain('"token":"from-secrets"');
+  expect(text).toContain('"token":"from-env"');
   expect(text).toContain('"leaked":null');
   expect(text).toContain(`"arg":${JSON.stringify(root)}`);
   // Nested calls reach SSE with their parent id.
@@ -91,5 +90,5 @@ it("runs a codemode script that calls an MCP tool with catalog secrets and a min
 it("keeps MCP tools out of reach from codemode when the allowlist has no mcp__ entry", async () => {
   const { text, isError } = await runSession(["codemode"]);
   expect(isError).toBe(true);
-  expect(text).not.toContain("from-secrets");
+  expect(text).not.toContain("from-env");
 }, 30_000);

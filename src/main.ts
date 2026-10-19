@@ -83,6 +83,11 @@ function resolveMigrationGate(value: string | undefined): "verify" {
   throw new Error(`PI_MIGRATION_GATE 只支持 verify（服务启动必须依赖离线 migration；当前值不回显），收到未知非空值时拒绝启动`);
 }
 
+// 已移除的 MCP 配置：还设置着就拒绝启动，免得以为它仍然生效。
+for (const name of ["PI_MCP_CATALOG_FILE", "PI_MCP_SECRETS_FILE"]) {
+  if (process.env[name]) throw new Error(`${name} 已移除：共享 MCP 改用 Pi 的全局 mcp.json（pi mcp add），见 docs/mcp-integration.md §14`);
+}
+
 const app = await startServer({
   port,
   host,
@@ -123,9 +128,7 @@ const app = await startServer({
   appendSystemPromptFile: process.env.PI_APPEND_SYSTEM_FILE,
   plugins: plugins.length > 0 ? plugins : undefined,
   extensionPaths: extensionPaths.length > 0 ? extensionPaths : undefined,
-  // MCP 接入（docs/mcp-integration.md）：未设置目录时不加载 MCP 与 codemode。
-  mcpCatalogFile: process.env.PI_MCP_CATALOG_FILE || undefined,
-  mcpSecretsFile: process.env.PI_MCP_SECRETS_FILE || undefined,
+  // MCP 接入（docs/mcp-integration.md §14.2）：共享 MCP 读 agentDir 下 Pi 的全局 mcp.json。
   mcpTokenKeyFile: process.env.PI_MCP_TOKEN_KEY_FILE || undefined,
   publicUrl: process.env.PI_PUBLIC_URL || undefined,
   mcpOAuthClientName: process.env.PI_MCP_OAUTH_CLIENT_NAME?.trim() || undefined,

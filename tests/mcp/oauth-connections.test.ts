@@ -2,7 +2,7 @@ import { randomBytes } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Kysely } from "kysely";
-import { parseMcpCatalog } from "../../src/mcp/catalog.js";
+import { catalogOf } from "./catalog-fixture.js";
 import { McpOAuthConnections, parsePublicUrl } from "../../src/mcp/oauth-connections.js";
 import { McpTokenCipher } from "../../src/mcp/token-cipher.js";
 import { initializeDatabase } from "../../src/storage/bootstrap.js";
@@ -13,10 +13,10 @@ import { FakeAuthorizationServer, ISSUER, MCP } from "../fixtures/fake-oauth-ser
 const A = "ip:10.0.0.1";
 const B = "ip:10.0.0.2";
 const PUBLIC = "https://pi.example.test";
-const catalog = parseMcpCatalog({ version: 1, servers: {
-  example: { url: MCP, description: "Example", oauth: { label: "Example", scope: "read" } },
+const catalog = catalogOf({
+  example: { url: MCP, description: "Example", oauth: { scope: "read" }, piAgentServer: { label: "Example" } },
   docs: { url: "https://docs.example.com/mcp", description: "Docs" },
-} });
+});
 
 describe("parsePublicUrl", () => {
   it("normalizes the address and flags plain http outside loopback", () => {
@@ -43,7 +43,7 @@ describe("McpOAuthConnections", () => {
   });
   afterEach(async () => { await kysely.destroy(); });
 
-  const connections = (publicUrl = PUBLIC) => new McpOAuthConnections({ catalog, secrets: new Map(), store, publicUrl, fetch: auth.fetch, now: () => now });
+  const connections = (publicUrl = PUBLIC) => new McpOAuthConnections({ catalog, store, publicUrl, fetch: auth.fetch, now: () => now });
 
   /** start 后模拟用户在授权页点同意：返回回调里会带的 state 与 code。 */
   async function authorize(service: McpOAuthConnections, owner = A) {
