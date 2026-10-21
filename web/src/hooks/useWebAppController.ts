@@ -34,6 +34,7 @@ export function useWebAppController() {
   const [thinkingLevels, setThinkingLevels] = useState<string[]>([]);
   const [defaultModel, setDefaultModel] = useState<ModelInfo | null>(null);
   const [defaultThinkingLevel, setDefaultThinkingLevel] = useState("");
+  const [modelThinkingLevels, setModelThinkingLevels] = useState<Record<string, string>>({});
   const [loadError, setLoadError] = useState<string | null>(null);
   const [navigationRetryAvailable, setNavigationRetryAvailable] = useState(false);
   const [projectsError, setProjectsError] = useState<string | null>(null);
@@ -402,6 +403,7 @@ export function useWebAppController() {
       setThinkingLevels(data.thinkingLevels);
       setDefaultModel(data.defaultModel);
       setDefaultThinkingLevel(data.defaultThinkingLevel);
+      setModelThinkingLevels(data.modelThinkingLevels ?? {});
     } catch {
       // 模型列表加载失败不阻塞主流程。
     }
@@ -881,6 +883,8 @@ export function useWebAppController() {
     thinkingLevels,
     defaultModel,
     defaultThinkingLevel,
+    modelThinkingLevels,
+    refreshModels,
     chatState,
     draftSource: draftStore,
     draftScope: currentScope,

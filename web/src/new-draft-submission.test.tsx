@@ -32,7 +32,7 @@ beforeEach(() => {
     { id: "p2", name: "Other", cwd: "/fixture/p2", isDefault: false },
   ]);
   vi.spyOn(ApiClient.prototype, "listSessionsByProject").mockResolvedValue([]);
-  vi.spyOn(ApiClient.prototype, "listModels").mockResolvedValue({ models: [], thinkingLevels: [], defaultModel: null, defaultThinkingLevel: "off" });
+  vi.spyOn(ApiClient.prototype, "listModels").mockResolvedValue({ models: [], thinkingLevels: [], defaultModel: null, defaultThinkingLevel: "off", modelThinkingLevels: {} });
   vi.spyOn(ApiClient.prototype, "createSession").mockResolvedValue(created);
   vi.spyOn(ApiClient.prototype, "updateSessionConfig").mockResolvedValue(created);
   vi.spyOn(ApiClient.prototype, "sendMessage").mockResolvedValue(undefined);

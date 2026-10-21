@@ -9,6 +9,8 @@ export type ModelThinkingPickerProps = {
   thinkingLevels: string[];
   defaultModel: ModelInfo | null;
   defaultThinkingLevel: string;
+  /** 按模型的默认思考档位（Agent 设置），键是 `provider/modelId`；没选档位时先用它。 */
+  modelThinkingLevels?: Readonly<Record<string, string>>;
   modelProvider: string | null;
   modelId: string | null;
   thinkingLevel: string | null;
@@ -43,6 +45,7 @@ export function ModelThinkingPicker({
   thinkingLevels,
   defaultModel,
   defaultThinkingLevel,
+  modelThinkingLevels,
   modelProvider,
   modelId,
   thinkingLevel,
@@ -60,7 +63,11 @@ export function ModelThinkingPicker({
   const panelId = `${id}-panel`;
   const configuredModel = modelProvider && modelId ? modelKey({ provider: modelProvider, id: modelId }) : undefined;
   const selectedModel = configuredModel ?? (defaultModel ? modelKey(defaultModel) : "");
-  const selectedThinking = thinkingLevel ?? defaultThinkingLevel;
+  const selectedModelRef = modelProvider && modelId ? `${modelProvider}/${modelId}`
+    : defaultModel ? `${defaultModel.provider}/${defaultModel.id}` : undefined;
+  const modelDefaultThinking = selectedModelRef ? modelThinkingLevels?.[selectedModelRef] : undefined;
+  const fallbackThinking = modelDefaultThinking ?? defaultThinkingLevel;
+  const selectedThinking = thinkingLevel ?? fallbackThinking;
 
   const availableModels: ModelInfo[] = [];
   const seenModels = new Set<string>();
@@ -89,7 +96,7 @@ export function ModelThinkingPicker({
     `${model.provider}/${model.id} ${model.name}`.toLowerCase().includes(query.trim().toLowerCase()),
   );
   const availableThinkingLevels = [...new Set([
-    ...thinkingLevels, ...(defaultThinkingLevel ? [defaultThinkingLevel] : []),
+    ...thinkingLevels, ...(fallbackThinking ? [fallbackThinking] : []),
   ])].sort((left, right) => {
     const rank = (level: string) => {
       const index = THINKING_ORDER.indexOf(level);

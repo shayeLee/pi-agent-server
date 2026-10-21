@@ -131,6 +131,8 @@ const SESSION_SHUTDOWN_LIMIT_MS = 5000;
 export class PiAgentAdapter implements AgentAdapter {
   /** 由会话工厂接上资源加载器的检查；没有时视为不会过期。 */
   isOutdated?: () => Promise<boolean>;
+  /** 由会话工厂接上：释放这个会话占用的宿主资源（例如 Agent 设置的订阅）。 */
+  onDispose?: () => void;
 
   constructor(
     private readonly session: AgentSessionLike,
@@ -877,6 +879,7 @@ export class PiAgentAdapter implements AgentAdapter {
     this.clearResponseMeasurement();
     this.disposeSession();
     if (!this.pendingControls.size && !this.pendingLegacyInputs) this.restorePublicQueueBoundary();
+    this.onDispose?.();
   }
 
   /**

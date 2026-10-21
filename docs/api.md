@@ -9,7 +9,7 @@ Pi SDK 与 pi-ai 固定为 **1.1.0**；本次 SDK 升级无需数据库迁移（
 | `GET` | `/metrics` | 固定 Prometheus 进程/readiness 指标 |
 | `GET` | `/v1/access` | 查询当前用户是否有读取和写入权限，返回 `canRead` 和 `canWrite` |
 | `GET` | `/v1/capabilities/<plugin-id>/access` | 查询当前用户可以使用该插件的哪些功能，具体返回字段由插件定义 |
-| `GET` | `/v1/models` | 可用模型与默认值 |
+| `GET` | `/v1/models` | 可用模型与默认值；`modelThinkingLevels` 是 Agent 设置里按模型的默认思考档位（键为 `provider/modelId`），新会话没选档位时先用它，再用 `defaultThinkingLevel` |
 | `GET` / `POST` | `/v1/projects` | 列出或创建项目 |
 | `DELETE` | `/v1/projects/:id` | 逻辑删除项目 |
 | `GET` / `POST` | `/v1/sessions` | 列出或创建会话 |
@@ -47,6 +47,8 @@ Pi SDK 与 pi-ai 固定为 **1.1.0**；本次 SDK 升级无需数据库迁移（
 | `POST` | `/v1/provider-auth/logins/:id/answer` | 回答当前问题 `{ promptId, value }`，返回登录记录。回答内容只交给 provider 的登录流程，不进记录、不进日志。问题已经不需要回答（例如 OAuth 回调先到了）返回 `409 provider_auth_stale_prompt`，`select` 的值不是选项之一返回 `400 provider_auth_invalid_answer` |
 | `DELETE` | `/v1/provider-auth/logins/:id` | 取消登录，返回登录记录；已结束的原样返回 |
 | `DELETE` | `/v1/provider-auth/credentials/:provider` | 退出登录：从 `auth.json` 删除这个 provider 的凭证，返回新的列表；环境变量和 `models.json` 里的配置不变，provider 那边的授权也不会被吊销。没存凭证返回 `404 provider_auth_not_stored` |
+| `GET` | `/v1/settings` | Agent 设置（对应 Pi TUI 的 `/settings`），读自 agentDir 下 Pi 的全局 `settings.json`：`{ canEdit, values, defaults, file? }`。`values` 是服务正在用的值 `{ autoCompaction, autoRetry, maxRetries, modelThinkingLevels }`（分别对应文件里的 `compaction.enabled`、`retry.enabled`、`retry.maxRetries`、`modelThinkingLevels`），文件里没写或写错类型的项用 Pi 的默认值，`defaults` 列出这些默认值。admin 另外拿到 `file: { path, hash, error? }`，`error` 说明文件读不了或哪些值无效（这时服务继续用上次读成功的内容或默认值）。所有能看模型列表的角色可读；服务没配置时返回 `404 settings_not_configured` |
+| `PUT` | `/v1/settings` | 修改 Agent 设置 `{ hash, values }`，只改 `values` 里给出的项，`modelThinkingLevels` 给出时整份替换（空对象表示全部清除），返回新的设置。只写这几个字段，文件里的其他字段原样保留；和 `pi` 命令行用同一个文件锁。`maxRetries` 为 0–10 的整数，`modelThinkingLevels` 的键是 `provider/modelId`、值是 `off` 到 `max`，最多 500 项。运行中的会话几秒内生效。只有 admin 可用；`hash` 对不上（文件在别处改过）返回 `409 settings_changed`，值不合法或文件本身读不了返回 `400 settings_invalid` |
 | `PUT` | `/v1/companion/persona` | 保存调用者的人设：`name` 1–12 个字且不能全是空白（存储时去掉首尾空白），`style` 为 `concise` / `lively` / `formal`，`docked` 为布尔值；返回 `{ persona }`。参数不合法返回 `400`；服务端未配置人设存储时返回 `503 companion_unavailable` |
 | `POST` | `/v1/projects/:id/companion/greeting` | 空白会话数字人的开场白：用默认模型，依据项目名、模板与 skill、时段和调用者最近的会话写两句话；按调用者和情境缓存约 30 分钟。未配置默认模型、`PI_COMPANION_GREETING=off` 或模型失败时返回 `503 companion_unavailable`，页面改用本地句子；权限与 `404` 同上 |
 | `POST` | `/v1/sessions/:id/commands` | 执行 `{ "command": "compact", "args"?: "总结要求" }`、`{ "command": "reload" }` 或扩展命令 `{ "command": "extension", "name": "antigravity.usage", "args"?: "参数" }`，只能在会话空闲时执行（否则 `409`）。见下文「宿主命令」 |

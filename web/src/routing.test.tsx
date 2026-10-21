@@ -20,7 +20,7 @@ beforeEach(() => {
   vi.spyOn(ApiClient.prototype, "listSessions").mockResolvedValue(records);
   vi.spyOn(ApiClient.prototype, "listSessionsByProject").mockImplementation(async id => records.filter(row => row.projectId === id));
   vi.spyOn(ApiClient.prototype, "getAccess").mockResolvedValue({ canRead: true, canWrite: true });
-  vi.spyOn(ApiClient.prototype, "listModels").mockResolvedValue({ models: [], thinkingLevels: [], defaultModel: null, defaultThinkingLevel: "off" });
+  vi.spyOn(ApiClient.prototype, "listModels").mockResolvedValue({ models: [], thinkingLevels: [], defaultModel: null, defaultThinkingLevel: "off", modelThinkingLevels: {} });
   vi.spyOn(ApiClient.prototype, "exportSession").mockResolvedValue({ messages: [], timeline: [], lastEventId: 0 });
   vi.spyOn(ApiClient.prototype, "deleteSession").mockResolvedValue(undefined);
   vi.spyOn(ApiClient.prototype, "createSession").mockResolvedValue({ ...records[0], id: "created" });

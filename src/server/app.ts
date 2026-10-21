@@ -62,6 +62,8 @@ import { ATTACHMENT_MAX_BYTES } from "../attachments/file-policy.js";
 import { UploadService } from "../application/upload-service.js";
 import { CompanionGreetingError, type CompanionGreeter } from "../application/companion-greeter.js";
 import { applySharedMcpForm, SharedMcpConfigError, sharedMcpList, validateSharedMcpEntry } from "../mcp/shared-config.js";
+import { AgentSettingsError } from "../settings/agent-settings-file.js";
+import { AGENT_THINKING_LEVELS, MAX_AGENT_RETRIES, type AgentSettingsInput } from "../shared/agent-settings.js";
 import type { SharedMcpServerInput } from "../shared/shared-mcp.js";
 import { ProviderLoginError, type ProviderLogins } from "../model-adapters/pi-provider-logins.js";
 import type { ProviderLoginAnswer, ProviderLoginStart } from "../shared/provider-auth.js";
@@ -101,6 +103,8 @@ export type ServerDeps = {
     readonly file: import("../mcp/shared-config.js").SharedMcpConfigFile;
     readonly catalog: import("../mcp/live-catalog.js").LiveMcpCatalog;
   };
+  /** Agent 设置，即 Pi 全局 settings.json 里的几个字段：所有人能看，admin 能改。缺省时相关接口返回未配置。 */
+  agentSettings?: Pick<import("../settings/agent-settings-file.js").AgentSettingsFile, "values" | "view" | "update">;
   /** 按用户 MCP OAuth（docs/mcp-integration.md §13）；目录里没有 oauth server 时缺省。 */
   mcpOAuth?: Pick<import("../mcp/oauth-connections.js").McpOAuthConnections, "list" | "start" | "complete" | "disconnect" | "returnUrl">;
   /** 模型登录（Pi 的 auth.json，对应 TUI 的 /login、/logout）；缺省时相关接口返回未配置。 */
@@ -277,6 +281,27 @@ const SHARED_MCP_SERVER_BODY_SCHEMA = {
     },
   },
   required: ["hash", "server"], additionalProperties: false,
+} as const;
+const AGENT_SETTINGS_BODY_SCHEMA = {
+  type: "object",
+  properties: {
+    hash: { type: "string", minLength: 1, maxLength: 128 },
+    values: {
+      type: "object",
+      properties: {
+        autoCompaction: { type: "boolean" },
+        autoRetry: { type: "boolean" },
+        maxRetries: { type: "integer", minimum: 0, maximum: MAX_AGENT_RETRIES },
+        modelThinkingLevels: {
+          type: "object", maxProperties: 500,
+          propertyNames: { minLength: 3, maxLength: 256 },
+          additionalProperties: { type: "string", enum: AGENT_THINKING_LEVELS },
+        },
+      },
+      additionalProperties: false,
+    },
+  },
+  required: ["hash", "values"], additionalProperties: false,
 } as const;
 const SESSION_COMMAND_BODY_SCHEMA = {
   type: "object",
@@ -595,7 +620,8 @@ export function buildApp(deps: ServerDeps): FastifyInstance {
     api.get("/access", { ...requirePermission("access:read") }, async (request, reply) =>
       reply.header("cache-control", "private, no-store").send(projectAccessCapabilities(request.access.role)),
     );
-    api.get("/models", { ...requirePermission("models:list") }, async () => sessions.models());
+    api.get("/models", { ...requirePermission("models:list") }, async () =>
+      ({ ...await sessions.models(), modelThinkingLevels: deps.agentSettings?.values.modelThinkingLevels ?? {} }));
     api.get("/projects", { ...requirePermission("projects:list") }, async (request) =>
       (await sessions.listProjects(ownerKeyOf(request))).map(project => ({ ...project,
         canCreateSession: project.canCreateSession !== false && ROUTE_PERMISSIONS["sessions:create"].includes(request.access.role),
@@ -949,6 +975,27 @@ export function buildApp(deps: ServerDeps): FastifyInstance {
       request.log.info({ mcpShared: { action: "remove", name } }, "shared MCP server removed");
       return reply.header("cache-control", "private, no-store").send(sharedMcpList(deps.sharedMcp.file, deps.sharedMcp.catalog, true));
     });
+    // Agent 设置（docs/configuration.md「Agent 设置」）：Pi 全局 settings.json 里的自动压缩、自动重试和按模型的思考档位。
+    // 所有人能看；admin 能改，写入要带 GET 给的文件 hash，文件在别处改过就返回 409。
+    const agentSettingsMissing = (reply: FastifyReply) =>
+      reply.code(404).send({ statusCode: 404, error: "Not Found", code: "settings_not_configured", message: "服务未配置 Agent 设置" });
+    api.get("/settings", { exposeHeadRoute: false, ...requirePermission("settings:read") }, async (request, reply) => {
+      if (!deps.agentSettings) return agentSettingsMissing(reply);
+      return reply.header("cache-control", "private, no-store").send(deps.agentSettings.view(request.access.role === "admin"));
+    });
+    api.put<{ Body: AgentSettingsInput }>("/settings",
+      { schema: { body: AGENT_SETTINGS_BODY_SCHEMA }, ...requirePermission("settings:admin") }, async (request, reply) => {
+        if (!deps.agentSettings) return agentSettingsMissing(reply);
+        try {
+          await deps.agentSettings.update(request.body.hash, request.body.values);
+        } catch (error) {
+          if (!(error instanceof AgentSettingsError)) throw error;
+          if (error.code === "conflict") return reply.code(409).send({ statusCode: 409, error: "Conflict", code: "settings_changed", message: error.message });
+          return reply.code(400).send({ statusCode: 400, error: "Bad Request", code: "settings_invalid", message: error.message });
+        }
+        request.log.info({ agentSettings: { action: "update", fields: Object.keys(request.body.values) } }, "agent settings saved");
+        return reply.header("cache-control", "private, no-store").send(deps.agentSettings.view(true));
+      });
     // 按用户 MCP OAuth（docs/mcp-integration.md §13.10）：每个用户用自己的身份连接目录里的 oauth server。
     // 回调由对方授权页整页跳回，浏览器带不上 Bearer token，网络准入对这一个路径免 token；
     // state 一次性、10 分钟过期、只有发起授权的同一调用者能用。

@@ -1,0 +1,157 @@
+import { zhCN } from "../i18n/zh-CN.js";
+import { useCallback, useEffect, useId, useState, type ReactNode } from "react";
+import {
+  AGENT_THINKING_LEVELS, ApiError, MAX_AGENT_RETRIES,
+  type AgentSettings, type AgentSettingsValues, type AgentThinkingLevel, type ApiClient, type ModelInfo,
+} from "pi-agent-server/client";
+import { IconSelect } from "./IconSelect.js";
+import { Modal } from "./Modal.js";
+import { errorMessage } from "./ProjectMcpPanel.js";
+
+type SettingsApi = Pick<ApiClient, "getAgentSettings" | "saveAgentSettings">;
+
+const text = zhCN.agentSettings;
+
+/**
+ * Agent 设置（Pi TUI 的 /settings 里服务会用的几项），入口在侧栏底部的“设置”菜单里。
+ * 设置保存在 Pi 的全局 settings.json，人人能看，只有 admin 能改；读不到时 `available` 为 false，菜单不显示这一项。
+ */
+export function useAgentSettings({ api, models, onSaved }: {
+  api: SettingsApi; models: readonly ModelInfo[]; onSaved?: () => void;
+}): { available: boolean; openPanel: () => void; dialog: ReactNode } {
+  const [available, setAvailable] = useState(false);
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    let current = true;
+    api.getAgentSettings().then(() => { if (current) setAvailable(true); }, () => {});
+    return () => { current = false; };
+  }, [api]);
+  const openPanel = useCallback(() => setOpen(true), []);
+  if (!available) return { available, openPanel, dialog: null };
+  return { available, openPanel, dialog: <Modal open={open} onClose={() => setOpen(false)} title={text.title} className="project-mcp-dialog">
+    {open && <AgentSettingsPanel api={api} models={models} onSaved={onSaved} />}
+  </Modal> };
+}
+
+type SaveState = { kind: "idle" | "saving" } | { kind: "error"; message: string; conflict: boolean };
+
+export function AgentSettingsPanel({ api, models, onSaved }: { api: SettingsApi; models: readonly ModelInfo[]; onSaved?: () => void }) {
+  const id = useId();
+  const [settings, setSettings] = useState<AgentSettings | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [state, setState] = useState<SaveState>({ kind: "idle" });
+  const load = useCallback(() => api.getAgentSettings().then(
+    result => { setSettings(result); setLoadError(null); setState({ kind: "idle" }); },
+    error => setLoadError(errorMessage(error))), [api]);
+  useEffect(() => { void load(); }, [load]);
+
+  if (!settings) {
+    return <div className="project-mcp agent-settings" data-testid="agent-settings-panel">
+      {loadError && <p className="project-mcp-error" role="alert">{text.loadFailed(loadError)}</p>}
+    </div>;
+  }
+  const { values, defaults, canEdit } = settings;
+  const busy = state.kind === "saving";
+  const disabled = !canEdit || busy;
+
+  async function save(change: Partial<AgentSettingsValues>) {
+    setState({ kind: "saving" });
+    try {
+      setSettings(await api.saveAgentSettings({ hash: settings!.file?.hash ?? "", values: change }));
+      setState({ kind: "idle" });
+      onSaved?.();
+    } catch (error) {
+      setState({ kind: "error", message: errorMessage(error), conflict: error instanceof ApiError && error.status === 409 });
+    }
+  }
+
+  return <div className="project-mcp agent-settings" data-testid="agent-settings-panel">
+    <p className="project-mcp-intro">{canEdit ? text.intro : text.readOnly}</p>
+    {settings.file?.error && <p className="project-mcp-error" role="alert">{text.fileError(settings.file.error)}</p>}
+    <ul className="project-mcp-list">
+      <li className={`project-mcp-row${values.autoCompaction ? " is-enabled" : ""}`} data-testid="agent-settings-compaction">
+        <div className="project-mcp-head">
+          <input id={`${id}-compaction`} type="checkbox" className="project-mcp-check" checked={values.autoCompaction} disabled={disabled}
+            onChange={event => void save({ autoCompaction: event.target.checked })} />
+          <label className="project-mcp-name agent-settings-name" htmlFor={`${id}-compaction`}>{text.autoCompaction}</label>
+          {values.autoCompaction === defaults.autoCompaction && <span className="project-mcp-meta">{text.isDefault}</span>}
+        </div>
+        <p className="project-mcp-desc">{text.autoCompactionHint}</p>
+      </li>
+      <li className={`project-mcp-row${values.autoRetry ? " is-enabled" : ""}`} data-testid="agent-settings-retry">
+        <div className="project-mcp-head">
+          <input id={`${id}-retry`} type="checkbox" className="project-mcp-check" checked={values.autoRetry} disabled={disabled}
+            onChange={event => void save({ autoRetry: event.target.checked })} />
+          <label className="project-mcp-name agent-settings-name" htmlFor={`${id}-retry`}>{text.autoRetry}</label>
+          {values.autoRetry === defaults.autoRetry && values.maxRetries === defaults.maxRetries && <span className="project-mcp-meta">{text.isDefault}</span>}
+        </div>
+        <p className="project-mcp-desc">{text.autoRetryHint}</p>
+        <div className="project-mcp-line">
+          <label className="project-mcp-key" htmlFor={`${id}-max-retries`}>{text.maxRetries}</label>
+          <RetryCount key={values.maxRetries} id={`${id}-max-retries`} value={values.maxRetries} disabled={disabled || !values.autoRetry}
+            onCommit={maxRetries => void save({ maxRetries })} />
+        </div>
+      </li>
+      <li className="project-mcp-row" data-testid="agent-settings-thinking">
+        <div className="project-mcp-head"><span className="project-mcp-name agent-settings-name">{text.modelThinking}</span></div>
+        <p className="project-mcp-desc">{text.modelThinkingHint}</p>
+        <ModelThinkingLevels id={id} levels={values.modelThinkingLevels} models={models} disabled={disabled}
+          onChange={modelThinkingLevels => void save({ modelThinkingLevels })} />
+      </li>
+    </ul>
+    {canEdit && settings.file && <p className="project-mcp-status">{text.file(settings.file.path)}</p>}
+    <p className="project-mcp-status" role="status">{busy ? text.saving : ""}</p>
+    {state.kind === "error" && <p className="project-mcp-error" role="alert">
+      {text.saveFailed(state.message)}
+      {state.conflict && <> <button type="button" className="project-mcp-action" onClick={() => void load()}>{text.reload}</button></>}
+    </p>}
+  </div>;
+}
+
+/** 失焦或回车时保存；超出范围的值不保存，恢复成原来的。 */
+function RetryCount({ id, value, disabled, onCommit }: { id: string; value: number; disabled: boolean; onCommit: (value: number) => void }) {
+  const [draft, setDraft] = useState(String(value));
+  function commit() {
+    const next = Number(draft);
+    if (draft.trim() === "" || !Number.isInteger(next) || next < 0 || next > MAX_AGENT_RETRIES) return setDraft(String(value));
+    if (next !== value) onCommit(next);
+  }
+  return <input id={id} type="number" min={0} max={MAX_AGENT_RETRIES} step={1} inputMode="numeric"
+    className="project-mcp-input agent-settings-number" data-testid="agent-settings-max-retries"
+    value={draft} disabled={disabled} onChange={event => setDraft(event.target.value)} onBlur={commit}
+    onKeyDown={event => { if (event.key === "Enter") { event.preventDefault(); commit(); } }} />;
+}
+
+function ModelThinkingLevels({ id, levels, models, disabled, onChange }: {
+  id: string; levels: Readonly<Record<string, AgentThinkingLevel>>; models: readonly ModelInfo[]; disabled: boolean;
+  onChange: (levels: Record<string, AgentThinkingLevel>) => void;
+}) {
+  const [newModel, setNewModel] = useState("");
+  const [newLevel, setNewLevel] = useState<AgentThinkingLevel>("medium");
+  const entries = Object.entries(levels).sort(([a], [b]) => a.localeCompare(b));
+  const known = new Set(models.map(model => `${model.provider}/${model.id}`));
+  const addable = models.map(model => `${model.provider}/${model.id}`).filter(ref => !(ref in levels));
+  const levelOptions = AGENT_THINKING_LEVELS.map(level => <option key={level} value={level}>{level}</option>);
+  return <div className="agent-settings-models">
+    {entries.length === 0
+      ? <p className="project-mcp-status">{text.noModelThinking}</p>
+      : entries.map(([ref, level]) => <div key={ref} className="project-mcp-line agent-settings-model" data-testid="agent-settings-model-row" data-model={ref}>
+        <span className="project-mcp-value project-mcp-tools agent-settings-model-ref">{ref}</span>
+        {!known.has(ref) && <span className="project-mcp-meta">{text.modelUnavailable}</span>}
+        <IconSelect aria-label={text.levelFor(ref)} value={level} disabled={disabled}
+          onChange={event => onChange({ ...levels, [ref]: event.target.value as AgentThinkingLevel })}>{levelOptions}</IconSelect>
+        <button type="button" className="project-mcp-action" disabled={disabled}
+          onClick={() => { const { [ref]: _removed, ...rest } = levels; onChange(rest); }}>{text.remove}</button>
+      </div>)}
+    {!disabled && addable.length > 0 && <div className="project-mcp-line agent-settings-add">
+      <IconSelect id={`${id}-new-model`} aria-label={text.newModel} value={newModel} data-testid="agent-settings-new-model"
+        onChange={event => setNewModel(event.target.value)}>
+        <option value="">{text.chooseModel}</option>
+        {addable.map(ref => <option key={ref} value={ref}>{ref}</option>)}
+      </IconSelect>
+      <IconSelect aria-label={text.newLevel} value={newLevel} onChange={event => setNewLevel(event.target.value as AgentThinkingLevel)}>{levelOptions}</IconSelect>
+      <button type="button" className="project-mcp-action project-mcp-primary" disabled={!newModel} data-testid="agent-settings-add-model"
+        onClick={() => { onChange({ ...levels, [newModel]: newLevel }); setNewModel(""); }}>{text.add}</button>
+    </div>}
+  </div>;
+}

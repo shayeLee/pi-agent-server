@@ -20,6 +20,7 @@ import {
 import { PiAgentAdapter, type AgentSessionLike } from "./pi-agent-adapter.js";
 import type { FailbackLifecycleSource } from "./failback-lifecycle.js";
 import type { AgentAdapter } from "./agent-adapter.js";
+import type { AgentSettingsFile } from "../settings/agent-settings-file.js";
 import {
   PI_AGENT_KIND,
   PI_CONVERSATION_FORMAT,
@@ -71,6 +72,11 @@ export type PiAgentSessionFactoryOptions = {
   readonly createResourceLoader: (request: PiResourceLoaderRequest) => Promise<PiSessionResourceLoader>;
   readonly defaultModel?: ReturnType<ModelRuntime["getModel"]>;
   readonly defaultThinkingLevel?: string;
+  /**
+   * Agent 设置（Pi 全局 settings.json 里的自动压缩、自动重试、按模型的思考档位）。
+   * 没有时会话用 Pi 的默认值，不读任何 settings.json。
+   */
+  readonly agentSettings?: Pick<AgentSettingsFile, "createSettingsManager">;
   readonly customTools?: readonly ToolDefinition[];
   readonly agentToolConfig: {
     /** Resolved exact allowlist; raw modifiers belong at the composition boundary. */
@@ -95,6 +101,7 @@ export class PiAgentSessionFactory implements AgentSessionFactory {
   private readonly createResourceLoader: PiAgentSessionFactoryOptions["createResourceLoader"];
   private readonly defaultModel: ReturnType<ModelRuntime["getModel"]> | undefined;
   private readonly defaultThinkingLevel: string | undefined;
+  private readonly agentSettings: PiAgentSessionFactoryOptions["agentSettings"];
   private readonly customTools: readonly ToolDefinition[] | undefined;
   private readonly agentToolConfig: PiAgentSessionFactoryOptions["agentToolConfig"];
 
@@ -106,6 +113,7 @@ export class PiAgentSessionFactory implements AgentSessionFactory {
     this.createResourceLoader = options.createResourceLoader;
     this.defaultModel = options.defaultModel;
     this.defaultThinkingLevel = options.defaultThinkingLevel;
+    this.agentSettings = options.agentSettings;
     this.customTools = options.customTools;
     validateResolvedToolSelection(options.agentToolConfig.tools);
     this.agentToolConfig = {
@@ -266,29 +274,39 @@ export class PiAgentSessionFactory implements AgentSessionFactory {
     if ((transcriptHasModel || databaseHasModel || !isNewSession) && !model) {
       throw new Error(transcriptHasModel ? "historical session model is unavailable" : "session model is unavailable (no saved or configured default model)");
     }
+    const hostSettings = this.agentSettings?.createSettingsManager();
+    const settingsManager = hostSettings?.manager ?? SettingsManager.inMemory();
+    // A new session without an explicit level takes the model's own default before the service default.
+    const modelThinkingLevel = isNewSession && model ? settingsManager.getModelThinkingLevel(model.provider, model.id) : undefined;
     const thinkingLevel = (isNewSession || !transcriptHasThinking)
-      ? context.thinkingLevel ?? (isNewSession ? this.defaultThinkingLevel : undefined)
+      ? context.thinkingLevel ?? (isNewSession ? modelThinkingLevel ?? this.defaultThinkingLevel : undefined)
       : undefined;
-    const settingsManager = SettingsManager.inMemory();
     const toolConfig = resolveSdkToolConfig(this.agentToolConfig, settingsManager.getDefaultTools());
-    const resolvedLoader = await this.resolveResourceLoader(context);
-    // Fail before SDK startup: an unbridged extension must never mistake this host for CLI.
-    if (!resolvedLoader?.loader || typeof resolvedLoader.failbackLifecycleSource?.on !== "function") {
-      throw new Error("Host session requires a session-local ResourceLoader EventBus");
+    let session: Awaited<ReturnType<typeof createAgentSession>>["session"];
+    let sessionLoader: PiSessionResourceLoader;
+    try {
+      const resolvedLoader = await this.resolveResourceLoader(context);
+      // Fail before SDK startup: an unbridged extension must never mistake this host for CLI.
+      if (!resolvedLoader?.loader || typeof resolvedLoader.failbackLifecycleSource?.on !== "function") {
+        throw new Error("Host session requires a session-local ResourceLoader EventBus");
+      }
+      sessionLoader = resolvedLoader;
+      const options: PiCreateOptions = {
+        sessionManager,
+        modelRuntime: this.modelRuntime,
+        resourceLoader: sessionLoader.loader,
+        settingsManager,
+        cwd: context.projectCwd,
+        ...(model ? { model } : {}),
+        ...(thinkingLevel ? { thinkingLevel: thinkingLevel as NonNullable<PiCreateOptions["thinkingLevel"]> } : {}),
+        ...toolConfig,
+        ...(this.customTools !== undefined ? { customTools: [...this.customTools] } : {}),
+      };
+      ({ session } = await createAgentSession(options));
+    } catch (error) {
+      hostSettings?.release();
+      throw error;
     }
-    const sessionLoader = resolvedLoader;
-    const options: PiCreateOptions = {
-      sessionManager,
-      modelRuntime: this.modelRuntime,
-      resourceLoader: sessionLoader.loader,
-      settingsManager,
-      cwd: context.projectCwd,
-      ...(model ? { model } : {}),
-      ...(thinkingLevel ? { thinkingLevel: thinkingLevel as NonNullable<PiCreateOptions["thinkingLevel"]> } : {}),
-      ...toolConfig,
-      ...(this.customTools !== undefined ? { customTools: [...this.customTools] } : {}),
-    };
-    const { session } = await createAgentSession(options);
     traceSessionLifecycle(session, context.sessionId);
     // SDK creation intentionally does not bind extension handlers. Install the adapter's session-local
     // failback + agent-team notready bridges first, then bind exactly once; probes stay unbound.
@@ -311,6 +329,7 @@ export class PiAgentSessionFactory implements AgentSessionFactory {
       sessionLoader.failbackLifecycleSource,
     );
     if (sessionLoader.isOutdated) adapter.isOutdated = sessionLoader.isOutdated;
+    if (hostSettings) adapter.onDispose = hostSettings.release;
     // Test doubles intentionally model only the adapter surface. Real SDK sessions always bind once.
     try {
       if (sdkSession.bindExtensions) {

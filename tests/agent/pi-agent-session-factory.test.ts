@@ -276,4 +276,47 @@ describe("PiAgentSessionFactory", () => {
       expect(call[0]).toEqual({ projectId: DEFAULT_PROJECT_ID, projectCwd: process.cwd(), systemPrompt: null, mcpCredentialOwner: null });
     }
   });
+
+  describe("Agent settings", () => {
+    function settingsSource(levels: Record<string, string> = {}) {
+      const release = vi.fn();
+      const manager = { getDefaultTools: () => undefined, getModelThinkingLevel: (provider: string, id: string) => levels[`${provider}/${id}`] };
+      return { source: { createSettingsManager: vi.fn(() => ({ manager: manager as never, release })) }, manager, release };
+    }
+
+    function factoryWith(agentSettings: ReturnType<typeof settingsSource>["source"], createResourceLoader = async () => sessionLoader({} as ResourceLoader)) {
+      return new PiAgentSessionFactory({
+        modelRuntime: { getModel: vi.fn((provider, id) => ({ provider, id })) } as unknown as ModelRuntime,
+        defaultModel: { provider: "fixture", id: "default" } as never,
+        defaultThinkingLevel: "medium",
+        agentSettings,
+        createResourceLoader, agentToolConfig: {},
+      });
+    }
+
+    it("gives the session the settings manager and a new session its model's own thinking level", async () => {
+      const { source, manager } = settingsSource({ "fixture/default": "high" });
+      await (await factoryWith(source).prepareNew(context())).open();
+      expect(sdk.createAgentSession).toHaveBeenLastCalledWith(expect.objectContaining({ settingsManager: manager, thinkingLevel: "high" }));
+      // A chosen level wins; a model without its own level takes the service default.
+      await (await factoryWith(source).prepareNew(context({ thinkingLevel: "low" }))).open();
+      expect(sdk.createAgentSession.mock.calls.at(-1)![0].thinkingLevel).toBe("low");
+      await (await factoryWith(source).prepareNew(context({ modelProvider: "other", modelId: "m" }))).open();
+      expect(sdk.createAgentSession.mock.calls.at(-1)![0].thinkingLevel).toBe("medium");
+    });
+
+    it("releases the settings manager when the session is disposed or fails to start", async () => {
+      sdk.createAgentSession.mockResolvedValue({ session: { sessionFile: "/sessions/session.jsonl", subscribe: () => () => {}, dispose: vi.fn() } });
+      const { source, release } = settingsSource();
+      const opened = await (await factoryWith(source).prepareNew(context())).open();
+      expect(release).not.toHaveBeenCalled();
+      opened.adapter.dispose();
+      expect(release).toHaveBeenCalledTimes(1);
+
+      const failing = settingsSource();
+      const prepared = await factoryWith(failing.source, async () => { throw new Error("loader failed"); }).prepareNew(context());
+      await expect(prepared.open()).rejects.toThrow("loader failed");
+      expect(failing.release).toHaveBeenCalledTimes(1);
+    });
+  });
 });

@@ -30,6 +30,7 @@ export type ComposerProps = {
   thinkingLevels: string[];
   defaultModel: ModelInfo | null;
   defaultThinkingLevel: string;
+  modelThinkingLevels?: Readonly<Record<string, string>>;
   streaming: boolean;
   queued: boolean;
   primaryAwaitingStart?: boolean;
@@ -68,7 +69,7 @@ export type ComposerProps = {
 
 export function Composer({
   session, activeProjectId, canCreateSession, canWrite = true,
-  models, thinkingLevels, defaultModel, defaultThinkingLevel,
+  models, thinkingLevels, defaultModel, defaultThinkingLevel, modelThinkingLevels,
   streaming, queued, primaryAwaitingStart = false, historyLoading = false, controlsBlocked = false, placeholder, onSend,
   draft: suppliedDraft, draftSource, draftScope = "", submission, pendingControls, onDraftText, onDraftSettings, onAddFile, onRetryFile, onRemoveFile, onRetrySubmit, onConfirmCreation,
   onAbort, onAbortArmedChange, onFollowUp, onConfigChange, loadCommands, searchFiles, onRunCommand, onActivity, perch,
@@ -393,7 +394,7 @@ export function Composer({
         </div>
         <div className="composer-right">
           <ModelThinkingPicker models={models} thinkingLevels={thinkingLevels} defaultModel={defaultModel}
-            defaultThinkingLevel={defaultThinkingLevel}
+            defaultThinkingLevel={defaultThinkingLevel} modelThinkingLevels={modelThinkingLevels}
             modelProvider={session ? session.modelProvider : draft?.settings.modelProvider ?? null}
             modelId={session ? session.modelId : draft?.settings.modelId ?? null}
             thinkingLevel={session ? session.thinkingLevel : draft?.settings.thinkingLevel ?? null}

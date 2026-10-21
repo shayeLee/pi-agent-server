@@ -37,6 +37,8 @@ export const PUBLIC_API_OPERATIONS = [
   ["/v1/mcp/shared", "get", "mcp:read"],
   ["/v1/mcp/shared/{name}", "put", "mcp:admin"],
   ["/v1/mcp/shared/{name}", "delete", "mcp:admin"],
+  ["/v1/settings", "get", "settings:read"],
+  ["/v1/settings", "put", "settings:admin"],
   ["/v1/mcp/connections", "get", "mcp:connect"],
   ["/v1/mcp/servers/{name}/oauth/start", "post", "mcp:connect"],
   ["/v1/mcp/oauth/callback", "get", "mcp:connect"],
@@ -145,6 +147,8 @@ const roles: Record<Permission, readonly string[]> = {
   "mcp:connect": ["admin", "user"],
   "mcp:read": ["admin", "user", "viewer"],
   "mcp:admin": ["admin"],
+  "settings:read": ["admin", "user", "viewer"],
+  "settings:admin": ["admin"],
   "providers:admin": ["admin"],
   "files:upload": ["admin", "user"],
   "sessions:list": ["admin", "user", "viewer"],
@@ -314,6 +318,18 @@ export const openapiV1 = {
       get: operation("listSharedMcpServers", "mcp:read", {
         "200": { description: "The shared MCP servers, in the order of Pi's global mcp.json. Others see the usable servers only; admins also see unusable ones with a reason, the form values (header and env values masked) and the file hash to send back when saving.", ...json(ref("SharedMcpList")) },
       }),
+    },
+    "/v1/settings": {
+      get: operation("getAgentSettings", "settings:read", {
+        "200": { description: "Agent settings read from Pi's global settings.json: values the service uses (Pi's defaults for fields the file leaves out) and those defaults. Admins also get the file path, its hash to send back when saving, and read errors.", ...json(ref("AgentSettings")) },
+        "404": error(404, "Agent settings are not configured (code settings_not_configured)."),
+      }),
+      put: operation("saveAgentSettings", "settings:admin", {
+        "200": { description: "Saved to settings.json. Only the given values change; other fields in the file are kept. Running sessions pick the change up within a few seconds; a new session takes the model's default thinking level unless one is chosen.", ...json(ref("AgentSettings")) },
+        "400": error(400, "Invalid values, or settings.json itself is unreadable (code settings_invalid)."),
+        "404": error(404, "Agent settings are not configured (code settings_not_configured)."),
+        "409": error(409, "settings.json changed since the hash was read (code settings_changed); reload and try again."),
+      }, { requestBody: request(ref("AgentSettingsInput")), ...requestValidation }),
     },
     "/v1/mcp/shared/{name}": {
       put: operation("saveSharedMcpServer", "mcp:admin", {
@@ -596,7 +612,7 @@ export const openapiV1 = {
       }, additionalProperties: false },
       Access: { type: "object", required: ["canRead", "canWrite"], properties: { canRead: { type: "boolean" }, canWrite: { type: "boolean" } }, additionalProperties: false },
       Model: { type: "object", required: ["provider", "id", "name"], properties: { provider: { type: "string" }, id: { type: "string" }, name: { type: "string" } }, additionalProperties: false },
-      ModelList: { type: "object", required: ["models", "thinkingLevels", "defaultModel", "defaultThinkingLevel"], properties: { models: { type: "array", items: ref("Model") }, thinkingLevels: { type: "array", items: { type: "string" } }, defaultModel: { anyOf: [ref("Model"), { type: "null" }] }, defaultThinkingLevel: { type: "string" } }, additionalProperties: false },
+      ModelList: { type: "object", required: ["models", "thinkingLevels", "defaultModel", "defaultThinkingLevel", "modelThinkingLevels"], properties: { models: { type: "array", items: ref("Model") }, thinkingLevels: { type: "array", items: { type: "string" } }, defaultModel: { anyOf: [ref("Model"), { type: "null" }] }, defaultThinkingLevel: { type: "string" }, modelThinkingLevels: { type: "object", additionalProperties: { type: "string" }, description: "Default thinking level per model from the Agent settings, keyed by provider/modelId. A new session without a chosen level uses its model's entry before defaultThinkingLevel." } }, additionalProperties: false },
       Project: { type: "object", required: ["id", "name", "cwd", "isDefault"], properties: { id: { type: "string" }, name: { type: "string" }, cwd: { type: "string" }, isDefault: { type: "boolean" }, canDelete: { type: "boolean", description: "Current actor owns this non-default project; shared automatic projects are system-administered." }, canCreateSession: { type: "boolean", description: "Current route RBAC and project access allow creating an actor-owned private session; does not grant project mutation or access to other actors' private resources." } }, additionalProperties: false },
       SessionStep: { type: "object", additionalProperties: false, required: ["id", "kind", "content", "status", "source"], properties: {
         id: { type: "string" }, kind: { type: "string", enum: ["user", "thinking", "assistant_text", "tool_call", "tool_result", "notification", "system_event", "error", "compaction", "custom"] }, content: {},
@@ -691,6 +707,28 @@ export const openapiV1 = {
       }, additionalProperties: false },
       SharedMcpServerInput: { type: "object", required: ["hash", "server"], properties: {
         hash: { type: "string", description: "file.hash from GET /v1/mcp/shared." }, server: ref("SharedMcpServerConfig"),
+      }, additionalProperties: false },
+      AgentSettingsValues: { type: "object", required: ["autoCompaction", "autoRetry", "maxRetries", "modelThinkingLevels"], properties: {
+        autoCompaction: { type: "boolean", description: "Compact the context automatically when it is nearly full (compaction.enabled)." },
+        autoRetry: { type: "boolean", description: "Retry a failed model request automatically (retry.enabled)." },
+        maxRetries: { type: "integer", minimum: 0, maximum: 10, description: "Most automatic retries (retry.maxRetries)." },
+        modelThinkingLevels: { type: "object", additionalProperties: { enum: ["off", "minimal", "low", "medium", "high", "xhigh", "max"] }, description: "Default thinking level per model, keyed by provider/modelId (modelThinkingLevels)." },
+      }, additionalProperties: false },
+      AgentSettings: { type: "object", required: ["canEdit", "values", "defaults"], properties: {
+        canEdit: { type: "boolean" }, values: ref("AgentSettingsValues"),
+        defaults: { type: "object", required: ["autoCompaction", "autoRetry", "maxRetries"], properties: {
+          autoCompaction: { type: "boolean" }, autoRetry: { type: "boolean" }, maxRetries: { type: "integer" },
+        }, additionalProperties: false },
+        file: { type: "object", required: ["path", "hash"], description: "Admins only.", properties: {
+          path: { type: "string" }, hash: { type: "string" }, error: { type: "string", description: "The file cannot be read, or some values in it are invalid; the service keeps using what was read before or the defaults." },
+        }, additionalProperties: false },
+      }, additionalProperties: false },
+      AgentSettingsInput: { type: "object", required: ["hash", "values"], properties: {
+        hash: { type: "string", description: "file.hash from GET /v1/settings." },
+        values: { type: "object", description: "Only the given values change; modelThinkingLevels, when given, replaces the whole map.", properties: {
+          autoCompaction: { type: "boolean" }, autoRetry: { type: "boolean" }, maxRetries: { type: "integer", minimum: 0, maximum: 10 },
+          modelThinkingLevels: { type: "object", maxProperties: 500, additionalProperties: { enum: ["off", "minimal", "low", "medium", "high", "xhigh", "max"] } },
+        }, additionalProperties: false },
       }, additionalProperties: false },
       McpConnection: { type: "object", required: ["name", "label", "connected"], properties: {
         name: { type: "string" }, label: { type: "string" }, connected: { type: "boolean" },

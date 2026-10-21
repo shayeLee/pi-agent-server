@@ -19,7 +19,7 @@ beforeEach(() => {
   vi.spyOn(ApiClient.prototype, "getAccess").mockResolvedValue({ canRead: true, canWrite: true });
   vi.spyOn(ApiClient.prototype, "listProjects").mockResolvedValue([{ id: "p1", name: "Default", cwd: "/fixture", isDefault: true }]);
   vi.spyOn(ApiClient.prototype, "listSessionsByProject").mockResolvedValue([session, { ...session, id: "s2" }]);
-  vi.spyOn(ApiClient.prototype, "listModels").mockResolvedValue({ models: [], thinkingLevels: [], defaultModel: null, defaultThinkingLevel: "off" });
+  vi.spyOn(ApiClient.prototype, "listModels").mockResolvedValue({ models: [], thinkingLevels: [], defaultModel: null, defaultThinkingLevel: "off", modelThinkingLevels: {} });
   vi.spyOn(ApiClient.prototype, "exportSession").mockResolvedValue({ messages: [], timeline: [], lastEventId: 0 });
   vi.spyOn(ApiClient.prototype, "getControlQueue").mockResolvedValue({ requestId: null, revision: 0, items: [] });
   vi.spyOn(ApiClient.prototype, "steer").mockResolvedValue(undefined);

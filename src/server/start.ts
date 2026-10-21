@@ -77,6 +77,7 @@ import type { McpCatalog } from "../mcp/catalog.js";
 import { createMcpHost } from "../mcp/host.js";
 import { effectiveMcpServerEntries } from "../mcp/project-settings.js";
 import { SharedMcpConfigFile } from "../mcp/shared-config.js";
+import { AgentSettingsFile } from "../settings/agent-settings-file.js";
 import { KyselyUploadedFileRepository } from "../storage/kysely-uploaded-file-repository.js";
 import { UploadService } from "../application/upload-service.js";
 import { KyselyFileOperationRepository } from "../storage/kysely-file-operation-repository.js";
@@ -366,6 +367,8 @@ export async function startServer(config: StartConfig) {
   // 不存在、读不了或写坏时只提示，不阻止启动；密钥文件的格式与权限错误仍然拒绝启动。
   const publicUrl = config.publicUrl ? parsePublicUrl(config.publicUrl).url : undefined;
   const mcpConfigPath = path.join(agentDir, "mcp.json");
+  // Agent 设置：Pi 全局 settings.json 里的自动压缩、自动重试、按模型的思考档位，和 mcp.json 在同一目录。
+  const agentSettings = new AgentSettingsFile(path.join(agentDir, "settings.json"), { warn: message => console.warn(message) });
   const mcpHost = createMcpHost({
     piConfigPath: mcpConfigPath,
     publicUrlConfigured: publicUrl !== undefined,
@@ -775,13 +778,14 @@ export async function startServer(config: StartConfig) {
       createResourceLoader,
       defaultModel: configuredDefaultModel,
       defaultThinkingLevel,
+      agentSettings,
       customTools: pluginTools,
       agentToolConfig,
       unified: { source: nativeSource, index: nativeIndex },
     });
     agentFactories.register(piFactory);
     agentFactories.register(new PiAgentSessionFactory({
-      modelRuntime, createResourceLoader, defaultModel: configuredDefaultModel, defaultThinkingLevel,
+      modelRuntime, createResourceLoader, defaultModel: configuredDefaultModel, defaultThinkingLevel, agentSettings,
       customTools: pluginTools, agentToolConfig, native: { source: nativeSource, index: nativeIndex },
     }));
     const cleanupPlan = (input: Parameters<PiJsonlConversationStorage["planCleanup"]>[0]) =>
@@ -832,7 +836,6 @@ export async function startServer(config: StartConfig) {
       fileOperations,
       defaultProjectCwd: cwd,
       dataDir,
-      defaultThinkingLevel,
       agentToolConfig,
     });
     // 测试注入点（生产不传，无操作）：存储初始化完成后、buildApp 前回调，用于验证
@@ -865,6 +868,7 @@ export async function startServer(config: StartConfig) {
     companionPersonas,
     projectMcp: { catalog: mcpHost.catalog, store: projectMcp },
     sharedMcp: { file: new SharedMcpConfigFile(mcpConfigPath), catalog: mcpHost.catalog },
+    agentSettings,
     ...(mcpOAuth ? { mcpOAuth } : {}),
     providerLogins,
     idempotencyRepo,
@@ -885,6 +889,7 @@ export async function startServer(config: StartConfig) {
 
   app.addHook("onClose", async () => { await nativeSessions.close(); });
   app.addHook("onClose", async () => { providerLogins.close(); });
+  app.addHook("onClose", async () => { agentSettings.close(); });
   if (!sessionService) throw new Error("插件宿主初始化失败：SessionService 不可用");
   if (!app) throw new Error("插件宿主初始化失败：HTTP 应用不可用");
   // 清理器必须在 registerPlugins **之前**建立：registerPlugins 抛错时 app 已存在，

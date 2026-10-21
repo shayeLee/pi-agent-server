@@ -1629,6 +1629,14 @@ details[open] > summary > .details-chevron { transform: rotate(90deg); }
 .provider-auth-prompt > .project-mcp-input { flex: none; box-sizing: border-box; width: 100%; }
 .provider-auth-options { display: flex; flex-direction: column; gap: 6px; }
 .provider-auth-done { margin: 0; color: var(--success); font-size: var(--fs-meta); }
+/* Agent settings (Pi's /settings): the same ledger rows; per-model thinking levels list under their row. */
+.agent-settings-name { color: var(--ink); }
+.project-mcp-input.agent-settings-number { flex: none; width: 72px; }
+.agent-settings-models { display: flex; flex-direction: column; gap: 2px; }
+.agent-settings-model-ref { flex: 1 1 200px; }
+.agent-settings-add { padding-top: 4px; }
+.agent-settings-add .icon-select { min-width: 0; max-width: 100%; }
+.agent-settings-add .icon-select select { max-width: 100%; }
 @media (max-width: 639px) {
   .project-mcp-row > :not(.project-mcp-head) { padding-left: 0; } .project-mcp-key { width: 100%; }
   .shared-mcp-field { flex-direction: column; } .shared-mcp-field > .project-mcp-key { padding-top: 0; } .shared-mcp-indent { padding-left: 0; }

@@ -6,6 +6,8 @@ export type { CompanionGreeting, CompanionGreetingInput, CompanionPersonaRecord 
 export type { McpConnection, McpExposure, ProjectMcpServer, ProjectMcpServerInput, ProjectMcpSettings } from "../shared/project-mcp.js";
 export type { SharedMcpList, SharedMcpServer, SharedMcpServerConfig, SharedMcpServerInput } from "../shared/shared-mcp.js";
 export { SHARED_MCP_MASK } from "../shared/shared-mcp.js";
+export type { AgentSettings, AgentSettingsInput, AgentSettingsValues, AgentThinkingLevel } from "../shared/agent-settings.js";
+export { AGENT_THINKING_LEVELS, MAX_AGENT_RETRIES } from "../shared/agent-settings.js";
 export type {
   ProviderAuthEntry, ProviderAuthList, ProviderAuthMethod, ProviderLogin, ProviderLoginAnswer, ProviderLoginPrompt, ProviderLoginStart, ProviderLoginStep,
 } from "../shared/provider-auth.js";

@@ -168,4 +168,19 @@ describe("ModelThinkingPicker", () => {
       expect(onConfigChange).not.toHaveBeenCalled();
     } finally { bounds.mockRestore(); height.mockRestore(); }
   });
+
+  it("shows the model's own default thinking level when none is chosen", () => {
+    setup({ thinkingLevel: null, modelThinkingLevels: { "provider-b/shared-id": "low" } });
+    expect(screen.getByTestId("thinking-trigger")).toHaveTextContent("low");
+  });
+
+  it("uses the default model's own level for a draft and falls back to the service default", () => {
+    setup({ modelProvider: null, modelId: null, thinkingLevel: null, modelThinkingLevels: { "provider-a/shared-id": "off" } });
+    expect(screen.getByTestId("thinking-trigger")).toHaveTextContent("off");
+  });
+
+  it("keeps a chosen level over the model's own default", () => {
+    setup({ thinkingLevel: "high", modelThinkingLevels: { "provider-b/shared-id": "low" } });
+    expect(screen.getByTestId("thinking-trigger")).toHaveTextContent("high");
+  });
 });

@@ -43,6 +43,8 @@ export type ChatProps = {
   thinkingLevels: string[];
   defaultModel: ModelInfo | null;
   defaultThinkingLevel: string;
+  /** 按模型的默认思考档位（Agent 设置），键是 `provider/modelId`。 */
+  modelThinkingLevels?: Readonly<Record<string, string>>;
   connection: SessionConnection;
   stats: UsageStats | null;
   compaction?: CompactionState | null;
@@ -113,6 +115,7 @@ export function Chat({
   thinkingLevels,
   defaultModel,
   defaultThinkingLevel,
+  modelThinkingLevels,
   connection,
   stats,
   compaction,
@@ -352,6 +355,7 @@ export function Chat({
             thinkingLevels={thinkingLevels}
             defaultModel={defaultModel}
             defaultThinkingLevel={defaultThinkingLevel}
+            modelThinkingLevels={modelThinkingLevels}
             streaming={streaming}
             queued={queued}
             primaryAwaitingStart={primaryAwaitingStart}

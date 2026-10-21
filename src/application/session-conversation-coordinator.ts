@@ -22,7 +22,6 @@ export type SessionConversationCoordinatorOptions = {
   readonly fileOperations: FileOperationStorePort;
   readonly defaultProjectCwd: string;
   readonly dataDir: string;
-  readonly defaultThinkingLevel?: string;
   readonly agentToolConfig: AgentSessionContext["agentToolConfig"];
   /** 配置快照写回的时钟；生产默认 Date.now，测试可注入。 */
   readonly now?: () => number;
@@ -36,7 +35,6 @@ export class SessionConversationCoordinator {
   private readonly fileOperations: FileOperationStorePort;
   private readonly defaultProjectCwd: string;
   private readonly dataDir: string;
-  private readonly defaultThinkingLevel?: string;
   private readonly agentToolConfig: AgentSessionContext["agentToolConfig"];
   private readonly now: () => number;
 
@@ -48,7 +46,6 @@ export class SessionConversationCoordinator {
     this.fileOperations = options.fileOperations;
     this.defaultProjectCwd = options.defaultProjectCwd;
     this.dataDir = options.dataDir;
-    this.defaultThinkingLevel = options.defaultThinkingLevel;
     this.agentToolConfig = options.agentToolConfig;
     this.now = options.now ?? Date.now;
   }
@@ -204,7 +201,8 @@ export class SessionConversationCoordinator {
       dataDir: this.dataDir,
       modelProvider: record.modelProvider,
       modelId: record.modelId,
-      thinkingLevel: record.thinkingLevel ?? (record.conversationRef === null ? this.defaultThinkingLevel ?? null : null),
+      // A new session without a chosen level is resolved by the factory: the model's own default, then the service default.
+      thinkingLevel: record.thinkingLevel,
       systemPrompt: record.systemPrompt,
       isNewSession: record.conversationRef === null,
       // 共享会话允许多人继续；原生会话的 owner 不是授权依据。两者都不能用某个人的外部身份。

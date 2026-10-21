@@ -209,6 +209,16 @@ export class ApiClient {
     return this.request("DELETE", `/v1/provider-auth/credentials/${encodeURIComponent(provider)}`);
   }
 
+  /** Agent 设置（Pi 全局 settings.json 里的几个字段）；admin 另外拿到文件 hash 和读取错误。 */
+  getAgentSettings(): Promise<import("../shared/agent-settings.js").AgentSettings> {
+    return this.request("GET", "/v1/settings");
+  }
+
+  /** 只改给出的项（admin）；hash 对不上时 409，说明文件在别处被改过。 */
+  saveAgentSettings(input: import("../shared/agent-settings.js").AgentSettingsInput): Promise<import("../shared/agent-settings.js").AgentSettings> {
+    return this.request("PUT", "/v1/settings", input);
+  }
+
   /** 调用者对需要用户授权的 MCP server 的连接状态。 */
   listMcpConnections(): Promise<{ servers: import("../shared/project-mcp.js").McpConnection[] }> {
     return this.request("GET", "/v1/mcp/connections");
@@ -228,6 +238,8 @@ export class ApiClient {
     thinkingLevels: string[];
     defaultModel: ModelInfo | null;
     defaultThinkingLevel: string;
+    /** 按模型的默认思考档位，键是 `provider/modelId`；新会话没选档位时先用它，再用 defaultThinkingLevel。 */
+    modelThinkingLevels: Record<string, string>;
   }> {
     return this.request("GET", "/v1/models");
   }

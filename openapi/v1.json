@@ -1362,6 +1362,165 @@
         }
       }
     },
+    "/v1/settings": {
+      "get": {
+        "operationId": "getAgentSettings",
+        "security": [
+          {
+            "IpAdmission": []
+          },
+          {
+            "IpAdmission": [],
+            "BearerAuth": []
+          }
+        ],
+        "x-pi-rbac": {
+          "permission": "settings:read",
+          "roles": [
+            "admin",
+            "user",
+            "viewer"
+          ]
+        },
+        "responses": {
+          "200": {
+            "description": "Agent settings read from Pi's global settings.json: values the service uses (Pi's defaults for fields the file leaves out) and those defaults. Admins also get the file path, its hash to send back when saving, and read errors.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentSettings"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer token required for this admitted IP profile.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "IP admission or RBAC denied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Agent settings are not configured (code settings_not_configured).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "operationId": "saveAgentSettings",
+        "security": [
+          {
+            "IpAdmission": []
+          },
+          {
+            "IpAdmission": [],
+            "BearerAuth": []
+          }
+        ],
+        "x-pi-rbac": {
+          "permission": "settings:admin",
+          "roles": [
+            "admin"
+          ]
+        },
+        "responses": {
+          "200": {
+            "description": "Saved to settings.json. Only the given values change; other fields in the file are kept. Running sessions pick the change up within a few seconds; a new session takes the model's default thinking level unless one is chosen.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentSettings"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid values, or settings.json itself is unreadable (code settings_invalid).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer token required for this admitted IP profile.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "IP admission or RBAC denied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Agent settings are not configured (code settings_not_configured).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "settings.json changed since the hash was read (code settings_changed); reload and try again.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentSettingsInput"
+              }
+            }
+          }
+        },
+        "x-pi-request-validation": {
+          "coerceTypes": true,
+          "removeAdditional": "silent-strip"
+        },
+        "description": "Request bodies use Fastify's AJV baseline: declared types are coerced (`coerceTypes: 'array'`,\nso numbers, booleans, and single-element arrays are accepted where a string is declared) and\nundeclared fields are silently stripped (`removeAdditional: true` combined with\n`additionalProperties: false`) instead of returning 400. A 400 therefore reports a missing\nrequired field or a value that cannot be coerced/constrained, never a wrong scalar type or an\nunknown field."
+      }
+    },
     "/v1/mcp/shared/{name}": {
       "put": {
         "operationId": "saveSharedMcpServer",
@@ -5827,7 +5986,8 @@
           "models",
           "thinkingLevels",
           "defaultModel",
-          "defaultThinkingLevel"
+          "defaultThinkingLevel",
+          "modelThinkingLevels"
         ],
         "properties": {
           "models": {
@@ -5854,6 +6014,13 @@
           },
           "defaultThinkingLevel": {
             "type": "string"
+          },
+          "modelThinkingLevels": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Default thinking level per model from the Agent settings, keyed by provider/modelId. A new session without a chosen level uses its model's entry before defaultThinkingLevel."
           }
         },
         "additionalProperties": false
@@ -7015,6 +7182,152 @@
           },
           "server": {
             "$ref": "#/components/schemas/SharedMcpServerConfig"
+          }
+        },
+        "additionalProperties": false
+      },
+      "AgentSettingsValues": {
+        "type": "object",
+        "required": [
+          "autoCompaction",
+          "autoRetry",
+          "maxRetries",
+          "modelThinkingLevels"
+        ],
+        "properties": {
+          "autoCompaction": {
+            "type": "boolean",
+            "description": "Compact the context automatically when it is nearly full (compaction.enabled)."
+          },
+          "autoRetry": {
+            "type": "boolean",
+            "description": "Retry a failed model request automatically (retry.enabled)."
+          },
+          "maxRetries": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 10,
+            "description": "Most automatic retries (retry.maxRetries)."
+          },
+          "modelThinkingLevels": {
+            "type": "object",
+            "additionalProperties": {
+              "enum": [
+                "off",
+                "minimal",
+                "low",
+                "medium",
+                "high",
+                "xhigh",
+                "max"
+              ]
+            },
+            "description": "Default thinking level per model, keyed by provider/modelId (modelThinkingLevels)."
+          }
+        },
+        "additionalProperties": false
+      },
+      "AgentSettings": {
+        "type": "object",
+        "required": [
+          "canEdit",
+          "values",
+          "defaults"
+        ],
+        "properties": {
+          "canEdit": {
+            "type": "boolean"
+          },
+          "values": {
+            "$ref": "#/components/schemas/AgentSettingsValues"
+          },
+          "defaults": {
+            "type": "object",
+            "required": [
+              "autoCompaction",
+              "autoRetry",
+              "maxRetries"
+            ],
+            "properties": {
+              "autoCompaction": {
+                "type": "boolean"
+              },
+              "autoRetry": {
+                "type": "boolean"
+              },
+              "maxRetries": {
+                "type": "integer"
+              }
+            },
+            "additionalProperties": false
+          },
+          "file": {
+            "type": "object",
+            "required": [
+              "path",
+              "hash"
+            ],
+            "description": "Admins only.",
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "hash": {
+                "type": "string"
+              },
+              "error": {
+                "type": "string",
+                "description": "The file cannot be read, or some values in it are invalid; the service keeps using what was read before or the defaults."
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      },
+      "AgentSettingsInput": {
+        "type": "object",
+        "required": [
+          "hash",
+          "values"
+        ],
+        "properties": {
+          "hash": {
+            "type": "string",
+            "description": "file.hash from GET /v1/settings."
+          },
+          "values": {
+            "type": "object",
+            "description": "Only the given values change; modelThinkingLevels, when given, replaces the whole map.",
+            "properties": {
+              "autoCompaction": {
+                "type": "boolean"
+              },
+              "autoRetry": {
+                "type": "boolean"
+              },
+              "maxRetries": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 10
+              },
+              "modelThinkingLevels": {
+                "type": "object",
+                "maxProperties": 500,
+                "additionalProperties": {
+                  "enum": [
+                    "off",
+                    "minimal",
+                    "low",
+                    "medium",
+                    "high",
+                    "xhigh",
+                    "max"
+                  ]
+                }
+              }
+            },
+            "additionalProperties": false
           }
         },
         "additionalProperties": false

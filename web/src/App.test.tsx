@@ -145,6 +145,9 @@ const mocks = vi.hoisted(() => {
     getSharedMcp = vi.fn(() => Promise.resolve({ canEdit: false, servers: [] }));
     // 非 admin 读不到模型登录列表，设置菜单里没有这一项。
     listProviderAuth = vi.fn(() => Promise.reject(new Error("HTTP 403")));
+    // 没有配置 Agent 设置时设置菜单里也没有这一项；面板本身见 AgentSettingsPanel.test.tsx。
+    getAgentSettings = vi.fn(() => Promise.reject(new Error("HTTP 404")));
+    saveAgentSettings = vi.fn();
     deleteSession = vi.fn();
     deleteProject = vi.fn((id: string) => {
       // 与真实删除联动：从项目列表移除，供 refreshProjects 回退默认项目
