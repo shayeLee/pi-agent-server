@@ -122,6 +122,9 @@ export function SessionList({
   const [renaming, setRenaming] = useState<SessionRecord | null>(null);
   const renamingRef = useRef(renaming);
   renamingRef.current = renaming;
+  /** Row to refocus once the dialog closes: the menu item that opened it is gone by then. */
+  const renameReturn = useRef<string | null>(null);
+  const listRef = useRef<HTMLElement>(null);
   const searchId = useId();
   const inputRef = useRef<HTMLInputElement>(null);
   const toggleRef = useRef<HTMLButtonElement>(null);
@@ -134,6 +137,16 @@ export function SessionList({
       restoreFocus.current = false;
     }
   }, [searchOpen]);
+  // Runs after Modal's cleanup, whose own restore target (the menu item) is already unmounted.
+  useLayoutEffect(() => {
+    if (renaming) { renameReturn.current = renaming.id; return; }
+    const id = renameReturn.current;
+    renameReturn.current = null;
+    if (id === null) return;
+    const find = (testId: string) => Array.from(listRef.current?.querySelectorAll<HTMLElement>("[data-testid]") ?? [])
+      .find(el => el.dataset.testid === testId);
+    (find(`session-menu-${id}`) ?? find(`session-${id}`))?.focus({ preventScroll: true });
+  }, [renaming]);
   useLayoutEffect(() => {
     if (!searchRequest) return;
     if (searchOpen) inputRef.current?.focus();
@@ -162,7 +175,7 @@ export function SessionList({
   });
 
   return (
-    <section className="session-list" data-testid="session-list">
+    <section ref={listRef} className="session-list" data-testid="session-list">
       {(() => {
         const toggle = <button ref={toggleRef} type="button" className="workbench-search-toggle"
           aria-label={zhCN.sessionList.search} aria-expanded={searchOpen} aria-controls={searchId}

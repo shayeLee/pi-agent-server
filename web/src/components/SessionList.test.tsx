@@ -240,6 +240,21 @@ describe("SessionList（会话列表）", () => {
     expect(screen.queryByTestId("rename-input")).not.toBeInTheDocument();
   });
 
+  it("重命名对话框关闭（Esc 或保存）后焦点回到该行的 ⋯ 按钮", () => {
+    setup();
+    fireEvent.contextMenu(screen.getByTestId("session-s2"));
+    fireEvent.click(screen.getByTestId("rename-s2"));
+    fireEvent(screen.getByRole("dialog"), new Event("cancel", { cancelable: true }));
+    expect(screen.queryByTestId("rename-input")).not.toBeInTheDocument();
+    expect(screen.getByTestId("session-menu-s2")).toHaveFocus();
+
+    fireEvent.contextMenu(screen.getByTestId("session-s1"));
+    fireEvent.click(screen.getByTestId("rename-s1"));
+    fireEvent.change(screen.getByTestId("rename-input"), { target: { value: "新标题" } });
+    fireEvent.click(screen.getByTestId("rename-save"));
+    expect(screen.getByTestId("session-menu-s1")).toHaveFocus();
+  });
+
   it("activeId 会话标记为激活样式", () => {
     const { container } = setup({ activeId: "s1" });
     expect(container.querySelector(".active")).not.toBeNull();
