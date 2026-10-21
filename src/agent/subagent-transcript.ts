@@ -19,7 +19,7 @@ export function projectSubagents(sessionId: string, entries: readonly unknown[],
     if (e.kind === "start" && !runs.has(e.id) && typeof p.agent === "string" && typeof p.task === "string") {
       runs.set(e.id, { run: { id: e.id, runId: String(p.runId), agent: p.agent, task: p.task,
         startedAt: p.startedAt, model: p.model, thinkingLevel: p.thinkingLevel, status: "unknown", revision: 0 }, messages: new Map(), tools: new Map(),
-        inputs: [{ id: `${e.id}:initial`, text: p.task, kind: "initial", order: e.seq, timestamp: e.timestamp, delivery: "submitted" }] });
+        inputs: [{ id: `${e.id}:initial`, text: p.task, kind: "initial", source: "host", order: e.seq, timestamp: e.timestamp, delivery: "submitted" }] });
     }
     const state = runs.get(e.id);
     if (!state || e.seq <= state.run.revision) continue;
@@ -34,7 +34,7 @@ export function projectSubagents(sessionId: string, entries: readonly unknown[],
       const tool = state.tools.get(p.toolCallId) ?? { order: e.seq, call: { toolCallId: p.toolCallId, toolName: String(p.toolName), args: {}, partialResult: null, result: null, done: false, isError: false } };
       Object.assign(tool.call, { done: true, result: p.result, isError: !!p.isError }); state.tools.set(p.toolCallId, tool);
     } else if (e.kind === "input" && typeof p.id === "string" && typeof p.text === "string") {
-      state.inputs.push({ id: p.id, text: p.text, kind: "steer", order: e.seq, timestamp: e.timestamp, delivery: "submitted" });
+      state.inputs.push({ id: p.id, text: p.text, kind: "steer", source: p.source === "user" ? "user" : "host", order: e.seq, timestamp: e.timestamp, delivery: "submitted" });
     } else if (e.kind === "input_status") {
       const input = state.inputs.find(i => i.id === p.id);
       if (input && p.delivery === "failed") input.delivery = "failed";
@@ -71,7 +71,7 @@ export function projectSubagents(sessionId: string, entries: readonly unknown[],
       runs.set(id, { run: { id, runId: String(result.runId ?? index + 1), agent: result.agent, task: result.task,
         startedAt: result.startedAt ?? 0, endedAt: result.endedAt, model: result.model, thinkingLevel: result.thinkingLevel, legacy: true, revision: result.messages.length,
         status: result.stopReason === "stopped" ? "stopped" : result.exitCode === 0 ? "completed" : result.exitCode > 0 ? "failed" : "unknown" },
-        inputs: [{ id: `${id}:initial`, text: result.task, kind: "initial", delivery: "unknown", timestamp: result.startedAt ?? 0 }],
+        inputs: [{ id: `${id}:initial`, text: result.task, kind: "initial", source: "host", delivery: "unknown", timestamp: result.startedAt ?? 0 }],
         tools: new Map(), messages: new Map(result.messages.filter(object).map((message: RecordValue, i: number) => [String(i), { message, complete: true, order: i }])) });
     }
   }
@@ -96,8 +96,8 @@ function conversation(state: RunState): SubagentConversation {
       if (input) input.delivery = "delivered";
       rows.push({ order, item: { kind: "message", id: `child:${key}`, role: "user", text, streaming: false, ...messageTime(m),
         images: content.filter((p: any) => p.type === "image" && typeof p.data === "string").map((p: any) => ({ mediaType: p.mimeType, base64: p.data })),
-        ...(input ? { hostInput: input.kind } : {}),
-        sourceLabel: input ? `主代理 · ${input.kind === "initial" ? "初始任务" : "steer"} · 已送达` : "用户消息" } });
+        ...(input?.source === "host" ? { hostInput: input.kind } : input?.kind === "steer" ? { userInput: "steer" as const } : {}),
+        sourceLabel: input ? `${input.source === "user" ? "你" : "主代理"} · ${input.kind === "initial" ? "初始任务" : "steer"} · 已送达` : "用户消息" } });
     } else if (m.role === "assistant") {
       content.forEach((p: any, index: number) => {
         const id = `child:${key}:${index}`, position = order + index / (content.length + 1);

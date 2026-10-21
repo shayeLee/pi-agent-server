@@ -804,6 +804,12 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
     return this.adapter.getSubagents?.(this.sessionId, runId) ?? null;
   }
 
+  /** Independent of the parent's task state: a background child may run while the parent idles. */
+  async steerSubagent(runId: string, text: string): Promise<import("../shared/subagents.js").SubagentSteerAck | "unavailable"> {
+    if (this.disposed) return "unavailable";
+    return await this.adapter.steerSubagent?.(runId, text) ?? "unavailable";
+  }
+
   getSessionSteps(): import("../shared/session-steps.js").SessionStepsSnapshot | null {
     if (this.disposed) throw new SessionDeletedError(this.sessionId);
     return this.adapter.getSessionSteps?.(this.sessionId) ?? null;

@@ -4184,6 +4184,154 @@
         ]
       }
     },
+    "/v1/sessions/{id}/subagents/{runId}/steer": {
+      "post": {
+        "operationId": "steerSubagent",
+        "security": [
+          {
+            "IpAdmission": []
+          },
+          {
+            "IpAdmission": [],
+            "BearerAuth": []
+          }
+        ],
+        "x-pi-rbac": {
+          "permission": "sessions:control",
+          "roles": [
+            "admin",
+            "user"
+          ]
+        },
+        "responses": {
+          "202": {
+            "description": "The running child's control channel took the message; empty body. Not delivery: the child receives it at its next turn boundary, and the transcript input moves from submitted to delivered only when its user message appears."
+          },
+          "400": {
+            "description": "Empty, too long or otherwise invalid text.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer token required for this admitted IP profile.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "IP admission or RBAC denied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Session not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Not steerable now. Does not create a runtime.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "statusCode",
+                    "error",
+                    "code",
+                    "message"
+                  ],
+                  "properties": {
+                    "statusCode": {
+                      "const": 409
+                    },
+                    "error": {
+                      "const": "Conflict"
+                    },
+                    "code": {
+                      "enum": [
+                        "SUBAGENT_NOT_RUNNING",
+                        "SUBAGENT_STEER_UNAVAILABLE",
+                        "SUBAGENT_STEER_FAILED"
+                      ],
+                      "description": "SUBAGENT_NOT_RUNNING: the run is not a running child of this session; SUBAGENT_STEER_UNAVAILABLE: no control channel (session not loaded, extension without host control, or a foreground run); SUBAGENT_STEER_FAILED: the control channel did not take it, retry may work."
+                    },
+                    "message": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "runId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "description": "Stable child execution ID from runs[].id."
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "text"
+                ],
+                "properties": {
+                  "text": {
+                    "type": "string",
+                    "maxLength": 32768
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "x-pi-request-validation": {
+          "coerceTypes": true,
+          "removeAdditional": "silent-strip"
+        },
+        "description": "Request bodies use Fastify's AJV baseline: declared types are coerced (`coerceTypes: 'array'`,\nso numbers, booleans, and single-element arrays are accepted where a string is declared) and\nundeclared fields are silently stripped (`removeAdditional: true` combined with\n`additionalProperties: false`) instead of returning 400. A 400 therefore reports a missing\nrequired field or a value that cannot be coerced/constrained, never a wrong scalar type or an\nunknown field."
+      }
+    },
     "/v1/sessions/{id}/steps": {
       "get": {
         "operationId": "getSessionSteps",
@@ -6492,7 +6640,7 @@
                 "type": "array",
                 "items": {
                   "type": "object",
-                  "description": "Client TimelineItem: message, thinking or tool, with the SDK message time as an ISO timestamp when recorded; sourceLabel records user provenance and hostInput (initial | steer) marks the host agent's turns."
+                  "description": "Client TimelineItem: message, thinking or tool, with the SDK message time as an ISO timestamp when recorded; sourceLabel records user provenance, hostInput (initial | steer) marks the host agent's turns and userInput (steer) a person's steer."
                 }
               },
               "messages": {
@@ -6509,6 +6657,7 @@
                     "text",
                     "timestamp",
                     "kind",
+                    "source",
                     "delivery"
                   ],
                   "properties": {
@@ -6527,6 +6676,14 @@
                         "initial",
                         "steer"
                       ]
+                    },
+                    "source": {
+                      "type": "string",
+                      "enum": [
+                        "host",
+                        "user"
+                      ],
+                      "description": "host: the parent agent; user: a person through POST /v1/sessions/{id}/subagents/{runId}/steer."
                     },
                     "delivery": {
                       "type": "string",

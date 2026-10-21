@@ -317,6 +317,11 @@ export class ApiClient {
     return this.request("GET", `/v1/sessions/${encodeURIComponent(id)}/subagents${runId ? `?runId=${encodeURIComponent(runId)}` : ""}`);
   }
 
+  /** A person's steer for a running child; resolves once its control channel took it, not on delivery. */
+  steerSubagent(id: string, runId: string, text: string): Promise<void> {
+    return this.request("POST", `/v1/sessions/${encodeURIComponent(id)}/subagents/${encodeURIComponent(runId)}/steer`, { text }, "void");
+  }
+
   getSessionSteps(id: string): Promise<import("../shared/session-steps.js").SessionStepsSnapshot> {
     return this.request("GET", `/v1/sessions/${encodeURIComponent(id)}/steps`);
   }

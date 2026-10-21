@@ -445,6 +445,15 @@ export class SessionService {
     }
   }
 
+  /**
+   * A person's steer for a running child. Only an in-memory runtime can own a running child, so
+   * this never creates one; a cold session answers "unavailable".
+   */
+  async steerSubagent(ownerKey: string, id: string, runId: string, text: string): Promise<"not-found" | import("../shared/subagents.js").SubagentSteerAck | "unavailable"> {
+    if (!(await this.findOwned(ownerKey, id))) return "not-found";
+    return await this.deps.registry.get(id)?.runtime.steerSubagent?.(runId, text) ?? "unavailable";
+  }
+
   async getSessionSteps(ownerKey: string, id: string): Promise<import("../shared/session-steps.js").SessionStepsSnapshot | null> {
     if (!(await this.findOwned(ownerKey, id))) return null;
     const allowed = await this.prepareOutputGuard(ownerKey, id);

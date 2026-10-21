@@ -12,7 +12,7 @@ import { FAILBACK_LIFECYCLE_EVENT, isFailbackLifecycleEvent, type FailbackLifecy
 import { FAILBACK_HOST_TRANSPORT_EVENT, isFailbackHostTransportHandshake, type FailbackHostTransport } from "./failback-host-transport.js";
 import type { AgentSdkEvent } from "./events.js";
 import type { SessionCommandInput, SessionCommandResult } from "../shared/commands.js";
-import { SUBAGENT_HOST_TRANSPORT_EVENT, isSubagentHostTransportHandshake, type SubagentHostTransport, type ExtensionCustomMessage } from "./subagent-host-transport.js";
+import { SUBAGENT_HOST_CONTROL_EVENT, SUBAGENT_HOST_TRANSPORT_EVENT, isSubagentHostControl, isSubagentHostTransportHandshake, steerAck, type SubagentHostControl, type SubagentHostTransport, type SubagentSteerAck, type ExtensionCustomMessage } from "./subagent-host-transport.js";
 import { notificationFromEntry } from "./subagent-notification.js";
 import { COMMAND_OUTPUT_ENTRY_TYPE, commandOutputFromEntry } from "./command-output.js";
 import type { CommandOutputEvent, CommandPromptClosedEvent, CommandPromptEvent } from "../shared/events.js";
@@ -216,6 +216,9 @@ export class PiAgentAdapter implements AgentAdapter {
         return this.subagentTransport?.post(payload) ?? Promise.resolve({ accepted: false, reason: "notready" });
       } });
     }) ?? (() => {});
+    this.unsubscribeSubagentControl = failbackLifecycleSource?.on(SUBAGENT_HOST_CONTROL_EVENT, data => {
+      if (isSubagentHostControl(data)) this.subagentControl = data;
+    }) ?? (() => {});
     // One internal observer, regardless of how many host SSE subscribers exist.
     this.unsubscribeMeasurement = session.subscribe((event) => {
       if (!this.discard) {
@@ -268,6 +271,15 @@ export class PiAgentAdapter implements AgentAdapter {
   private subagentLive: SubagentLive = { active: new Set(), partials: new Map() };
   private unsubscribeTranscript: () => void = () => {};
   private readonly unsubscribeHostIdentity: () => void;
+  private subagentControl: SubagentHostControl | undefined;
+  private readonly unsubscribeSubagentControl: () => void;
+  /** A person's steer for a running child; "unavailable" when the extension offered no control. */
+  async steerSubagent(transcriptId: string, text: string): Promise<SubagentSteerAck | "unavailable"> {
+    const control = this.disposed ? undefined : this.subagentControl;
+    if (!control) return "unavailable";
+    try { return steerAck(await control.steer(transcriptId, text)); }
+    catch { return { ok: false, reason: "failed" }; }
+  }
   bindSubagentHostTransport(transport: SubagentHostTransport): () => void {
     this.subagentTransport = transport;
     return () => { if (this.subagentTransport === transport) this.subagentTransport = undefined; };
@@ -863,6 +875,8 @@ export class PiAgentAdapter implements AgentAdapter {
     this.subagentTransport = undefined;
     this.unsubscribeSubagentTransport();
     this.unsubscribeHostIdentity();
+    this.subagentControl = undefined;
+    this.unsubscribeSubagentControl();
     this.unsubscribeTranscript();
     this.requestAbort?.abort();
     this.commandAbort?.abort();

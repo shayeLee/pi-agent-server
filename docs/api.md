@@ -24,6 +24,8 @@ Pi SDK 与 pi-ai 固定为 **1.1.0**；本次 SDK 升级无需数据库迁移（
 | `POST` | `/v1/sessions/:id/control-queue/:controlId/promote` | 将排队的追加项提升为引导 |
 | `POST` | `/v1/sessions/:id/abort` | 中止该会话当前正在执行的任务。请求体可以不填；如果填写，必须是 `{ "requestId": "..." }`，只有任务的请求 ID 与它一致时才会中止。ID 不匹配则返回 `409`，任务继续运行。 |
 | `GET` | `/v1/sessions/:id/export` | 只读消息快照；绝不创建 runtime |
+| `GET` | `/v1/sessions/:id/subagents?runId=<optional>` | 子代理运行列表；带 `runId`（`runs[].id`）时附该子代理的只读会话。不创建 runtime。见[子代理会话](subagent-conversations.md) |
+| `POST` | `/v1/sessions/:id/subagents/:runId/steer` | 由用户引导运行中的子代理，请求体 `{ "text": "..." }`，需要 `sessions:control`。空 `202` 只表示子代理控制通道已接收；子代理在下一回合开始前收到，送达以子代理记录为准。不可引导时返回 `409`：`SUBAGENT_NOT_RUNNING`（未在运行）、`SUBAGENT_STEER_UNAVAILABLE`（会话未加载、扩展未提供宿主控制或前台运行）、`SUBAGENT_STEER_FAILED`（发送失败，可重试）。不创建 runtime |
 | `GET` | `/v1/sessions/:id/steps` | Inspector 完整步骤快照，数组顺序权威；只读且不创建 runtime |
 | `GET` / `HEAD` | `/v1/sessions/:id/system-prompt` | 读取系统提示词并明确标注 `live_effective`、`creation_snapshot` 或 `unavailable` 来源；只读且不创建 runtime |
 | `GET` | `/v1/sessions/:id/file-preview?path=<relative>&line=<optional>` | 预览该会话项目目录中的文本文件；`path` 填相对文件路径，`line` 可选，用于定位行号。不能读取项目目录外的文件 |

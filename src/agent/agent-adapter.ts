@@ -27,6 +27,8 @@ export type AgentConfigurationSnapshot = {
 export interface AgentAdapter {
   getSubagents?(sessionId: string, runId?: string): import("../shared/subagents.js").SubagentSnapshot;
   /** Internal session-local extension capability, installed before SDK extension binding. */
+  /** A person's steer for a running child via the extension's session-local control. */
+  steerSubagent?(transcriptId: string, text: string): Promise<import("./subagent-host-transport.js").SubagentSteerAck | "unavailable">;
   bindSubagentHostTransport?(transport: import("./subagent-host-transport.js").SubagentHostTransport): () => void;
   isSdkStreaming?(): boolean;
   queueCustomFollowUp?(message: import("./subagent-host-transport.js").ExtensionCustomMessage): Promise<void>;

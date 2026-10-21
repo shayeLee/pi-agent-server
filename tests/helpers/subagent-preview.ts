@@ -48,7 +48,19 @@ export async function createSubagentPreview() {
   const storage = new ConversationStorageRegistry(); storage.register(new PiJsonlConversationStorage(root));
   const adapter = new MockAgentAdapter();
   adapter.exportSession = async () => projectExportSnapshot([], manager.getBranch());
-  Object.assign(adapter, { getSubagents: (id: string, runId?: string) => projectSubagents(id, manager.getBranch(), { active, partials: new Map() }, runId) });
+  // A person's steer: saved as submitted, then "delivered" by the child's next user message.
+  const changed = new Set<(revision: number) => void>();
+  let revision = 0;
+  const moved = () => { revision++; for (const listener of changed) listener(revision); };
+  const steerSubagent = async (transcriptId: string, text: string) => {
+    const runId = journal.runIdOf(transcriptId);
+    if (!runId || !active.has(transcriptId)) return { ok: false, reason: "not-running" } as const;
+    journal.steer(runId, text, "user")(true); moved();
+    setTimeout(() => { if (active.has(transcriptId)) { message(runId, { role: "user", content: text, timestamp: Date.now() }); moved(); } }, 1500);
+    return { ok: true } as const;
+  };
+  Object.assign(adapter, { getSubagents: (id: string, runId?: string) => projectSubagents(id, manager.getBranch(), { active, partials: new Map() }, runId),
+    steerSubagent, subscribeSubagentsChanged: (listener: (revision: number) => void) => { changed.add(listener); return () => { changed.delete(listener); }; } });
   const app = buildApp({ sessions: db.sessions, projects: db.projects, conversationStorage: storage, defaultProjectCwd: root,
     ipAccess: makeTestIpAccess(), createAdapter: async () => adapter });
   return { app, db, root, manager, journal };

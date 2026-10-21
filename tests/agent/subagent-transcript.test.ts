@@ -132,6 +132,28 @@ describe("subagent transcript durability", () => {
     ]);
   });
 
+  it("tells a person's steer from the host agent's: YOU in the conversation, source on the input", () => {
+    const entries: unknown[] = [];
+    const journal = new TranscriptJournal((customType, data) => entries.push({ type: "custom", customType, data }), () => {});
+    journal.start({ id: "1", agent: "worker", task: "task", startedAt: 1 });
+    journal.event("1", { type: "message_end", message: { role: "user", content: "task" } });
+    const id = projectSubagents("s", entries).runs[0]!.id;
+    // Hosts address runs by transcript id; the journal resolves it while the run is open.
+    expect(journal.runIdOf(id)).toBe("1");
+    journal.steer("1", "host steer")(true);
+    journal.steer("1", "person steer", "user")(true);
+    journal.event("1", { type: "message_end", message: { role: "user", content: "person steer" } });
+    const { timeline, inputs } = projectSubagents("s", entries, undefined, id).conversation!;
+    // No live process here, so the never-delivered host steer reads as unknown.
+    expect(inputs.map(i => [i.text, i.source, i.delivery])).toEqual([
+      ["task", "host", "delivered"], ["host steer", "host", "unknown"], ["person steer", "user", "delivered"]]);
+    const person = timeline.find(item => item.kind === "message" && item.text === "person steer");
+    expect(person).toMatchObject({ userInput: "steer", sourceLabel: "你 · steer · 已送达" });
+    expect(person).not.toHaveProperty("hostInput");
+    journal.finish("1", "completed", {});
+    expect(journal.runIdOf(id)).toBeUndefined();
+  });
+
   it("does not publish unsaved entries on a write failure", () => {
     const published: unknown[] = [];
     const journal = new TranscriptJournal(() => { throw new Error("disk full"); }, (_, data) => published.push(data));

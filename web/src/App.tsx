@@ -424,7 +424,8 @@ export default function App() {
 
       {/* 聊天区 */}
       {activeSession && selectedChild && <SubagentChat {...subagents} title={activeSession.title || activeSession.firstPrompt || "主会话"}
-        inspectorOpen={!detailsCollapsed} onBack={() => setChildSelection(null)} onToggleInspector={toggleInspector} />}
+        inspectorOpen={!detailsCollapsed} onBack={() => setChildSelection(null)} onToggleInspector={toggleInspector}
+        canWrite={controller.canWrite} onSteer={(runId, text) => controller.api.steerSubagent(activeSession.id, runId, text)} />}
       <Chat
         hidden={!!selectedChild}
         session={activeSession}

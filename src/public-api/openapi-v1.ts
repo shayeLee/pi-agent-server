@@ -62,6 +62,7 @@ export const PUBLIC_API_OPERATIONS = [
   ["/v1/sessions/{id}/messages", "post", "sessions:send-message"],
   ["/v1/sessions/{id}/export", "get", "sessions:export"],
   ["/v1/sessions/{id}/subagents", "get", "sessions:export"],
+  ["/v1/sessions/{id}/subagents/{runId}/steer", "post", "sessions:control"],
   ["/v1/sessions/{id}/steps", "get", "sessions:export"],
   ["/v1/sessions/{id}/system-prompt", "get", "sessions:export"],
   ["/v1/sessions/{id}/file-preview", "get", "sessions:file-preview"],
@@ -508,6 +509,15 @@ export const openapiV1 = {
         "200": headJson("Child runs; body suppressed."), "404": headJson("Session not found."),
       }, { parameters: sessionParameters }),
     },
+    "/v1/sessions/{id}/subagents/{runId}/steer": {
+      post: operation("steerSubagent", "sessions:control", {
+        "202": { description: "The running child's control channel took the message; empty body. Not delivery: the child receives it at its next turn boundary, and the transcript input moves from submitted to delivered only when its user message appears." },
+        "400": error(400, "Empty, too long or otherwise invalid text."),
+        "404": error(404, "Session not found."),
+        "409": { description: "Not steerable now. Does not create a runtime.", content: { "application/json": { schema: { type: "object", required: ["statusCode", "error", "code", "message"], properties: { statusCode: { const: 409 }, error: { const: "Conflict" }, code: { enum: ["SUBAGENT_NOT_RUNNING", "SUBAGENT_STEER_UNAVAILABLE", "SUBAGENT_STEER_FAILED"], description: "SUBAGENT_NOT_RUNNING: the run is not a running child of this session; SUBAGENT_STEER_UNAVAILABLE: no control channel (session not loaded, extension without host control, or a foreground run); SUBAGENT_STEER_FAILED: the control channel did not take it, retry may work." }, message: { type: "string" } }, additionalProperties: false } } } },
+      }, { parameters: [...sessionParameters, { name: "runId", in: "path", required: true, schema: { type: "string", minLength: 1, maxLength: 128 }, description: "Stable child execution ID from runs[].id." }],
+        requestBody: request({ type: "object", required: ["text"], properties: { text: { type: "string", maxLength: 32768 } }, additionalProperties: false }), ...requestValidation }),
+    },
     "/v1/sessions/{id}/steps": {
       get: operation("getSessionSteps", "sessions:export", {
         "200": { description: "Complete authoritative steps snapshot, including active unsaved blocks. Recorded history follows selected branch order; observed tool results follow actual completion order. No runtime is created.", ...json(ref("SessionStepsSnapshot")) },
@@ -643,10 +653,11 @@ export const openapiV1 = {
       SubagentSnapshot: { type: "object", required: ["sessionId", "runs"], properties: {
         sessionId: { type: "string" }, runs: { type: "array", items: ref("SubagentRun") },
         conversation: { type: "object", required: ["run", "timeline", "inputs", "messages"], properties: {
-          run: ref("SubagentRun"), timeline: { type: "array", items: { type: "object", description: "Client TimelineItem: message, thinking or tool, with the SDK message time as an ISO timestamp when recorded; sourceLabel records user provenance and hostInput (initial | steer) marks the host agent's turns." } },
+          run: ref("SubagentRun"), timeline: { type: "array", items: { type: "object", description: "Client TimelineItem: message, thinking or tool, with the SDK message time as an ISO timestamp when recorded; sourceLabel records user provenance, hostInput (initial | steer) marks the host agent's turns and userInput (steer) a person's steer." } },
           messages: { type: "array", items: {}, description: "Original SDK messages, without transcript truncation." },
-          inputs: { type: "array", items: { type: "object", required: ["id", "text", "timestamp", "kind", "delivery"], properties: {
+          inputs: { type: "array", items: { type: "object", required: ["id", "text", "timestamp", "kind", "source", "delivery"], properties: {
             id: { type: "string" }, text: { type: "string" }, timestamp: { type: "number" }, kind: { type: "string", enum: ["initial", "steer"] },
+            source: { type: "string", enum: ["host", "user"], description: "host: the parent agent; user: a person through POST /v1/sessions/{id}/subagents/{runId}/steer." },
             delivery: { type: "string", enum: ["submitted", "delivered", "failed", "unknown"] },
           }, additionalProperties: false } },
         }, additionalProperties: false },

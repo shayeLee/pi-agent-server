@@ -15,7 +15,8 @@ async function fixture(nativeSessions?: NativeSessionPort, shared = false) {
   await sessions.create({ id: "steps", ownerKey: identityKey({ kind: "ip", ip: OWNER }), projectId: DEFAULT_PROJECT_ID, title: "steps", createdAt: 1, updatedAt: 1, agentKind: "pi", conversationFormat: "pi-jsonl-v3", conversationRef: null, modelProvider: null, modelId: null, thinkingLevel: null, systemPrompt: "creation", capabilityVersions: null, ...(shared ? { origin: "native" as const, visibility: "shared" as const } : {}) });
   const adapter = new MockAgentAdapter();
   const live = vi.fn(() => snapshot("live"));
-  Object.assign(adapter, { getSubagents: live });
+  const steer = vi.fn(async (): Promise<import("../../src/shared/subagents.js").SubagentSteerAck> => ({ ok: true }));
+  Object.assign(adapter, { getSubagents: live, steerSubagent: steer });
   const createAdapter = vi.fn(async () => adapter);
   const readSubagents = vi.fn(async () => snapshot("cold"));
   const storage = new ConversationStorageRegistry();
@@ -23,7 +24,8 @@ async function fixture(nativeSessions?: NativeSessionPort, shared = false) {
   const app = buildApp({ sessions, projects, conversationStorage: storage, nativeSessions, defaultProjectCwd: "/tmp/steps-server-test", createAdapter, ipAccess: makeTestIpAccess({ policy: makePolicy([{ ip: "10.0.0.3", role: "viewer" }, { ip: "10.0.0.4", role: "operator" }]) }) });
   const get = (ip = OWNER, id = "steps") => app.inject({ method: "GET", url: `/v1/sessions/${id}/subagents`, remoteAddress: ip });
   const activate = () => app.inject({ method: "POST", url: "/v1/sessions/steps/messages", remoteAddress: OWNER, payload: { requestId: "activate", prompt: "offline" } });
-  return { app, sessions, live, readSubagents, createAdapter, get, activate };
+  const postSteer = (payload: unknown, ip = OWNER, id = "steps") => app.inject({ method: "POST", url: `/v1/sessions/${id}/subagents/child/steer`, remoteAddress: ip, payload: payload as object });
+  return { app, sessions, live, steer, readSubagents, createAdapter, get, activate, postSteer };
 }
 describe("GET subagent authorization/read-only", () => {
   it("returns cold projection without creating runtime; missing/other owner indistinguishable and operator denied", async () => {
@@ -80,5 +82,47 @@ describe("GET subagent authorization/read-only", () => {
       expect((await cold.get()).statusCode).toBe(404);
       expect(cold.createAdapter).not.toHaveBeenCalled();
     } finally { await cold.app.close(); }
+  });
+});
+describe("POST subagent steer", () => {
+  it("hands a person's steer to the live runtime; 202 is admission, not delivery", async () => {
+    const f = await fixture();
+    try {
+      await f.activate();
+      const response = await f.postSteer({ text: "只检查侧栏" });
+      expect(response.statusCode).toBe(202); expect(response.body).toBe("");
+      expect(f.steer).toHaveBeenCalledWith("child", "只检查侧栏");
+    } finally { await f.app.close(); }
+  });
+  it("never creates a runtime: a cold session has no running child to steer", async () => {
+    const f = await fixture();
+    try {
+      const response = await f.postSteer({ text: "只检查侧栏" });
+      expect(response.statusCode).toBe(409); expect(response.json().code).toBe("SUBAGENT_STEER_UNAVAILABLE");
+      expect(f.createAdapter).not.toHaveBeenCalled();
+    } finally { await f.app.close(); }
+  });
+  it("maps each refusal to a stable code", async () => {
+    const f = await fixture();
+    try {
+      await f.activate();
+      for (const [reason, status, code] of [["not-found", 409, "SUBAGENT_NOT_RUNNING"], ["not-running", 409, "SUBAGENT_NOT_RUNNING"],
+        ["no-channel", 409, "SUBAGENT_STEER_UNAVAILABLE"], ["failed", 409, "SUBAGENT_STEER_FAILED"], ["invalid", 400, undefined]] as const) {
+        f.steer.mockResolvedValueOnce({ ok: false, reason });
+        const response = await f.postSteer({ text: "x" });
+        expect(response.statusCode).toBe(status); expect(response.json().code).toBe(code);
+      }
+    } finally { await f.app.close(); }
+  });
+  it("rejects blank text before reaching the runtime; other owners see 404 and viewers 403", async () => {
+    const f = await fixture();
+    try {
+      await f.activate();
+      expect((await f.postSteer({ text: "   " })).statusCode).toBe(400);
+      expect((await f.postSteer({})).statusCode).toBe(400);
+      expect((await f.postSteer({ text: "x" }, "10.0.0.2")).statusCode).toBe(404);
+      expect((await f.postSteer({ text: "x" }, "10.0.0.3")).statusCode).toBe(403);
+      expect(f.steer).not.toHaveBeenCalled();
+    } finally { await f.app.close(); }
   });
 });

@@ -91,6 +91,8 @@ export type TimelineItem =
       sourceLabel?: string;
       /** In a child conversation: this user turn is the host agent's input of that kind. */
       hostInput?: "initial" | "steer";
+      /** In a child conversation: this user turn is a person's steer sent through the host. */
+      userInput?: "steer";
       text: string;
       images?: readonly { mediaType: string; base64: string }[];
       /** 是否仍在流式接收增量（未完成）。 */

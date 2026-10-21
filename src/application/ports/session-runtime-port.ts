@@ -68,6 +68,7 @@ export type SessionTurnResult =
 /** 面向 HTTP/application 的会话运行时端口。 */
 export interface SessionRuntimePort {
   getSubagents?(runId?: string): import("../../shared/subagents.js").SubagentSnapshot | null;
+  steerSubagent?(runId: string, text: string): Promise<import("../../shared/subagents.js").SubagentSteerAck | "unavailable">;
   /** 会话标识（只读）。 */
   readonly sessionId: string;
   /** 当前任务状态（idle/queued/streaming/terminal）。 */

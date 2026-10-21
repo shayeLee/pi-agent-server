@@ -1,4 +1,5 @@
 import type { SubagentNotification } from "./subagent-notification.js";
+import type { SubagentSteerAck, SubagentSteerReason } from "../shared/subagents.js";
 
 /** Session-local capability, not a public HTTP/SDK API. ACK means admission, never turn completion. */
 export const SUBAGENT_HOST_TRANSPORT_EVENT = "agent-team:host-transport";
@@ -11,6 +12,27 @@ export function isSubagentHostTransportHandshake(value: unknown): value is Subag
   return typeof value === "object" && value !== null &&
     (value as { version?: unknown }).version === 1 &&
     typeof (value as { accept?: unknown }).accept === "function";
+}
+/**
+ * Session-local control the agent-team extension hands the host at session_start: a person's
+ * steer for a running child, addressed by transcript id. ok means the control socket took the
+ * message, never that the child received it; delivery shows in the transcript.
+ */
+export const SUBAGENT_HOST_CONTROL_EVENT = "agent-team:host-control";
+export type SubagentHostControl = { version: 1; steer(transcriptId: string, text: string): Promise<SubagentSteerAck> };
+export type { SubagentSteerAck };
+export function isSubagentHostControl(value: unknown): value is SubagentHostControl {
+  return typeof value === "object" && value !== null &&
+    (value as { version?: unknown }).version === 1 &&
+    typeof (value as { steer?: unknown }).steer === "function";
+}
+const STEER_REASONS: readonly string[] = ["not-found", "not-running", "no-channel", "failed", "invalid"];
+/** An extension answer is untrusted shape: anything but a known ack reads as a failed send. */
+export function steerAck(value: unknown): SubagentSteerAck {
+  if (typeof value !== "object" || value === null) return { ok: false, reason: "failed" };
+  const ack = value as { ok?: unknown; reason?: unknown };
+  if (ack.ok === true) return { ok: true };
+  return { ok: false, reason: typeof ack.reason === "string" && STEER_REASONS.includes(ack.reason) ? ack.reason as SubagentSteerReason : "failed" };
 }
 export type ExtensionCustomMessage = {
   customType: "agent-team:results-ready";

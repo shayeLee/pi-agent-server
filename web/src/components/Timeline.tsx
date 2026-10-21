@@ -95,11 +95,14 @@ function LedgerRow({ entry, observed, liveTail, tail, pending }: { entry: Ledger
   // In a subagent conversation the host agent's turns carry their kind (initial task / steer).
   const hostInput = entry.role === "user" && first?.kind !== "work" && first?.item.kind === "message" ? first.item.hostInput : undefined;
   const host = hostInput ? zhCN.subagents.inputKind[hostInput] : null;
+  // A person's steer keeps the YOU tag; the gutter still names it as a steer.
+  const userInput = entry.role === "user" && first?.kind !== "work" && first?.item.kind === "message" ? first.item.userInput : undefined;
+  const note = host ?? (userInput ? zhCN.subagents.inputKind[userInput] : null);
   const [tag, label] = host ? [zhCN.ledger.host, zhCN.ledger.hostLabel(host)] : TAGS[entry.role];
   const lastSegment = entry.segments[entry.segments.length - 1];
   return <div className="ledger-entry" data-role={entry.role}>
     <div className="ledger-time">{clock && <time dateTime={entry.timestamp} title={clock.title}>{clock.text}</time>}
-      {host && <span className="ledger-note">{host}</span>}</div>
+      {note && <span className="ledger-note">{note}</span>}</div>
     <div className="ledger-tag" aria-label={label}>{tag}</div>
     <div className="ledger-body">
       {entry.segments.map(segment => segment.kind === "work"

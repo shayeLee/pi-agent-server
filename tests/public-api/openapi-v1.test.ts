@@ -384,6 +384,7 @@ describe("public host API v1 contract", () => {
       "POST /v1/sessions/{id}/follow-ups",
       "POST /v1/sessions/{id}/messages",
       "POST /v1/sessions/{id}/steer",
+      "POST /v1/sessions/{id}/subagents/{runId}/steer",
       "PUT /v1/companion/persona",
       "PUT /v1/mcp/shared/{name}",
       "PUT /v1/projects/{id}/mcp/servers/{name}",

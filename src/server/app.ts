@@ -207,6 +207,16 @@ const STEERING_BODY_SCHEMA = {
   anyOf: [{ required: ["controlId", "acknowledgementId", "requestId"] },
     { not: { anyOf: [{ required: ["controlId"] }, { required: ["acknowledgementId"] }, { required: ["requestId"] }, { required: ["images"] }] } }],
 } as const;
+const SUBAGENT_STEER_BODY_SCHEMA = {
+  type: "object", properties: { text: { type: "string", maxLength: TURN_TEXT_LIMITS.maxPromptLength } },
+  required: ["text"], additionalProperties: false,
+} as const;
+const SUBAGENT_STEER_CONFLICTS = {
+  "not-found": { code: "SUBAGENT_NOT_RUNNING", message: "子代理未在运行，无法引导" },
+  "not-running": { code: "SUBAGENT_NOT_RUNNING", message: "子代理未在运行，无法引导" },
+  "no-channel": { code: "SUBAGENT_STEER_UNAVAILABLE", message: "该子代理没有可用的引导通道" },
+  failed: { code: "SUBAGENT_STEER_FAILED", message: "引导发送失败，请稍后重试" },
+} as const;
 type CompanionGreetingBody = import("../shared/companion.js").CompanionGreetingInput;
 const COMPANION_GREETING_BODY_SCHEMA = {
   type: "object",
@@ -835,6 +845,21 @@ export function buildApp(deps: ServerDeps): FastifyInstance {
       const snapshot = await sessions.getSubagents(ownerKeyOf(request), request.params.id, runId);
       return snapshot ? reply.code(200).send(snapshot) : NOT_FOUND(reply);
     });
+    // A person's steer for a running child. 202 means the child's control channel took it;
+    // delivery shows in the subagent transcript once the child starts that turn.
+    api.post<{ Params: { id: string; runId: string }; Body: { text: string } }>("/sessions/:id/subagents/:runId/steer",
+      { schema: { body: SUBAGENT_STEER_BODY_SCHEMA, params: { type: "object", required: ["id", "runId"],
+        properties: { id: { type: "string" }, runId: { type: "string", minLength: 1, maxLength: 128 } } } }, ...requirePermission("sessions:control") },
+      async (request, reply) => {
+        const text = checkTurnText(request.body.text, TURN_TEXT_LIMITS.maxPromptLength);
+        if (!text.ok) return reply.code(400).send({ statusCode: 400, error: "Bad Request", message: "text 非法" });
+        const result = await sessions.steerSubagent(ownerKeyOf(request), request.params.id, request.params.runId, text.value);
+        if (result === "not-found") return NOT_FOUND(reply);
+        if (result !== "unavailable" && result.ok) return reply.code(202).send();
+        const reason = result === "unavailable" ? "no-channel" : result.reason;
+        if (reason === "invalid") return reply.code(400).send({ statusCode: 400, error: "Bad Request", message: "text 非法" });
+        return reply.code(409).send({ statusCode: 409, error: "Conflict", ...SUBAGENT_STEER_CONFLICTS[reason] });
+      });
     api.get<{ Params: { id: string } }>("/sessions/:id/steps", { ...requirePermission("sessions:export") }, async (request, reply) => {
       const snapshot = await sessions.getSessionSteps(ownerKeyOf(request), request.params.id);
       return snapshot ? reply.code(200).send(snapshot) : NOT_FOUND(reply);
