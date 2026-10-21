@@ -39,6 +39,8 @@ pnpm --filter web build
 pnpm run e2e
 ```
 
-`pnpm run e2e` 使用本机已安装的 Chrome 并发运行分组（默认取 CPU 核数的一半，最多 4 组；设置 `PI_E2E_CONCURRENCY=1` 则逐组运行）。每组使用独立端口，并由单元测试保证不冲突，各组不会共用服务；保留已有 skip 守卫，默认排除长会话性能与最近会话恢复测试。rich-app/start-state 的 11 个测试在独立 rich 组使用隔离 mock 端口 5226/8126 执行；只有该组的测试进程及服务设置 `MOCK_SCENARIO=rich`。其它组和全量基线 discovery 显式清空该变量，即使调用者环境中已设置。某组失败不影响其它组。通过的组只输出一行，失败的组输出完整日志；每组的日志（`output.log`）、原生 Playwright JSON 报告及汇总（通过/失败/跳过/未执行）保存在启动时打印的独立临时目录。使用 `pnpm run e2e -- --list` 可核验分组的 Playwright discovery，不启动服务或执行测试。
+`pnpm run e2e` 使用本机已安装的 Chrome 并发运行分组（默认取 CPU 核数的一半，最多 6 组；设置 `PI_E2E_CONCURRENCY=1` 则逐组运行）。每组使用独立端口，并由单元测试保证不冲突，各组不会共用服务；保留已有 skip 守卫，默认排除长会话性能与最近会话恢复测试。rich-app/start-state 的 11 个测试在独立 rich 组使用隔离 mock 端口 5226/8126 执行；只有该组的测试进程及服务设置 `MOCK_SCENARIO=rich`。其它组和全量基线 discovery 显式清空该变量，即使调用者环境中已设置。没有专用分组的普通 spec 按文件名轮流分到 `general-1`…`general-N` 几个分片（`web/e2e-groups.ts` 的 `generalShards`），每片有自己的 mock 服务和端口，片内串行、片间并行；直连 mock 的 spec 从 `PI_E2E_MOCK_API` 取地址，不写死端口。各组按上次整组运行的耗时从长到短启动（记录在 `web/node_modules/.cache/pi-e2e-durations.json`，丢失只影响顺序）。某组失败不影响其它组。通过的组只输出一行，失败的组输出完整日志；每组的日志（`output.log`）、原生 Playwright JSON 报告及汇总（通过/失败/跳过/未执行）保存在启动时打印的独立临时目录。使用 `pnpm run e2e -- --list` 可核验分组的 Playwright discovery，不启动服务或执行测试。
+
+开发中只跑相关用例：`pnpm run e2e -- --group=workspace,steps` 只执行这些分组（`general` 表示全部 general 分片）；`pnpm run e2e -- --spec=compaction,start-state` 只执行这些 spec 文件（`.spec.ts` 可省略），每个文件仍在所属分组的配置与端口下运行，同组其它 spec 不执行。两者可组合，被 `--group` 选中的分组整组执行。discovery 始终覆盖全部分组，遗漏/重复校验照常生效；部分运行会打印 `Partial run`/`Partial total`，未执行数只按选中的用例计算，提交前仍应全量运行。`--max-failures=N` 在累计 N 个用例失败后停止：各组 Playwright 到 N 即停，且不再启动新分组，未运行的用例计为未执行，因此运行判定失败。
 
 专项离线命令与 PostgreSQL 门禁见 [docs/operations.md](operations.md)、[docs/postgres-podman-test.md](postgres-podman-test.md)和 `package.json`。

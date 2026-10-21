@@ -16,7 +16,7 @@ for (const viewport of [{ width: 1920, height: 871, dpr: 2 }, { width: 2470, hei
         if (path.endsWith('/export')) return json({ timeline: [{ type: 'message', id: 'u', role: 'user', text: '保持舒适的阅读宽度。' }, { type: 'message', id: 'a', role: 'assistant', text: '正文与输入区域保持同轴，额外空间留在主区两侧。' }], messages: [], lastEventId: 0 });
         return route.fulfill({ status: 204, body: '' });
       });
-      await page.goto('http://127.0.0.1:5189');
+      await page.goto('/');
       const composer = page.getByTestId('composer');
       await expect(page.getByTestId('model-thinking-trigger')).toBeVisible();
       const box = (selector: string) => page.locator(selector).boundingBox();

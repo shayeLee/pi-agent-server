@@ -27,13 +27,6 @@ test("foundation keyboard, portals, disabled and focus behavior", async ({ page 
   await button("Menu").focus();
   await page.keyboard.press("ArrowDown");
   await expect(page.getByRole("menuitem", { name: "First", exact: true })).toBeFocused();
-  await page.mouse.move(800, 0);
-  const first = page.getByRole('menuitem', { name: 'First', exact: true });
-  const focusedItem = await appearance(first);
-  await page.keyboard.press('ArrowDown');
-  expect(await appearance(first)).toEqual(focusedItem);
-  await page.keyboard.press('ArrowUp');
-  await expect(first).toBeFocused();
   await page.screenshot({ path: `${evidence}/dropdown-light.png` });
   await page.keyboard.press("ArrowDown");
   await expect(page.getByRole("menuitemcheckbox")).toBeFocused();

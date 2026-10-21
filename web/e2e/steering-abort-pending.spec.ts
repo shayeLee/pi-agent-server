@@ -1,5 +1,6 @@
 import { test, expect, type Page, type Route } from "@playwright/test";
 import { isOptionalFeature, notFound } from "./optional-features";
+import { failOnUnexpectedRequest } from "./unexpected-request";
 
 const sessionId = "steering-abort-fixture";
 const requestId = "active-request-fixture";
@@ -67,8 +68,7 @@ async function fixture(page: Page, options: { delayed202?: boolean; abortFails?:
         ? route.fulfill({ status: 500, json: { error: "fixture abort failed" } })
         : route.fulfill({ status: 204 });
     }
-    unexpected.push(`${req.method()} ${path}`);
-    await route.fulfill({ status: 501, json: { error: "Unexpected fixture API" } });
+    await failOnUnexpectedRequest(page, route, unexpected);
   });
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.goto("/");

@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { failOnUnexpectedRequest } from "./unexpected-request";
 
 for (const theme of ["light", "dark"]) {
   test(`isolated cursor matrix and cancellation (${theme})`, async ({ page }, testInfo) => {
@@ -7,10 +8,7 @@ for (const theme of ["light", "dark"]) {
     page.on("pageerror", error => errors.push(error.message));
     await page.route("**/*", route => {
       const url = new URL(route.request().url());
-      if (url.origin !== "http://127.0.0.1:5298" || /^\/(v1|health)(\/|$)/.test(url.pathname)) {
-        unexpected.push(url.href);
-        return route.abort();
-      }
+      if (url.origin !== "http://127.0.0.1:5298" || /^\/(v1|health)(\/|$)/.test(url.pathname)) return failOnUnexpectedRequest(page, route, unexpected, url.href);
       return route.continue();
     });
     await page.setViewportSize({ width: 1000, height: 1100 });

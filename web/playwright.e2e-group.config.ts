@@ -6,8 +6,8 @@ import { buildGroups, discoverSpecs, excludedSpecs, findGroup, groupEnvironment,
 const web = dirname(fileURLToPath(import.meta.url));
 const testDir = resolve(web, "e2e");
 const groups = buildGroups(discoverSpecs(testDir));
-const group = findGroup(groups, process.env.PI_E2E_GROUP ?? "general");
-const scenario = groupEnvironment(process.env.PI_E2E_DISCOVERY_ALL ? "general" : group.name, process.env).MOCK_SCENARIO!;
+const group = findGroup(groups, process.env.PI_E2E_GROUP ?? "general-1");
+const scenario = groupEnvironment(process.env.PI_E2E_DISCOVERY_ALL ? "general-1" : group.name, process.env).MOCK_SCENARIO!;
 // Test workers inherit this environment, including during --list.
 process.env.MOCK_SCENARIO = scenario;
 const original = (await import(pathToFileURL(resolve(web, group.config)).href)).default as PlaywrightTestConfig;
@@ -17,7 +17,8 @@ if (!process.env.PI_E2E_GROUP_OUTPUT) throw new Error("Use pnpm run e2e (or pnpm
 export default defineConfig({
   ...original,
   testDir,
-  testMatch: process.env.PI_E2E_DISCOVERY_ALL ? "**/*.spec.ts" : group.specs.map(spec => specMatch(testDir, spec)),
+  // PI_E2E_SPECS (from --spec) narrows the group to those files.
+  testMatch: process.env.PI_E2E_DISCOVERY_ALL ? "**/*.spec.ts" : group.specs.filter(spec => !process.env.PI_E2E_SPECS || process.env.PI_E2E_SPECS.split(",").includes(spec)).map(spec => specMatch(testDir, spec)),
   testIgnore: process.env.PI_E2E_DISCOVERY_ALL ? excludedSpecs.map(spec => specMatch(testDir, spec)) : [],
   outputDir: resolve(process.env.PI_E2E_GROUP_OUTPUT, "artifacts"),
   reporter: [["list"], ["json", { outputFile: resolve(process.env.PI_E2E_GROUP_OUTPUT, "report.json") }]],

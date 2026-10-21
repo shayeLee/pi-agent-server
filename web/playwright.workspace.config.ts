@@ -5,6 +5,9 @@ import foundation from './playwright.ui-foundation.config';
 export default defineConfig({
   ...foundation,
   testMatch: ['workspace.spec.ts', 'theme-menu.spec.ts'],
+  // Every test mocks its own requests in its own page, so they can run side by side.
+  fullyParallel: true,
+  workers: 2,
   outputDir: 'test-results/workspace',
   use: { ...foundation.use, baseURL: 'http://127.0.0.1:5191' },
   webServer: {

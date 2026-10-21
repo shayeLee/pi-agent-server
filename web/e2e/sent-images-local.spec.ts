@@ -1,6 +1,7 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { expect, test, type Page } from "@playwright/test";
 import { isOptionalFeature, notFound } from "./optional-features";
+import { failOnUnexpectedRequest } from "./unexpected-request";
 
 // Generated 32x32 orange PNG, no user images or sessions.
 const png = "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAKklEQVR4nGP4n2ZMU8QwasGoBaMWjFowasGoBaMWjFowasGoBaMWDBULAIAlYFtUlL3ZAAAAAElFTkSuQmCC";
@@ -50,7 +51,7 @@ for (const count of [1, 2]) test(`accepted ${count} image(s): composer clears, t
         images: Array.from({ length: count }, () => ({ mediaType: "image/png", base64: png })) });
       return json({ status: "accepted" }, 202);
     }
-    throw new Error(`Unexpected fixture request: ${request.method()} ${path}`);
+    await failOnUnexpectedRequest(page, route, []);
   });
   await page.setViewportSize({ width: 1400, height: 900 });
   await page.goto("/");

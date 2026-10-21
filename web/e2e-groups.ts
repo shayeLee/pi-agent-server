@@ -48,9 +48,17 @@ export const specialGroups: E2EGroup[] = [
   group("message-cursor", "playwright.message-cursor.config.ts", "message-cursor"),
 ];
 
+/**
+ * Specs without a dedicated group share the general mock server, one at a time (it is a shared in-memory
+ * store), so they are the longest group. They are dealt round-robin over these shards, each with its own
+ * mock server and ports, so the shards run side by side.
+ */
+export const generalShards = ["playwright.config.ts", "playwright.general-2.config.ts", "playwright.general-3.config.ts"];
+export const isGeneral = (name: string) => /^general-\d+$/.test(name);
+
 export function buildGroups(files: string[], specials = specialGroups): E2EGroup[] {
   const assigned = new Set(excludedSpecs);
-  const names = new Set(["general"]);
+  const names = new Set(generalShards.map((_, index) => `general-${index + 1}`));
   for (const entry of specials) {
     if (names.has(entry.name)) throw new Error(`Duplicate group: ${entry.name}`);
     names.add(entry.name);
@@ -60,10 +68,15 @@ export function buildGroups(files: string[], specials = specialGroups): E2EGroup
       assigned.add(spec);
     }
   }
-  return [{ name: "general", config: "playwright.config.ts", specs: files.filter(file => !assigned.has(file)).sort() }, ...specials];
+  const general = files.filter(file => !assigned.has(file)).sort();
+  const shards = generalShards.map((config, shard) => ({
+    name: `general-${shard + 1}`, config, specs: general.filter((_, index) => index % generalShards.length === shard),
+  }));
+  // Playwright fails a run that finds no tests.
+  return [...shards.filter(shard => shard.specs.length), ...specials];
 }
 
-// Never let a caller's rich scenario leak into general, baseline discovery or other groups.
+// Never let a caller's rich scenario leak into the general shards, baseline discovery or other groups.
 export function groupEnvironment(name: string, env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
   return { ...env, MOCK_SCENARIO: name === "rich" ? "rich" : "" };
 }

@@ -3,8 +3,10 @@ import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { describe, expect, it, vi } from "vitest";
-import { buildGroups, discoverSpecs, excludedSpecs, findGroup, groupEnvironment, specMatch } from "../web/e2e-groups.js";
-import { aggregate, concurrencyFrom, inPool, reportTests } from "../scripts/e2e.mjs";
+import { buildGroups, discoverSpecs, excludedSpecs, findGroup, generalShards, groupEnvironment, isGeneral, specMatch, type E2EGroup } from "../web/e2e-groups.js";
+
+const generalSpecs = (groups: E2EGroup[]) => groups.filter(group => isGeneral(group.name)).flatMap(group => group.specs);
+import { aggregate, concurrencyFrom, failedTests, inPool, longestFirst, parseArgs, reportTests, selectRuns } from "../scripts/e2e.mjs";
 
 describe("E2E mapping", () => {
   it("assigns rich specs exactly once and preserves default exclusions", () => {
@@ -14,15 +16,15 @@ describe("E2E mapping", () => {
     const assigned = groups.flatMap(group => group.specs);
     expect(new Set(assigned).size).toBe(assigned.length);
     expect([...assigned].sort()).toEqual(files.filter(file => !excludedSpecs.includes(file)).sort());
-    expect(findGroup(groups, "general").specs).not.toContain("rich-app.spec.ts");
-    expect(findGroup(groups, "general").specs).not.toContain("start-state.spec.ts");
+    expect(generalSpecs(groups)).not.toContain("rich-app.spec.ts");
+    expect(generalSpecs(groups)).not.toContain("start-state.spec.ts");
   });
   it("routes isolated UI fixtures to their dedicated frontend-only configurations", async () => {
     const groups = buildGroups(discoverSpecs(resolve(dirname(fileURLToPath(import.meta.url)), "../web/e2e")));
     for (const name of ["workspace", "ui-foundation", "control-queue", "steps"]) {
       const specs = name === "workspace" ? ["workspace.spec.ts", "theme-menu.spec.ts"] : name === "steps" ? ["steps.spec.ts", "inspector-app.spec.ts"] : [`${name}.spec.ts`];
       expect(findGroup(groups, name)).toEqual({ name, config: `playwright.${name}.config.ts`, specs });
-      for (const spec of specs) expect(findGroup(groups, "general").specs).not.toContain(spec);
+      for (const spec of specs) expect(generalSpecs(groups)).not.toContain(spec);
       try {
         vi.stubEnv("PI_E2E_GROUP", name);
         vi.stubEnv("PI_E2E_GROUP_OUTPUT", "/tmp/e2e-config-unit");
@@ -41,11 +43,14 @@ describe("E2E mapping", () => {
       } finally { vi.unstubAllEnvs(); vi.resetModules(); }
     }
   });
-  it("automatically includes new ordinary specs in general", () => {
-    const groups = buildGroups(["ordinary.spec.ts", "special.spec.ts", "new.spec.ts"], [
+  it("automatically deals new ordinary specs round-robin over the general shards", () => {
+    const ordinary = ["a", "b", "c", "d", "e"].map(name => `${name}.spec.ts`);
+    const groups = buildGroups([...ordinary].reverse().concat("special.spec.ts"), [
       { name: "special", config: "special.config.ts", specs: ["special.spec.ts"] },
     ]);
-    expect(groups[0]?.specs).toEqual(["new.spec.ts", "ordinary.spec.ts"]);
+    const shards = groups.filter(group => isGeneral(group.name));
+    expect(shards.map(group => group.config)).toEqual(generalShards);
+    expect(shards.map(group => group.specs)).toEqual(generalShards.map((_, shard) => ordinary.filter((_, index) => index % generalShards.length === shard)));
     expect(() => findGroup(groups, "unknown")).toThrow("Unknown E2E group");
   });
   it("rejects duplicate and missing mappings", () => {
@@ -64,7 +69,7 @@ describe("E2E mapping", () => {
       const files = discoverSpecs(dir);
       expect(files).toEqual(["nested/deeper/new[1].spec.ts", "nested/same.spec.ts", "same.spec.ts"]);
       const groups = buildGroups(files, [{ name: "special", config: "special.ts", specs: ["same.spec.ts"] }]);
-      expect(groups[0]?.specs).toEqual(["nested/deeper/new[1].spec.ts", "nested/same.spec.ts"]);
+      expect(generalSpecs(groups).sort()).toEqual(["nested/deeper/new[1].spec.ts", "nested/same.spec.ts"]);
       expect(specMatch(dir, "same.spec.ts").test(resolve(dir, "same.spec.ts"))).toBe(true);
       expect(specMatch(dir, "same.spec.ts").test(resolve(dir, "nested/same.spec.ts"))).toBe(false);
       expect(specMatch(dir, "nested/deeper/new[1].spec.ts").test(resolve(dir, "nested/deeper/new[1].spec.ts"))).toBe(true);
@@ -104,7 +109,8 @@ describe("E2E scenario isolation", () => {
   });
   it("isolates discovery workers and mock services even with inherited rich", async () => {
     try {
-      for (const [name, all, scenario] of [["general", "", ""], ["rich", "", "rich"], ["rich", "1", ""]]) {
+      const baseURLs = new Set<string>();
+      for (const [name, all, scenario] of [["general-1", "", ""], ["general-2", "", ""], ["rich", "", "rich"], ["rich", "1", ""]]) {
         vi.resetModules();
         vi.stubEnv("PI_E2E_GROUP", name!);
         vi.stubEnv("PI_E2E_DISCOVERY_ALL", all!);
@@ -118,9 +124,11 @@ describe("E2E scenario isolation", () => {
           expect(server?.env?.MOCK_SCENARIO).toBe(scenario);
           expect(server?.reuseExistingServer).toBe(false);
         }
-        expect(config.use?.baseURL).toBe(name === "rich" ? "http://127.0.0.1:5226" : "http://127.0.0.1:5189");
+        if (name === "rich") expect(config.use?.baseURL).toBe("http://127.0.0.1:5226");
+        else baseURLs.add(config.use!.baseURL!);
         expect(config.use?.channel).toBe("chrome");
       }
+      expect(baseURLs.size).toBe(2);
     } finally { vi.unstubAllEnvs(); vi.resetModules(); }
   });
 });
@@ -153,6 +161,56 @@ describe("E2E concurrency", () => {
     expect(concurrencyFrom({ PI_E2E_CONCURRENCY: "0" }, 2)).toBe(1);
     expect(concurrencyFrom({}, 16)).toBeLessThan(16 / 2 + 1);
     expect(concurrencyFrom({}, 1)).toBe(1);
+  });
+});
+
+describe("E2E arguments", () => {
+  it("accepts --list and --max-failures=N and rejects anything else", () => {
+    expect(parseArgs([])).toEqual({ listOnly: false });
+    expect(parseArgs(["--", "--list"])).toEqual({ listOnly: true });
+    expect(parseArgs(["--max-failures=5"])).toEqual({ listOnly: false, maxFailures: 5 });
+    expect(parseArgs(["--group=steps,rich", "--group=steps", "--spec=compaction", "--spec=nested/a.spec.ts"]))
+      .toEqual({ listOnly: false, groups: ["steps", "rich"], specs: ["compaction.spec.ts", "nested/a.spec.ts"] });
+    for (const bad of [["--max-failures=0"], ["--max-failures"], ["--grep", "x"], ["--group="], ["--spec=,"]]) expect(() => parseArgs(bad)).toThrow(/Supported arguments/);
+  });
+  it("selects whole groups or single specs within their group, in group order", () => {
+    const groups = buildGroups(["a.spec.ts", "b.spec.ts", "x.spec.ts", "y.spec.ts", "z.spec.ts"], [
+      { name: "xy", config: "xy.config.ts", specs: ["x.spec.ts", "y.spec.ts"] },
+      { name: "z", config: "z.config.ts", specs: ["z.spec.ts"] },
+    ]);
+    const names = (runs: ReturnType<typeof selectRuns>) => runs.map(({ group, specs }) => [group.name, specs]);
+    expect(names(selectRuns(groups, {}))).toEqual([["general-1", undefined], ["general-2", undefined], ["xy", undefined], ["z", undefined]]);
+    expect(names(selectRuns(groups, { groups: ["z"], specs: ["b.spec.ts", "y.spec.ts"] }))).toEqual([["general-2", ["b.spec.ts"]], ["xy", ["y.spec.ts"]], ["z", undefined]]);
+    expect(names(selectRuns(groups, { groups: ["general"] }))).toEqual([["general-1", undefined], ["general-2", undefined]]);
+    expect(names(selectRuns(groups, { groups: ["xy"], specs: ["x.spec.ts"] }))).toEqual([["xy", undefined]]);
+    expect(() => selectRuns(groups, { groups: ["nope"] })).toThrow(/Unknown E2E group: nope\. Groups: general-1, general-2, xy, z/);
+    expect(() => selectRuns(groups, { specs: ["nope.spec.ts"] })).toThrow(/nope\.spec\.ts is not in any E2E group/);
+    expect(() => selectRuns(buildGroups([...excludedSpecs, "a.spec.ts"], []), { specs: [excludedSpecs[0]!] })).toThrow(/not in any E2E group/);
+  });
+  it("starts the longest groups first, untimed groups before all", () => {
+    const runs = ["a", "b", "c", "d"].map(name => ({ group: { name, config: `${name}.ts`, specs: [] } }));
+    expect(longestFirst(runs, { a: 5, b: 30, d: 5 }).map(run => run.group.name)).toEqual(["c", "b", "a", "d"]);
+  });
+  it("leaves out general shards that would get no specs", () => {
+    expect(buildGroups(["a.spec.ts"], []).map(group => group.name)).toEqual(["general-1"]);
+  });
+  it("narrows a group's configuration to the --spec files", async () => {
+    try {
+      vi.stubEnv("PI_E2E_GROUP", "steps");
+      vi.stubEnv("PI_E2E_GROUP_OUTPUT", "/tmp/e2e-config-unit");
+      vi.stubEnv("PI_E2E_DISCOVERY_ALL", "");
+      vi.stubEnv("PI_E2E_SPECS", "inspector-app.spec.ts");
+      vi.resetModules();
+      const { default: config } = await import("../web/playwright.e2e-group.config.js");
+      expect(config.testMatch).toEqual([specMatch(resolve(dirname(fileURLToPath(import.meta.url)), "../web/e2e"), "inspector-app.spec.ts")]);
+    } finally { vi.unstubAllEnvs(); vi.resetModules(); }
+  });
+  it("counts the failed tests of a group's report", () => {
+    const test = (status: string) => ({ projectName: "chromium", expectedStatus: "passed", status, results: [{ status: "failed" }] });
+    const report = { specs: [{ id: "a", file: "a.spec.ts", line: 1, column: 1, title: "a", tests: [test("unexpected"), test("expected"), test("flaky")] }],
+      suites: [{ specs: [{ id: "b", file: "b.spec.ts", line: 1, column: 1, title: "b", tests: [test("unexpected")] }] }] };
+    expect(failedTests(report)).toBe(2);
+    expect(failedTests(undefined)).toBe(0);
   });
 });
 

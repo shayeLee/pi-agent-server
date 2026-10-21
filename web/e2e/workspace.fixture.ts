@@ -1,5 +1,6 @@
 import type { Page } from '@playwright/test';
 import { isOptionalFeature, notFound } from "./optional-features";
+import { failOnUnexpectedRequest } from "./unexpected-request";
 export async function workspaceFixture(page: Page, command = 'printf "fixture output"', resetStorage = true) {
   const unexpected: string[] = [];
   if (resetStorage) await page.addInitScript(() => { localStorage.clear(); sessionStorage.clear(); });
@@ -38,7 +39,7 @@ export async function workspaceFixture(page: Page, command = 'printf "fixture ou
         ]),
       ] });
     }
-    unexpected.push(`${route.request().method()} ${path}`); await route.abort();
+    await failOnUnexpectedRequest(page, route, unexpected);
   });
   return unexpected;
 }

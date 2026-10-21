@@ -1,5 +1,6 @@
 import { expect, type Page } from "@playwright/test";
 import { isOptionalFeature, notFound } from "./optional-features";
+import { failOnUnexpectedRequest } from "./unexpected-request";
 
 export const historyText = "历史会话用于验证 foundation 不影响现有消息布局。";
 const projectId = "foundation-project";
@@ -28,8 +29,7 @@ export async function installFoundationFixture(page: Page, history: boolean) {
       if (pathname === `/v1/sessions/${sessionId}/subagents`) return json({ sessionId, runs: [] });
       if (pathname === `/v1/sessions/${sessionId}/events`) return route.fulfill({ status: 204, body: "" });
     }
-    unexpected.push(`${route.request().method()} ${pathname}`);
-    await route.abort();
+    await failOnUnexpectedRequest(page, route, unexpected);
   });
   return unexpected;
 }
