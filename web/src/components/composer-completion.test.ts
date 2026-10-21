@@ -47,4 +47,12 @@ describe('hostCommand', () => {
     expect(hostCommand('/review src')).toBeNull();
     expect(hostCommand('please /compact')).toBeNull();
   });
+
+  it('runs the extension commands the menu listed, with their arguments', () => {
+    const names = new Set(['antigravity.usage', 'antigravity.search']);
+    expect(hostCommand('/antigravity.usage', names)).toEqual({ command: 'extension', name: 'antigravity.usage' });
+    expect(hostCommand(' /antigravity.search --thinking pi agent \n', names)).toEqual({ command: 'extension', name: 'antigravity.search', args: '--thinking pi agent' });
+    expect(hostCommand('/antigravity.doctor', names)).toBeNull();
+    expect(hostCommand('/reload now', names)).toBeNull();
+  });
 });

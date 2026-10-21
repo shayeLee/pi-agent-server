@@ -8,6 +8,7 @@ import type { DraftSource } from "../draft-store.js";
 import { Composer, type ComposerProps } from "./Composer.js";
 import { ControlQueue, type ControlQueueProps } from "./ControlQueue.js";
 import { CompactionBanner, type CompactionState } from "./CompactionBanner.js";
+import { CommandPromptPanel } from "./CommandPromptPanel.js";
 import { StatsBar } from "./StatsBar.js";
 import { ChatHeader } from "./ChatHeader.js";
 import { useRunStatus } from "../hooks/useRunStatus.js";
@@ -45,6 +46,9 @@ export type ChatProps = {
   connection: SessionConnection;
   stats: UsageStats | null;
   compaction?: CompactionState | null;
+  /** The dialog an extension command is waiting on (SSE-maintained). */
+  commandPrompt?: import("pi-agent-server/client").ChatState["commandPrompt"];
+  onAnswerCommandPrompt?: (answer: import("pi-agent-server/client").CommandPromptAnswer) => Promise<void>;
   modelOutput?: import("pi-agent-server/client").ChatState["modelOutput"];
   runProgress?: import("pi-agent-server/client").ChatState["runProgress"];
   activeTools?: boolean;
@@ -112,6 +116,8 @@ export function Chat({
   connection,
   stats,
   compaction,
+  commandPrompt,
+  onAnswerCommandPrompt,
   modelOutput,
   runProgress,
   activeTools,
@@ -327,6 +333,8 @@ export function Chat({
       {(session || projects !== null) && (
         <div className="chat-footer">
           <CompactionBanner key={session?.id ?? "no-session"} compaction={compaction} streamLost={streamLost} />
+          {session && commandPrompt && onAnswerCommandPrompt
+            && <CommandPromptPanel key={session.id} entry={commandPrompt} canAnswer={canWrite} onAnswer={onAnswerCommandPrompt} />}
           {session && showControlQueue && deleteControl && promoteControl && <ControlQueue items={controlQueue?.items ?? []}
             loading={controlQueueLoading} error={controlQueueError} operations={controlQueueOperations}
             onRefresh={refreshControlQueue} onDelete={deleteControl} onPromote={promoteControl}

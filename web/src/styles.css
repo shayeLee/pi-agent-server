@@ -1617,6 +1617,18 @@ details[open] > summary > .details-chevron { transform: rotate(90deg); }
 .shared-mcp-indent { padding-left: 84px; }
 .shared-mcp-check { display: flex; align-items: center; gap: 8px; cursor: pointer; }
 .shared-mcp-checks { gap: 6px; padding-top: 4px; }
+/* Provider sign-in (Pi's /login): the same ledger rows; a running login unfolds under its row step by step. */
+.provider-auth .project-mcp-row > :not(.project-mcp-head) { padding-left: 0; }
+.project-mcp-input.provider-auth-filter { flex: none; box-sizing: border-box; width: 100%; margin: 12px 0; }
+.provider-auth-ok { color: var(--success); }
+.provider-auth-login { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; padding: 8px 0 0 12px; border-left: 2px solid var(--line); }
+.provider-auth-step { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; margin: 0; }
+.provider-auth-url { margin: 0; font-family: var(--font-mono); font-size: var(--fs-meta); color: var(--faint); overflow-wrap: anywhere; user-select: all; }
+.provider-auth-code { margin: 0; font-family: var(--font-mono); font-size: var(--fs-ui); font-weight: 600; letter-spacing: 0.08em; color: var(--ink); user-select: all; }
+.provider-auth-prompt { display: flex; flex-direction: column; gap: 6px; }
+.provider-auth-prompt > .project-mcp-input { flex: none; box-sizing: border-box; width: 100%; }
+.provider-auth-options { display: flex; flex-direction: column; gap: 6px; }
+.provider-auth-done { margin: 0; color: var(--success); font-size: var(--fs-meta); }
 @media (max-width: 639px) {
   .project-mcp-row > :not(.project-mcp-head) { padding-left: 0; } .project-mcp-key { width: 100%; }
   .shared-mcp-field { flex-direction: column; } .shared-mcp-field > .project-mcp-key { padding-top: 0; } .shared-mcp-indent { padding-left: 0; }
@@ -1691,6 +1703,28 @@ details[open] > summary > .details-chevron { transform: rotate(90deg); }
 .compaction-indicator.is-running { background: var(--accent); animation: compaction-pulse 1.6s ease-in-out infinite; }
 @keyframes compaction-pulse { 50% { opacity: .35; } }
 @media (prefers-reduced-motion: reduce) { .compaction-indicator.is-running { animation: none; } }
+
+/* An extension command's dialog: a quiet card above the composer, answered in place. */
+.command-prompt { display: flex; flex-direction: column; gap: 8px; width: 100%; max-width: var(--reading-max); margin: 0 auto 8px; padding: 10px 12px;
+  border: 1px solid var(--line); border-radius: var(--radius-control); background: var(--bg-surface); font-size: var(--font-sm); line-height: 1.6; }
+.command-prompt-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; min-width: 0; }
+.command-prompt-command { font-family: var(--font-mono); font-size: var(--fs-meta); color: var(--dim); }
+.command-prompt-title { color: var(--ink); font-weight: 600; overflow-wrap: anywhere; }
+.command-prompt-message { margin: 0; color: var(--body2); white-space: pre-wrap; overflow-wrap: anywhere; }
+.command-prompt-note { margin: 0; color: var(--dim); }
+.command-prompt-error { margin: 0; color: var(--danger); overflow-wrap: anywhere; }
+.command-prompt-options { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.command-prompt-option { padding: 4px 10px; border: 1px solid var(--line); border-radius: var(--radius-control); background: var(--bg-page); color: var(--ink);
+  font: inherit; font-family: var(--font-mono); font-size: var(--fs-step); cursor: pointer; overflow-wrap: anywhere; text-align: left; }
+.command-prompt-option:hover, .command-prompt-option:focus-visible { border-color: var(--ink); }
+.command-prompt-form { display: flex; flex-direction: column; gap: 8px; }
+.command-prompt-input { box-sizing: border-box; width: 100%; padding: 4px 8px; border: 1px solid var(--line); border-radius: var(--radius-control); background: var(--bg-page);
+  color: var(--ink); font-family: var(--font-mono); font-size: var(--fs-step); resize: vertical; }
+.command-prompt-actions { display: flex; align-items: center; gap: 12px; }
+.command-prompt-action { padding: 0 2px; border: 0; background: none; color: var(--dim); font: inherit; text-decoration: underline; text-underline-offset: 3px;
+  text-decoration-color: var(--line); cursor: pointer; }
+.command-prompt-action:hover { color: var(--ink); text-decoration-color: currentColor; }
+.command-prompt-action.is-primary { color: var(--acc); text-decoration-color: currentColor; }
 
 .control-queue, .composer-stack { width: 100%; max-width: var(--reading-max); margin-inline: auto; min-width: 0; }
 /* Size to content: runtime controls must not reserve idle editor space. */
@@ -3517,6 +3551,13 @@ details[open] > summary > .details-chevron { transform: rotate(90deg); }
 /* System entries: subagent notifications without a coloured side bar (§4.8). */
 .ledger .subagent-notification { padding: 0; border: 0; background: none; }
 .ledger .subagent-notification-label { color: var(--dim); font-family: var(--font-mono); }
+/* Extension command output: the command as typed in mono, then its lines as plain preformatted text. */
+.command-output { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.command-output-head { color: var(--dim); font-family: var(--font-mono); font-size: var(--fs-meta); overflow-wrap: anywhere; }
+.command-output-line { margin: 0; font-family: var(--font-mono); font-size: var(--fs-step); line-height: 1.6; color: var(--ink); white-space: pre-wrap; overflow-wrap: anywhere; }
+.command-output-line.is-warning { color: var(--warning); }
+.command-output-line.is-error { color: var(--danger); }
+.command-output-empty { margin: 0; color: var(--dim); font-size: var(--fs-meta); }
 
 
 @media (prefers-reduced-motion: reduce) {

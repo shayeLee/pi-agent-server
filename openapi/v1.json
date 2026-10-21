@@ -939,7 +939,7 @@
         },
         "responses": {
           "200": {
-            "description": "Prompt templates and skill:<name> a draft in this project can start with. Host commands (compact, reload) need a session and are left out.",
+            "description": "Prompt templates and skill:<name> a draft in this project can start with. Host and extension commands need a session and are left out.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1848,6 +1848,476 @@
         "parameters": [
           {
             "name": "name",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/v1/provider-auth": {
+      "get": {
+        "operationId": "listProviderAuth",
+        "security": [
+          {
+            "IpAdmission": []
+          },
+          {
+            "IpAdmission": [],
+            "BearerAuth": []
+          }
+        ],
+        "x-pi-rbac": {
+          "permission": "providers:admin",
+          "roles": [
+            "admin"
+          ]
+        },
+        "responses": {
+          "200": {
+            "description": "Every model provider with its sign-in methods and whether it can be used now, sorted by name. stored is the credential type saved in Pi's auth.json, which pi CLI shares; only stored credentials can be removed. Providers no longer defined but still stored are listed too.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderAuthList"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer token required for this admitted IP profile.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "IP admission or RBAC denied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Provider sign-in is not available on this server (code provider_auth_not_configured).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/provider-auth/logins": {
+      "post": {
+        "operationId": "startProviderLogin",
+        "security": [
+          {
+            "IpAdmission": []
+          },
+          {
+            "IpAdmission": [],
+            "BearerAuth": []
+          }
+        ],
+        "x-pi-rbac": {
+          "permission": "providers:admin",
+          "roles": [
+            "admin"
+          ]
+        },
+        "responses": {
+          "201": {
+            "description": "Started. Poll GET /v1/provider-auth/logins/{id} and answer its prompt until state is no longer running. Starting another login for the same provider cancels this one; an unfinished login is cancelled after 10 minutes. OAuth callbacks reach the server's own localhost; from another machine, paste the final redirect URL when the manual_code prompt asks.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderLogin"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The provider does not offer this method (code provider_auth_unsupported_method).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer token required for this admitted IP profile.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "IP admission or RBAC denied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown provider (code provider_auth_unknown_provider).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProviderLoginStart"
+              }
+            }
+          }
+        },
+        "x-pi-request-validation": {
+          "coerceTypes": true,
+          "removeAdditional": "silent-strip"
+        },
+        "description": "Request bodies use Fastify's AJV baseline: declared types are coerced (`coerceTypes: 'array'`,\nso numbers, booleans, and single-element arrays are accepted where a string is declared) and\nundeclared fields are silently stripped (`removeAdditional: true` combined with\n`additionalProperties: false`) instead of returning 400. A 400 therefore reports a missing\nrequired field or a value that cannot be coerced/constrained, never a wrong scalar type or an\nunknown field."
+      }
+    },
+    "/v1/provider-auth/logins/{id}": {
+      "get": {
+        "operationId": "getProviderLogin",
+        "security": [
+          {
+            "IpAdmission": []
+          },
+          {
+            "IpAdmission": [],
+            "BearerAuth": []
+          }
+        ],
+        "x-pi-rbac": {
+          "permission": "providers:admin",
+          "roles": [
+            "admin"
+          ]
+        },
+        "responses": {
+          "200": {
+            "description": "The login so far. Finished logins are kept for 5 minutes.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderLogin"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer token required for this admitted IP profile.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "IP admission or RBAC denied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such login for this caller, or it expired (code provider_auth_unknown_login).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      },
+      "delete": {
+        "operationId": "cancelProviderLogin",
+        "security": [
+          {
+            "IpAdmission": []
+          },
+          {
+            "IpAdmission": [],
+            "BearerAuth": []
+          }
+        ],
+        "x-pi-rbac": {
+          "permission": "providers:admin",
+          "roles": [
+            "admin"
+          ]
+        },
+        "responses": {
+          "200": {
+            "description": "Cancelled; a finished login is returned unchanged.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderLogin"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer token required for this admitted IP profile.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "IP admission or RBAC denied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such login for this caller, or it expired (code provider_auth_unknown_login).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      }
+    },
+    "/v1/provider-auth/logins/{id}/answer": {
+      "post": {
+        "operationId": "answerProviderLogin",
+        "security": [
+          {
+            "IpAdmission": []
+          },
+          {
+            "IpAdmission": [],
+            "BearerAuth": []
+          }
+        ],
+        "x-pi-rbac": {
+          "permission": "providers:admin",
+          "roles": [
+            "admin"
+          ]
+        },
+        "responses": {
+          "200": {
+            "description": "Answered. The value goes to the provider's sign-in flow only and is never stored in the login or logged.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderLogin"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Not one of the options of a select prompt (code provider_auth_invalid_answer).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer token required for this admitted IP profile.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "IP admission or RBAC denied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such login for this caller, or it expired (code provider_auth_unknown_login).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The prompt is no longer open, for example because the OAuth callback arrived first (code provider_auth_stale_prompt).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProviderLoginAnswer"
+              }
+            }
+          }
+        },
+        "x-pi-request-validation": {
+          "coerceTypes": true,
+          "removeAdditional": "silent-strip"
+        },
+        "description": "Request bodies use Fastify's AJV baseline: declared types are coerced (`coerceTypes: 'array'`,\nso numbers, booleans, and single-element arrays are accepted where a string is declared) and\nundeclared fields are silently stripped (`removeAdditional: true` combined with\n`additionalProperties: false`) instead of returning 400. A 400 therefore reports a missing\nrequired field or a value that cannot be coerced/constrained, never a wrong scalar type or an\nunknown field."
+      }
+    },
+    "/v1/provider-auth/credentials/{provider}": {
+      "delete": {
+        "operationId": "removeProviderCredential",
+        "security": [
+          {
+            "IpAdmission": []
+          },
+          {
+            "IpAdmission": [],
+            "BearerAuth": []
+          }
+        ],
+        "x-pi-rbac": {
+          "permission": "providers:admin",
+          "roles": [
+            "admin"
+          ]
+        },
+        "responses": {
+          "200": {
+            "description": "Removed from auth.json, like /logout in pi. Environment variables and models.json keys stay, and the credential is not revoked at the provider.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderAuthList"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer token required for this admitted IP profile.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "IP admission or RBAC denied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "auth.json has no credential for this provider (code provider_auth_not_stored).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "provider",
             "in": "path",
             "required": true,
             "schema": {
@@ -3900,7 +4370,7 @@
         },
         "responses": {
           "200": {
-            "description": "Commands the composer offers after `/`: host commands (compact, reload), prompt templates and skill:<name>, discovered from the session project and the service agentDir. Read from disk without creating a runtime; templates and skills apply to a running session after /reload.",
+            "description": "Commands the composer offers after `/`: host commands (compact, reload), prompt templates and skill:<name>, discovered from the session project and the service agentDir, and commands registered by the explicitly loaded Pi extensions (source extension, read once at startup). Read without creating a runtime; templates and skills apply to a running session after /reload.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3971,7 +4441,7 @@
         },
         "responses": {
           "200": {
-            "description": "Command finished. compact publishes compaction_start/compaction_end and then completed/aborted/error SSE events under its own requestId; reload publishes no events.",
+            "description": "Command finished. compact publishes compaction_start/compaction_end and then completed/aborted/error SSE events under its own requestId; reload publishes no events. extension returns what the command showed and records it in the session (never sent to the model), published as a command_output SSE event and kept in the export timeline; a command that throws still returns 200, with failed output. Dialogs a command opens are answered as if there were no UI.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3981,7 +4451,7 @@
             }
           },
           "400": {
-            "description": "Invalid command body.",
+            "description": "Invalid command body, or extension without name.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4031,7 +4501,7 @@
             }
           },
           "422": {
-            "description": "The command failed, for example nothing to compact.",
+            "description": "The command failed, for example nothing to compact, or no extension command with that name.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4067,6 +4537,195 @@
             "application/json": {
               "schema": {
                 "$ref": "#/components/schemas/SessionCommandInput"
+              }
+            }
+          }
+        },
+        "x-pi-request-validation": {
+          "coerceTypes": true,
+          "removeAdditional": "silent-strip"
+        },
+        "description": "Request bodies use Fastify's AJV baseline: declared types are coerced (`coerceTypes: 'array'`,\nso numbers, booleans, and single-element arrays are accepted where a string is declared) and\nundeclared fields are silently stripped (`removeAdditional: true` combined with\n`additionalProperties: false`) instead of returning 400. A 400 therefore reports a missing\nrequired field or a value that cannot be coerced/constrained, never a wrong scalar type or an\nunknown field."
+      }
+    },
+    "/v1/sessions/{id}/command-prompt": {
+      "get": {
+        "operationId": "getCommandPrompt",
+        "security": [
+          {
+            "IpAdmission": []
+          },
+          {
+            "IpAdmission": [],
+            "BearerAuth": []
+          }
+        ],
+        "x-pi-rbac": {
+          "permission": "sessions:events",
+          "roles": [
+            "admin",
+            "user",
+            "viewer"
+          ]
+        },
+        "responses": {
+          "200": {
+            "description": "The dialog an extension command is waiting on, or null. Read it when a page opens or reconnects; afterwards command_prompt and command_prompt_closed SSE events keep it current. Never creates a runtime.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "prompt"
+                  ],
+                  "properties": {
+                    "prompt": {
+                      "oneOf": [
+                        {
+                          "$ref": "#/components/schemas/CommandPrompt"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer token required for this admitted IP profile.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "IP admission or RBAC denied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Session not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      },
+      "post": {
+        "operationId": "answerCommandPrompt",
+        "security": [
+          {
+            "IpAdmission": []
+          },
+          {
+            "IpAdmission": [],
+            "BearerAuth": []
+          }
+        ],
+        "x-pi-rbac": {
+          "permission": "sessions:control",
+          "roles": [
+            "admin",
+            "user"
+          ]
+        },
+        "responses": {
+          "204": {
+            "description": "Answered. The first answer wins; every page receives command_prompt_closed with reason answered (or cancelled when cancel is true)."
+          },
+          "400": {
+            "description": "The answer does not fit the question: confirm needs confirmed, the others value, and select one of its options (code command_prompt_invalid).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer token required for this admitted IP profile.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "IP admission or RBAC denied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Session not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The question was already answered elsewhere, cancelled, or timed out (code command_prompt_closed).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CommandPromptAnswer"
               }
             }
           }
@@ -5938,7 +6597,8 @@
                   "enum": [
                     "builtin",
                     "prompt",
-                    "skill"
+                    "skill",
+                    "extension"
                   ]
                 },
                 "description": {
@@ -6391,6 +7051,331 @@
         },
         "additionalProperties": false
       },
+      "ProviderAuthMethod": {
+        "enum": [
+          "oauth",
+          "api_key"
+        ]
+      },
+      "ProviderAuthEntry": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "status"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "oauth": {
+            "type": "object",
+            "required": [
+              "name",
+              "subscription"
+            ],
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "loginLabel": {
+                "type": "string"
+              },
+              "subscription": {
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": false
+          },
+          "apiKey": {
+            "type": "object",
+            "required": [
+              "name",
+              "interactive"
+            ],
+            "properties": {
+              "name": {
+                "type": "string"
+              },
+              "interactive": {
+                "type": "boolean",
+                "description": "false: the key comes only from the environment or other ambient sources and cannot be entered here."
+              }
+            },
+            "additionalProperties": false
+          },
+          "status": {
+            "type": "object",
+            "required": [
+              "configured"
+            ],
+            "properties": {
+              "configured": {
+                "type": "boolean"
+              },
+              "type": {
+                "$ref": "#/components/schemas/ProviderAuthMethod"
+              },
+              "source": {
+                "type": "string",
+                "description": "Where the credential comes from, for example an environment variable name."
+              }
+            },
+            "additionalProperties": false
+          },
+          "stored": {
+            "$ref": "#/components/schemas/ProviderAuthMethod"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ProviderAuthList": {
+        "type": "object",
+        "required": [
+          "providers"
+        ],
+        "properties": {
+          "providers": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProviderAuthEntry"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "ProviderLoginStep": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "type",
+              "url"
+            ],
+            "properties": {
+              "type": {
+                "const": "auth_url"
+              },
+              "url": {
+                "type": "string"
+              },
+              "instructions": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "required": [
+              "type",
+              "userCode",
+              "verificationUri"
+            ],
+            "properties": {
+              "type": {
+                "const": "device_code"
+              },
+              "userCode": {
+                "type": "string"
+              },
+              "verificationUri": {
+                "type": "string"
+              },
+              "expiresInSeconds": {
+                "type": "number"
+              }
+            },
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "required": [
+              "type",
+              "message"
+            ],
+            "properties": {
+              "type": {
+                "const": "info"
+              },
+              "message": {
+                "type": "string"
+              },
+              "links": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "required": [
+                    "url"
+                  ],
+                  "properties": {
+                    "url": {
+                      "type": "string"
+                    },
+                    "label": {
+                      "type": "string"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            },
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "required": [
+              "type",
+              "message"
+            ],
+            "properties": {
+              "type": {
+                "const": "progress"
+              },
+              "message": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          }
+        ]
+      },
+      "ProviderLoginPrompt": {
+        "type": "object",
+        "required": [
+          "id",
+          "type",
+          "message"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "type": {
+            "enum": [
+              "text",
+              "secret",
+              "select",
+              "manual_code"
+            ],
+            "description": "manual_code: paste the final redirect URL or the authorization code."
+          },
+          "message": {
+            "type": "string"
+          },
+          "placeholder": {
+            "type": "string"
+          },
+          "options": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "label"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string"
+                },
+                "label": {
+                  "type": "string"
+                },
+                "description": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "ProviderLogin": {
+        "type": "object",
+        "required": [
+          "id",
+          "provider",
+          "method",
+          "state",
+          "steps"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "provider": {
+            "type": "string"
+          },
+          "method": {
+            "$ref": "#/components/schemas/ProviderAuthMethod"
+          },
+          "state": {
+            "enum": [
+              "running",
+              "succeeded",
+              "failed",
+              "cancelled"
+            ]
+          },
+          "steps": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProviderLoginStep"
+            },
+            "description": "What the provider showed, in order."
+          },
+          "prompt": {
+            "$ref": "#/components/schemas/ProviderLoginPrompt",
+            "description": "The question waiting for an answer, while running."
+          },
+          "error": {
+            "type": "string",
+            "description": "Why it failed; on success, a warning that the model list could not be refreshed."
+          }
+        },
+        "additionalProperties": false
+      },
+      "ProviderLoginStart": {
+        "type": "object",
+        "required": [
+          "provider",
+          "method"
+        ],
+        "properties": {
+          "provider": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 200
+          },
+          "method": {
+            "$ref": "#/components/schemas/ProviderAuthMethod"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ProviderLoginAnswer": {
+        "type": "object",
+        "required": [
+          "promptId",
+          "value"
+        ],
+        "properties": {
+          "promptId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "value": {
+            "type": "string",
+            "maxLength": 16384
+          }
+        },
+        "additionalProperties": false
+      },
       "CompanionGreeting": {
         "type": "object",
         "required": [
@@ -6416,13 +7401,123 @@
           "command": {
             "enum": [
               "compact",
-              "reload"
+              "reload",
+              "extension"
             ]
           },
           "args": {
             "type": "string",
             "maxLength": 4000,
-            "description": "compact: optional summary instructions."
+            "description": "compact: optional summary instructions. extension: the command's arguments."
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[^\\s/]+$",
+            "description": "extension: the command name without the leading /."
+          }
+        },
+        "additionalProperties": false
+      },
+      "CommandPrompt": {
+        "type": "object",
+        "required": [
+          "promptId",
+          "command",
+          "kind",
+          "title",
+          "expiresAt"
+        ],
+        "description": "A dialog an extension command opened. While it is open the command's 3-minute limit is paused; unanswered, it closes after 10 minutes or the extension's own shorter timeout.",
+        "properties": {
+          "promptId": {
+            "type": "string"
+          },
+          "command": {
+            "type": "string",
+            "description": "Command name without the leading /."
+          },
+          "kind": {
+            "enum": [
+              "select",
+              "confirm",
+              "input",
+              "editor"
+            ]
+          },
+          "title": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string",
+            "description": "confirm only."
+          },
+          "options": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "select only; answered by value."
+          },
+          "placeholder": {
+            "type": "string",
+            "description": "input only."
+          },
+          "prefill": {
+            "type": "string",
+            "description": "editor only."
+          },
+          "expiresAt": {
+            "type": "integer",
+            "description": "Milliseconds since the epoch."
+          }
+        },
+        "additionalProperties": false
+      },
+      "CommandPromptAnswer": {
+        "type": "object",
+        "required": [
+          "promptId"
+        ],
+        "properties": {
+          "promptId": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "cancel": {
+            "type": "boolean",
+            "description": "Close the dialog without an answer."
+          },
+          "value": {
+            "type": "string",
+            "maxLength": 65536,
+            "description": "select, input and editor."
+          },
+          "confirmed": {
+            "type": "boolean",
+            "description": "confirm."
+          }
+        },
+        "additionalProperties": false
+      },
+      "CommandOutputLine": {
+        "type": "object",
+        "required": [
+          "level",
+          "text"
+        ],
+        "properties": {
+          "level": {
+            "enum": [
+              "info",
+              "warning",
+              "error"
+            ]
+          },
+          "text": {
+            "type": "string"
           }
         },
         "additionalProperties": false
@@ -6478,6 +7573,30 @@
               "extensions": {
                 "type": "integer",
                 "minimum": 0
+              }
+            },
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "required": [
+              "command",
+              "name",
+              "output"
+            ],
+            "properties": {
+              "command": {
+                "const": "extension"
+              },
+              "name": {
+                "type": "string"
+              },
+              "output": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/CommandOutputLine"
+                },
+                "description": "Notifications, widgets and status lines the command showed, in order; ANSI colors removed."
               }
             },
             "additionalProperties": false
@@ -7353,6 +8472,60 @@
               }
             },
             "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "required": [
+              "id",
+              "type",
+              "version",
+              "name",
+              "args",
+              "output",
+              "failed",
+              "entryId",
+              "timestamp",
+              "order"
+            ],
+            "description": "An extension command run from the Web composer.",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "type": {
+                "const": "command_output"
+              },
+              "version": {
+                "const": 1
+              },
+              "name": {
+                "type": "string"
+              },
+              "args": {
+                "type": "string"
+              },
+              "output": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/CommandOutputLine"
+                }
+              },
+              "failed": {
+                "type": "boolean",
+                "description": "The command threw; its message is the last error line."
+              },
+              "entryId": {
+                "type": "string"
+              },
+              "timestamp": {
+                "type": "string"
+              },
+              "order": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "additionalProperties": false
           }
         ]
       },
@@ -7790,6 +8963,93 @@
               },
               "text": {
                 "type": "string"
+              },
+              "entryId": {
+                "type": "string"
+              },
+              "timestamp": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "required": [
+              "type",
+              "prompt"
+            ],
+            "description": "An extension command opened a dialog. Session-level, no requestId.",
+            "properties": {
+              "type": {
+                "const": "command_prompt"
+              },
+              "prompt": {
+                "$ref": "#/components/schemas/CommandPrompt"
+              }
+            },
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "required": [
+              "type",
+              "promptId",
+              "reason"
+            ],
+            "description": "The dialog closed for every page. Session-level, no requestId.",
+            "properties": {
+              "type": {
+                "const": "command_prompt_closed"
+              },
+              "promptId": {
+                "type": "string"
+              },
+              "reason": {
+                "enum": [
+                  "answered",
+                  "cancelled",
+                  "timeout"
+                ]
+              }
+            },
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "required": [
+              "type",
+              "version",
+              "name",
+              "args",
+              "output",
+              "failed",
+              "entryId",
+              "timestamp"
+            ],
+            "description": "An extension command's output, recorded in the session. Session-level, no requestId.",
+            "properties": {
+              "type": {
+                "const": "command_output"
+              },
+              "version": {
+                "const": 1
+              },
+              "name": {
+                "type": "string"
+              },
+              "args": {
+                "type": "string"
+              },
+              "output": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/CommandOutputLine"
+                }
+              },
+              "failed": {
+                "type": "boolean",
+                "description": "The command threw; its message is the last error line."
               },
               "entryId": {
                 "type": "string"

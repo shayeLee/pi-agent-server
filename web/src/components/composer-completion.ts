@@ -39,10 +39,16 @@ export function filterCommands(commands: readonly SessionCommandInfo[], query: s
   return [...prefix, ...inner];
 }
 
-/** The host runs `/compact [instructions]` and `/reload`; any other text is a message. */
-export function hostCommand(text: string): SessionCommandInput | null {
-  const match = /^\/(compact|reload)(?:\s+([\s\S]*))?$/.exec(text.trim());
+/**
+ * The host runs `/compact [instructions]`, `/reload` and the extension commands the menu listed
+ * (`/antigravity.usage all`); any other text is a message.
+ */
+export function hostCommand(text: string, extensionNames: ReadonlySet<string> = new Set()): SessionCommandInput | null {
+  const match = /^\/(\S+)(?:\s+([\s\S]*))?$/.exec(text.trim());
   if (!match) return null;
+  const name = match[1]!;
   const args = match[2]?.trim();
-  return match[1] === "compact" ? { command: "compact", ...(args ? { args } : {}) } : { command: "reload" };
+  if (name === "compact") return { command: "compact", ...(args ? { args } : {}) };
+  if (name === "reload") return args ? null : { command: "reload" };
+  return extensionNames.has(name) ? { command: "extension", name, ...(args ? { args } : {}) } : null;
 }

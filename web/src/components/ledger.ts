@@ -32,7 +32,7 @@ export function groupLedger(timeline: readonly TimelineItem[], observed?: Readon
   for (const item of timeline) {
     if (!visible(item)) continue;
     const current = entries[entries.length - 1];
-    const role = item.kind === "message" && item.role === "user" ? "user" : item.kind === "notification" ? "system" : "assistant";
+    const role = item.kind === "message" && item.role === "user" ? "user" : item.kind === "notification" || item.kind === "command" ? "system" : "assistant";
     if (role !== "assistant" || current?.role !== "assistant") {
       flush(current);
       entries.push({ id: `entry:${item.id}`, role, timestamp: timeOf(item), segments: [] });

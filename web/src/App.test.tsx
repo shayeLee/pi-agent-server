@@ -143,6 +143,8 @@ const mocks = vi.hoisted(() => {
     getProjectMcp = vi.fn(() => Promise.resolve({ configured: projectMcpConfigured, canEdit: false, servers: [] }));
     saveProjectMcpServer = vi.fn();
     getSharedMcp = vi.fn(() => Promise.resolve({ canEdit: false, servers: [] }));
+    // 非 admin 读不到模型登录列表，设置菜单里没有这一项。
+    listProviderAuth = vi.fn(() => Promise.reject(new Error("HTTP 403")));
     deleteSession = vi.fn();
     deleteProject = vi.fn((id: string) => {
       // 与真实删除联动：从项目列表移除，供 refreshProjects 回退默认项目

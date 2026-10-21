@@ -81,6 +81,8 @@ export type ToolCall = {
 /** 聊天区按时间顺序的统一条目：消息、思考或工具调用，按 SSE 事件到达顺序交错排列。 */
 export type TimelineItem =
   | ({ kind: "notification"; id: string } & Omit<import("../shared/events.js").NotificationEvent, "type" | "requestId">)
+  /** An extension command run from the composer (`/antigravity.usage`) and what it showed. */
+  | ({ kind: "command"; id: string } & Omit<import("../shared/events.js").CommandOutputEvent, "type" | "requestId">)
   | {
       kind: "message";
       id: string;

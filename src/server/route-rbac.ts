@@ -67,6 +67,7 @@ export type RoutePermission =
   | "mcp:connect"
   | "mcp:read"
   | "mcp:admin"
+  | "providers:admin"
   | "sessions:list"
   | "sessions:create"
   | "sessions:delete"
@@ -114,6 +115,8 @@ export const ROUTE_PERMISSIONS: Record<RoutePermission, readonly IpRole[]> = Obj
   // 共享 MCP（Pi 的全局 mcp.json）：列表人人能看；修改等于在服务器上配置要执行的命令，只给 admin。
   "mcp:read": frozenRoles("admin", "user", "viewer"),
   "mcp:admin": frozenRoles("admin"),
+  // 模型登录（Pi 的 auth.json）：凭证是整个服务共用的模型身份，看和改都只给 admin。
+  "providers:admin": frozenRoles("admin"),
   "sessions:create": frozenRoles("admin", "user"),
   "sessions:delete": frozenRoles("admin", "user"),
   "sessions:update": frozenRoles("admin", "user"),

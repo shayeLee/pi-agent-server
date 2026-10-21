@@ -726,6 +726,17 @@ export class SessionService {
     return await entry.runtime.runCommand?.(input) ?? { kind: "unsupported" };
   }
 
+  /** 扩展命令正在等待回答的问题；只看已经在内存里的 runtime，不为此创建。 */
+  async getCommandPrompt(ownerKey: string, id: string): Promise<"not-found" | import("../shared/commands.js").CommandPrompt | null> {
+    if (!(await this.findOwned(ownerKey, id))) return "not-found";
+    return this.deps.registry.get(id)?.runtime.getCommandPrompt?.() ?? null;
+  }
+
+  async answerCommandPrompt(ownerKey: string, id: string, answer: import("../shared/commands.js").CommandPromptAnswer): Promise<"not-found" | "ok" | "stale" | "invalid"> {
+    if (!(await this.findOwned(ownerKey, id))) return "not-found";
+    return this.deps.registry.get(id)?.runtime.answerCommandPrompt?.(answer) ?? "stale";
+  }
+
   async getControlQueue(ownerKey: string, id: string): Promise<import("../shared/control-queue.js").ControlQueueSnapshot | null> {
     const record = await this.findOwned(ownerKey, id);
     if (!record) return null;

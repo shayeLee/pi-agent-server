@@ -234,7 +234,8 @@ export function Composer({
     setDispatching(true);
     setLocalError(null);
     try {
-      const command = onRunCommand ? hostCommand(text) : null;
+      const extensionNames = new Set(commandList?.filter(item => item.source === "extension").map(item => item.name));
+      const command = onRunCommand ? hostCommand(text, extensionNames) : null;
       if (command && !session) { setLocalError(zhCN.composer.commandNeedsSession); return; }
       if (command) {
         if (runtimeControls) { setLocalError(zhCN.composer.commandBusy); return; }

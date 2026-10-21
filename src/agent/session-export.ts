@@ -1,6 +1,7 @@
 import { toolDurationMs } from "../shared/tool-duration.js";
 import { readNestedToolCalls, type NestedToolCalls } from "../shared/nested-tool-calls.js";
 import { notificationFromEntry } from "./subagent-notification.js";
+import { commandOutputFromEntry } from "./command-output.js";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import {
   createExportImageProjectionState,
@@ -23,7 +24,8 @@ export type ExportTimelineItem =
   | { id: string; type: "thinking"; messageId: string; turnId: string | null; text: string; order: number; timestamp?: string }
   | { id: string; type: "tool_call"; messageId: string; turnId: string | null; callId: string; toolCallId: string; toolName: string; args: unknown; status: "completed" | "error" | "no_result"; order: number; timestamp?: string }
   | { id: string; type: "tool_result"; messageId: string | null; turnId: string | null; callId: string; toolCallId: string; toolName: string; result: unknown; isError: boolean; durationMs?: number | null; nestedCalls?: NestedToolCalls; order: number; timestamp?: string }
-  | { id: string; type: "system_event"; event: "model_failback"; from: string; to: string; reason: string; order: number; timestamp?: string };
+  | { id: string; type: "system_event"; event: "model_failback"; from: string; to: string; reason: string; order: number; timestamp?: string }
+  | (Omit<import("../shared/events.js").CommandOutputEvent, "type" | "requestId"> & { id: string; type: "command_output"; order: number });
 
 /** Additive export payload. `messages` is the pre-existing text/image projection. */
 export type ExportSnapshot = { messages: ExportMessage[]; timeline: ExportTimelineItem[] };
@@ -94,6 +96,12 @@ export function projectExportSnapshot(messages: readonly unknown[], branch: read
         notificationIds.add(notification.notificationId);
         timeline.push({ ...notification, id: `notification:${notification.notificationId}`, order: order++ });
       }
+      continue;
+    }
+    const commandOutput = commandOutputFromEntry(entry);
+    if (commandOutput) {
+      const { type: _type, ...record } = commandOutput;
+      timeline.push({ ...record, id: `command:${commandOutput.entryId}`, type: "command_output", order: order++ });
       continue;
     }
     const failback = presentation.events.get(entry.id);

@@ -41,6 +41,12 @@ export const PUBLIC_API_OPERATIONS = [
   ["/v1/mcp/servers/{name}/oauth/start", "post", "mcp:connect"],
   ["/v1/mcp/oauth/callback", "get", "mcp:connect"],
   ["/v1/mcp/servers/{name}/connection", "delete", "mcp:connect"],
+  ["/v1/provider-auth", "get", "providers:admin"],
+  ["/v1/provider-auth/logins", "post", "providers:admin"],
+  ["/v1/provider-auth/logins/{id}", "get", "providers:admin"],
+  ["/v1/provider-auth/logins/{id}", "delete", "providers:admin"],
+  ["/v1/provider-auth/logins/{id}/answer", "post", "providers:admin"],
+  ["/v1/provider-auth/credentials/{provider}", "delete", "providers:admin"],
   ["/v1/companion/persona", "get", "sessions:create"],
   ["/v1/companion/persona", "put", "sessions:create"],
   ["/v1/files", "post", "files:upload"],
@@ -58,6 +64,8 @@ export const PUBLIC_API_OPERATIONS = [
   ["/v1/sessions/{id}/files", "get", "sessions:file-preview"],
   ["/v1/sessions/{id}/commands", "get", "sessions:export"],
   ["/v1/sessions/{id}/commands", "post", "sessions:control"],
+  ["/v1/sessions/{id}/command-prompt", "get", "sessions:events"],
+  ["/v1/sessions/{id}/command-prompt", "post", "sessions:control"],
   ["/v1/sessions/{id}/control-queue", "get", "sessions:export"],
   ["/v1/sessions/{id}/control-queue/{controlId}", "delete", "sessions:control"],
   ["/v1/sessions/{id}/control-queue/{controlId}/promote", "post", "sessions:control"],
@@ -137,6 +145,7 @@ const roles: Record<Permission, readonly string[]> = {
   "mcp:connect": ["admin", "user"],
   "mcp:read": ["admin", "user", "viewer"],
   "mcp:admin": ["admin"],
+  "providers:admin": ["admin"],
   "files:upload": ["admin", "user"],
   "sessions:list": ["admin", "user", "viewer"],
   "sessions:create": ["admin", "user"],
@@ -275,7 +284,7 @@ export const openapiV1 = {
     },
     "/v1/projects/{id}/commands": {
       get: operation("listProjectCommands", "sessions:create", {
-        "200": { description: "Prompt templates and skill:<name> a draft in this project can start with. Host commands (compact, reload) need a session and are left out.", ...json(ref("SessionCommandList")) },
+        "200": { description: "Prompt templates and skill:<name> a draft in this project can start with. Host and extension commands need a session and are left out.", ...json(ref("SessionCommandList")) },
         "404": error(404, "Project not found, not usable for new sessions, or its directory is unavailable."),
       }, { parameters: [id] }),
     },
@@ -347,6 +356,43 @@ export const openapiV1 = {
         "204": { description: "Disconnected. The tokens are revoked at the authorization server when it supports revocation; failures there do not block the removal." },
         "404": error(404, "No per-user MCP server is configured (code mcp_oauth_not_configured), or the caller is not connected (code mcp_not_connected)."),
       }, { parameters: [{ name: "name", in: "path", required: true, schema: { type: "string" } }] }),
+    },
+    "/v1/provider-auth": {
+      get: operation("listProviderAuth", "providers:admin", {
+        "200": { description: "Every model provider with its sign-in methods and whether it can be used now, sorted by name. stored is the credential type saved in Pi's auth.json, which pi CLI shares; only stored credentials can be removed. Providers no longer defined but still stored are listed too.", ...json(ref("ProviderAuthList")) },
+        "404": error(404, "Provider sign-in is not available on this server (code provider_auth_not_configured)."),
+      }),
+    },
+    "/v1/provider-auth/logins": {
+      post: operation("startProviderLogin", "providers:admin", {
+        "201": { description: "Started. Poll GET /v1/provider-auth/logins/{id} and answer its prompt until state is no longer running. Starting another login for the same provider cancels this one; an unfinished login is cancelled after 10 minutes. OAuth callbacks reach the server's own localhost; from another machine, paste the final redirect URL when the manual_code prompt asks.", ...json(ref("ProviderLogin")) },
+        "400": error(400, "The provider does not offer this method (code provider_auth_unsupported_method)."),
+        "404": error(404, "Unknown provider (code provider_auth_unknown_provider)."),
+      }, { requestBody: request(ref("ProviderLoginStart")), ...requestValidation }),
+    },
+    "/v1/provider-auth/logins/{id}": {
+      get: operation("getProviderLogin", "providers:admin", {
+        "200": { description: "The login so far. Finished logins are kept for 5 minutes.", ...json(ref("ProviderLogin")) },
+        "404": error(404, "No such login for this caller, or it expired (code provider_auth_unknown_login)."),
+      }, { parameters: [id] }),
+      delete: operation("cancelProviderLogin", "providers:admin", {
+        "200": { description: "Cancelled; a finished login is returned unchanged.", ...json(ref("ProviderLogin")) },
+        "404": error(404, "No such login for this caller, or it expired (code provider_auth_unknown_login)."),
+      }, { parameters: [id] }),
+    },
+    "/v1/provider-auth/logins/{id}/answer": {
+      post: operation("answerProviderLogin", "providers:admin", {
+        "200": { description: "Answered. The value goes to the provider's sign-in flow only and is never stored in the login or logged.", ...json(ref("ProviderLogin")) },
+        "400": error(400, "Not one of the options of a select prompt (code provider_auth_invalid_answer)."),
+        "404": error(404, "No such login for this caller, or it expired (code provider_auth_unknown_login)."),
+        "409": error(409, "The prompt is no longer open, for example because the OAuth callback arrived first (code provider_auth_stale_prompt)."),
+      }, { parameters: [id], requestBody: request(ref("ProviderLoginAnswer")), ...requestValidation }),
+    },
+    "/v1/provider-auth/credentials/{provider}": {
+      delete: operation("removeProviderCredential", "providers:admin", {
+        "200": { description: "Removed from auth.json, like /logout in pi. Environment variables and models.json keys stay, and the credential is not revoked at the provider.", ...json(ref("ProviderAuthList")) },
+        "404": error(404, "auth.json has no credential for this provider (code provider_auth_not_stored)."),
+      }, { parameters: [{ name: "provider", in: "path", required: true, schema: { type: "string" } }] }),
     },
     "/v1/companion/persona": {
       get: operation("getCompanionPersona", "sessions:create", {
@@ -464,17 +510,29 @@ export const openapiV1 = {
     },
     "/v1/sessions/{id}/commands": {
       get: operation("listSessionCommands", "sessions:export", {
-        "200": { description: "Commands the composer offers after `/`: host commands (compact, reload), prompt templates and skill:<name>, discovered from the session project and the service agentDir. Read from disk without creating a runtime; templates and skills apply to a running session after /reload.", ...json(ref("SessionCommandList")) },
+        "200": { description: "Commands the composer offers after `/`: host commands (compact, reload), prompt templates and skill:<name>, discovered from the session project and the service agentDir, and commands registered by the explicitly loaded Pi extensions (source extension, read once at startup). Read without creating a runtime; templates and skills apply to a running session after /reload.", ...json(ref("SessionCommandList")) },
         "404": error(404, "Session not found."),
       }, { parameters: sessionParameters }),
       post: operation("runSessionCommand", "sessions:control", {
-        "200": { description: "Command finished. compact publishes compaction_start/compaction_end and then completed/aborted/error SSE events under its own requestId; reload publishes no events.", ...json(ref("SessionCommandResult")) },
-        "400": error(400, "Invalid command body."),
+        "200": { description: "Command finished. compact publishes compaction_start/compaction_end and then completed/aborted/error SSE events under its own requestId; reload publishes no events. extension returns what the command showed and records it in the session (never sent to the model), published as a command_output SSE event and kept in the export timeline; a command that throws still returns 200, with failed output. Dialogs a command opens are answered as if there were no UI.", ...json(ref("SessionCommandResult")) },
+        "400": error(400, "Invalid command body, or extension without name."),
         "404": error(404, "Session not found."),
         "409": error(409, "The session is busy, or the compaction was cancelled (code COMMAND_ABORTED)."),
-        "422": error(422, "The command failed, for example nothing to compact."),
+        "422": error(422, "The command failed, for example nothing to compact, or no extension command with that name."),
         "501": error(501, "The session agent does not support host commands."),
       }, { parameters: sessionParameters, requestBody: request(ref("SessionCommandInput")), ...requestValidation }),
+    },
+    "/v1/sessions/{id}/command-prompt": {
+      get: operation("getCommandPrompt", "sessions:events", {
+        "200": { description: "The dialog an extension command is waiting on, or null. Read it when a page opens or reconnects; afterwards command_prompt and command_prompt_closed SSE events keep it current. Never creates a runtime.", ...json({ type: "object", required: ["prompt"], properties: { prompt: { oneOf: [ref("CommandPrompt"), { type: "null" }] } }, additionalProperties: false }) },
+        "404": error(404, "Session not found."),
+      }, { parameters: sessionParameters }),
+      post: operation("answerCommandPrompt", "sessions:control", {
+        "204": { description: "Answered. The first answer wins; every page receives command_prompt_closed with reason answered (or cancelled when cancel is true)." },
+        "400": error(400, "The answer does not fit the question: confirm needs confirmed, the others value, and select one of its options (code command_prompt_invalid)."),
+        "404": error(404, "Session not found."),
+        "409": error(409, "The question was already answered elsewhere, cancelled, or timed out (code command_prompt_closed)."),
+      }, { parameters: sessionParameters, requestBody: request(ref("CommandPromptAnswer")), ...requestValidation }),
     },
     "/v1/sessions/{id}/control-queue": {
       get: operation("getControlQueue", "sessions:export", { "200": { description: "Authoritative resident SDK queue. Public event reconciliation has propagation delay, not atomic realtime drain notification. No pending input-extension work or custom SDK messages.", ...json(ref("ControlQueueSnapshot")) }, "404": error(404, "Session not found.") }, { parameters: sessionParameters }),
@@ -577,7 +635,7 @@ export const openapiV1 = {
       SubmitResult: { oneOf: [{ type: "object", required: ["status"], properties: { status: { const: "accepted" } }, additionalProperties: false }, { type: "object", required: ["status"], properties: { status: { const: "queued" }, position: { type: "integer" } }, additionalProperties: false }] },
       FilePreview: { type: "object", required: ["path", "content", "lineCount"], properties: { path: { type: "string", description: "Normalized project-relative path." }, content: { type: "string", description: "Complete UTF-8 content; maximum 262144 bytes." }, lineCount: { type: "integer", minimum: 1 }, requestedLine: { type: "integer", minimum: 1 } }, additionalProperties: false },
       ProjectFileSearch: { type: "object", required: ["entries", "truncated"], properties: { entries: { type: "array", maxItems: 20, items: { type: "object", required: ["path", "kind"], properties: { path: { type: "string", description: "Project-relative path with / separators." }, kind: { enum: ["file", "directory"] } }, additionalProperties: false } }, truncated: { type: "boolean", description: "The project listing hit its file cap; some paths cannot be suggested." } }, additionalProperties: false },
-      SessionCommandList: { type: "object", required: ["commands"], properties: { commands: { type: "array", items: { type: "object", required: ["name", "source", "description"], properties: { name: { type: "string", description: "Typed after /." }, source: { enum: ["builtin", "prompt", "skill"] }, description: { type: "string" }, argumentHint: { type: "string" } }, additionalProperties: false } } }, additionalProperties: false },
+      SessionCommandList: { type: "object", required: ["commands"], properties: { commands: { type: "array", items: { type: "object", required: ["name", "source", "description"], properties: { name: { type: "string", description: "Typed after /." }, source: { enum: ["builtin", "prompt", "skill", "extension"] }, description: { type: "string" }, argumentHint: { type: "string" } }, additionalProperties: false } } }, additionalProperties: false },
       CompanionGreetingInput: { type: "object", required: ["persona", "dayPart"], properties: {
         persona: { type: "object", required: ["name", "style"], properties: { name: { type: "string", minLength: 1, maxLength: 12 }, style: { enum: ["concise", "lively", "formal"] } }, additionalProperties: false },
         dayPart: { enum: ["dawn", "morning", "noon", "afternoon", "evening", "night"], description: "The caller's local time of day." },
@@ -640,11 +698,59 @@ export const openapiV1 = {
         connectedAt: { type: "integer", description: "Milliseconds since the epoch." },
         expiresAt: { type: "integer", description: "Access token expiry in milliseconds since the epoch; tokens are refreshed automatically." },
       }, additionalProperties: false },
+      ProviderAuthMethod: { enum: ["oauth", "api_key"] },
+      ProviderAuthEntry: { type: "object", required: ["id", "name", "status"], properties: {
+        id: { type: "string" }, name: { type: "string" },
+        oauth: { type: "object", required: ["name", "subscription"], properties: { name: { type: "string" }, loginLabel: { type: "string" }, subscription: { type: "boolean" } }, additionalProperties: false },
+        apiKey: { type: "object", required: ["name", "interactive"], properties: { name: { type: "string" }, interactive: { type: "boolean", description: "false: the key comes only from the environment or other ambient sources and cannot be entered here." } }, additionalProperties: false },
+        status: { type: "object", required: ["configured"], properties: { configured: { type: "boolean" }, type: ref("ProviderAuthMethod"), source: { type: "string", description: "Where the credential comes from, for example an environment variable name." } }, additionalProperties: false },
+        stored: ref("ProviderAuthMethod"),
+      }, additionalProperties: false },
+      ProviderAuthList: { type: "object", required: ["providers"], properties: { providers: { type: "array", items: ref("ProviderAuthEntry") } }, additionalProperties: false },
+      ProviderLoginStep: { oneOf: [
+        { type: "object", required: ["type", "url"], properties: { type: { const: "auth_url" }, url: { type: "string" }, instructions: { type: "string" } }, additionalProperties: false },
+        { type: "object", required: ["type", "userCode", "verificationUri"], properties: { type: { const: "device_code" }, userCode: { type: "string" }, verificationUri: { type: "string" }, expiresInSeconds: { type: "number" } }, additionalProperties: false },
+        { type: "object", required: ["type", "message"], properties: { type: { const: "info" }, message: { type: "string" }, links: { type: "array", items: { type: "object", required: ["url"], properties: { url: { type: "string" }, label: { type: "string" } }, additionalProperties: false } } }, additionalProperties: false },
+        { type: "object", required: ["type", "message"], properties: { type: { const: "progress" }, message: { type: "string" } }, additionalProperties: false },
+      ] },
+      ProviderLoginPrompt: { type: "object", required: ["id", "type", "message"], properties: {
+        id: { type: "string" }, type: { enum: ["text", "secret", "select", "manual_code"], description: "manual_code: paste the final redirect URL or the authorization code." },
+        message: { type: "string" }, placeholder: { type: "string" },
+        options: { type: "array", items: { type: "object", required: ["id", "label"], properties: { id: { type: "string" }, label: { type: "string" }, description: { type: "string" } }, additionalProperties: false } },
+      }, additionalProperties: false },
+      ProviderLogin: { type: "object", required: ["id", "provider", "method", "state", "steps"], properties: {
+        id: { type: "string" }, provider: { type: "string" }, method: ref("ProviderAuthMethod"),
+        state: { enum: ["running", "succeeded", "failed", "cancelled"] },
+        steps: { type: "array", items: ref("ProviderLoginStep"), description: "What the provider showed, in order." },
+        prompt: { ...ref("ProviderLoginPrompt"), description: "The question waiting for an answer, while running." },
+        error: { type: "string", description: "Why it failed; on success, a warning that the model list could not be refreshed." },
+      }, additionalProperties: false },
+      ProviderLoginStart: { type: "object", required: ["provider", "method"], properties: { provider: { type: "string", minLength: 1, maxLength: 200 }, method: ref("ProviderAuthMethod") }, additionalProperties: false },
+      ProviderLoginAnswer: { type: "object", required: ["promptId", "value"], properties: { promptId: { type: "string", minLength: 1, maxLength: 64 }, value: { type: "string", maxLength: 16384 } }, additionalProperties: false },
       CompanionGreeting: { type: "object", required: ["greeting", "hint"], properties: { greeting: { type: "string" }, hint: { type: "string" } }, additionalProperties: false },
-      SessionCommandInput: { type: "object", required: ["command"], properties: { command: { enum: ["compact", "reload"] }, args: { type: "string", maxLength: 4000, description: "compact: optional summary instructions." } }, additionalProperties: false },
+      SessionCommandInput: { type: "object", required: ["command"], properties: {
+        command: { enum: ["compact", "reload", "extension"] },
+        args: { type: "string", maxLength: 4000, description: "compact: optional summary instructions. extension: the command's arguments." },
+        name: { type: "string", minLength: 1, maxLength: 128, pattern: "^[^\\s/]+$", description: "extension: the command name without the leading /." },
+      }, additionalProperties: false },
+      CommandPrompt: { type: "object", required: ["promptId", "command", "kind", "title", "expiresAt"], description: "A dialog an extension command opened. While it is open the command's 3-minute limit is paused; unanswered, it closes after 10 minutes or the extension's own shorter timeout.", properties: {
+        promptId: { type: "string" }, command: { type: "string", description: "Command name without the leading /." },
+        kind: { enum: ["select", "confirm", "input", "editor"] }, title: { type: "string" },
+        message: { type: "string", description: "confirm only." }, options: { type: "array", items: { type: "string" }, description: "select only; answered by value." },
+        placeholder: { type: "string", description: "input only." }, prefill: { type: "string", description: "editor only." },
+        expiresAt: { type: "integer", description: "Milliseconds since the epoch." },
+      }, additionalProperties: false },
+      CommandPromptAnswer: { type: "object", required: ["promptId"], properties: {
+        promptId: { type: "string", minLength: 1, maxLength: 64 },
+        cancel: { type: "boolean", description: "Close the dialog without an answer." },
+        value: { type: "string", maxLength: 65536, description: "select, input and editor." },
+        confirmed: { type: "boolean", description: "confirm." },
+      }, additionalProperties: false },
+      CommandOutputLine: { type: "object", required: ["level", "text"], properties: { level: { enum: ["info", "warning", "error"] }, text: { type: "string" } }, additionalProperties: false },
       SessionCommandResult: { oneOf: [
         { type: "object", required: ["command", "tokensBefore"], properties: { command: { const: "compact" }, tokensBefore: { type: "number", minimum: 0 }, tokensAfter: { type: "number", minimum: 0 } }, additionalProperties: false },
         { type: "object", required: ["command", "contextFiles", "promptTemplates", "skills", "extensions"], properties: { command: { const: "reload" }, contextFiles: { type: "integer", minimum: 0 }, promptTemplates: { type: "integer", minimum: 0 }, skills: { type: "integer", minimum: 0 }, extensions: { type: "integer", minimum: 0 } }, additionalProperties: false },
+        { type: "object", required: ["command", "name", "output"], properties: { command: { const: "extension" }, name: { type: "string" }, output: { type: "array", items: ref("CommandOutputLine"), description: "Notifications, widgets and status lines the command showed, in order; ANSI colors removed." } }, additionalProperties: false },
       ] },
       ExportMessage: { type: "object", required: ["role", "text"], properties: { id: { type: "string", description: "Preserved legacy host message id, if any." }, sourceId: { type: "string", description: "Pi JSONL message-entry id. When present, exactly matches timeline.messageId; image-only messages have one too." }, role: { enum: ["user", "assistant"] }, text: { type: "string" }, images: { type: "array", items: ref("ImageInput") } }, additionalProperties: false },
       ExecutionSnapshot: { type: "object", required: ["scope", "coverage", "totalLoops", "totalTurns", "recordedLoops", "recordedTurns"], properties: {
@@ -676,6 +782,7 @@ export const openapiV1 = {
         { type: "object", required: ["id", "type", "messageId", "turnId", "callId", "toolCallId", "toolName", "args", "status", "order"], properties: { id: { type: "string" }, type: { const: "tool_call" }, messageId: { type: "string" }, turnId: { type: ["string", "null"] }, callId: { type: "string", description: "SDK tool-call id; use as the SSE deduplication key." }, toolCallId: { type: "string" }, toolName: { type: "string" }, args: {}, status: { enum: ["completed", "error", "no_result"] }, order: { type: "integer", minimum: 0 }, timestamp: { type: "string" } }, additionalProperties: false },
         { type: "object", required: ["id", "type", "messageId", "turnId", "callId", "toolCallId", "toolName", "result", "isError", "order"], properties: { id: { type: "string" }, type: { const: "tool_result" }, messageId: { type: ["string", "null"] }, turnId: { type: ["string", "null"] }, callId: { type: "string" }, toolCallId: { type: "string" }, toolName: { type: "string" }, result: {}, isError: { type: "boolean" }, durationMs: { type: ["number", "null"], minimum: 0 }, nestedCalls: ref("NestedToolCalls"), order: { type: "integer", minimum: 0 }, timestamp: { type: "string" } }, additionalProperties: false },
         { type: "object", required: ["id", "type", "event", "from", "to", "reason", "order"], properties: { id: { type: "string" }, type: { const: "system_event" }, event: { const: "model_failback" }, from: { type: "string" }, to: { type: "string" }, reason: { type: "string" }, order: { type: "integer", minimum: 0 }, timestamp: { type: "string" } }, additionalProperties: false },
+        { type: "object", required: ["id", "type", "version", "name", "args", "output", "failed", "entryId", "timestamp", "order"], description: "An extension command run from the Web composer.", properties: { id: { type: "string" }, type: { const: "command_output" }, version: { const: 1 }, name: { type: "string" }, args: { type: "string" }, output: { type: "array", items: ref("CommandOutputLine") }, failed: { type: "boolean", description: "The command threw; its message is the last error line." }, entryId: { type: "string" }, timestamp: { type: "string" }, order: { type: "integer", minimum: 0 } }, additionalProperties: false },
       ] },
       SteeringIdentity: { type: "object", required: ["controlId", "acknowledgementId", "requestId"], properties: { controlId: { type: "string", minLength: 1, maxLength: 128 }, acknowledgementId: { type: "string", minLength: 1, maxLength: 128 }, requestId: { type: "string", maxLength: 128 } }, additionalProperties: false },
       SteeringInput: { type: "object", required: ["text"], properties: { text: { type: "string", maxLength: 32768 }, controlId: { type: "string", minLength: 1, maxLength: 128 }, acknowledgementId: { type: "string", minLength: 1, maxLength: 128 }, requestId: { type: "string", maxLength: 128 }, images: { type: "array", maxItems: 4, items: ref("ImageInput") } }, anyOf: [{ required: ["controlId", "acknowledgementId", "requestId"] }, { not: { anyOf: [{ required: ["controlId"] }, { required: ["acknowledgementId"] }, { required: ["requestId"] }, { required: ["images"] }] } }], additionalProperties: false, description: "Legacy text-only or complete correlated identity, optionally with images. File attachments are not supported. Admission is not consumption." },
@@ -696,6 +803,9 @@ export const openapiV1 = {
         { type: "object", required: ["type", "revision"], properties: { type: { const: "subagents_changed" }, revision: { type: "integer", minimum: 0 } }, additionalProperties: false,
           description: "Subagent records or live output moved: a transcript entry (start, message, steer, end), a live partial, or a legacy collected-log tool result. Coalesced to at most one per 250 ms with the final change always sent; also sent while the parent is idle and children run in the background. Carries no run data: read GET /v1/sessions/{id}/subagents. Session-level, never request-owned." },
         { type: "object", required: ["type", "version", "notificationId", "runIds", "text", "entryId", "timestamp"], properties: { type: { const: "notification" }, version: { const: 1 }, notificationId: { type: "string", format: "uuid" }, runIds: { type: "array", minItems: 1, items: { type: "string", minLength: 1 } }, text: { type: "string" }, entryId: { type: "string" }, timestamp: { type: "string" } }, additionalProperties: false },
+        { type: "object", required: ["type", "prompt"], description: "An extension command opened a dialog. Session-level, no requestId.", properties: { type: { const: "command_prompt" }, prompt: ref("CommandPrompt") }, additionalProperties: false },
+        { type: "object", required: ["type", "promptId", "reason"], description: "The dialog closed for every page. Session-level, no requestId.", properties: { type: { const: "command_prompt_closed" }, promptId: { type: "string" }, reason: { enum: ["answered", "cancelled", "timeout"] } }, additionalProperties: false },
+        { type: "object", required: ["type", "version", "name", "args", "output", "failed", "entryId", "timestamp"], description: "An extension command's output, recorded in the session. Session-level, no requestId.", properties: { type: { const: "command_output" }, version: { const: 1 }, name: { type: "string" }, args: { type: "string" }, output: { type: "array", items: ref("CommandOutputLine") }, failed: { type: "boolean", description: "The command threw; its message is the last error line." }, entryId: { type: "string" }, timestamp: { type: "string" } }, additionalProperties: false },
         { type: "object", required: ["type", "text"], properties: { type: { const: "text_delta" }, text: { type: "string" }, requestId: { type: "string" } }, additionalProperties: false },
         { type: "object", required: ["type", "text"], properties: { type: { const: "thinking_delta" }, text: { type: "string" }, requestId: { type: "string" } }, additionalProperties: false },
         { type: "object", required: ["type", "ordinal", "phase", "tokensPerSecondEstimate", "includesThinking"], properties: {

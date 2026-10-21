@@ -51,7 +51,7 @@ describe("Pi export tool timeline", () => {
     ] as any;
     const snapshot = projectExportSnapshot([], branch);
 
-    expect(snapshot.timeline.map((item) => item.type === "tool_call" ? `${item.type}:${item.callId}:${item.status}` : item.type === "tool_result" ? `${item.type}:${item.callId}` : item.type === "message" || item.type === "thinking" ? `${item.type}:${item.text}` : item.type === "system_event" ? `${item.type}:${item.event}` : `${item.type}:${item.notificationId}`)).toEqual([
+    expect(snapshot.timeline.map((item) => item.type === "tool_call" ? `${item.type}:${item.callId}:${item.status}` : item.type === "tool_result" ? `${item.type}:${item.callId}` : item.type === "message" || item.type === "thinking" ? `${item.type}:${item.text}` : item.type === "system_event" ? `${item.type}:${item.event}` : item.type === "command_output" ? `${item.type}:${item.name}` : `${item.type}:${item.notificationId}`)).toEqual([
       "message:run", "message:before", "thinking:private", "tool_call:call-a:error", "message:between", "tool_call:call-b:completed", "tool_result:call-b", "tool_result:call-a", "tool_call:call-aborted:no_result",
     ]);
     expect(snapshot.timeline).toContainEqual(expect.objectContaining({ type: "thinking", text: "private", messageId: "a1", turnId: "u1", order: 2 }));

@@ -817,7 +817,10 @@ export function useWebAppController() {
     return activeProjectId ? (await api.searchProjectFiles(activeProjectId, query)).entries : [];
   }, [api, activeSessionId, activeProjectId]);
 
-  /** /compact reports through its compaction events; /reload returns what it loaded. */
+  /**
+   * /compact reports through its compaction events; /reload returns what it loaded; an extension
+   * command's output reaches the timeline as a command_output event.
+   */
   async function runCommand(input: SessionCommandInput): Promise<string | null> {
     if (!activeSessionId) return null;
     try {
@@ -830,8 +833,15 @@ export function useWebAppController() {
       let parsed: { message?: unknown; code?: unknown } = {};
       try { parsed = body ? JSON.parse(body) : {}; } catch { /* non-JSON body */ }
       if (parsed.code === "COMMAND_ABORTED") return zhCN.composer.compactCancelled;
-      throw new Error(typeof parsed.message === "string" && parsed.message ? zhCN.composer.commandFailed(input.command, parsed.message) : error.message);
+      const typed = input.command === "extension" ? input.name ?? "" : input.command;
+      throw new Error(typeof parsed.message === "string" && parsed.message ? zhCN.composer.commandFailed(typed, parsed.message) : error.message);
     }
+  }
+
+  /** First answer wins; a 409 means another page answered, or the question closed. */
+  async function answerCommandPrompt(answer: import("pi-agent-server/client").CommandPromptAnswer): Promise<void> {
+    if (!activeSessionId) return;
+    await api.answerCommandPrompt(activeSessionId, answer);
   }
 
   function clearEventLog(): void {
@@ -857,7 +867,7 @@ export function useWebAppController() {
   }
 
   return {
-    api, inspectionRefreshKey, stepsPosition, subagentsPosition,
+    api, inspectionRefreshKey, stepsPosition, subagentsPosition, answerCommandPrompt,
     sessions,
     canWrite: access?.canWrite === true,
     projectAllowsCreation,

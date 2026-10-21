@@ -273,7 +273,7 @@ describe("public host API v1 contract", () => {
     try {
       await app.ready();
       for (const [path, method, permission] of PUBLIC_API_OPERATIONS) {
-        const fastifyPath = path.replaceAll("{id}", ":id").replaceAll("{controlId}", ":controlId").replaceAll("{name}", ":name");
+        const fastifyPath = path.replace(/\{(\w+)\}/g, ":$1");
         expect(app.hasRoute({ method: method.toUpperCase(), url: fastifyPath })).toBe(true);
         const documented = document.paths[path]![method]!;
         expect(documented["x-pi-rbac"]).toEqual({ permission, roles: ROUTE_PERMISSIONS[permission] });
@@ -375,7 +375,10 @@ describe("public host API v1 contract", () => {
       "PATCH /v1/sessions/{id}/config",
       "POST /v1/projects",
       "POST /v1/projects/{id}/companion/greeting",
+      "POST /v1/provider-auth/logins",
+      "POST /v1/provider-auth/logins/{id}/answer",
       "POST /v1/sessions",
+      "POST /v1/sessions/{id}/command-prompt",
       "POST /v1/sessions/{id}/commands",
       "POST /v1/sessions/{id}/control-queue/{controlId}/promote",
       "POST /v1/sessions/{id}/follow-ups",

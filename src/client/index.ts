@@ -1,11 +1,14 @@
 export type { ControlIdentity, ControlQueueItem, ControlQueueSnapshot } from "../shared/control-queue.js";
 export type { SubagentRun, SubagentSnapshot, SubagentConversation, SubagentInput } from "../shared/subagents.js";
 export type { SteeringInput } from "../shared/steering.js";
-export type { ProjectFileEntry, ProjectFileSearch, SessionCommandInfo, SessionCommandList, SessionCommandInput, SessionCommandResult } from "../shared/commands.js";
+export type { ProjectFileEntry, ProjectFileSearch, SessionCommandInfo, SessionCommandList, SessionCommandInput, SessionCommandResult, CommandOutputLine, CommandPrompt, CommandPromptAnswer } from "../shared/commands.js";
 export type { CompanionGreeting, CompanionGreetingInput, CompanionPersonaRecord } from "../shared/companion.js";
 export type { McpConnection, McpExposure, ProjectMcpServer, ProjectMcpServerInput, ProjectMcpSettings } from "../shared/project-mcp.js";
 export type { SharedMcpList, SharedMcpServer, SharedMcpServerConfig, SharedMcpServerInput } from "../shared/shared-mcp.js";
 export { SHARED_MCP_MASK } from "../shared/shared-mcp.js";
+export type {
+  ProviderAuthEntry, ProviderAuthList, ProviderAuthMethod, ProviderLogin, ProviderLoginAnswer, ProviderLoginPrompt, ProviderLoginStart, ProviderLoginStep,
+} from "../shared/provider-auth.js";
 export { DEFAULT_PROJECT_ID } from "../shared/project-identity.js";
 export * from "./api.js";
 export * from "./session-title.js";

@@ -111,3 +111,21 @@ export function createSessionCommandLister(options: { loaderCwd: string; agentDi
     return commands;
   };
 }
+
+/**
+ * Commands the explicitly loaded Pi extensions registered (pi.registerCommand), read once from an
+ * already loaded ResourceLoader. Names that collide with a built-in are left out: the built-in wins.
+ */
+export function extensionCommandsOf(loader: { getExtensions(): { extensions: readonly { commands?: ReadonlyMap<string, { name: string; description?: string }> }[] } }): SessionCommandInfo[] {
+  const builtinNames = new Set(BUILTIN_SESSION_COMMANDS.map(command => command.name));
+  const seen = new Set<string>();
+  const commands: SessionCommandInfo[] = [];
+  for (const extension of loader.getExtensions().extensions) {
+    for (const command of extension.commands?.values() ?? []) {
+      if (builtinNames.has(command.name) || seen.has(command.name)) continue;
+      seen.add(command.name);
+      commands.push({ name: command.name, source: "extension", description: command.description ?? "" });
+    }
+  }
+  return commands;
+}

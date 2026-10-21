@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { createChatState, applySseEvent, addUserMessage } from "pi-agent-server/client";
+import { createChatState, applySseEvent, addUserMessage, createChatStore } from "pi-agent-server/client";
 import type { ChatState, SseEvent } from "pi-agent-server/client";
 
 /** 从初始状态依次应用一组事件。 */
@@ -229,5 +229,46 @@ describe("chat-state（SSE 事件 → 时间线 UI 状态映射）", () => {
     const s1 = applySseEvent(s0, { type: "text_delta", text: "hi" });
     expect(s0.timeline).toEqual([]);
     expect(s1).not.toBe(s0);
+  });
+});
+
+describe("extension command output", () => {
+  it("adds one system entry per recorded run, whoever ran it and whatever request is active", () => {
+    const event: SseEvent = { type: "command_output", version: 1, name: "antigravity.usage", args: "", failed: false,
+      output: [{ level: "info", text: "Gemini 80%" }], entryId: "e1", timestamp: "2026-10-19T10:00:00Z" };
+    const busy = { ...createChatState(), phase: "streaming" as const, activeRequestId: "r1" };
+    const once = applySseEvent(busy, event);
+    expect(once.timeline).toEqual([{ kind: "command", id: "command:e1", version: 1, name: "antigravity.usage", args: "", failed: false,
+      output: [{ level: "info", text: "Gemini 80%" }], entryId: "e1", timestamp: "2026-10-19T10:00:00Z" }]);
+    expect(once.phase).toBe("streaming");
+    expect(applySseEvent(once, event).timeline).toHaveLength(1);
+  });
+});
+
+describe("extension command questions", () => {
+  const prompt = { promptId: "p1", command: "workbuddy", kind: "select" as const, title: "Plan", options: ["free", "all"], expiresAt: 1 };
+
+  it("keeps a question answered elsewhere on screen until the output arrives, and drops cancelled ones", () => {
+    const asked = applySseEvent(createChatState(), { type: "command_prompt", prompt });
+    expect(asked.commandPrompt).toEqual({ prompt });
+    expect(applySseEvent(asked, { type: "command_prompt_closed", promptId: "other", reason: "answered" })).toBe(asked);
+    const answered = applySseEvent(asked, { type: "command_prompt_closed", promptId: "p1", reason: "answered" });
+    expect(answered.commandPrompt).toEqual({ prompt, closed: "answered" });
+    const done = applySseEvent(answered, { type: "command_output", version: 1, name: "workbuddy", args: "", failed: false, output: [], entryId: "e1", timestamp: "t" });
+    expect(done.commandPrompt).toBeNull();
+    expect(applySseEvent(asked, { type: "command_prompt_closed", promptId: "p1", reason: "timeout" }).commandPrompt).toBeNull();
+  });
+
+  it("restores the open question on (re)connect without undoing a newer close", () => {
+    const store = createChatStore();
+    store.restoreCommandPrompt(prompt);
+    expect(store.getState().commandPrompt).toEqual({ prompt });
+    store.applyEvent({ type: "command_prompt_closed", promptId: "p1", reason: "answered" });
+    store.restoreCommandPrompt(null);
+    expect(store.getState().commandPrompt).toEqual({ prompt, closed: "answered" });
+    store.applyEvent({ type: "command_prompt_closed", promptId: "p1", reason: "cancelled" });
+    store.restoreCommandPrompt(prompt);
+    store.restoreCommandPrompt(null);
+    expect(store.getState().commandPrompt).toBeNull();
   });
 });

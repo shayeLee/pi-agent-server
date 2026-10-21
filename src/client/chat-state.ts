@@ -27,6 +27,11 @@ export type ChatState = {
   /** Only observed tool_start lifecycle for the active request, not historical timeline cards. */
   activeToolCallIds?: string[];
   compaction?: import("../shared/events.js").CompactionState | null;
+  /**
+   * The dialog an extension command is waiting on. `closed: "answered"` keeps it on screen, marked as
+   * answered elsewhere, until the command's output arrives; cancelled or timed-out questions just go.
+   */
+  commandPrompt?: { prompt: import("../shared/commands.js").CommandPrompt; closed?: "answered" } | null;
 };
 
 export function createChatState(): ChatState {
@@ -59,7 +64,7 @@ export function addUserMessage(state: ChatState, text: string, messageId?: strin
 /** Notifications are display-only. Missing IDs retain the legacy session-stream contract.
  * A new lifecycle may claim an idle/terminal state, but cannot steal an active request. */
 export function ownsSseEvent(state: ChatState, event: SseEvent): boolean {
-  if (event.type === "notification") return false;
+  if (event.type === "notification" || event.type === "command_output" || event.type === "command_prompt" || event.type === "command_prompt_closed") return false;
   if ((event.type === "compaction_start" || event.type === "compaction_end") && event.requestId &&
       state.retiredRequestIds?.includes(event.requestId)) return false;
   if (!event.requestId || !state.activeRequestId) return true;
@@ -79,7 +84,7 @@ export function mergeExecution(previous: import("./types.js").ExecutionSnapshot 
 
 /** Map one SSE event to a new ChatState without mutating the previous state. */
 export function applySseEvent(state: ChatState, event: SseEvent, now: () => number = () => performance.now()): ChatState {
-  if (event.type !== "notification") {
+  if (event.type !== "notification" && event.type !== "command_output" && event.type !== "command_prompt" && event.type !== "command_prompt_closed") {
     if (!ownsSseEvent(state, event)) {
       // Record a foreign failure, without ending the active answer or clearing its progress.
       return event.type === "error" ? { ...state, error: event.message } : state;
@@ -100,6 +105,20 @@ export function applySseEvent(state: ChatState, event: SseEvent, now: () => numb
       const item: TimelineItem = { ...notification, kind: "notification", id: `notification:${event.notificationId}` };
       const exists = state.timeline.some(row => row.id === item.id);
       return { ...state, timeline: exists ? state.timeline.map(row => row.id === item.id ? item : row) : [...state.timeline, item] };
+    }
+    case "command_output": {
+      const { type: _type, ...record } = event;
+      const item: TimelineItem = { ...record, kind: "command", id: `command:${event.entryId}` };
+      const exists = state.timeline.some(row => row.id === item.id);
+      // The command finished: whatever it asked is settled.
+      return { ...state, commandPrompt: null, timeline: exists ? state.timeline.map(row => row.id === item.id ? item : row) : [...state.timeline, item] };
+    }
+    case "command_prompt":
+      return { ...state, commandPrompt: { prompt: event.prompt } };
+    case "command_prompt_closed": {
+      const current = state.commandPrompt;
+      if (!current || current.prompt.promptId !== event.promptId) return state;
+      return { ...state, commandPrompt: event.reason === "answered" ? { ...current, closed: "answered" } : null };
     }
     case "steering_consumed": {
       const message = event.message;

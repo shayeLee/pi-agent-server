@@ -74,6 +74,13 @@ export interface AgentAdapter {
 
   subscribeNotifications?(listener: (event: import("./subagent-notification.js").NotificationEvent) => void): () => void;
 
+  /** 扩展命令的输出（已记进会话）。 */
+  subscribeCommandEvents?(listener: (event: import("./pi-agent-adapter.js").CommandEvent) => void): () => void;
+
+  /** 扩展命令正在等待回答的问题（对话框）。 */
+  getCommandPrompt?(): import("../shared/commands.js").CommandPrompt | null;
+  answerCommandPrompt?(answer: import("../shared/commands.js").CommandPromptAnswer): "ok" | "stale" | "invalid";
+
   /** 订阅同一 session ResourceLoader 的 model-failback 生命周期（可选扩展能力）。 */
   subscribeFailbackLifecycle?(listener: (event: FailbackLifecycleEvent) => void): () => void;
 

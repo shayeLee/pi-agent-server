@@ -14,6 +14,14 @@ import type { AgentSdkEvent } from "./events.js";
 import type { SessionCommandInput, SessionCommandResult } from "../shared/commands.js";
 import { SUBAGENT_HOST_TRANSPORT_EVENT, isSubagentHostTransportHandshake, type SubagentHostTransport, type ExtensionCustomMessage } from "./subagent-host-transport.js";
 import { notificationFromEntry } from "./subagent-notification.js";
+import { COMMAND_OUTPUT_ENTRY_TYPE, commandOutputFromEntry } from "./command-output.js";
+import type { CommandOutputEvent, CommandPromptClosedEvent, CommandPromptEvent } from "../shared/events.js";
+import type { CommandOutputLine, CommandOutputRecord, CommandPrompt, CommandPromptAnswer } from "../shared/commands.js";
+import { randomUUID } from "node:crypto";
+
+/** 扩展命令发给页面的事件。 */
+export type CommandEvent = CommandOutputEvent | CommandPromptEvent | CommandPromptClosedEvent;
+type DialogOptions = { signal?: AbortSignal; timeout?: number };
 import { ModelOutputSampler, type ModelOutputProgress } from "./model-output-sampler.js";
 import { EMPTY_USAGE_TOKENS, addUsageTokens, cacheHitPercent, nonnegative, responseSpeed, type LastResponseUsage, type PromptUsage, type UsageSnapshot, type UsageTokens } from "../core/usage-snapshot.js";
 import type { Usage } from "@earendil-works/pi-ai";
@@ -56,7 +64,13 @@ export type SdkImageContent = {
 export type AgentSessionLike = {
   prompt(text: string, options?: { images?: SdkImageContent[] }): Promise<void>;
   /** 用来在 dispose 前发出 session_shutdown（Pi 的 dispose 自己不发）。 */
-  readonly extensionRunner?: { hasHandlers(eventType: string): boolean; emit(event: { type: "session_shutdown"; reason: "reload" }): Promise<unknown> };
+  readonly extensionRunner?: {
+    hasHandlers(eventType: string): boolean; emit(event: { type: "session_shutdown"; reason: "reload" }): Promise<unknown>;
+    /** 扩展命令（Web 的 / 菜单）。 */
+    getCommand?(name: string): { handler(args: string, ctx: unknown): Promise<void> | void } | undefined;
+    createCommandContext?(): unknown;
+    setUIContext?(uiContext: object | undefined, mode?: "tui" | "rpc" | "json" | "print"): void;
+  };
   readonly isStreaming?: boolean;
   sendCustomMessage?(message: ExtensionCustomMessage, options: { deliverAs: "followUp"; triggerTurn: true }): Promise<void>;
   steer(text: string, images?: SdkImageContent[]): Promise<unknown>;
@@ -96,7 +110,7 @@ export type AgentSessionLike = {
   getSessionStats?(): { tokens: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number }; cost: number };
   getContextUsage?(): { tokens: number | null; contextWindow: number; percent: number | null } | undefined;
   /** SDK public session manager gives the active JSONL branch and its stable entry ids. */
-  sessionManager?: Pick<SessionManager, "getBranch"> & Partial<Pick<SessionManager, "getEntries" | "appendCustomEntry" | "getLeafId">>;
+  sessionManager?: Pick<SessionManager, "getBranch"> & Partial<Pick<SessionManager, "getEntries" | "appendCustomEntry" | "getLeafId" | "getEntry">>;
   /** SDK 当前状态；恢复时 transcript 解析后的值在这里可见。 */
   model?: { provider?: string; id?: string };
   thinkingLevel?: string;
@@ -104,6 +118,12 @@ export type AgentSessionLike = {
 
 /** 按 provider + modelId 取模型（Model 结构隔离，避免 SDK 类型入接口）。 */
 export type GetModel = (provider: string, modelId: string) => unknown;
+
+const LEVELS: ReadonlySet<string> = new Set(["info", "warning", "error"]);
+/** 扩展命令最长等多久；超时后会话恢复可用，命令自己的后续输出不再收集。 */
+const EXTENSION_COMMAND_LIMIT_MS = 3 * 60_000;
+/** 扩展命令的一个问题最多等多久（扩展自己给了更短的 timeout 时用它的）。 */
+const COMMAND_PROMPT_LIMIT_MS = 10 * 60_000;
 
 /** dispose 时等扩展处理 session_shutdown 的上限。 */
 const SESSION_SHUTDOWN_LIMIT_MS = 5000;
@@ -637,8 +657,9 @@ export class PiAgentAdapter implements AgentAdapter {
     this.session.setThinkingLevel(level);
   }
 
-  /** Pi's /compact and /reload. The runtime only calls this while no prompt is active. */
+  /** Pi's /compact and /reload, and extension commands. The runtime only calls this while no prompt is active. */
   async runCommand(input: SessionCommandInput): Promise<SessionCommandResult> {
+    if (input.command === "extension") return this.runExtensionCommand(input.name ?? "", input.args?.trim() ?? "");
     if (input.command === "compact") {
       if (!this.session.compact) throw new Error("会话不支持手动压缩");
       const instructions = input.args?.trim();
@@ -659,6 +680,145 @@ export class PiAgentAdapter implements AgentAdapter {
     return { command: "reload", contextFiles: loader?.getAgentsFiles().agentsFiles.length ?? 0,
       promptTemplates: loader?.getPrompts().prompts.length ?? 0, skills: loader?.getSkills().skills.length ?? 0,
       extensions: loader?.getExtensions().extensions.length ?? 0 };
+  }
+
+  /**
+   * 扩展命令（例如 /antigravity.usage）。服务端平时不给扩展 UI（hasUI 为 false，对话框直接得到“无 UI”的结果），
+   * 只在命令执行期间换上一个 Web 用的 UI：notify、setWidget、setStatus 记成输出行；select、confirm、input、editor
+   * 挂起一个问题推给页面，等任意一个能操作会话的页面回答（先答先得），超时或被取消时按关掉对话框处理；
+   * custom（终端界面）做不到，记一行说明。执行完换回原来的 UI。输出作为 custom 条目记进会话（不进模型上下文）。
+   */
+  private async runExtensionCommand(name: string, args: string): Promise<SessionCommandResult> {
+    const runner = this.session.extensionRunner;
+    const command = runner?.getCommand?.(name);
+    if (!runner || !command || !runner.createCommandContext || !runner.setUIContext) throw new Error(`没有扩展命令 /${name}`);
+    const output: CommandOutputLine[] = [];
+    let closed = false;
+    const push = (level: CommandOutputLine["level"], text: string) => {
+      if (closed) return;
+      // 扩展给终端准备的颜色码在页面上没用。
+      const clean = text.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, "").replace(/\s+$/, "");
+      if (clean.trim()) output.push({ level, text: clean });
+    };
+    // 扩展自己的网络请求可能不设超时；会话不能因此一直被命令占着。等人回答的时间不算，回答后重新计时。
+    let limitTimer: ReturnType<typeof setTimeout> | undefined;
+    let fireLimit: () => void = () => {};
+    const limit = new Promise<"timeout">(resolve => { fireLimit = () => resolve("timeout"); });
+    const resumeLimit = () => { clearTimeout(limitTimer); limitTimer = setTimeout(fireLimit, EXTENSION_COMMAND_LIMIT_MS); limitTimer.unref?.(); };
+    const pauseLimit = () => clearTimeout(limitTimer);
+
+    const ask = <T>(fields: Omit<CommandPrompt, "promptId" | "command" | "expiresAt">, opts: DialogOptions | undefined, fallback: T,
+      read: (answer: CommandPromptAnswer) => T): Promise<T> => {
+      if (closed || opts?.signal?.aborted) return Promise.resolve(fallback);
+      if (this.pendingPrompt) {
+        push("warning", `这个命令同时打开了两个对话框，后一个（${fields.title}）已按取消处理`);
+        return Promise.resolve(fallback);
+      }
+      const wait = opts?.timeout && opts.timeout > 0 ? Math.min(opts.timeout, COMMAND_PROMPT_LIMIT_MS) : COMMAND_PROMPT_LIMIT_MS;
+      const prompt: CommandPrompt = { promptId: randomUUID(), command: name, ...fields, expiresAt: Date.now() + wait };
+      return new Promise<T>(resolve => {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const finish = (reason: CommandPromptClosedEvent["reason"], value: T) => {
+          if (this.pendingPrompt?.prompt.promptId !== prompt.promptId) return;
+          this.pendingPrompt = null;
+          clearTimeout(timer);
+          opts?.signal?.removeEventListener("abort", onAbort);
+          if (reason === "timeout") push("warning", `“${prompt.title}”没有人回答，已按取消处理`);
+          this.emitCommandEvent({ type: "command_prompt_closed", promptId: prompt.promptId, reason });
+          if (!closed) resumeLimit();
+          resolve(value);
+        };
+        const onAbort = () => finish("cancelled", fallback);
+        this.pendingPrompt = {
+          prompt,
+          settle: answer => answer === "cancelled" ? finish("cancelled", fallback)
+            : answer.cancel ? finish("cancelled", fallback) : finish("answered", read(answer)),
+        };
+        timer = setTimeout(() => finish("timeout", fallback), wait);
+        timer.unref?.();
+        opts?.signal?.addEventListener("abort", onAbort, { once: true });
+        pauseLimit();
+        this.emitCommandEvent({ type: "command_prompt", prompt });
+      });
+    };
+
+    const internals = runner as unknown as { uiContext?: object; mode?: "tui" | "rpc" | "json" | "print" };
+    const previous = { uiContext: internals.uiContext, mode: internals.mode };
+    runner.setUIContext({
+      ...previous.uiContext,
+      notify: (message: string, type: CommandOutputLine["level"] = "info") => push(LEVELS.has(type) ? type : "info", String(message)),
+      setStatus: (_key: string, text: string | undefined) => { if (text) push("info", text); },
+      setWidget: (_key: string, content: unknown) => { if (Array.isArray(content)) push("info", content.map(String).join("\n")); },
+      select: (title: string, options: string[], opts?: DialogOptions) =>
+        ask({ kind: "select", title: String(title), options: options.map(String) }, opts, undefined as string | undefined, answer => answer.value),
+      confirm: (title: string, message: string, opts?: DialogOptions) =>
+        ask({ kind: "confirm", title: String(title), ...(message ? { message: String(message) } : {}) }, opts, false, answer => answer.confirmed === true),
+      input: (title: string, placeholder?: string, opts?: DialogOptions) =>
+        ask({ kind: "input", title: String(title), ...(placeholder ? { placeholder: String(placeholder) } : {}) }, opts, undefined as string | undefined, answer => answer.value),
+      editor: (title: string, prefill?: string) =>
+        ask({ kind: "editor", title: String(title), ...(prefill ? { prefill: String(prefill) } : {}) }, undefined, undefined as string | undefined, answer => answer.value),
+      custom: async () => { push("warning", "这个命令要打开终端界面，Web 上做不到，已按取消处理"); return undefined; },
+    }, previous.mode);
+    let failed = false;
+    try {
+      resumeLimit();
+      const outcome = await Promise.race([Promise.resolve(command.handler(args, runner.createCommandContext())), limit]);
+      if (outcome === "timeout") {
+        failed = true;
+        push("error", `命令超过 ${EXTENSION_COMMAND_LIMIT_MS / 60_000} 分钟没有结束，已不再等待；它之后的输出不会显示`);
+      }
+    } catch (error) {
+      failed = true;
+      push("error", error instanceof Error && error.message ? error.message : String(error));
+    } finally {
+      clearTimeout(limitTimer);
+      // 命令结束（或不再等它）时还挂着的问题一并收起。
+      this.pendingPrompt?.settle("cancelled");
+      closed = true;
+      internals.uiContext = previous.uiContext;
+      internals.mode = previous.mode;
+    }
+    this.recordCommandOutput({ version: 1, name, args, output, failed });
+    return { command: "extension", name, output };
+  }
+
+  /** 扩展命令正在等待回答的问题；同一时间最多一个。 */
+  private pendingPrompt: { prompt: CommandPrompt; settle(answer: CommandPromptAnswer | "cancelled"): void } | null = null;
+
+  getCommandPrompt(): CommandPrompt | null {
+    return this.pendingPrompt?.prompt ?? null;
+  }
+
+  /** 先答先得：问题已经被别的页面回答、取消或超时，返回 stale。 */
+  answerCommandPrompt(answer: CommandPromptAnswer): "ok" | "stale" | "invalid" {
+    const pending = this.pendingPrompt;
+    if (!pending || pending.prompt.promptId !== answer.promptId) return "stale";
+    const { prompt } = pending;
+    if (!answer.cancel) {
+      if (prompt.kind === "confirm" ? typeof answer.confirmed !== "boolean" : typeof answer.value !== "string") return "invalid";
+      if (prompt.kind === "select" && !prompt.options?.includes(answer.value!)) return "invalid";
+    }
+    pending.settle(answer);
+    return "ok";
+  }
+
+  private readonly commandListeners = new Set<(event: CommandEvent) => void>();
+
+  private emitCommandEvent(event: CommandEvent): void {
+    for (const listener of this.commandListeners) listener(event);
+  }
+
+  private recordCommandOutput(record: CommandOutputRecord): void {
+    const manager = this.session.sessionManager;
+    if (!manager?.appendCustomEntry || !manager.getEntry) return;
+    const event = commandOutputFromEntry(manager.getEntry(manager.appendCustomEntry(COMMAND_OUTPUT_ENTRY_TYPE, record)));
+    if (event) this.emitCommandEvent(event);
+  }
+
+  /** 扩展命令的输出（已记进会话）、等待回答的问题及其收起。 */
+  subscribeCommandEvents(listener: (event: CommandEvent) => void): () => void {
+    this.commandListeners.add(listener);
+    return () => { this.commandListeners.delete(listener); };
   }
 
   abortCommand(): void {
@@ -708,6 +868,8 @@ export class PiAgentAdapter implements AgentAdapter {
     this.unsubscribeMeasurement();
     this.unsubscribeCoreQueue();
     this.queueListeners.clear();
+    this.pendingPrompt?.settle("cancelled");
+    this.commandListeners.clear();
     this.outputListeners.clear();
     this.steeringListeners.clear();
     this.requestErrorListeners.clear();

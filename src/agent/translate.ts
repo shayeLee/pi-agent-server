@@ -10,7 +10,7 @@ function parentOf(event: { parentToolCallId?: string }): { parentToolCallId?: st
   return typeof event.parentToolCallId === "string" ? { parentToolCallId: event.parentToolCallId } : {};
 }
 
-export function translateSdkEvent(event: AgentSdkEvent): Exclude<SseEvent, { type: "notification" | "steering_consumed" | "control_queue" }> | null {
+export function translateSdkEvent(event: AgentSdkEvent): Exclude<SseEvent, { type: "notification" | "command_output" | "command_prompt" | "command_prompt_closed" | "steering_consumed" | "control_queue" }> | null {
   switch (event.type) {
     case "message_update":
       // thinking_delta 映射为 SSE thinking_delta

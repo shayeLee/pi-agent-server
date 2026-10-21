@@ -10,7 +10,7 @@ import { resolveHostToolSelection, resolveSdkToolConfig } from "../agent/tool-se
 import { createMcpToolBoundaryExtension } from "../agent/mcp-tool-boundary.js";
 import { readAppendSystemPromptFile } from "./system-prompt-file.js";
 import { frozenPromptBase } from "./frozen-system-prompt.js";
-import { createSessionCommandLister } from "./session-resources.js";
+import { createSessionCommandLister, extensionCommandsOf } from "./session-resources.js";
 import { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
 import { chmodSync, copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
@@ -82,6 +82,7 @@ import { UploadService } from "../application/upload-service.js";
 import { KyselyFileOperationRepository } from "../storage/kysely-file-operation-repository.js";
 import { PiModelRuntimeCatalog } from "../model-adapters/pi-model-runtime-catalog.js";
 import { PiModelRuntimeCredentials } from "../model-adapters/pi-model-runtime-credentials.js";
+import { ProviderLogins } from "../model-adapters/pi-provider-logins.js";
 import { CapabilityRegistry, collectPromptFragmentSources } from "../application/capabilities/index.js";
 import { PluginLoader } from "../application/plugins/loader.js";
 import { registerPlugins, type PluginHost } from "./plugin-host.js";
@@ -556,6 +557,9 @@ export async function startServer(config: StartConfig) {
     appendSystemPrompt: collectPromptFragmentSources(capabilitySnapshot.promptFragments),
   };
   const probeResourceLoader = await createSessionResourceLoader({ ...unfrozenPromptOptions, resourceCwd: cwd });
+  // 显式扩展注册的命令（/antigravity.usage 等）：扩展只在这里加载过一次，命令表对所有会话相同。
+  const extensionCommands = extensionCommandsOf(probeResourceLoader);
+  const listResourceCommands = createSessionCommandLister({ loaderCwd: cwd, agentDir });
 
   // provider 扩展注册完成后才解析默认模型与插件 mode：显式接入的 provider 对二者可见。
   const configuredDefaultModel = config.defaultModel
@@ -835,6 +839,12 @@ export async function startServer(config: StartConfig) {
     // 启动失败/成功路径的幂等 storage close（抛错即进入下方 catch 的统一清理路径）。
     await config.onStorageReady?.(kysely);
 
+    // Web 上的模型登录与 pi CLI 的 /login 写同一个 auth.json。OpenAI 等 provider 登录要一个安装 ID：
+    // 用 auth.json 所在目录的 Pi settings.json 里的 deviceId，和 CLI 是同一个安装身份。
+    const providerLogins = new ProviderLogins(modelRuntime, {
+      getDeviceId: () => SettingsManager.create(cwd, path.dirname(authPath)).getOrCreateDeviceId(),
+    });
+
     app = buildApp({
     sessions,
     projects,
@@ -848,7 +858,7 @@ export async function startServer(config: StartConfig) {
     conversationStorage,
     nativeSessions,
     createAdapter: (sessionId) => sessionConversationCoordinator.createAdapter(sessionId),
-    listSessionCommands: createSessionCommandLister({ loaderCwd: cwd, agentDir }),
+    listSessionCommands: async (projectCwd: string) => [...await listResourceCommands(projectCwd), ...extensionCommands],
     ...(resolvedDefaultModel && config.companionGreeting !== false
       ? { companionGreeter: new CompanionGreeter({ complete: completeWith(modelRuntime, resolvedDefaultModel) }) }
       : {}),
@@ -856,6 +866,7 @@ export async function startServer(config: StartConfig) {
     projectMcp: { catalog: mcpHost.catalog, store: projectMcp },
     sharedMcp: { file: new SharedMcpConfigFile(mcpConfigPath), catalog: mcpHost.catalog },
     ...(mcpOAuth ? { mcpOAuth } : {}),
+    providerLogins,
     idempotencyRepo,
     uploads,
     serverEpoch: randomUUID(),
@@ -873,6 +884,7 @@ export async function startServer(config: StartConfig) {
   });
 
   app.addHook("onClose", async () => { await nativeSessions.close(); });
+  app.addHook("onClose", async () => { providerLogins.close(); });
   if (!sessionService) throw new Error("插件宿主初始化失败：SessionService 不可用");
   if (!app) throw new Error("插件宿主初始化失败：HTTP 应用不可用");
   // 清理器必须在 registerPlugins **之前**建立：registerPlugins 抛错时 app 已存在，

@@ -44,8 +44,22 @@ export type CompactionState = {
 export type SseRequestId = { readonly requestId?: string };
 /** Set on tool events of calls another tool (such as a codemode script) made. */
 export type SseParentToolCallId = { readonly parentToolCallId?: string };
+/** An extension command's output, recorded in the session (`pi-agent-server:command` entry). Session-level. */
+export type CommandOutputEvent = import("./commands.js").CommandOutputRecord & {
+  type: "command_output";
+  entryId: string;
+  timestamp: string;
+  requestId?: never;
+};
+/** An extension command is waiting for an answer (session-level). */
+export type CommandPromptEvent = { type: "command_prompt"; prompt: import("./commands.js").CommandPrompt; requestId?: never };
+/** The question was answered (by any page), cancelled, or timed out; pages close it. */
+export type CommandPromptClosedEvent = { type: "command_prompt_closed"; promptId: string; reason: "answered" | "cancelled" | "timeout"; requestId?: never };
 export type SseEvent =
   | NotificationEvent
+  | CommandOutputEvent
+  | CommandPromptEvent
+  | CommandPromptClosedEvent
   | ({ type: "compaction_start"; reason: CompactionReason; replay?: boolean } & SseRequestId)
   | ({ type: "compaction_end"; reason: CompactionReason; outcome: "succeeded" | "failed" | "aborted"; willRetry: boolean; tokensBefore?: number; tokensAfter?: number; replay?: boolean } & SseRequestId)
   | ({ type: "control_queue" } & import("./control-queue.js").ControlQueueSnapshot)

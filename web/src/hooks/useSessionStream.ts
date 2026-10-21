@@ -126,6 +126,8 @@ export function useSessionStream({
           if (ownsStream()) {
             setConnection("open");
             onOpen?.();
+            // A question an extension command asked before this page connected arrives as no event.
+            api.getCommandPrompt?.(sessionId).then(result => { if (ownsStream()) store.restoreCommandPrompt(result.prompt); }, () => {});
           }
         },
         onEpoch: epoch => {

@@ -2,6 +2,7 @@ import { zhCN } from "../i18n/zh-CN.js";
 import { memo, useRef, type ReactNode } from "react";
 import type { ChatState, TimelineItem } from "pi-agent-server/client";
 import { NotificationItem } from "./NotificationItem.js";
+import { CommandOutputItem } from "./CommandOutputItem.js";
 import { MessageItem } from "./MessageItem.js";
 import { ToolCallCard } from "./ToolCallCard.js";
 import { ThinkingRow } from "./ThinkingRow.js";
@@ -20,6 +21,8 @@ function Anchor({ item, children }: { item: TimelineItem; children: ReactNode })
 function renderItem(item: TimelineItem) {
   return <Anchor key={item.id} item={item}>{item.kind === "notification"
     ? <NotificationItem item={item} />
+    : item.kind === "command"
+    ? <CommandOutputItem item={item} />
     : item.kind === "tool"
       ? <ToolCallCard call={item.call} />
       : <MessageItem item={item} />}</Anchor>;

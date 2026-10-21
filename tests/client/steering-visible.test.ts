@@ -12,7 +12,7 @@ it("consumed closes presentation, not task; replay/history dedup uses entry ID, 
   const after = applySseEvent(state, consumed("one"));
   expect(after.phase).toBe("streaming");
   expect(after.activeRequestId).toBe("primary");
-  expect(after.timeline.filter(row => row.kind !== "tool" && row.kind !== "notification").every(row => !row.streaming)).toBe(true);
+  expect(after.timeline.filter(row => row.kind !== "tool" && row.kind !== "notification" && row.kind !== "command").every(row => !row.streaming)).toBe(true);
   expect(after.timeline.at(-1)).toMatchObject({ role: "user", text: "same", images: [{ mediaType: "image/png", base64: "safe-projection" }] });
   expect(applySseEvent(after, consumed("one"))).toBe(after);
   const second = applySseEvent(after, consumed("two"));

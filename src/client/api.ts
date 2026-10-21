@@ -172,6 +172,43 @@ export class ApiClient {
     return this.request("DELETE", `/v1/mcp/shared/${encodeURIComponent(name)}?hash=${encodeURIComponent(hash)}`);
   }
 
+  /** 扩展命令正在等待回答的问题（对话框）；没有时 prompt 为 null。 */
+  getCommandPrompt(sessionId: string): Promise<{ prompt: import("../shared/commands.js").CommandPrompt | null }> {
+    return this.request("GET", `/v1/sessions/${encodeURIComponent(sessionId)}/command-prompt`);
+  }
+
+  /** 先答先得；问题已经在别处回答、被取消或超时返回 409。 */
+  answerCommandPrompt(sessionId: string, answer: import("../shared/commands.js").CommandPromptAnswer): Promise<void> {
+    return this.request("POST", `/v1/sessions/${encodeURIComponent(sessionId)}/command-prompt`, answer);
+  }
+
+  /** 模型登录（admin）：每个 provider 的登录方式和当前状态。 */
+  listProviderAuth(): Promise<import("../shared/provider-auth.js").ProviderAuthList> {
+    return this.request("GET", "/v1/provider-auth");
+  }
+
+  /** 发起登录；之后轮询 getProviderLogin，遇到 prompt 就 answerProviderLogin，直到 state 不再是 running。 */
+  startProviderLogin(input: import("../shared/provider-auth.js").ProviderLoginStart): Promise<import("../shared/provider-auth.js").ProviderLogin> {
+    return this.request("POST", "/v1/provider-auth/logins", input);
+  }
+
+  getProviderLogin(id: string): Promise<import("../shared/provider-auth.js").ProviderLogin> {
+    return this.request("GET", `/v1/provider-auth/logins/${encodeURIComponent(id)}`);
+  }
+
+  answerProviderLogin(id: string, answer: import("../shared/provider-auth.js").ProviderLoginAnswer): Promise<import("../shared/provider-auth.js").ProviderLogin> {
+    return this.request("POST", `/v1/provider-auth/logins/${encodeURIComponent(id)}/answer`, answer);
+  }
+
+  cancelProviderLogin(id: string): Promise<import("../shared/provider-auth.js").ProviderLogin> {
+    return this.request("DELETE", `/v1/provider-auth/logins/${encodeURIComponent(id)}`);
+  }
+
+  /** 退出登录：删掉 auth.json 里这个 provider 的凭证（环境变量和 models.json 不变）。 */
+  removeProviderCredential(provider: string): Promise<import("../shared/provider-auth.js").ProviderAuthList> {
+    return this.request("DELETE", `/v1/provider-auth/credentials/${encodeURIComponent(provider)}`);
+  }
+
   /** 调用者对需要用户授权的 MCP server 的连接状态。 */
   listMcpConnections(): Promise<{ servers: import("../shared/project-mcp.js").McpConnection[] }> {
     return this.request("GET", "/v1/mcp/connections");

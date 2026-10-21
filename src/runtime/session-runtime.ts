@@ -166,6 +166,7 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
     return { kind: "ok", snapshot: this.getControlQueue() };
   }
   private readonly unsubscribeNotifications: () => void;
+  private readonly unsubscribeCommandOutput: () => void;
   private readonly unsubscribeOutputProgress: () => void;
   private readonly unsubscribeStepsChanged: () => void;
   private readonly unsubscribeSubagentsChanged: () => void;
@@ -258,6 +259,9 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
     this.unsubscribeNotifications = this.adapter.subscribeNotifications?.((event) => {
       if (!this.disposed) this.emitEvent(event);
     }) ?? (() => {});
+    this.unsubscribeCommandOutput = this.adapter.subscribeCommandEvents?.((event) => {
+      if (!this.disposed) this.emitEvent(event);
+    }) ?? (() => {});
     // Session-level, independent of any request: idle-time changes (model switch, rename) count too.
     this.unsubscribeStepsChanged = this.adapter.subscribeStepsChanged?.((position) => {
       if (!this.disposed) this.emitEvent({ type: "steps_changed", ...position });
@@ -306,6 +310,7 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
     this.unsubscribeControlQueue();
     this.unsubscribeRequestError();
     this.unsubscribeNotifications();
+    this.unsubscribeCommandOutput();
     this.unsubscribeOutputProgress();
     this.unsubscribeStepsChanged();
     this.unsubscribeSubagentsChanged();
@@ -866,10 +871,19 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
   }
 
   /**
-   * Pi's /compact and /reload, only while the session is idle. Compaction events are published
+   * Pi's /compact and /reload, and extension commands, only while the session is idle. Compaction events are published
    * under the command's requestId and closed with completed / aborted / error, so clients settle
    * the run they observed; reload publishes nothing. Waiting notifications drain afterwards.
    */
+  getCommandPrompt(): import("../shared/commands.js").CommandPrompt | null {
+    return this.disposed ? null : this.adapter.getCommandPrompt?.() ?? null;
+  }
+
+  answerCommandPrompt(answer: import("../shared/commands.js").CommandPromptAnswer): "ok" | "stale" | "invalid" {
+    if (this.disposed || !this.adapter.answerCommandPrompt) return "stale";
+    return this.adapter.answerCommandPrompt(answer);
+  }
+
   async runCommand(input: SessionCommandInput): Promise<CommandDecision> {
     if (this.disposed) throw new SessionDeletedError(this.sessionId);
     if (!this.adapter.runCommand) return { kind: "unsupported" };

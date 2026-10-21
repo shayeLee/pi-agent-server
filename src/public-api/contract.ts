@@ -39,14 +39,15 @@ export type ExportTimelineItem =
   | { id: string; type: "thinking"; messageId: string; turnId: string | null; text: string; order: number; timestamp?: string }
   | { id: string; type: "tool_call"; messageId: string; turnId: string | null; callId: string; toolCallId: string; toolName: string; args: unknown; status: "completed" | "error" | "no_result"; order: number; timestamp?: string }
   | { id: string; type: "tool_result"; messageId: string | null; turnId: string | null; callId: string; toolCallId: string; toolName: string; result: unknown; isError: boolean; durationMs?: number | null; nestedCalls?: import("../shared/nested-tool-calls.js").NestedToolCalls; order: number; timestamp?: string }
-  | { id: string; type: "system_event"; event: "model_failback"; from: string; to: string; reason: string; order: number; timestamp?: string };
+  | { id: string; type: "system_event"; event: "model_failback"; from: string; to: string; reason: string; order: number; timestamp?: string }
+  | (Omit<import("../shared/events.js").CommandOutputEvent, "type" | "requestId"> & { id: string; type: "command_output"; order: number });
 /** Read-only session snapshot returned by `GET /v1/sessions/:id/export`. `timeline` is additive; Pi `messages[].sourceId` exactly joins `timeline[].messageId`. */
 export type { UsageSnapshot, UsageTokens, LastResponseUsage, ExecutionSnapshot, PromptUsage, SubagentUsage } from "../core/usage-snapshot.js";
 export type Export = { messages: ExportMessage[]; timeline: ExportTimelineItem[]; lastEventId: number; compaction?: import("../shared/events.js").CompactionState; usageSnapshot?: import("../core/usage-snapshot.js").UsageSnapshot };
 /** Owner/session-scoped UTF-8 text preview. `path` is always project-relative; no root is client supplied. */
 export type FilePreview = { path: string; content: string; lineCount: number; requestedLine?: number };
 /** `@` path suggestions, `/` command menu and host command results (`/v1/sessions/:id/files` and `/commands`). */
-export type { ProjectFileEntry, ProjectFileSearch, SessionCommandInfo, SessionCommandList, SessionCommandInput, SessionCommandName, SessionCommandResult } from "../shared/commands.js";
+export type { ProjectFileEntry, ProjectFileSearch, SessionCommandInfo, SessionCommandList, SessionCommandInput, SessionCommandName, SessionCommandResult, CommandOutputLine, CommandPrompt, CommandPromptAnswer } from "../shared/commands.js";
 
 /** Stable error envelope used by HTTP error responses. */
 export type ApiError = { statusCode: number; error: string; message: string; code?: string };
@@ -67,6 +68,9 @@ export const SSE_EVENT_TYPES = [
   "compaction_start",
   "compaction_end",
   "notification",
+  "command_output",
+  "command_prompt",
+  "command_prompt_closed",
   "steering_consumed",
   "control_queue",
   "steps_changed",

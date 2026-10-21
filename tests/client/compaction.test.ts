@@ -12,7 +12,7 @@ describe("compaction chat state", () => {
     let state = applySseEvent(createChatState(), { type: "text_delta", text: "a", requestId: "r1" });
     state = applySseEvent(state, { type: "thinking_delta", text: "b", requestId: "r1" });
     state = applySseEvent(state, start());
-    expect(state.timeline.every(row => row.kind === "tool" || row.kind === "notification" || !row.streaming)).toBe(true);
+    expect(state.timeline.every(row => row.kind === "tool" || row.kind === "notification" || row.kind === "command" || !row.streaming)).toBe(true);
     expect(state.modelOutput).toBeNull();
     state = applySseEvent(state, { type: "status", phase: "agent_start", requestId: "r1" });
     expect(state.compaction?.status).toBe("running");

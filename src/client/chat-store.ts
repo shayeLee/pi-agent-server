@@ -16,6 +16,8 @@ export type ChatStore = {
   /** Replace the visible timeline with restored session history. */
   restoreHistory(timeline: TimelineItem[]): ChatState;
   restoreCompaction(compaction: ChatState["compaction"]): ChatState;
+  /** The open extension-command question read on (re)connect; null when there is none. */
+  restoreCommandPrompt(prompt: import("../shared/commands.js").CommandPrompt | null): ChatState;
   restoreExecution(execution: import("./types.js").ExecutionSnapshot | null | undefined): ChatState;
   /** Set or clear the most recent chat error. */
   setError(error: string | null): ChatState;
@@ -46,6 +48,11 @@ export function createChatStore(initialState: ChatState = createChatState()): Ch
     applyEvent: (event) => update(applySseEvent(state, event)),
     addUserMessage: (text, messageId, requestId) => update(addUserMessage(state, text, messageId, requestId)),
     beginRequest: (requestId) => update({ ...state, activeRequestId: requestId, retiredRequestIds: retireRequest(state, requestId), phase: "submitting", compaction: null, modelOutput: null, activeToolCallIds: [] }),
+    restoreCommandPrompt: (prompt) => {
+      const current = state.commandPrompt;
+      if (!prompt) return current && !current.closed ? update({ ...state, commandPrompt: null }) : state;
+      return current?.prompt.promptId === prompt.promptId ? state : update({ ...state, commandPrompt: { prompt } });
+    },
     restoreCompaction: (compaction) => compaction === undefined ? state : update({ ...state,
       compaction: finishCompaction(compaction, "unknown"),
       ...(compaction?.status === "running" && compaction.requestId ? { activeRequestId: compaction.requestId } : {}) }),

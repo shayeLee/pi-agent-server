@@ -63,6 +63,8 @@ import { UploadService } from "../application/upload-service.js";
 import { CompanionGreetingError, type CompanionGreeter } from "../application/companion-greeter.js";
 import { applySharedMcpForm, SharedMcpConfigError, sharedMcpList, validateSharedMcpEntry } from "../mcp/shared-config.js";
 import type { SharedMcpServerInput } from "../shared/shared-mcp.js";
+import { ProviderLoginError, type ProviderLogins } from "../model-adapters/pi-provider-logins.js";
+import type { ProviderLoginAnswer, ProviderLoginStart } from "../shared/provider-auth.js";
 import { mcpServerIdentity, projectMcpServerViews, validateProjectMcpSetting, type ProjectMcpServerView, type ProjectMcpSettingInput } from "../mcp/project-settings.js";
 
 export type ServerDeps = {
@@ -101,6 +103,8 @@ export type ServerDeps = {
   };
   /** 按用户 MCP OAuth（docs/mcp-integration.md §13）；目录里没有 oauth server 时缺省。 */
   mcpOAuth?: Pick<import("../mcp/oauth-connections.js").McpOAuthConnections, "list" | "start" | "complete" | "disconnect" | "returnUrl">;
+  /** 模型登录（Pi 的 auth.json，对应 TUI 的 /login、/logout）；缺省时相关接口返回未配置。 */
+  providerLogins?: Pick<ProviderLogins, "list" | "start" | "get" | "answer" | "cancel" | "logout">;
   /** 生产组合根注入的通用会话存储 registry；用于未实例化会话的只读导出。 */
   conversationStorage?: ConversationStorageRegistry;
   nativeSessions?: import("../application/ports/native-session-port.js").NativeSessionPort;
@@ -233,6 +237,19 @@ const PROJECT_MCP_SERVER_BODY_SCHEMA = {
 } as const;
 const MCP_EXPOSURE_SCHEMA = { type: "string", enum: ["direct", "codemode", "deferred", "hidden"] } as const;
 const STRING_MAP_SCHEMA = { type: "object", maxProperties: 64, additionalProperties: { type: "string", maxLength: 8192 } } as const;
+const PROVIDER_LOGIN_START_BODY_SCHEMA = {
+  type: "object",
+  required: ["provider", "method"],
+  properties: { provider: { type: "string", minLength: 1, maxLength: 200 }, method: { enum: ["oauth", "api_key"] } },
+  additionalProperties: false,
+} as const;
+const PROVIDER_LOGIN_ANSWER_BODY_SCHEMA = {
+  type: "object",
+  required: ["promptId", "value"],
+  properties: { promptId: { type: "string", minLength: 1, maxLength: 64 }, value: { type: "string", maxLength: 16384 } },
+  additionalProperties: false,
+} as const;
+
 const SHARED_MCP_SERVER_BODY_SCHEMA = {
   type: "object",
   properties: {
@@ -263,8 +280,19 @@ const SHARED_MCP_SERVER_BODY_SCHEMA = {
 } as const;
 const SESSION_COMMAND_BODY_SCHEMA = {
   type: "object",
-  properties: { command: { type: "string", enum: ["compact", "reload"] }, args: { type: "string", maxLength: 4000 } },
+  properties: {
+    command: { type: "string", enum: ["compact", "reload", "extension"] }, args: { type: "string", maxLength: 4000 },
+    name: { type: "string", minLength: 1, maxLength: 128, pattern: "^[^\\s/]+$" },
+  },
   required: ["command"], additionalProperties: false,
+} as const;
+const COMMAND_PROMPT_ANSWER_BODY_SCHEMA = {
+  type: "object",
+  properties: {
+    promptId: { type: "string", minLength: 1, maxLength: 64 }, cancel: { type: "boolean" },
+    value: { type: "string", maxLength: 65536 }, confirmed: { type: "boolean" },
+  },
+  required: ["promptId"], additionalProperties: false,
 } as const;
 const CONTROL_MUTATION_BODY_SCHEMA = {
   type: "object",
@@ -796,8 +824,8 @@ export function buildApp(deps: ServerDeps): FastifyInstance {
       const projectCwd = await rootOf(ownerKeyOf(request), request.params.id);
       if (!projectCwd) return NOT_FOUND(reply);
       const commands = deps.listSessionCommands ? await deps.listSessionCommands(projectCwd.cwd) : [...BUILTIN_SESSION_COMMANDS];
-      // Host commands act on a live session; a draft only gets templates and skills.
-      return reply.code(200).send({ commands: includeBuiltins ? commands : commands.filter(command => command.source !== "builtin") });
+      // Host and extension commands act on a live session; a draft only gets templates and skills.
+      return reply.code(200).send({ commands: includeBuiltins ? commands : commands.filter(command => command.source !== "builtin" && command.source !== "extension") });
     };
     const sessionRoot: RootOf = (owner, id) => sessions.sessionProjectCwd(owner, id);
     const projectRoot: RootOf = (owner, id) => sessions.projectCwd(owner, id);
@@ -820,7 +848,7 @@ export function buildApp(deps: ServerDeps): FastifyInstance {
         if (projectName === null || !root) return NOT_FOUND(reply);
         const unavailable = () => reply.code(503).send({ statusCode: 503, error: "Service Unavailable", code: "companion_unavailable", message: "开场白暂不可用" });
         if (!deps.companionGreeter) return unavailable();
-        const commands = deps.listSessionCommands ? (await deps.listSessionCommands(root.cwd)).filter(command => command.source !== "builtin") : [];
+        const commands = deps.listSessionCommands ? (await deps.listSessionCommands(root.cwd)).filter(command => command.source === "prompt" || command.source === "skill") : [];
         const { persona, dayPart, recent } = request.body;
         try {
           return reply.code(200).send(await deps.companionGreeter.greet({
@@ -953,6 +981,67 @@ export function buildApp(deps: ServerDeps): FastifyInstance {
       }
       return reply.code(204).send();
     });
+    // 模型登录（Pi 的 auth.json）：整个服务共用这份凭证，只有 admin 能看能改。登录是个来回多次的过程：
+    // 发起后轮询登录记录，遇到问题（API key、授权码、选项）就回答；回答内容不进日志。
+    const providerLoginsMissing = (reply: FastifyReply) =>
+      reply.code(404).send({ statusCode: 404, error: "Not Found", code: "provider_auth_not_configured", message: "服务没有开放模型登录" });
+    const providerLoginError = (reply: FastifyReply, error: unknown) => {
+      if (!(error instanceof ProviderLoginError)) throw error;
+      const status = error.code === "unknown_provider" || error.code === "unknown_login" ? 404 : error.code === "stale_prompt" ? 409 : 400;
+      const label = status === 404 ? "Not Found" : status === 409 ? "Conflict" : "Bad Request";
+      return reply.code(status).send({ statusCode: status, error: label, code: `provider_auth_${error.code}`, message: error.message });
+    };
+    api.get("/provider-auth", { exposeHeadRoute: false, ...requirePermission("providers:admin") }, async (_request, reply) => {
+      if (!deps.providerLogins) return providerLoginsMissing(reply);
+      return reply.header("cache-control", "private, no-store").send(await deps.providerLogins.list());
+    });
+    api.post<{ Body: ProviderLoginStart }>("/provider-auth/logins",
+      { schema: { body: PROVIDER_LOGIN_START_BODY_SCHEMA }, ...requirePermission("providers:admin") }, async (request, reply) => {
+        if (!deps.providerLogins) return providerLoginsMissing(reply);
+        try {
+          const login = deps.providerLogins.start(ownerKeyOf(request), request.body.provider, request.body.method);
+          request.log.info({ providerAuth: { action: "login", provider: login.provider, method: login.method } }, "provider login started");
+          return reply.code(201).header("cache-control", "no-store").send(login);
+        } catch (error) {
+          return providerLoginError(reply, error);
+        }
+      });
+    api.get<{ Params: { id: string } }>("/provider-auth/logins/:id", { exposeHeadRoute: false, ...requirePermission("providers:admin") }, async (request, reply) => {
+      if (!deps.providerLogins) return providerLoginsMissing(reply);
+      try {
+        return reply.header("cache-control", "no-store").send(deps.providerLogins.get(ownerKeyOf(request), request.params.id));
+      } catch (error) {
+        return providerLoginError(reply, error);
+      }
+    });
+    api.post<{ Params: { id: string }; Body: ProviderLoginAnswer }>("/provider-auth/logins/:id/answer",
+      { schema: { body: PROVIDER_LOGIN_ANSWER_BODY_SCHEMA }, ...requirePermission("providers:admin") }, async (request, reply) => {
+        if (!deps.providerLogins) return providerLoginsMissing(reply);
+        try {
+          return reply.header("cache-control", "no-store")
+            .send(deps.providerLogins.answer(ownerKeyOf(request), request.params.id, request.body.promptId, request.body.value));
+        } catch (error) {
+          return providerLoginError(reply, error);
+        }
+      });
+    api.delete<{ Params: { id: string } }>("/provider-auth/logins/:id", { ...requirePermission("providers:admin") }, async (request, reply) => {
+      if (!deps.providerLogins) return providerLoginsMissing(reply);
+      try {
+        return reply.header("cache-control", "no-store").send(deps.providerLogins.cancel(ownerKeyOf(request), request.params.id));
+      } catch (error) {
+        return providerLoginError(reply, error);
+      }
+    });
+    api.delete<{ Params: { provider: string } }>("/provider-auth/credentials/:provider", { ...requirePermission("providers:admin") }, async (request, reply) => {
+      if (!deps.providerLogins) return providerLoginsMissing(reply);
+      const before = await deps.providerLogins.list();
+      if (!before.providers.some(provider => provider.id === request.params.provider && provider.stored)) {
+        return reply.code(404).send({ statusCode: 404, error: "Not Found", code: "provider_auth_not_stored", message: "auth.json 里没有这个 provider 的凭证" });
+      }
+      await deps.providerLogins.logout(request.params.provider);
+      request.log.info({ providerAuth: { action: "logout", provider: request.params.provider } }, "provider credential removed");
+      return reply.header("cache-control", "private, no-store").send(await deps.providerLogins.list());
+    });
     // The companion's persona follows the caller; only people who can start sessions meet it.
     // Without a store it reads as unset and a save is refused, so the page keeps it per browser.
     api.get("/companion/persona", { exposeHeadRoute: false, ...requirePermission("sessions:create") },
@@ -971,6 +1060,9 @@ export function buildApp(deps: ServerDeps): FastifyInstance {
       "/sessions/:id/commands",
       { schema: { body: SESSION_COMMAND_BODY_SCHEMA }, ...requirePermission("sessions:control") },
       async (request, reply) => {
+        if (request.body.command === "extension" && !request.body.name) {
+          return reply.code(400).send({ statusCode: 400, error: "Bad Request", message: "扩展命令需要 name" });
+        }
         const decision = await sessions.runCommand(ownerKeyOf(request), request.params.id, request.body);
         if (decision === "not-found") return NOT_FOUND(reply);
         switch (decision.kind) {
@@ -982,6 +1074,21 @@ export function buildApp(deps: ServerDeps): FastifyInstance {
         }
       },
     );
+    // 扩展命令打开的对话框：所有看得到会话的人都能看到问题，能操作会话的人才能回答，先答先得。
+    api.get<{ Params: { id: string } }>("/sessions/:id/command-prompt",
+      { exposeHeadRoute: false, ...requirePermission("sessions:events") }, async (request, reply) => {
+        const prompt = await sessions.getCommandPrompt(ownerKeyOf(request), request.params.id);
+        if (prompt === "not-found") return NOT_FOUND(reply);
+        return reply.header("cache-control", "no-store").send({ prompt });
+      });
+    api.post<{ Params: { id: string }; Body: import("../shared/commands.js").CommandPromptAnswer }>("/sessions/:id/command-prompt",
+      { schema: { body: COMMAND_PROMPT_ANSWER_BODY_SCHEMA }, ...requirePermission("sessions:control") }, async (request, reply) => {
+        const result = await sessions.answerCommandPrompt(ownerKeyOf(request), request.params.id, request.body);
+        if (result === "not-found") return NOT_FOUND(reply);
+        if (result === "stale") return reply.code(409).send({ statusCode: 409, error: "Conflict", code: "command_prompt_closed", message: "这个问题已经回答过、被取消或已超时" });
+        if (result === "invalid") return reply.code(400).send({ statusCode: 400, error: "Bad Request", code: "command_prompt_invalid", message: "回答和问题类型不匹配" });
+        return reply.code(204).send();
+      });
     api.get<{ Params: { id: string } }>("/sessions/:id/control-queue",
       { ...requirePermission("sessions:export") }, async (request, reply) => {
         const snapshot = await sessions.getControlQueue(ownerKeyOf(request), request.params.id);

@@ -20,6 +20,14 @@ export function projectExportTimeline(raw: readonly unknown[], messages: readonl
     if (row.type === "notification" && row.version === 1 && typeof row.notificationId === "string" && typeof row.entryId === "string" && typeof row.text === "string" && Array.isArray(row.runIds) && row.runIds.every(id => typeof id === "string")) {
       const id = `notification:${row.notificationId}`;
       if (!items.some(item => item.id === id)) items.push({ kind: "notification", id, version: 1, notificationId: row.notificationId, entryId: row.entryId, text: row.text, runIds: row.runIds as string[], timestamp: String(row.timestamp ?? "") });
+    } else if (row.type === "command_output" && row.version === 1 && typeof row.name === "string" && typeof row.args === "string" && typeof row.entryId === "string"
+        && typeof row.failed === "boolean" && Array.isArray(row.output)) {
+      const id = `command:${row.entryId}`;
+      const output = row.output.filter((line): line is { level: "info" | "warning" | "error"; text: string } =>
+        !!line && typeof line === "object" && typeof (line as { text?: unknown }).text === "string"
+        && ["info", "warning", "error"].includes((line as { level?: unknown }).level as string));
+      if (!items.some(item => item.id === id)) items.push({ kind: "command", id, version: 1, name: row.name, args: row.args, output, failed: row.failed,
+        entryId: row.entryId, timestamp: String(row.timestamp ?? "") });
     } else if (row.type === "message" && (row.role === "user" || row.role === "assistant") && typeof row.text === "string") {
       items.push({ kind: "message", id: row.role === "user" && typeof row.messageId === "string" ? `history-message:${row.messageId}` : `history-${String(row.id ?? items.length)}`,
         role: row.role, text: row.text, streaming: false, ...recorded,

@@ -104,6 +104,10 @@ export interface SessionRuntimePort {
   setThinkingLevel(level: string): Promise<void>;
   /** 执行宿主命令；会话忙时返回 conflict。 */
   runCommand?(input: import("../../shared/commands.js").SessionCommandInput): Promise<CommandDecision>;
+  /** 扩展命令正在等待回答的问题；没有在运行的命令时为 null。 */
+  getCommandPrompt?(): import("../../shared/commands.js").CommandPrompt | null;
+  /** 先答先得；问题已经收起时为 stale。 */
+  answerCommandPrompt?(answer: import("../../shared/commands.js").CommandPromptAnswer): "ok" | "stale" | "invalid";
 }
 
 /** RuntimeRegistry 内部持有的运行时：应用端口 + 生命周期操作。 */

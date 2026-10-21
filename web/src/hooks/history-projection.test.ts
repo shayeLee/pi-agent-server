@@ -39,6 +39,13 @@ describe("export history projection", () => {
     if (result[2]?.kind === "tool") expect(result[2].call).not.toHaveProperty("durationMs");
   });
 
+  it("restores extension command runs and drops malformed output lines", () => {
+    const row = { type: "command_output", version: 1, name: "antigravity.usage", args: "all", failed: true, entryId: "e9", timestamp: "2026-10-19T10:00:00Z",
+      output: [{ level: "error", text: "No credentials" }, { level: "loud", text: "x" }, null] };
+    expect(projectExportTimeline([row, { ...row, name: 1 }], [])).toEqual([{ kind: "command", id: "command:e9", version: 1, name: "antigravity.usage", args: "all",
+      failed: true, output: [{ level: "error", text: "No credentials" }], entryId: "e9", timestamp: "2026-10-19T10:00:00Z" }]);
+  });
+
   it("deduplicates notifications and skips malformed rows without reordering history", () => {
     const notification = { type: "notification", version: 1, notificationId: "n", entryId: "e", text: "notice", runIds: [] };
     expect(projectExportTimeline([null, false, notification, { ...notification, text: "duplicate" },

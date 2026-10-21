@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { createSessionCommandLister, sessionPromptPaths, sessionSkillPaths } from "../../src/server/session-resources.js";
+import { createSessionCommandLister, extensionCommandsOf, sessionPromptPaths, sessionSkillPaths } from "../../src/server/session-resources.js";
 import { loadSessionResourceLoader } from "../../src/server/provider-extensions.js";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 
@@ -55,5 +55,19 @@ describe("session resources", () => {
     expect(list).toContainEqual({ name: "iterate", source: "prompt", description: "Iterate", argumentHint: "<goal>" });
     expect(list).toContainEqual({ name: "skill:repo-agents", source: "skill", description: "repo-agents skill" });
     expect(list.map(command => command.name)).not.toContain("skill:above-git-root");
+  });
+});
+
+describe("extensionCommandsOf", () => {
+  it("lists commands extensions registered, once each, without shadowing built-ins", () => {
+    const commands = (...entries: [string, string?][]) => new Map(entries.map(([name, description]) => [name, { name, ...(description ? { description } : {}) }]));
+    expect(extensionCommandsOf({ getExtensions: () => ({ extensions: [
+      { commands: commands(["antigravity.usage", "Show quota"], ["reload", "shadow"]) },
+      {},
+      { commands: commands(["antigravity.usage", "duplicate"], ["team"]) },
+    ] }) })).toEqual([
+      { name: "antigravity.usage", source: "extension", description: "Show quota" },
+      { name: "team", source: "extension", description: "" },
+    ]);
   });
 });
