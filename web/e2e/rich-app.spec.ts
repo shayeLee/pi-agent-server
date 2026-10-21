@@ -63,7 +63,7 @@ for (const width of [1280, 390]) {
       await page.emulateMedia({ colorScheme: theme as "light" | "dark" });
       // The real app UI renders model metadata; this local visual fixture supplies a
       // deliberately long identifier without selecting a paid provider.
-      await page.route("**/v1/models", async (route) => route.fulfill({ contentType: "application/json", body: JSON.stringify({
+      await page.route(/\/v1\/models(\?|$)/, async (route) => route.fulfill({ contentType: "application/json", body: JSON.stringify({
         models: [{ provider: "fixture", id: "crossband/very-long-model-id-for-visual-qa", name: "Local visual model" }],
         defaultModel: { provider: "fixture", id: "crossband/very-long-model-id-for-visual-qa", name: "Local visual model" },
         thinkingLevels: ["off", "medium"], defaultThinkingLevel: "medium",

@@ -1,6 +1,6 @@
 // MCP 目录（docs/mcp-integration.md §4、§14.2）：共享 MCP 来自 agentDir 下 Pi 的全局 mcp.json，
 // 由 pi-config.ts 逐项转换成这里的 McpCatalogServer；项目只能在目录范围内启用与收紧。
-// 从不读取项目里的 .pi/mcp.json。
+// 信任的项目另外读它的 .pi/mcp.json，合并成这个项目自己的目录（project-config.ts）。
 
 import { lstatSync, readFileSync } from "node:fs";
 import { isAbsolute } from "node:path";
@@ -46,6 +46,8 @@ export interface McpCatalogServer {
   readonly timeout?: number;
   readonly adminOnly: boolean;
   readonly defaultEnabled: boolean;
+  /** 只在项目的目录里有：defined 是项目 .pi/mcp.json 定义的，overridden 是全局的、被项目文件改了默认设置。 */
+  readonly projectFile?: "defined" | "overridden";
 }
 
 export interface McpCatalog {

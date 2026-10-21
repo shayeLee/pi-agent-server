@@ -298,6 +298,8 @@ describe("PiAgentSessionFactory", () => {
       const { source, manager } = settingsSource({ "fixture/default": "high" });
       await (await factoryWith(source).prepareNew(context())).open();
       expect(sdk.createAgentSession).toHaveBeenLastCalledWith(expect.objectContaining({ settingsManager: manager, thinkingLevel: "high" }));
+      // The project's own settings.json (when trusted) is layered by the settings source.
+      expect(source.createSettingsManager).toHaveBeenLastCalledWith(process.cwd());
       // A chosen level wins; a model without its own level takes the service default.
       await (await factoryWith(source).prepareNew(context({ thinkingLevel: "low" }))).open();
       expect(sdk.createAgentSession.mock.calls.at(-1)![0].thinkingLevel).toBe("low");

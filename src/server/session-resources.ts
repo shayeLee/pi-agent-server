@@ -6,10 +6,11 @@
 // discovery directories from the session project cwd and hand them to the loader explicitly.
 // Extensions are never discovered here: they stay explicit (PI_EXTENSION_PATHS).
 //
-// Every project registered with this service is treated as trusted for these text resources;
-// the service has no interactive equivalent of Pi's project trust prompt.
+// Context files, prompt templates and skills load for every project, trusted or not. A project's
+// .pi/SYSTEM.md and .pi/APPEND_SYSTEM.md load only when the project is trusted (project-trust.ts),
+// see sessionSystemPromptSources; project extensions never load.
 
-import { existsSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { DefaultResourceLoader, loadProjectContextFiles } from "@earendil-works/pi-coding-agent";
@@ -65,6 +66,30 @@ export function sessionResourceLoaderOptions(roots: SessionResourceRoots) {
     additionalSkillPaths: sessionSkillPaths(roots),
     additionalPromptTemplatePaths: sessionPromptPaths(roots),
     agentsFilesOverride: () => ({ agentsFiles: loadProjectContextFiles({ cwd: roots.projectCwd, agentDir: roots.agentDir }) }),
+  };
+}
+
+function isFile(path: string): boolean {
+  try { return statSync(path).isFile(); } catch { return false; }
+}
+
+/**
+ * Where a new session's system prompt comes from, in Pi's order: a trusted project's
+ * `.pi/SYSTEM.md`, then `<agentDir>/SYSTEM.md`, else Pi's default prompt (""). A trusted
+ * project's `.pi/APPEND_SYSTEM.md` is appended. Values are absolute file paths the loader reads.
+ *
+ * Always explicit: left to itself the loader would look for `.pi/SYSTEM.md` under its own cwd,
+ * which is the service cwd, and give one project's prompt to every project.
+ */
+export function sessionSystemPromptSources(roots: SessionResourceRoots & { readonly projectTrusted: boolean }): {
+  systemPrompt: string; appendSystemPrompt: string[];
+} {
+  const projectSystem = join(roots.projectCwd, ".pi", "SYSTEM.md");
+  const userSystem = join(roots.agentDir, "SYSTEM.md");
+  const projectAppend = join(roots.projectCwd, ".pi", "APPEND_SYSTEM.md");
+  return {
+    systemPrompt: roots.projectTrusted && isFile(projectSystem) ? projectSystem : isFile(userSystem) ? userSystem : "",
+    appendSystemPrompt: roots.projectTrusted && isFile(projectAppend) ? [projectAppend] : [],
   };
 }
 

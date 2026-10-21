@@ -10,7 +10,7 @@ import { resolveHostToolSelection, resolveSdkToolConfig } from "../agent/tool-se
 import { createMcpToolBoundaryExtension } from "../agent/mcp-tool-boundary.js";
 import { readAppendSystemPromptFile } from "./system-prompt-file.js";
 import { frozenPromptBase } from "./frozen-system-prompt.js";
-import { createSessionCommandLister, extensionCommandsOf } from "./session-resources.js";
+import { createSessionCommandLister, extensionCommandsOf, sessionSystemPromptSources } from "./session-resources.js";
 import { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
 import { chmodSync, copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
@@ -78,6 +78,8 @@ import { createMcpHost } from "../mcp/host.js";
 import { effectiveMcpServerEntries } from "../mcp/project-settings.js";
 import { SharedMcpConfigFile } from "../mcp/shared-config.js";
 import { AgentSettingsFile } from "../settings/agent-settings-file.js";
+import { ProjectTrust } from "../settings/project-trust.js";
+import { ProjectMcpCatalogs } from "../mcp/project-config.js";
 import { KyselyUploadedFileRepository } from "../storage/kysely-uploaded-file-repository.js";
 import { UploadService } from "../application/upload-service.js";
 import { KyselyFileOperationRepository } from "../storage/kysely-file-operation-repository.js";
@@ -368,7 +370,12 @@ export async function startServer(config: StartConfig) {
   const publicUrl = config.publicUrl ? parsePublicUrl(config.publicUrl).url : undefined;
   const mcpConfigPath = path.join(agentDir, "mcp.json");
   // Agent 设置：Pi 全局 settings.json 里的自动压缩、自动重试、按模型的思考档位，和 mcp.json 在同一目录。
-  const agentSettings = new AgentSettingsFile(path.join(agentDir, "settings.json"), { warn: message => console.warn(message) });
+  // 项目信任用 Pi 的 trust.json：信任的项目才加载它的 .pi/mcp.json、.pi/settings.json、.pi/SYSTEM.md、.pi/APPEND_SYSTEM.md。
+  const agentSettings: AgentSettingsFile = new AgentSettingsFile(path.join(agentDir, "settings.json"), {
+    warn: message => console.warn(message),
+    isProjectTrusted: projectCwd => projectTrust.isTrusted(projectCwd),
+  });
+  const projectTrust = new ProjectTrust(agentDir, { defaultTrust: () => agentSettings.defaultProjectTrust, warn: message => console.warn(message) });
   const mcpHost = createMcpHost({
     piConfigPath: mcpConfigPath,
     publicUrlConfigured: publicUrl !== undefined,
@@ -380,6 +387,10 @@ export async function startServer(config: StartConfig) {
     logPath: path.join(agentDir, "mcp.log"),
   });
   if (mcpHost.tokenCipher && !publicUrl) throw new Error("PI_MCP_TOKEN_KEY_FILE needs PI_PUBLIC_URL for the MCP authorization callback");
+  const projectMcpCatalogs = new ProjectMcpCatalogs({
+    global: mcpHost.catalog, isTrusted: projectCwd => projectTrust.isTrusted(projectCwd), warn: message => console.warn(message),
+    oauthEnabled: mcpHost.tokenCipher !== undefined && publicUrl !== undefined,
+  });
   // 在任何异步初始化之前固定文件快照；不随项目 cwd 变化重新读取。
   const appendFileText = readAppendSystemPromptFile(config.appendSystemPromptFile);
   const appendSystemPromptText = [config.appendSystemPrompt, appendFileText]
@@ -550,16 +561,31 @@ export async function startServer(config: StartConfig) {
   // 因此默认模型/凭证与插件 mode 校验必须排在它之后（否则显式接入的 provider 不可见）。
   // 这个 loader 只用于 startup 探针会话，探针 dispose 后不再交给任何真实会话
   // （同一 cwd 下扩展模块只求值一次，见 provider-extensions.ts）。
-  // 仅未冻结路径使用：默认/整体覆盖 → PI_APPEND_SYSTEM 原文 → 文件快照原文 → 能力片段。
-  // 原文不进入 SDK 的文件路径解析；trim 仅判空，不改变有效文本。
-  const unfrozenPromptOptions = {
-    ...(config.systemPrompt ? { systemPrompt: config.systemPrompt } : {}),
-    ...(appendSystemPromptText
-      ? { appendSystemPromptText }
-      : {}),
-    appendSystemPrompt: collectPromptFragmentSources(capabilitySnapshot.promptFragments),
+  // 仅未冻结路径使用：整体覆盖（PI_SYSTEM_PROMPT，其次信任项目的 .pi/SYSTEM.md，再次 agentDir/SYSTEM.md，都没有时
+  // 用 Pi 默认）→ PI_APPEND_SYSTEM 原文 → 文件快照原文 → 信任项目的 .pi/APPEND_SYSTEM.md → 能力片段。
+  // 原文不进入 SDK 的文件路径解析；trim 仅判空，不改变有效文本。项目文件每次按当时的信任状态重新找。
+  const promptFragmentSources = collectPromptFragmentSources(capabilitySnapshot.promptFragments);
+  const promptFiles = (projectCwd: string) =>
+    sessionSystemPromptSources({ projectCwd, agentDir, projectTrusted: projectTrust.isTrusted(projectCwd) });
+  /** 提示词文件及其修改时间；没变时默认项目可以沿用启动时解析的结果。 */
+  const promptFilesKey = (projectCwd: string) => {
+    const files = promptFiles(projectCwd);
+    return JSON.stringify([files.systemPrompt, ...files.appendSystemPrompt].map(file => {
+      try { const stat = statSync(file); return [file, stat.size, stat.mtimeMs]; } catch { return [file]; }
+    }));
   };
-  const probeResourceLoader = await createSessionResourceLoader({ ...unfrozenPromptOptions, resourceCwd: cwd });
+  const unfrozenPromptOptions = (projectCwd: string) => {
+    const files = promptFiles(projectCwd);
+    return {
+      systemPrompt: config.systemPrompt || files.systemPrompt,
+      ...(appendSystemPromptText
+        ? { appendSystemPromptText }
+        : {}),
+      appendSystemPrompt: [...files.appendSystemPrompt, ...promptFragmentSources],
+    };
+  };
+  const defaultPromptFilesKey = promptFilesKey(cwd);
+  const probeResourceLoader = await createSessionResourceLoader({ ...unfrozenPromptOptions(cwd), resourceCwd: cwd });
   // 显式扩展注册的命令（/antigravity.usage 等）：扩展只在这里加载过一次，命令表对所有会话相同。
   const extensionCommands = extensionCommandsOf(probeResourceLoader);
   const listResourceCommands = createSessionCommandLister({ loaderCwd: cwd, agentDir });
@@ -617,13 +643,14 @@ export async function startServer(config: StartConfig) {
   const defaultSystemPrompt = defaultSession.systemPrompt;
   defaultSession.dispose();
 
-  // 默认项目复用已解析结果；额外项目的 Pi 默认提示词会包含各自 cwd，故单独解析。
+  // 默认项目在提示词文件（.pi/SYSTEM.md 等，及项目信任）没变时复用启动时的结果；
+  // 其他项目的 Pi 默认提示词会包含各自 cwd，故单独解析。
   const systemPromptResolver: SystemPromptPort = {
     async resolve(projectCwd: string): Promise<string> {
-      if (projectCwd === cwd) return defaultSystemPrompt;
+      if (projectCwd === cwd && promptFilesKey(cwd) === defaultPromptFilesKey) return defaultSystemPrompt;
       // 探针 loader 同样独立：创建后立即 dispose，只影响该次探针自己的 runtime；
       // 扩展加载 cwd 仍是服务 cwd（模块缓存不因项目 cwd 交替而清空）。
-      const projectLoader = await createSessionResourceLoader({ ...unfrozenPromptOptions, resourceCwd: projectCwd });
+      const projectLoader = await createSessionResourceLoader({ ...unfrozenPromptOptions(projectCwd), resourceCwd: projectCwd });
       const { session } = await createAgentSession({
         sessionManager: SessionManager.inMemory(projectCwd),
         modelRuntime,
@@ -743,29 +770,37 @@ export async function startServer(config: StartConfig) {
     const mcpOAuth = mcpHost.tokenCipher && publicUrl
       ? new McpOAuthConnections({
           catalog: mcpHost.catalog, store: new KyselyMcpOAuthRepository(kysely, mcpHost.tokenCipher), publicUrl,
+          // 授权回调时重新取项目的目录（项目自己的 oauth server）；默认项目的 cwd 用运行时配置。
+          projectCatalog: async (projectId: string) => {
+            const record = await projects.get(projectId);
+            return record ? projectMcpCatalogs.forProject(projectId === DEFAULT_PROJECT_ID ? cwd : record.cwd).catalog : undefined;
+          },
           ...(config.mcpOAuthClientName ? { clientName: config.mcpOAuthClientName } : {}),
         })
       : undefined;
     // oauth server 只进入 owner 已连接的私有会话，并且只用这个 owner 的凭证（§13.9）。
     // mcp.json 里没有可用的 server 时不查库，会话也不加载 MCP 与 codemode。
     const sessionMcp = async (request: PiResourceLoaderRequest) => {
-      const mcpCatalog = mcpHost.catalog.snapshot();
-      if (mcpCatalog.servers.size === 0) return { credentialOwner: null, mcp: undefined, signature: "[]" };
+      // 项目的目录：信任的项目还有它 .pi/mcp.json 里的 server。
+      const mcpCatalog = projectMcpCatalogs.forProject(request.projectCwd).catalog;
+      if (mcpCatalog.servers.size === 0) return { credentialOwner: null, mcp: undefined, oauthProject: undefined, signature: "[]" };
       const credentialOwner = mcpOAuth ? request.mcpCredentialOwner : null;
-      const connectedOAuth = mcpOAuth && credentialOwner ? await mcpOAuth.connectedServers(credentialOwner) : new Set<string>();
+      // 项目自己的 oauth server 按项目存凭证，所以连同项目的目录一起交给 mcpOAuth。
+      const oauthProject = { id: request.projectId, catalog: mcpCatalog };
+      const connectedOAuth = mcpOAuth && credentialOwner ? await mcpOAuth.connectedServers(credentialOwner, oauthProject) : new Set<string>();
       const servers = effectiveMcpServerEntries(mcpCatalog, await projectMcp.list(request.projectId), connectedOAuth);
-      return { credentialOwner, mcp: { catalog: mcpCatalog, servers }, signature: JSON.stringify(servers) };
+      return { credentialOwner, mcp: { catalog: mcpCatalog, servers }, oauthProject, signature: JSON.stringify(servers) };
     };
     const createResourceLoader = async (request: PiResourceLoaderRequest) => {
       const frozen = request.systemPrompt;
       // 项目 MCP 设置与用户的连接在 adapter 创建时快照（§4.5）；之后变了，会话空闲时在下一条消息前重建 adapter。
-      const { credentialOwner, mcp, signature } = await sessionMcp(request);
+      const { credentialOwner, mcp, oauthProject, signature } = await sessionMcp(request);
       const loader = await createSessionResourceLoader({
         resourceCwd: request.projectCwd,
         ...(mcp ? { mcp } : {}),
-        ...(mcpOAuth && credentialOwner ? { mcpAuthProviderFor: (serverName: string) => mcpOAuth.sessionAuthProvider(credentialOwner, serverName) } : {}),
+        ...(mcpOAuth && credentialOwner ? { mcpAuthProviderFor: (serverName: string) => mcpOAuth.sessionAuthProvider(credentialOwner, serverName, oauthProject) } : {}),
         ...(frozen === null
-          ? unfrozenPromptOptions
+          ? unfrozenPromptOptions(request.projectCwd)
           : { systemPromptOverride: () => frozenPromptBase(frozen) }),
       });
       return {
@@ -866,9 +901,10 @@ export async function startServer(config: StartConfig) {
       ? { companionGreeter: new CompanionGreeter({ complete: completeWith(modelRuntime, resolvedDefaultModel) }) }
       : {}),
     companionPersonas,
-    projectMcp: { catalog: mcpHost.catalog, store: projectMcp },
+    projectMcp: { catalog: mcpHost.catalog, projectCatalogs: projectMcpCatalogs, store: projectMcp },
     sharedMcp: { file: new SharedMcpConfigFile(mcpConfigPath), catalog: mcpHost.catalog },
     agentSettings,
+    projectTrust,
     ...(mcpOAuth ? { mcpOAuth } : {}),
     providerLogins,
     idempotencyRepo,

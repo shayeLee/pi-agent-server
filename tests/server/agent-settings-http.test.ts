@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -6,7 +6,7 @@ import { buildApp } from "../../src/server/app.js";
 import { MockAgentAdapter } from "../../src/agent/mock-agent-adapter.js";
 import { AgentSettingsFile } from "../../src/settings/agent-settings-file.js";
 import { makeInitializedMemoryDb } from "../helpers/sqlite.js";
-import { makePolicy, makeTestIpAccess, USER_IP_A } from "../helpers/ip-access.js";
+import { makePolicy, makeTestIpAccess, USER_IP_A, USER_IP_B } from "../helpers/ip-access.js";
 
 const ADMIN_IP = "10.0.0.9";
 const VIEWER_IP = "10.0.0.8";
@@ -15,7 +15,10 @@ async function setup(withSettings = true) {
   const dir = mkdtempSync(path.join(tmpdir(), "pi-agent-settings-http-"));
   const settingsPath = path.join(dir, "settings.json");
   writeFileSync(settingsPath, JSON.stringify({ theme: "dark", modelThinkingLevels: { "fixture/a": "high" } }, null, 2));
-  const agentSettings = new AgentSettingsFile(settingsPath);
+  // 项目 cwd 按真实路径保存（macOS 的 /var 是 /private/var）。
+  const project = realpathSync(mkdtempSync(path.join(tmpdir(), "pi-agent-settings-project-")));
+  let trusted = true;
+  const agentSettings = new AgentSettingsFile(settingsPath, { isProjectTrusted: cwd => cwd === project && trusted });
   const { projects, sessions } = await makeInitializedMemoryDb({ cwd: dir });
   const app = buildApp({
     sessions, projects, defaultProjectCwd: dir, createAdapter: async () => new MockAgentAdapter(),
@@ -28,7 +31,9 @@ async function setup(withSettings = true) {
   });
   const hash = async () => (await get(ADMIN_IP)).json().file.hash as string;
   const file = () => JSON.parse(readFileSync(settingsPath, "utf8")) as Record<string, unknown>;
-  return { app, settingsPath, get, put, hash, file };
+  const createProject = async () => (await app.inject({ method: "POST", url: "/v1/projects", remoteAddress: USER_IP_A,
+    headers: { "content-type": "application/json" }, payload: JSON.stringify({ name: "p", cwd: project }) })).json().id as string;
+  return { app, settingsPath, get, put, hash, file, project, createProject, trust: (value: boolean) => { trusted = value; } };
 }
 
 describe("Agent settings routes", () => {
@@ -74,6 +79,27 @@ describe("Agent settings routes", () => {
     try {
       const models = await app.inject({ method: "GET", url: "/v1/models", remoteAddress: VIEWER_IP });
       expect(models.json().modelThinkingLevels).toEqual({ "fixture/a": "high" });
+    } finally { await app.close(); }
+  });
+
+  it("shows a trusted project's own settings and the thinking levels its new sessions use", async () => {
+    const { app, project, createProject, trust } = await setup();
+    try {
+      const projectId = await createProject();
+      const models = async () => (await app.inject({ method: "GET", url: `/v1/models?projectId=${projectId}`, remoteAddress: USER_IP_A })).json().modelThinkingLevels;
+      const settings = async () => (await app.inject({ method: "GET", url: `/v1/settings?projectId=${projectId}`, remoteAddress: USER_IP_A })).json().project;
+      expect(await settings()).toBeUndefined();
+      mkdirSync(path.join(project, ".pi"));
+      const projectFile = path.join(project, ".pi", "settings.json");
+      writeFileSync(projectFile, JSON.stringify({ retry: { maxRetries: 1, enabled: "no" }, modelThinkingLevels: { "fixture/b": "low" } }));
+      expect(await models()).toEqual({ "fixture/a": "high", "fixture/b": "low" });
+      expect(await settings()).toEqual({ path: projectFile, trusted: true, values: { maxRetries: 1, modelThinkingLevels: { "fixture/b": "low" } }, error: expect.stringContaining("retry.enabled") });
+      trust(false);
+      expect(await models()).toEqual({ "fixture/a": "high" });
+      expect(await settings()).toEqual({ path: projectFile, trusted: false, values: {} });
+      // Another owner's project is not found.
+      expect((await app.inject({ method: "GET", url: `/v1/models?projectId=${projectId}`, remoteAddress: USER_IP_B })).statusCode).toBe(404);
+      expect((await app.inject({ method: "GET", url: `/v1/settings?projectId=${projectId}`, remoteAddress: USER_IP_B })).statusCode).toBe(404);
     } finally { await app.close(); }
   });
 

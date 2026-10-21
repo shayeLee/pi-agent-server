@@ -2,6 +2,7 @@
 // 文件由管理员用 `pi mcp add`、TUI 的 `/mcp` 或手工维护，格式是 Pi 的 `mcpServers`。逐项转换：
 // 本服务支持不了的项（`!cmd`、`auth.provider`、缺环境变量……）记为不可用并写明原因，不影响其他项，
 // 也不让整个文件失效。本服务专用的设置放在每一项的 `piAgentServer` 对象里，Pi 会原样保留。
+// 信任的项目里的 .pi/mcp.json 也用这里解析（parseProjectPiMcpConfig），规则更严，见 PiMcpConfigContext.projectFile。
 
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -22,6 +23,11 @@ export interface PiMcpConfigContext {
   readonly env: NodeJS.ProcessEnv;
   /** 服务配置了 PI_MCP_TOKEN_KEY_FILE 与 PI_PUBLIC_URL，能让用户各自授权。 */
   readonly oauthEnabled: boolean;
+  /**
+   * 解析的是项目的 .pi/mcp.json（project-config.ts）：不能引用服务的环境变量（否则仓库能把服务的密钥
+   * 发到自己写的地址）。可以用 oauth：用户各自授权，凭证按项目存（oauth-connections.ts）。
+   */
+  readonly projectFile?: boolean;
 }
 
 /** 这一项进不了目录；原因会显示给管理员。 */
@@ -67,6 +73,7 @@ function convertValue(value: string, where: string, context: PiMcpConfigContext,
   const parts: Part[] = [];
   const literal = (text: string) => parts.push({ literal: text });
   const env = (name: string) => {
+    if (context.projectFile) skip(`${where} 引用了环境变量 ${name}，项目的 .pi/mcp.json 不能引用服务的环境变量`);
     if (!context.env[name]) skip(`${where} 引用的环境变量 ${name} 没有设置`);
     parts.push({ placeholder: `\${env:${name}}` });
   };
@@ -261,17 +268,68 @@ function parseEntry(name: string, raw: unknown, context: PiMcpConfigContext): Mc
   };
 }
 
+/** 项目 .pi/mcp.json 里没写 command、url、type 的一项：只改全局同名 server 在这个项目里的这几个设置（与 Pi 一致）。 */
+export interface PiMcpOverride {
+  readonly name: string;
+  readonly enabled?: boolean;
+  readonly exposure?: McpExposure;
+  readonly toolExposure?: Readonly<Record<string, McpExposure>>;
+}
+
+export interface ProjectPiMcpConfig extends PiMcpConfig {
+  readonly overrides: readonly PiMcpOverride[];
+}
+
+const OVERRIDE_KEYS = ["enabled", "exposure", "toolExposure"];
+
+function isOverride(raw: unknown): raw is Record<string, unknown> {
+  return isRecord(raw) && raw.command === undefined && raw.url === undefined && raw.type === undefined;
+}
+
+function parseOverride(name: string, raw: Record<string, unknown>): PiMcpOverride {
+  const extra = Object.keys(raw).filter(key => !OVERRIDE_KEYS.includes(key));
+  if (extra.length > 0) skip(`没有 command 或 url 时是覆盖全局同名 server，只能写 ${OVERRIDE_KEYS.join("、")}，不能写 ${extra.join("、")}`);
+  if (raw.enabled !== undefined && typeof raw.enabled !== "boolean") skip("enabled 必须是 true 或 false");
+  let toolExposure: Record<string, McpExposure> | undefined;
+  if (raw.toolExposure !== undefined) {
+    if (!isRecord(raw.toolExposure)) skip("toolExposure 必须是工具名到提供方式的映射");
+    toolExposure = {};
+    for (const [tool, value] of Object.entries(raw.toolExposure)) toolExposure[tool] = exposureOf(value, `toolExposure ${tool}`);
+  }
+  return {
+    name,
+    ...(typeof raw.enabled === "boolean" ? { enabled: raw.enabled } : {}),
+    ...(raw.exposure !== undefined ? { exposure: exposureOf(raw.exposure, "exposure") } : {}),
+    ...(toolExposure ? { toolExposure } : {}),
+  };
+}
+
 /** 解析 mcp.json 的内容。文件整体形状不对时抛错；单项的问题记进 `unavailable`。 */
 export function parsePiMcpConfig(raw: unknown, context: PiMcpConfigContext): PiMcpConfig {
+  const { servers, unavailable } = parseMcpServers(raw, context);
+  return { servers, unavailable };
+}
+
+/** 解析项目的 .pi/mcp.json：新定义的 server 和覆盖项分开给出，和全局目录的合并见 project-config.ts。 */
+export function parseProjectPiMcpConfig(raw: unknown, context: Omit<PiMcpConfigContext, "projectFile">): ProjectPiMcpConfig {
+  return parseMcpServers(raw, { ...context, projectFile: true });
+}
+
+function parseMcpServers(raw: unknown, context: PiMcpConfigContext): ProjectPiMcpConfig {
   if (!isRecord(raw) || (raw.mcpServers !== undefined && !isRecord(raw.mcpServers))) {
     throw new Error('mcp.json must contain an object with an "mcpServers" object');
   }
   const servers: McpCatalogServer[] = [];
+  const overrides: PiMcpOverride[] = [];
   const unavailable: PiMcpUnavailable[] = [];
   // SDK 的工具名把 `-` 换成 `_`，仅这两个字符不同的名称会撞名。
   const normalized = new Map<string, string>();
   for (const [name, value] of Object.entries(raw.mcpServers ?? {})) {
     try {
+      if (context.projectFile && isOverride(value)) {
+        overrides.push(parseOverride(name, value));
+        continue;
+      }
       const server = parseEntry(name, value, context);
       const clash = normalized.get(name.replaceAll("-", "_"));
       if (clash) skip(`和 ${clash} 只差 - 与 _，工具名会冲突`);
@@ -282,5 +340,5 @@ export function parsePiMcpConfig(raw: unknown, context: PiMcpConfigContext): PiM
       unavailable.push({ name, reason: error.message });
     }
   }
-  return { servers, unavailable };
+  return { servers, overrides, unavailable };
 }

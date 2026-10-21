@@ -93,7 +93,7 @@
 - 占位符：`${secret:NAME}` 从密钥文件读取（见第 7 节）；`${PROJECT_CWD}` 由宿主替换为会话项目 cwd。stdio 的相对 `cwd` 按项目 cwd 解析，不使用 SDK 的“相对会话目录”规则。
 - server 名称规则沿用 Pi：只允许字母、数字、`_`、`-`，仅 `-`/`_` 不同的名称视为同一个。
 
-宿主通过 `createMcpExtension({ loadConfig })` 注入合成后的配置，并设置 `projectTrusted: false`、`updateConfig` 为 no-op、`openUrl` 直接报错。任何路径都不读取 `~/.pi/agent/mcp.json`、`<agentDir>/mcp.json` 或 `<project cwd>/.pi/mcp.json`。
+宿主通过 `createMcpExtension({ loadConfig })` 注入合成后的配置，并设置 `projectTrusted: false`、`updateConfig` 为 no-op、`openUrl` 直接报错。SDK 自己不读取任何 `mcp.json`：全局 `<agentDir>/mcp.json`（第 14.2 节）和信任项目的 `<project cwd>/.pi/mcp.json`（第 15 节）都由宿主解析后并入目录。
 
 ### 4.2 项目级配置（项目 owner）
 
@@ -457,7 +457,7 @@ P3-4 实现说明（2026-10-18）：
 
 **读取方式**
 - 服务总是读取 agentDir 下的 `mcp.json`，不需要开关；文件不存在就没有共享 MCP。**只读这一个全局文件**。
-- 项目目录里的 `.pi/mcp.json` 永远不读，因为会话里的模型能写项目目录，读它等于让模型给自己加 server。
+- 项目目录里的 `.pi/mcp.json` 原先永远不读，因为会话里的模型能写项目目录，读它等于让模型给自己加 server。2026-10-21 起信任的项目会读，并用第 15 节的限制挡住这条路。
 - Pi TUI 自己的 OAuth 凭证 `<agentDir>/mcp-auth.json` 也不读，那是 TUI 使用者本人的身份。
 
 **旧的目录文件**
@@ -627,3 +627,27 @@ P3-6b 实现说明（2026-10-19）：
 - 个人 MCP 不按项目启用，对本人的所有私有会话生效。
 - `PI_MCP_CATALOG_FILE` 不保留：用户决定直接移除，共享 MCP 只有 `mcp.json` 一个来源。
 - 共享 MCP 不支持 `!cmd`，含 `!cmd` 的项标为“仅 TUI 可用”。
+
+## 15. 信任项目的 .pi/mcp.json（2026-10-21）
+
+> 实现：`src/mcp/project-config.ts`、`src/settings/project-trust.ts`。
+
+**项目信任**
+- 和 pi CLI 用同一份 `<agentDir>/trust.json`：取离项目最近的一条记录（项目自己或上级目录，按真实路径比较）；没有记录时看全局 `settings.json` 的 `defaultProjectTrust`，`always` 信任，`ask` 和 `never` 都不信任（服务没法弹窗问）。
+- 服务读 `trust.json` 不加锁；admin 在 Web 上修改时用 Pi 的 `ProjectTrustStore` 写入（同一个文件锁、同样的格式），只给该项目自己记一条。每次用到时检查文件，改了立即生效。文件写坏时继续用上次读成功的内容。
+- 信任只管四个文件：`.pi/mcp.json`、`.pi/settings.json`、`.pi/SYSTEM.md`、`.pi/APPEND_SYSTEM.md`。skills、提示词模板和 `AGENTS.md` 不看信任；项目扩展始终不加载。
+
+**合并规则**（和 Pi 的区别用粗体标出）
+- 写了 `command`、`url` 或 `type` 的项是项目自己的 server。**和全局 server 同名（含只差 `-` 与 `_`）时不用**：项目不能替换全局 server，否则会绕过 admin 给它定的 `adminOnly`、`maxExposure`。
+- 只写 `enabled`、`exposure`、`toolExposure` 的项改全局同名 server 在这个项目里的默认设置，和 Pi 一致；**不能超过全局的 `maxExposure`，也不能默认启用 `adminOnly` server**。Web 上的项目设置（第 4.2 节）仍然优先。
+- **不能引用服务的环境变量**（`$NAME`、`${NAME}`），否则仓库能把服务的密钥写进 header 发到自己的地址；`${PROJECT_CWD}` 可以用。和 Pi 一样不能用 `auth.provider`（那是 TUI 使用者的模型登录凭证）。
+- 可以用 `oauth`（需要服务配置了 `PI_MCP_TOKEN_KEY_FILE` 和 `PI_PUBLIC_URL`）：每个用户在 MCP 面板里用自己的账号授权，流程同第 13 节。凭证和动态注册的客户端存在 `project:<项目 ID>:<名称>` 下，同名 server 在不同项目里各自授权；凭证只用于授权时的地址，项目文件换了地址就不再使用。授权回调时会重新读项目的目录，项目期间不再受信任或换了 server 就返回 `server_changed`。项目删除后这些凭证留在库里，不再被使用。
+- 未信任的项目只用全局目录；文件存在时面板提示“没有加载”，之前为项目 server 做的设置标为 `missing`。
+
+**挡住模型给自己加 server**
+- 项目文件定义的 server **一律默认不启用**，不认 `piAgentServer.defaultEnabled`，要项目 owner 在 Web 上勾选。
+- 勾选时记下 server 身份（第 14.3 节）。项目 server 的身份**除了命令、参数、cwd、地址，还包括 env 和 `oauth` 设置**：模型改 env（如 `NODE_OPTIONS`）同样能换掉运行的代码，改授权服务器或客户端能把用户引到别处授权。身份变了设置就失效，要重新勾选。
+- 仍然存在的风险：覆盖项可以默认启用 admin 已放进全局目录、又不是 `adminOnly` 的 server，这和项目 owner 自己勾选的权限相同。
+
+**热更新**：和全局文件一样，每次给会话做快照时检查项目文件，变了就重新读，会话从下一条消息起生效；写坏时继续用上次读成功的内容，面板上显示错误。
+

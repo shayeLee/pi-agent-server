@@ -21,6 +21,17 @@ export interface AgentSettingsValues {
   readonly modelThinkingLevels: Readonly<Record<string, AgentThinkingLevel>>;
 }
 
+/** 项目 .pi/settings.json 对这几项的覆盖（GET /v1/settings?projectId=…）；文件不存在时没有。 */
+export interface AgentSettingsProject {
+  readonly path: string;
+  /** 项目不受信任时为 false，文件没有加载。 */
+  readonly trusted: boolean;
+  /** 文件里写了的项，叠加在全局之上，只对这个项目的会话生效。 */
+  readonly values: Partial<AgentSettingsValues>;
+  /** 文件读不了，或其中有无效的值。 */
+  readonly error?: string;
+}
+
 export interface AgentSettings {
   readonly canEdit: boolean;
   /** 服务正在用的值；文件里没写的项是 Pi 的默认值。 */
@@ -28,6 +39,8 @@ export interface AgentSettings {
   readonly defaults: Omit<AgentSettingsValues, "modelThinkingLevels">;
   /** 只给 admin：文件位置、内容 hash（保存时带回）和读取错误。 */
   readonly file?: { readonly path: string; readonly hash: string; readonly error?: string };
+  /** 请求时给了项目、而项目有 .pi/settings.json 时才有。 */
+  readonly project?: AgentSettingsProject;
 }
 
 /** PUT /v1/settings：只改给出的项；modelThinkingLevels 给出时整份替换。 */

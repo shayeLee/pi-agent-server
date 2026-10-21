@@ -1,11 +1,13 @@
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { buildApp } from "../../src/server/app.js";
 import { MockAgentAdapter } from "../../src/agent/mock-agent-adapter.js";
 import type { McpOAuthConnections } from "../../src/mcp/oauth-connections.js";
+import type { McpCatalog } from "../../src/mcp/catalog.js";
 import { makeInitializedMemoryDb } from "../helpers/sqlite.js";
+import { KyselyProjectMcpRepository } from "../../src/storage/kysely-project-mcp-repository.js";
 import { makePolicy, makeTestIpAccess, USER_IP_A, USER_IP_B } from "../helpers/ip-access.js";
 
 const VIEWER_IP = "10.0.0.8";
@@ -23,9 +25,9 @@ function fakeMcpOAuth(): McpOAuthDeps & { [K in "list" | "start" | "complete" | 
   };
 }
 
-async function setup(options: { mcpOAuth?: McpOAuthDeps; tokenRequired?: boolean } = {}) {
+async function setup(options: { mcpOAuth?: McpOAuthDeps; tokenRequired?: boolean; forProject?: (cwd: string) => { catalog: McpCatalog } } = {}) {
   const dir = mkdtempSync(path.join(tmpdir(), "pi-mcp-oauth-http-"));
-  const { projects, sessions } = await makeInitializedMemoryDb({ cwd: dir });
+  const { projects, sessions, kysely } = await makeInitializedMemoryDb({ cwd: dir });
   const policy = makePolicy([
     { ip: VIEWER_IP, role: "viewer" },
     ...(options.tokenRequired ? [{ ip: USER_IP_B, tokenRequired: true, tokens: ["valid-token"] }] : []),
@@ -34,10 +36,33 @@ async function setup(options: { mcpOAuth?: McpOAuthDeps; tokenRequired?: boolean
     sessions, projects, defaultProjectCwd: dir, createAdapter: async () => new MockAgentAdapter(),
     ipAccess: makeTestIpAccess({ policy }),
     ...(options.mcpOAuth ? { mcpOAuth: options.mcpOAuth } : {}),
+    ...(options.forProject ? { projectMcp: { catalog: { servers: new Map() }, projectCatalogs: { forProject: options.forProject }, store: new KyselyProjectMcpRepository(kysely) } } : {}),
   });
 }
 
 describe("MCP OAuth routes", () => {
+  it("passes the caller's project, with its own catalog, and hides other owners' projects", async () => {
+    const mcpOAuth = fakeMcpOAuth();
+    const catalog: McpCatalog = { servers: new Map() };
+    const forProject = vi.fn((_cwd: string) => ({ catalog }));
+    const app = await setup({ mcpOAuth, forProject });
+    try {
+      const cwd = realpathSync(mkdtempSync(path.join(tmpdir(), "pi-mcp-oauth-project-")));
+      const projectId = (await app.inject({ method: "POST", url: "/v1/projects", remoteAddress: USER_IP_A,
+        headers: { "content-type": "application/json" }, payload: JSON.stringify({ name: "p", cwd }) })).json().id as string;
+      await app.inject({ method: "GET", url: `/v1/mcp/connections?projectId=${projectId}`, remoteAddress: USER_IP_A });
+      expect(mcpOAuth.list).toHaveBeenLastCalledWith(`ip:${USER_IP_A}`, { id: projectId, catalog });
+      expect(forProject).toHaveBeenLastCalledWith(cwd);
+      await app.inject({ method: "POST", url: `/v1/mcp/servers/linear/oauth/start?projectId=${projectId}`, remoteAddress: USER_IP_A });
+      expect(mcpOAuth.start).toHaveBeenLastCalledWith(`ip:${USER_IP_A}`, "linear", { id: projectId, catalog });
+      await app.inject({ method: "DELETE", url: `/v1/mcp/servers/linear/connection?projectId=${projectId}`, remoteAddress: USER_IP_A });
+      expect(mcpOAuth.disconnect).toHaveBeenLastCalledWith(`ip:${USER_IP_A}`, "linear", { id: projectId, catalog });
+      for (const [method, url] of [["GET", "/v1/mcp/connections"], ["POST", "/v1/mcp/servers/linear/oauth/start"], ["DELETE", "/v1/mcp/servers/linear/connection"]] as const) {
+        expect((await app.inject({ method, url: `${url}?projectId=${projectId}`, remoteAddress: USER_IP_B })).statusCode).toBe(404);
+      }
+    } finally { await app.close(); }
+  });
+
   it("lists, starts, completes and disconnects for the calling IP", async () => {
     const mcpOAuth = fakeMcpOAuth();
     const app = await setup({ mcpOAuth });
@@ -48,7 +73,7 @@ describe("MCP OAuth routes", () => {
 
       const started = await app.inject({ method: "POST", url: "/v1/mcp/servers/linear/oauth/start", remoteAddress: USER_IP_A });
       expect(started.json()).toEqual({ authorizationUrl: "https://auth.example.test/authorize?state=s" });
-      expect(mcpOAuth.start).toHaveBeenCalledWith(`ip:${USER_IP_A}`, "linear");
+      expect(mcpOAuth.start).toHaveBeenCalledWith(`ip:${USER_IP_A}`, "linear", undefined);
 
       const back = await app.inject({ method: "GET", url: "/v1/mcp/oauth/callback?code=c&state=s&iss=https%3A%2F%2Fauth.example.test&extra=1", remoteAddress: USER_IP_A });
       expect(back.statusCode).toBe(302);

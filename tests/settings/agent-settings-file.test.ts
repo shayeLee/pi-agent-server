@@ -139,6 +139,46 @@ describe("AgentSettingsFile", () => {
     expect(manager.getRetrySettings().enabled).toBe(false);
   });
 
+  it("layers a trusted project's settings.json over the global one and follows trust changes", async () => {
+    const { settingsPath, writeExternally } = setup({ compaction: { reserveTokens: 65536 }, retry: { maxRetries: 2 }, modelThinkingLevels: { "a/b": "high", "c/d": "low" } });
+    const project = mkdtempSync(path.join(tmpdir(), "pi-agent-settings-project-"));
+    mkdirSync(path.join(project, ".pi"));
+    const projectFile = path.join(project, ".pi", "settings.json");
+    writeFileSync(projectFile, JSON.stringify({ compaction: { enabled: false }, retry: { maxRetries: "many" }, modelThinkingLevels: { "a/b": "off" }, defaultModel: "x" }));
+    let trusted = true;
+    const warn = vi.fn();
+    const file = new AgentSettingsFile(settingsPath, { warn, pollMs: 10, isProjectTrusted: cwd => cwd === project && trusted });
+    files.push(file);
+    const { manager } = file.createSettingsManager(project);
+    expect(manager.getCompactionSettings()).toEqual({ enabled: false, reserveTokens: 65536, keepRecentTokens: 20000 });
+    expect(manager.getRetrySettings()).toMatchObject({ maxRetries: 2 });
+    expect(manager.getModelThinkingLevel("a", "b")).toBe("off");
+    expect(manager.getModelThinkingLevel("c", "d")).toBe("low");
+    expect(manager.getSettings()).not.toHaveProperty("defaultModel");
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining(`${projectFile}: retry.maxRetries`));
+    // The service's own view stays global.
+    expect(file.values.autoCompaction).toBe(true);
+    expect(file.createSettingsManager().manager.getCompactionEnabled()).toBe(true);
+
+    trusted = false;
+    await vi.waitFor(() => expect(manager.getCompactionEnabled()).toBe(true));
+    expect(manager.getModelThinkingLevel("a", "b")).toBe("high");
+    trusted = true;
+    await vi.waitFor(() => expect(manager.getCompactionEnabled()).toBe(false));
+    writeExternally({ modelThinkingLevels: { "c/d": "xhigh" } });
+    await vi.waitFor(() => expect(manager.getModelThinkingLevel("c", "d")).toBe("xhigh"));
+    expect(manager.getModelThinkingLevel("a", "b")).toBe("off");
+  });
+
+  it("reads defaultProjectTrust like Pi: only always and never count", () => {
+    const { file, writeExternally } = setup({ defaultProjectTrust: "always" });
+    expect(file.defaultProjectTrust).toBe("always");
+    writeExternally({ defaultProjectTrust: "sometimes" });
+    expect(file.defaultProjectTrust).toBe("ask");
+    writeExternally({ defaultProjectTrust: "never" });
+    expect(file.defaultProjectTrust).toBe("never");
+  });
+
   it("writes what Pi's own SettingsManager reads", async () => {
     const { file, settingsPath } = setup({ defaultThinkingLevel: "low" });
     await file.update(file.view(true).file!.hash, { autoCompaction: false, autoRetry: false, maxRetries: 2, modelThinkingLevels: { "a/b": "xhigh" } });

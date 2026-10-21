@@ -128,7 +128,7 @@ describe("useProjectMcp", () => {
     await waitFor(() => expect(row.getByText(zhCN.projectMcp.connection.notConnected("Linear"))).toBeTruthy());
     fireEvent.click(row.getByRole("button", { name: "连接 Linear" }));
     await waitFor(() => expect(assign).toHaveBeenCalledWith("https://auth.example.test/authorize?state=s"));
-    expect(api.startMcpOAuth).toHaveBeenCalledWith("linear");
+    expect(api.startMcpOAuth).toHaveBeenCalledWith("linear", "p1");
     expect(window.sessionStorage.getItem("pi.mcpOAuthReturnPath")).toBe("/p/p1/s/s1");
   });
 
@@ -142,7 +142,7 @@ describe("useProjectMcp", () => {
     connected = false;
     fireEvent.click(row.getByRole("button", { name: "断开" }));
     await waitFor(() => expect(row.getByText(zhCN.projectMcp.connection.notConnected("Linear"))).toBeTruthy());
-    expect(api.disconnectMcp).toHaveBeenCalledWith("linear");
+    expect(api.disconnectMcp).toHaveBeenCalledWith("linear", "p1");
   });
 
   it("explains that viewers cannot connect", async () => {
@@ -182,6 +182,28 @@ describe("useProjectMcp", () => {
     fireEvent.click(await screen.findByTestId("project-mcp-open"));
     expect(within(row("docs")).getByRole("note").textContent).toBe(zhCN.projectMcp.changed);
     expect(within(row("docs")).getByRole("checkbox", { name: "docs" })).not.toBeChecked();
+  });
+
+  it("marks servers from the project's .pi/mcp.json and says why the file is not loaded", async () => {
+    const local: ProjectMcpServer = { ...docs, name: "local", transport: "stdio", projectFile: "defined" };
+    const path = "/work/app/.pi/mcp.json";
+    setup({ configured: true, canEdit: true, servers: [{ ...docs, projectFile: "overridden" }, local],
+      projectConfig: { path, trusted: true, unavailable: [{ name: "admin", reason: "和全局 mcp.json 里的 admin 重名" }] } });
+    fireEvent.click(await screen.findByTestId("project-mcp-open"));
+    const notice = within(screen.getByTestId("project-mcp-project-file"));
+    expect(notice.getByText(zhCN.projectMcp.projectFile.loaded(path))).toBeTruthy();
+    expect(notice.getByText("和全局 mcp.json 里的 admin 重名", { exact: false })).toBeTruthy();
+    expect(within(row("local")).getByText(`· ${zhCN.projectMcp.projectFile.tags.defined}`, { exact: false })).toBeTruthy();
+    // A server of the project file has no shared identity.
+    expect(within(row("local")).queryByText(`· ${zhCN.projectMcp.shared}`, { exact: false })).toBeNull();
+    expect(within(row("docs")).getByText(`· ${zhCN.projectMcp.projectFile.tags.overridden}`, { exact: false })).toBeTruthy();
+  });
+
+  it("says when the project is not trusted", async () => {
+    const path = "/work/app/.pi/mcp.json";
+    setup({ configured: true, canEdit: true, servers: [docs], projectConfig: { path, trusted: false, unavailable: [] } });
+    fireEvent.click(await screen.findByTestId("project-mcp-open"));
+    expect(screen.getByText(zhCN.projectMcp.projectFile.untrusted(path))).toBeTruthy();
   });
 
   it("shows the shared MCP tab to admins only", async () => {

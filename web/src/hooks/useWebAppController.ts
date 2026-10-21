@@ -398,7 +398,10 @@ export function useWebAppController() {
   async function refreshModels(): Promise<void> {
     if (!api) return;
     try {
-      const data = await api.listModels();
+      // 按当前项目取：信任项目的 .pi/settings.json 会改各模型的默认思考档位。
+      const projectId = activeProjectIdRef.current;
+      const data = await api.listModels(projectId ?? undefined);
+      if (projectId !== activeProjectIdRef.current) return;
       setModels(data.models);
       setThinkingLevels(data.thinkingLevels);
       setDefaultModel(data.defaultModel);
@@ -414,9 +417,12 @@ export function useWebAppController() {
       // 项目元数据确定后，由单一导航流程加载列表并校验 URL。
       void api.getAccess().then(setAccess).catch(() => setAccess({ canRead: false, canWrite: false }));
       void refreshProjects();
-      void refreshModels();
     }
   }, [api]);
+  // 模型列表随项目变：各模型的默认思考档位可以被项目的 .pi/settings.json 改掉。
+  useEffect(() => {
+    if (api) void refreshModels();
+  }, [api, activeProjectId]);
 
   useEffect(() => listenRoute(() => {
     const generation = advanceNavigation();

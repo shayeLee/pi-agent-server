@@ -68,7 +68,7 @@ export function createMcpHost(options: McpHostOptions): McpHost {
         {
           name: "pi-agent-server-mcp",
           factory: createMcpExtension({
-            // 只用宿主合成的配置：SDK 自己不读任何 mcp.json（全局 mcp.json 由宿主解析后并入目录，项目 .pi/mcp.json 从不读）。
+            // 只用宿主合成的配置：SDK 自己不读任何 mcp.json（全局 mcp.json 与信任项目的 .pi/mcp.json 由宿主解析后并入目录）。
             loadConfig: () => ({ servers, errors: [], autoEnableCodemode: true }),
             createTransport,
             logPath: options.logPath,

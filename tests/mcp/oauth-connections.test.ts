@@ -3,6 +3,9 @@ import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Kysely } from "kysely";
 import { catalogOf } from "./catalog-fixture.js";
+import type { McpCatalog } from "../../src/mcp/catalog.js";
+import { parseProjectPiMcpConfig } from "../../src/mcp/pi-config.js";
+import { mergeProjectMcpCatalog } from "../../src/mcp/project-config.js";
 import { McpOAuthConnections, parsePublicUrl } from "../../src/mcp/oauth-connections.js";
 import { McpTokenCipher } from "../../src/mcp/token-cipher.js";
 import { initializeDatabase } from "../../src/storage/bootstrap.js";
@@ -53,6 +56,42 @@ describe("McpOAuthConnections", () => {
     auth.codes.set(`code-${url.searchParams.get("state")}`, { clientId: url.searchParams.get("client_id")! });
     return { url, state: url.searchParams.get("state")!, code: `code-${url.searchParams.get("state")}` };
   }
+
+  it("connects a trusted project's own oauth server per project, and drops it once the project file changes", async () => {
+    const projectCatalog = (url = MCP): McpCatalog => mergeProjectMcpCatalog(catalog, parseProjectPiMcpConfig({ mcpServers: {
+      tracker: { url, oauth: { scope: "read" }, piAgentServer: { label: "Tracker" } },
+    } }, { env: {}, oauthEnabled: true })).catalog;
+    let current: McpCatalog | undefined = projectCatalog();
+    const service = new McpOAuthConnections({ catalog, store, publicUrl: PUBLIC, fetch: auth.fetch, now: () => now, projectCatalog: async () => current });
+    const project = (id: string) => ({ id, catalog: projectCatalog() });
+    expect((await service.list(A, project("p1"))).map(view => view.name)).toEqual(["example", "tracker"]);
+    // Without the project there is no such server.
+    expect(await service.start(A, "tracker")).toMatchObject({ code: "unknown_server" });
+
+    const started = await service.start(A, "tracker", project("p1"));
+    if (!("authorizationUrl" in started)) throw new Error(started.message);
+    const state = new URL(started.authorizationUrl).searchParams.get("state")!;
+    auth.codes.set(`code-${state}`, { clientId: new URL(started.authorizationUrl).searchParams.get("client_id")! });
+    expect(await service.complete(A, { code: `code-${state}`, state, iss: ISSUER })).toEqual({ ok: true, server: "tracker" });
+
+    // Stored under the project, so the same name in another project needs its own authorization.
+    expect((await store.listCredentials(A)).map(credential => credential.serverName)).toEqual(["project:p1:tracker"]);
+    expect(await service.connectedServers(A, project("p1"))).toEqual(new Set(["tracker"]));
+    expect(await service.connectedServers(A, project("p2"))).toEqual(new Set());
+    expect(service.sessionAuthProvider(A, "tracker", project("p1"))).toBeDefined();
+    // The project file moved the server elsewhere: the credential is not used there.
+    expect(await service.connectedServers(A, { id: "p1", catalog: projectCatalog("https://elsewhere.example.com/mcp") })).toEqual(new Set());
+
+    // A callback after the project stopped being trusted is refused.
+    const again = await service.start(A, "tracker", project("p1"));
+    if (!("authorizationUrl" in again)) throw new Error(again.message);
+    const againState = new URL(again.authorizationUrl).searchParams.get("state")!;
+    current = catalog;
+    expect(await service.complete(A, { code: "x", state: againState, iss: ISSUER })).toEqual({ ok: false, server: "tracker", reason: "server_changed" });
+
+    expect(await service.disconnect(A, "tracker", project("p1"))).toBe(true);
+    expect(await store.listCredentials(A)).toEqual([]);
+  });
 
   it("lists only oauth servers and connects the caller through the public callback", async () => {
     const service = connections();

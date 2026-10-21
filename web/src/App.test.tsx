@@ -148,6 +148,9 @@ const mocks = vi.hoisted(() => {
     // 没有配置 Agent 设置时设置菜单里也没有这一项；面板本身见 AgentSettingsPanel.test.tsx。
     getAgentSettings = vi.fn(() => Promise.reject(new Error("HTTP 404")));
     saveAgentSettings = vi.fn();
+    // 没有配置项目信任时设置菜单里也没有这一项；面板本身见 ProjectTrustPanel.test.tsx。
+    getProjectTrust = vi.fn(() => Promise.reject(new Error("HTTP 404")));
+    saveProjectTrust = vi.fn();
     deleteSession = vi.fn();
     deleteProject = vi.fn((id: string) => {
       // 与真实删除联动：从项目列表移除，供 refreshProjects 回退默认项目

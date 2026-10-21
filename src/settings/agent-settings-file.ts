@@ -2,7 +2,9 @@
 // - 读：自动压缩（含 Pi 的压缩阈值 reserveTokens、keepRecentTokens 与按模型的 modelOverrides，只读透传，Web 上不改）、
 //   自动重试、按模型的思考档位。每次取值时检查文件的修改时间和大小，变了就重新解析；文件不存在时全用 Pi 的默认值，写坏时继续用上一次读成功的内容。
 // - 会话：每个会话一个 SettingsManager，只看得到这几个字段；会话里的改动（Pi 的 setter）不写回文件。
-//   有会话在用时每隔一会儿检查文件，变了就让这些 SettingsManager 重新读取，运行中的会话也立即生效。
+//   信任的项目（project-trust.ts）里 .pi/settings.json 的同样几个字段叠加在全局之上，和 Pi 一样逐层合并。
+//   有会话在用时每隔一会儿检查文件和项目信任，变了就让这些 SettingsManager 重新读取，运行中的会话也立即生效。
+// - 另外读出 defaultProjectTrust，供项目信任在 trust.json 里没有记录时使用。
 // - 写：和 pi CLI 用同一个文件锁（proper-lockfile 的 settings.json.lock），只改这几个字段，其他字段原样保留；
 //   先写临时文件再改名。GET 给出文件内容的 hash，保存时对不上就是文件在别处（CLI、手工）被改过，拒绝覆盖。
 
@@ -13,8 +15,9 @@ import { SettingsManager } from "@earendil-works/pi-coding-agent";
 import lockfile from "proper-lockfile";
 import {
   AGENT_THINKING_LEVELS, MAX_AGENT_RETRIES,
-  type AgentSettings, type AgentSettingsValues, type AgentThinkingLevel,
+  type AgentSettings, type AgentSettingsProject, type AgentSettingsValues, type AgentThinkingLevel,
 } from "../shared/agent-settings.js";
+import type { DefaultProjectTrust } from "./project-trust.js";
 
 const MAX_FILE_BYTES = 1024 * 1024;
 const ABSENT_HASH = "absent";
@@ -157,6 +160,22 @@ export function applyAgentSettings(config: Record<string, unknown>, values: Part
   return next;
 }
 
+/** 交给会话的 Pi 设置里写了的项，换成面板上的几个值。 */
+function valuesOf(piSettings: PiSettings): Partial<AgentSettingsValues> {
+  const settings = piSettings as { compaction?: { enabled?: boolean }; retry?: { enabled?: boolean; maxRetries?: number }; modelThinkingLevels?: Record<string, AgentThinkingLevel> };
+  return {
+    ...(settings.compaction?.enabled !== undefined ? { autoCompaction: settings.compaction.enabled } : {}),
+    ...(settings.retry?.enabled !== undefined ? { autoRetry: settings.retry.enabled } : {}),
+    ...(settings.retry?.maxRetries !== undefined ? { maxRetries: settings.retry.maxRetries } : {}),
+    ...(settings.modelThinkingLevels ? { modelThinkingLevels: settings.modelThinkingLevels } : {}),
+  };
+}
+
+/** 和 Pi 一样：只认 always 和 never，其余（包括没写）都是 ask。 */
+function defaultProjectTrustOf(config: Record<string, unknown>): DefaultProjectTrust {
+  return config.defaultProjectTrust === "always" || config.defaultProjectTrust === "never" ? config.defaultProjectTrust : "ask";
+}
+
 function hashOf(text: string): string {
   return createHash("sha256").update(text).digest("hex");
 }
@@ -174,6 +193,50 @@ export interface AgentSettingsFileOptions {
   readonly warn?: (message: string) => void;
   /** 有会话在用时检查文件的间隔。 */
   readonly pollMs?: number;
+  /** 项目是否信任；没有时不读任何项目的 .pi/settings.json。 */
+  readonly isProjectTrusted?: (projectCwd: string) => boolean;
+}
+
+function fileSignature(path: string): string {
+  try {
+    const stat = statSync(path);
+    return `${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "ENOENT" ? "missing" : "unreadable";
+  }
+}
+
+/** 读 settings.json：不跟随符号链接，不超过 1 MiB，允许 BOM 和空文件。 */
+function readSettingsFile(path: string): FileState {
+  let stat: Stats;
+  try {
+    stat = lstatSync(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { hash: ABSENT_HASH, config: {} };
+    return { hash: ABSENT_HASH, error: `${path} 读不了` };
+  }
+  if (stat.isSymbolicLink()) return { hash: ABSENT_HASH, error: `${path} 是符号链接，Web 上不能修改，请在终端里改` };
+  if (!stat.isFile()) return { hash: ABSENT_HASH, error: `${path} 不是普通文件` };
+  if (stat.size > MAX_FILE_BYTES) return { hash: ABSENT_HASH, error: `${path} 超过 1 MiB` };
+  let text: string;
+  try { text = readFileSync(path, "utf8"); }
+  catch { return { hash: ABSENT_HASH, error: `${path} 读不了` }; }
+  const hash = hashOf(text);
+  let config: unknown;
+  // 不回显 JSON.parse 的原文片段；Pi 和 pi CLI 一样允许 BOM。
+  try { config = text.trim() === "" ? {} : JSON.parse(text.replace(/^\uFEFF/, "")); }
+  catch { return { hash, text, error: `${path} 不是有效的 JSON` }; }
+  if (!isRecord(config)) return { hash, text, error: `${path} 的内容要是一个对象` };
+  return { hash, text, config, mode: stat.mode & 0o777 };
+}
+
+/** 一个会话所在项目的 .pi/settings.json。 */
+interface ProjectSettings {
+  readonly cwd: string;
+  readonly path: string;
+  /** 信任状态加文件签名；变了才重新读。 */
+  signature?: string;
+  piSettings: PiSettings;
 }
 
 /** Pi 全局 settings.json 中 Agent 设置的读写。同一进程里的写入排队执行。 */
@@ -183,8 +246,10 @@ export class AgentSettingsFile {
   #signature: string | undefined;
   #values: AgentSettingsValues = { ...AGENT_SETTINGS_DEFAULTS, modelThinkingLevels: {} };
   #piSettings: PiSettings = {};
+  #defaultProjectTrust: DefaultProjectTrust = "ask";
   #liveError: string | undefined;
-  readonly #managers = new Set<SettingsManager>();
+  /** 会话的 SettingsManager 及其项目设置（没给项目时缺省）。 */
+  readonly #managers = new Map<SettingsManager, ProjectSettings | undefined>();
   #timer: ReturnType<typeof setInterval> | undefined;
 
   constructor(readonly path: string, options: AgentSettingsFileOptions = {}) {
@@ -197,26 +262,65 @@ export class AgentSettingsFile {
     return this.#values;
   }
 
-  /** GET /v1/settings；admin 另外拿到文件位置、hash 和读取错误。 */
-  view(isAdmin: boolean): AgentSettings {
+  /** 全局 settings.json 里的 defaultProjectTrust。 */
+  get defaultProjectTrust(): DefaultProjectTrust {
+    this.#refresh();
+    return this.#defaultProjectTrust;
+  }
+
+  /**
+   * GET /v1/settings；admin 另外拿到文件位置、hash 和读取错误。给了项目目录、而项目有 .pi/settings.json 时
+   * 另外说明它覆盖了哪几项。
+   */
+  view(isAdmin: boolean, projectCwd?: string): AgentSettings {
     const values = this.values;
-    if (!isAdmin) return { canEdit: false, values, defaults: AGENT_SETTINGS_DEFAULTS };
+    const project = projectCwd === undefined ? undefined : this.projectView(projectCwd);
+    const withProject = project ? { project } : {};
+    if (!isAdmin) return { canEdit: false, values, defaults: AGENT_SETTINGS_DEFAULTS, ...withProject };
     const state = this.#read();
     const error = state.error ?? this.#liveError;
-    return { canEdit: true, values, defaults: AGENT_SETTINGS_DEFAULTS, file: { path: this.path, hash: state.hash, ...(error ? { error } : {}) } };
+    return { canEdit: true, values, defaults: AGENT_SETTINGS_DEFAULTS, file: { path: this.path, hash: state.hash, ...(error ? { error } : {}) }, ...withProject };
+  }
+
+  /** 项目 .pi/settings.json 写了的几项；文件不存在时没有，项目不受信任时不读文件。 */
+  projectView(projectCwd: string): AgentSettingsProject | undefined {
+    const path = join(projectCwd, ".pi", "settings.json");
+    if (fileSignature(path) === "missing") return undefined;
+    if (!(this.#options.isProjectTrusted?.(projectCwd) ?? false)) return { path, trusted: false, values: {} };
+    const state = readSettingsFile(path);
+    if (!state.config) return { path, trusted: true, values: {}, ...(state.error ? { error: state.error } : {}) };
+    const parsed = parseAgentSettings(state.config);
+    return {
+      path, trusted: true, values: valuesOf(parsed.piSettings),
+      ...(parsed.problems.length > 0 ? { error: `${parsed.problems.join("；")}；这些项不生效` } : {}),
+    };
+  }
+
+  /** 这个项目的会话实际用的按模型思考档位：全局的，再叠加信任项目的 .pi/settings.json。 */
+  modelThinkingLevelsFor(projectCwd: string): Readonly<Record<string, AgentThinkingLevel>> {
+    const project = this.projectView(projectCwd)?.values.modelThinkingLevels;
+    return project ? { ...this.values.modelThinkingLevels, ...project } : this.values.modelThinkingLevels;
   }
 
   /**
    * 给一个会话用的 SettingsManager：只看得到 Agent 设置，会话里的改动留在内存里不写回文件。
+   * 给了项目目录并且项目受信任时，项目 .pi/settings.json 里的这几个字段叠加在全局之上。
    * 会话结束时调用 release。
    */
-  createSettingsManager(): { manager: SettingsManager; release: () => void } {
+  createSettingsManager(projectCwd?: string): { manager: SettingsManager; release: () => void } {
     this.#refresh();
+    const project: ProjectSettings | undefined = projectCwd === undefined
+      ? undefined
+      : { cwd: projectCwd, path: join(projectCwd, ".pi", "settings.json"), piSettings: {} };
+    if (project) this.#refreshProject(project);
     const storage: PiSettingsStorage = {
-      withLock: (scope, fn) => { fn(scope === "global" ? JSON.stringify(this.#piSettings) : undefined); },
+      withLock: (scope, fn) => {
+        const settings = scope === "global" ? this.#piSettings : project?.piSettings;
+        fn(settings ? JSON.stringify(settings) : undefined);
+      },
     };
     const manager = SettingsManager.fromStorage(storage);
-    this.#managers.add(manager);
+    this.#managers.set(manager, project);
     this.#startPolling();
     return {
       manager,
@@ -255,38 +359,12 @@ export class AgentSettingsFile {
   }
 
   #read(): FileState {
-    const path = this.path;
-    let stat: Stats;
-    try {
-      stat = lstatSync(path);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "ENOENT") return { hash: ABSENT_HASH, config: {} };
-      return { hash: ABSENT_HASH, error: `${path} 读不了` };
-    }
-    if (stat.isSymbolicLink()) return { hash: ABSENT_HASH, error: `${path} 是符号链接，Web 上不能修改，请在终端里改` };
-    if (!stat.isFile()) return { hash: ABSENT_HASH, error: `${path} 不是普通文件` };
-    if (stat.size > MAX_FILE_BYTES) return { hash: ABSENT_HASH, error: `${path} 超过 1 MiB` };
-    let text: string;
-    try { text = readFileSync(path, "utf8"); }
-    catch { return { hash: ABSENT_HASH, error: `${path} 读不了` }; }
-    const hash = hashOf(text);
-    let config: unknown;
-    // 不回显 JSON.parse 的原文片段；Pi 和 pi CLI 一样允许 BOM。
-    try { config = text.trim() === "" ? {} : JSON.parse(text.replace(/^﻿/, "")); }
-    catch { return { hash, text, error: `${path} 不是有效的 JSON` }; }
-    if (!isRecord(config)) return { hash, text, error: `${path} 的内容要是一个对象` };
-    return { hash, text, config, mode: stat.mode & 0o777 };
+    return readSettingsFile(this.path);
   }
 
   #refresh(): void {
     const path = this.path;
-    let signature: string;
-    try {
-      const stat = statSync(path);
-      signature = `${stat.ino}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
-    } catch (error) {
-      signature = (error as NodeJS.ErrnoException).code === "ENOENT" ? "missing" : "unreadable";
-    }
+    const signature = fileSignature(path);
     if (signature === this.#signature) return;
     this.#signature = signature;
     const state = signature === "unreadable" ? { hash: ABSENT_HASH, error: `${path} 读不了` } : this.#read();
@@ -298,14 +376,43 @@ export class AgentSettingsFile {
     const parsed = parseAgentSettings(state.config);
     this.#values = parsed.values;
     this.#piSettings = parsed.piSettings;
+    this.#defaultProjectTrust = defaultProjectTrustOf(state.config);
     this.#liveError = parsed.problems.length > 0 ? `${parsed.problems.join("；")}；这些项按默认值处理` : undefined;
     for (const problem of parsed.problems) this.#options.warn?.(`Agent settings: ${problem}`);
-    for (const manager of this.#managers) void manager.reload().catch(() => {});
+    for (const manager of this.#managers.keys()) void manager.reload().catch(() => {});
+  }
+
+  /** 重新判断项目信任、检查项目 .pi/settings.json；有变化时返回 true。写坏时继续用上一次读成功的内容。 */
+  #refreshProject(project: ProjectSettings): boolean {
+    const trusted = this.#options.isProjectTrusted?.(project.cwd) ?? false;
+    const signature = trusted ? fileSignature(project.path) : "untrusted";
+    if (signature === project.signature) return false;
+    project.signature = signature;
+    if (!trusted) {
+      project.piSettings = {};
+      return true;
+    }
+    const state = signature === "unreadable" ? { hash: ABSENT_HASH, error: `${project.path} 读不了` } : readSettingsFile(project.path);
+    if (!state.config) {
+      this.#options.warn?.(`Agent settings: ${state.error ?? `${project.path} cannot be read`}; keeping the project settings read before`);
+      return false;
+    }
+    const parsed = parseAgentSettings(state.config);
+    for (const problem of parsed.problems) this.#options.warn?.(`Agent settings: ${project.path}: ${problem}`);
+    project.piSettings = parsed.piSettings;
+    return true;
+  }
+
+  #poll(): void {
+    this.#refresh();
+    for (const [manager, project] of this.#managers) {
+      if (project && this.#refreshProject(project)) void manager.reload().catch(() => {});
+    }
   }
 
   #startPolling(): void {
     if (this.#timer) return;
-    this.#timer = setInterval(() => this.#refresh(), this.#options.pollMs ?? DEFAULT_POLL_MS);
+    this.#timer = setInterval(() => this.#poll(), this.#options.pollMs ?? DEFAULT_POLL_MS);
     this.#timer.unref?.();
   }
 

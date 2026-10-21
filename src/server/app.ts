@@ -96,6 +96,8 @@ export type ServerDeps = {
   /** MCP 目录与项目设置；缺省时项目 MCP 接口返回未配置（测试用）。 */
   projectMcp?: {
     readonly catalog: import("../mcp/catalog.js").McpCatalog;
+    /** 项目自己的目录（加上信任项目的 .pi/mcp.json）；缺省时所有项目都用 `catalog`。 */
+    readonly projectCatalogs?: Pick<import("../mcp/project-config.js").ProjectMcpCatalogs, "forProject">;
     readonly store: import("../application/ports/project-mcp-store-port.js").ProjectMcpStorePort;
   };
   /** 共享 MCP，即 Pi 的全局 mcp.json（docs/mcp-integration.md §14.3）：所有人能看列表，admin 能增删改。 */
@@ -104,7 +106,9 @@ export type ServerDeps = {
     readonly catalog: import("../mcp/live-catalog.js").LiveMcpCatalog;
   };
   /** Agent 设置，即 Pi 全局 settings.json 里的几个字段：所有人能看，admin 能改。缺省时相关接口返回未配置。 */
-  agentSettings?: Pick<import("../settings/agent-settings-file.js").AgentSettingsFile, "values" | "view" | "update">;
+  agentSettings?: Pick<import("../settings/agent-settings-file.js").AgentSettingsFile, "values" | "view" | "update" | "modelThinkingLevelsFor">;
+  /** 项目信任，即 Pi 的 trust.json：所有人能看，admin 能改。缺省时相关接口返回未配置。 */
+  projectTrust?: Pick<import("../settings/project-trust.js").ProjectTrust, "status" | "set">;
   /** 按用户 MCP OAuth（docs/mcp-integration.md §13）；目录里没有 oauth server 时缺省。 */
   mcpOAuth?: Pick<import("../mcp/oauth-connections.js").McpOAuthConnections, "list" | "start" | "complete" | "disconnect" | "returnUrl">;
   /** 模型登录（Pi 的 auth.json，对应 TUI 的 /login、/logout）；缺省时相关接口返回未配置。 */
@@ -282,6 +286,20 @@ const SHARED_MCP_SERVER_BODY_SCHEMA = {
   },
   required: ["hash", "server"], additionalProperties: false,
 } as const;
+const PROJECT_TRUST_BODY_SCHEMA = {
+  type: "object",
+  required: ["trusted"],
+  properties: { trusted: { type: "boolean" } },
+  additionalProperties: false,
+} as const;
+
+/** GET /models 与 /settings 的可选项目：按这个项目（受信任时）的 .pi/settings.json 给出实际生效的值。 */
+const PROJECT_QUERY_SCHEMA = {
+  type: "object",
+  properties: { projectId: { type: "string", minLength: 1, maxLength: 128 } },
+  additionalProperties: false,
+} as const;
+
 const AGENT_SETTINGS_BODY_SCHEMA = {
   type: "object",
   properties: {
@@ -620,8 +638,20 @@ export function buildApp(deps: ServerDeps): FastifyInstance {
     api.get("/access", { ...requirePermission("access:read") }, async (request, reply) =>
       reply.header("cache-control", "private, no-store").send(projectAccessCapabilities(request.access.role)),
     );
-    api.get("/models", { ...requirePermission("models:list") }, async () =>
-      ({ ...await sessions.models(), modelThinkingLevels: deps.agentSettings?.values.modelThinkingLevels ?? {} }));
+    /** 查询参数里的项目：没给时为 undefined，调用者看不到时为 null。 */
+    const queriedProjectCwd = async (request: FastifyRequest<{ Querystring: { projectId?: string } }>): Promise<string | null | undefined> => {
+      const projectId = request.query.projectId;
+      if (projectId === undefined) return undefined;
+      return (await sessions.projectCwd(ownerKeyOf(request), projectId))?.cwd ?? null;
+    };
+    // 给了项目时，按模型的思考档位叠加这个项目（受信任时）的 .pi/settings.json，和该项目的新会话实际用的一致。
+    api.get<{ Querystring: { projectId?: string } }>("/models", { schema: { querystring: PROJECT_QUERY_SCHEMA }, ...requirePermission("models:list") }, async (request, reply) => {
+      const projectCwd = await queriedProjectCwd(request);
+      if (projectCwd === null) return NOT_FOUND(reply);
+      const settings = deps.agentSettings;
+      const modelThinkingLevels = settings ? (projectCwd ? settings.modelThinkingLevelsFor(projectCwd) : settings.values.modelThinkingLevels) : {};
+      return { ...await sessions.models(), modelThinkingLevels };
+    });
     api.get("/projects", { ...requirePermission("projects:list") }, async (request) =>
       (await sessions.listProjects(ownerKeyOf(request))).map(project => ({ ...project,
         canCreateSession: project.canCreateSession !== false && ROUTE_PERMISSIONS["sessions:create"].includes(request.access.role),
@@ -888,31 +918,44 @@ export function buildApp(deps: ServerDeps): FastifyInstance {
       });
     // 项目 MCP 设置（docs/mcp-integration.md §4.4）：项目可见者可读；owner 可启用与收紧，
     // adminOnly server 与共享的默认项目只有 admin 能改。修改只影响之后创建或恢复的会话。
+    // 项目的目录：信任的项目还有它 .pi/mcp.json 里的 server。看不到项目时为 null。
+    const projectMcpCatalog = async (ownerKey: string, projectId: string, projectMcp: NonNullable<ServerDeps["projectMcp"]>) => {
+      if ((await sessions.projectName(ownerKey, projectId)) === null) return null;
+      if (!projectMcp.projectCatalogs) return { catalog: { servers: projectMcp.catalog.servers } };
+      const root = await sessions.projectCwd(ownerKey, projectId);
+      return root ? projectMcp.projectCatalogs.forProject(root.cwd) : null;
+    };
     api.get<{ Params: { id: string } }>("/projects/:id/mcp", { exposeHeadRoute: false, ...requirePermission("projects:mcp-read") },
       async (request, reply) => {
-        if ((await sessions.projectName(ownerKeyOf(request), request.params.id)) === null) return NOT_FOUND(reply);
-        if (!deps.projectMcp) return { configured: false, canEdit: false, servers: [] };
+        if (!deps.projectMcp) {
+          if ((await sessions.projectName(ownerKeyOf(request), request.params.id)) === null) return NOT_FOUND(reply);
+          return { configured: false, canEdit: false, servers: [] };
+        }
+        const project = await projectMcpCatalog(ownerKeyOf(request), request.params.id, deps.projectMcp);
+        if (!project) return NOT_FOUND(reply);
         const settings = await deps.projectMcp.store.list(request.params.id);
         const canEdit = ROUTE_PERMISSIONS["projects:mcp-write"].includes(request.access.role) &&
           (request.params.id !== DEFAULT_PROJECT_ID || request.access.role === "admin");
-        const servers = withEnableCapability(projectMcpServerViews(deps.projectMcp.catalog, settings), canEdit, request.access.role === "admin");
-        return { configured: true, canEdit, servers };
+        const servers = withEnableCapability(projectMcpServerViews(project.catalog, settings), canEdit, request.access.role === "admin");
+        return { configured: true, canEdit, servers, ...(project.status ? { projectConfig: project.status } : {}) };
       });
     api.put<{ Params: { id: string; name: string }; Body: ProjectMcpSettingInput }>("/projects/:id/mcp/servers/:name",
       { schema: { body: PROJECT_MCP_SERVER_BODY_SCHEMA }, ...requirePermission("projects:mcp-write") },
       async (request, reply) => {
         const ownerKey = ownerKeyOf(request);
         const { id, name } = request.params;
-        if ((await sessions.projectName(ownerKey, id)) === null) return NOT_FOUND(reply);
         if (!deps.projectMcp) {
+          if ((await sessions.projectName(ownerKey, id)) === null) return NOT_FOUND(reply);
           return reply.code(404).send({ statusCode: 404, error: "Not Found", code: "mcp_not_configured", message: "服务未配置 MCP 目录" });
         }
+        // 校验和记下身份用同一份内容，期间 mcp.json 被改也对得上。
+        const project = await projectMcpCatalog(ownerKey, id, deps.projectMcp);
+        if (!project) return NOT_FOUND(reply);
         const isAdmin = request.access.role === "admin";
         if (id === DEFAULT_PROJECT_ID && !isAdmin) {
           return reply.code(403).send({ statusCode: 403, error: "Forbidden", code: "mcp_default_project", message: "默认项目由所有用户共享，只有管理员能修改其 MCP 设置" });
         }
-        // 校验和记下身份用同一份内容，期间 mcp.json 被改也对得上。
-        const catalog = { servers: deps.projectMcp.catalog.servers };
+        const catalog = project.catalog;
         const error = validateProjectMcpSetting(catalog, name, request.body, isAdmin);
         if (error?.code === "unknown_server") return reply.code(404).send({ statusCode: 404, error: "Not Found", code: "mcp_unknown_server", message: "目录中没有这个 MCP server" });
         if (error?.code === "admin_only") return reply.code(403).send({ statusCode: 403, error: "Forbidden", code: "mcp_admin_only", message: "这个 MCP server 只有管理员能启用" });
@@ -925,6 +968,31 @@ export function buildApp(deps: ServerDeps): FastifyInstance {
         if (!saved) return NOT_FOUND(reply);
         const views = withEnableCapability(projectMcpServerViews(catalog, await deps.projectMcp.store.list(id)), true, isAdmin);
         return { server: views.find(view => view.name === name) };
+      });
+    // 项目信任（docs/configuration.md「项目信任」）：Pi 的 trust.json。项目可见者能看；只有 admin 能改，
+    // 信任一个项目等于允许它的 .pi/mcp.json 在服务器上启动命令。改动对之后的消息与新会话生效。
+    const projectTrustMissing = (reply: FastifyReply) =>
+      reply.code(404).send({ statusCode: 404, error: "Not Found", code: "trust_not_configured", message: "服务未配置项目信任" });
+    api.get<{ Params: { id: string } }>("/projects/:id/trust", { exposeHeadRoute: false, ...requirePermission("projects:list") }, async (request, reply) => {
+      const root = await sessions.projectCwd(ownerKeyOf(request), request.params.id);
+      if (!root) return NOT_FOUND(reply);
+      if (!deps.projectTrust) return projectTrustMissing(reply);
+      return reply.header("cache-control", "private, no-store").send(deps.projectTrust.status(root.cwd, request.access.role === "admin"));
+    });
+    api.put<{ Params: { id: string }; Body: import("../shared/project-trust.js").ProjectTrustInput }>("/projects/:id/trust",
+      { schema: { body: PROJECT_TRUST_BODY_SCHEMA }, ...requirePermission("settings:admin") }, async (request, reply) => {
+        const root = await sessions.projectCwd(ownerKeyOf(request), request.params.id);
+        if (!root) return NOT_FOUND(reply);
+        if (!deps.projectTrust) return projectTrustMissing(reply);
+        try {
+          deps.projectTrust.set(root.cwd, request.body.trusted);
+        } catch (error) {
+          // trust.json 写坏了或锁一直被占着：不覆盖，原因交给 admin。
+          request.log.warn({ err: error }, "project trust not saved");
+          return reply.code(409).send({ statusCode: 409, error: "Conflict", code: "trust_unavailable", message: error instanceof Error ? error.message : String(error) });
+        }
+        request.log.info({ projectTrust: { action: "update", projectId: request.params.id, trusted: request.body.trusted } }, "project trust saved");
+        return reply.header("cache-control", "private, no-store").send(deps.projectTrust.status(root.cwd, true));
       });
     // 共享 MCP（docs/mcp-integration.md §14.3）：Pi 的全局 mcp.json。所有人能看列表；admin 能增删改，
     // 并拿到打码后的连接参数。写入要带 GET 给的文件 hash，文件在别处改过就返回 409。
@@ -979,9 +1047,11 @@ export function buildApp(deps: ServerDeps): FastifyInstance {
     // 所有人能看；admin 能改，写入要带 GET 给的文件 hash，文件在别处改过就返回 409。
     const agentSettingsMissing = (reply: FastifyReply) =>
       reply.code(404).send({ statusCode: 404, error: "Not Found", code: "settings_not_configured", message: "服务未配置 Agent 设置" });
-    api.get("/settings", { exposeHeadRoute: false, ...requirePermission("settings:read") }, async (request, reply) => {
+    api.get<{ Querystring: { projectId?: string } }>("/settings", { exposeHeadRoute: false, schema: { querystring: PROJECT_QUERY_SCHEMA }, ...requirePermission("settings:read") }, async (request, reply) => {
       if (!deps.agentSettings) return agentSettingsMissing(reply);
-      return reply.header("cache-control", "private, no-store").send(deps.agentSettings.view(request.access.role === "admin"));
+      const projectCwd = await queriedProjectCwd(request);
+      if (projectCwd === null) return NOT_FOUND(reply);
+      return reply.header("cache-control", "private, no-store").send(deps.agentSettings.view(request.access.role === "admin", projectCwd));
     });
     api.put<{ Body: AgentSettingsInput }>("/settings",
       { schema: { body: AGENT_SETTINGS_BODY_SCHEMA }, ...requirePermission("settings:admin") }, async (request, reply) => {
@@ -1001,11 +1071,24 @@ export function buildApp(deps: ServerDeps): FastifyInstance {
     // state 一次性、10 分钟过期、只有发起授权的同一调用者能用。
     const mcpOAuthMissing = (reply: FastifyReply) =>
       reply.code(404).send({ statusCode: 404, error: "Not Found", code: "mcp_oauth_not_configured", message: "服务没有需要用户授权的 MCP server" });
-    api.get("/mcp/connections", { exposeHeadRoute: false, ...requirePermission("mcp:connect") }, async (request, reply) =>
-      reply.header("cache-control", "private, no-store").send({ servers: deps.mcpOAuth ? await deps.mcpOAuth.list(ownerKeyOf(request)) : [] }));
-    api.post<{ Params: { name: string } }>("/mcp/servers/:name/oauth/start", { ...requirePermission("mcp:connect") }, async (request, reply) => {
+    // 可选的 projectId：再加上这个项目（受信任时）.pi/mcp.json 里的 oauth server（docs/mcp-integration.md §15）。
+    // 没给时为 undefined，看不到的项目为 null。
+    const oauthProject = async (request: FastifyRequest<{ Querystring: { projectId?: string } }>) => {
+      const projectCwd = await queriedProjectCwd(request);
+      if (projectCwd === null) return null;
+      const catalogs = deps.projectMcp?.projectCatalogs;
+      return projectCwd && catalogs ? { id: request.query.projectId!, catalog: catalogs.forProject(projectCwd).catalog } : undefined;
+    };
+    api.get<{ Querystring: { projectId?: string } }>("/mcp/connections", { exposeHeadRoute: false, schema: { querystring: PROJECT_QUERY_SCHEMA }, ...requirePermission("mcp:connect") }, async (request, reply) => {
+      const project = await oauthProject(request);
+      if (project === null) return NOT_FOUND(reply);
+      return reply.header("cache-control", "private, no-store").send({ servers: deps.mcpOAuth ? await deps.mcpOAuth.list(ownerKeyOf(request), project) : [] });
+    });
+    api.post<{ Params: { name: string }; Querystring: { projectId?: string } }>("/mcp/servers/:name/oauth/start", { schema: { querystring: PROJECT_QUERY_SCHEMA }, ...requirePermission("mcp:connect") }, async (request, reply) => {
       if (!deps.mcpOAuth) return mcpOAuthMissing(reply);
-      const result = await deps.mcpOAuth.start(ownerKeyOf(request), request.params.name);
+      const project = await oauthProject(request);
+      if (project === null) return NOT_FOUND(reply);
+      const result = await deps.mcpOAuth.start(ownerKeyOf(request), request.params.name, project);
       if ("authorizationUrl" in result) return reply.header("cache-control", "no-store").send(result);
       if (result.code === "unknown_server") return reply.code(404).send({ statusCode: 404, error: "Not Found", code: "mcp_unknown_server", message: result.message });
       return reply.code(502).send({ statusCode: 502, error: "Bad Gateway", code: `mcp_oauth_${result.code}`, message: result.message });
@@ -1021,9 +1104,11 @@ export function buildApp(deps: ServerDeps): FastifyInstance {
         if (result.server) target.searchParams.set("mcp_server", result.server);
         return reply.header("cache-control", "no-store").header("referrer-policy", "no-referrer").redirect(target.href, 302);
       });
-    api.delete<{ Params: { name: string } }>("/mcp/servers/:name/connection", { ...requirePermission("mcp:connect") }, async (request, reply) => {
+    api.delete<{ Params: { name: string }; Querystring: { projectId?: string } }>("/mcp/servers/:name/connection", { schema: { querystring: PROJECT_QUERY_SCHEMA }, ...requirePermission("mcp:connect") }, async (request, reply) => {
       if (!deps.mcpOAuth) return mcpOAuthMissing(reply);
-      if (!(await deps.mcpOAuth.disconnect(ownerKeyOf(request), request.params.name))) {
+      const project = await oauthProject(request);
+      if (project === null) return NOT_FOUND(reply);
+      if (!(await deps.mcpOAuth.disconnect(ownerKeyOf(request), request.params.name, project))) {
         return reply.code(404).send({ statusCode: 404, error: "Not Found", code: "mcp_not_connected", message: "没有连接这个 MCP server" });
       }
       return reply.code(204).send();

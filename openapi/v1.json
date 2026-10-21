@@ -402,7 +402,7 @@
         },
         "responses": {
           "200": {
-            "description": "Available models.",
+            "description": "Available models. With projectId, modelThinkingLevels is what that project's new sessions use.",
             "content": {
               "application/json": {
                 "schema": {
@@ -430,8 +430,31 @@
                 }
               }
             }
+          },
+          "404": {
+            "description": "projectId names a project the caller cannot see.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
           }
-        }
+        },
+        "parameters": [
+          {
+            "name": "projectId",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "description": "A project the caller can see: values then include that project's .pi/settings.json when the project is trusted. Unknown or hidden projects return 404."
+          }
+        ]
       },
       "head": {
         "operationId": "listModelsHead",
@@ -1121,7 +1144,7 @@
         },
         "responses": {
           "200": {
-            "description": "The shared MCP servers (Pi's global mcp.json) with this project's settings. configured is always true and kept for older clients. canEdit says whether the caller may change them (the shared default project needs admin).",
+            "description": "The shared MCP servers (Pi's global mcp.json), plus the servers of the project's .pi/mcp.json when the project is trusted, with this project's settings. configured is always true and kept for older clients. canEdit says whether the caller may change them (the shared default project needs admin). projectConfig is present when the project has a .pi/mcp.json.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1143,6 +1166,9 @@
                       "items": {
                         "$ref": "#/components/schemas/ProjectMcpServer"
                       }
+                    },
+                    "projectConfig": {
+                      "$ref": "#/components/schemas/ProjectMcpConfigFile"
                     }
                   },
                   "additionalProperties": false
@@ -1191,6 +1217,175 @@
             }
           }
         ]
+      }
+    },
+    "/v1/projects/{id}/trust": {
+      "get": {
+        "operationId": "getProjectTrust",
+        "security": [
+          {
+            "IpAdmission": []
+          },
+          {
+            "IpAdmission": [],
+            "BearerAuth": []
+          }
+        ],
+        "x-pi-rbac": {
+          "permission": "projects:list",
+          "roles": [
+            "admin",
+            "user",
+            "viewer"
+          ]
+        },
+        "responses": {
+          "200": {
+            "description": "Whether the project is trusted (Pi's trust.json, then defaultProjectTrust), and which of the files that load only when trusted it has: .pi/mcp.json, .pi/settings.json, .pi/SYSTEM.md, .pi/APPEND_SYSTEM.md.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectTrust"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer token required for this admitted IP profile.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "IP admission or RBAC denied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Project not found, or project trust is not configured (code trust_not_configured).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ]
+      },
+      "put": {
+        "operationId": "saveProjectTrust",
+        "security": [
+          {
+            "IpAdmission": []
+          },
+          {
+            "IpAdmission": [],
+            "BearerAuth": []
+          }
+        ],
+        "x-pi-rbac": {
+          "permission": "settings:admin",
+          "roles": [
+            "admin"
+          ]
+        },
+        "responses": {
+          "200": {
+            "description": "Saved to trust.json as the project's own entry, with the lock and format the pi CLI uses. Sessions pick it up from their next message; prompt files apply to new sessions.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectTrust"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer token required for this admitted IP profile.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "IP admission or RBAC denied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Project not found, or project trust is not configured (code trust_not_configured).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "trust.json is invalid or locked (code trust_unavailable); it is not overwritten.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProjectTrustInput"
+              }
+            }
+          }
+        },
+        "x-pi-request-validation": {
+          "coerceTypes": true,
+          "removeAdditional": "silent-strip"
+        },
+        "description": "Request bodies use Fastify's AJV baseline: declared types are coerced (`coerceTypes: 'array'`,\nso numbers, booleans, and single-element arrays are accepted where a string is declared) and\nundeclared fields are silently stripped (`removeAdditional: true` combined with\n`additionalProperties: false`) instead of returning 400. A 400 therefore reports a missing\nrequired field or a value that cannot be coerced/constrained, never a wrong scalar type or an\nunknown field."
       }
     },
     "/v1/projects/{id}/mcp/servers/{name}": {
@@ -1414,7 +1609,7 @@
             }
           },
           "404": {
-            "description": "Agent settings are not configured (code settings_not_configured).",
+            "description": "Agent settings are not configured (code settings_not_configured), or projectId names a project the caller cannot see.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1423,7 +1618,20 @@
               }
             }
           }
-        }
+        },
+        "parameters": [
+          {
+            "name": "projectId",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "description": "A project the caller can see: values then include that project's .pi/settings.json when the project is trusted. Unknown or hidden projects return 404."
+          }
+        ]
       },
       "put": {
         "operationId": "saveAgentSettings",
@@ -1737,7 +1945,7 @@
         },
         "responses": {
           "200": {
-            "description": "The caller's connection to every catalog server that needs per-user authorization; empty without such servers.",
+            "description": "The caller's connection to every catalog server that needs per-user authorization; empty without such servers. With projectId, also the oauth servers of that project's .pi/mcp.json (when trusted); their authorizations are kept per project.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1777,8 +1985,31 @@
                 }
               }
             }
+          },
+          "404": {
+            "description": "projectId names a project the caller cannot see.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
           }
-        }
+        },
+        "parameters": [
+          {
+            "name": "projectId",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "description": "Required for a server defined in a trusted project's .pi/mcp.json: its authorization belongs to that project. Unknown or hidden projects return 404."
+          }
+        ]
       }
     },
     "/v1/mcp/servers/{name}/oauth/start": {
@@ -1870,6 +2101,17 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "projectId",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "description": "Required for a server defined in a trusted project's .pi/mcp.json: its authorization belongs to that project. Unknown or hidden projects return 404."
           }
         ]
       }
@@ -2012,6 +2254,17 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "projectId",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "description": "Required for a server defined in a trusted project's .pi/mcp.json: its authorization belongs to that project. Unknown or hidden projects return 404."
           }
         ]
       }
@@ -6946,6 +7199,129 @@
           "changed": {
             "type": "boolean",
             "description": "The project's setting was made for an earlier server of the same name (another URL or command); it does not apply until saved again."
+          },
+          "projectFile": {
+            "enum": [
+              "defined",
+              "overridden"
+            ],
+            "description": "defined: the server comes from the project's .pi/mcp.json. overridden: a shared server whose defaults (enabled, exposure, toolExposure) the project file changes for this project."
+          }
+        },
+        "additionalProperties": false
+      },
+      "ProjectTrust": {
+        "type": "object",
+        "required": [
+          "trusted",
+          "source",
+          "defaultTrust",
+          "canEdit",
+          "files"
+        ],
+        "properties": {
+          "trusted": {
+            "type": "boolean"
+          },
+          "source": {
+            "enum": [
+              "project",
+              "parent",
+              "default"
+            ],
+            "description": "project: the project's own trust.json entry. parent: the entry of a folder above it. default: no entry, so defaultProjectTrust decides (only always trusts)."
+          },
+          "entryPath": {
+            "type": "string",
+            "description": "The folder whose entry applies, when source is parent."
+          },
+          "defaultTrust": {
+            "enum": [
+              "ask",
+              "always",
+              "never"
+            ]
+          },
+          "canEdit": {
+            "type": "boolean",
+            "description": "Only admins can change trust."
+          },
+          "files": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "name",
+                "exists"
+              ],
+              "properties": {
+                "name": {
+                  "enum": [
+                    ".pi/mcp.json",
+                    ".pi/settings.json",
+                    ".pi/SYSTEM.md",
+                    ".pi/APPEND_SYSTEM.md"
+                  ]
+                },
+                "exists": {
+                  "type": "boolean"
+                }
+              },
+              "additionalProperties": false
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "ProjectTrustInput": {
+        "type": "object",
+        "required": [
+          "trusted"
+        ],
+        "properties": {
+          "trusted": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ProjectMcpConfigFile": {
+        "type": "object",
+        "required": [
+          "path",
+          "trusted",
+          "unavailable"
+        ],
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "trusted": {
+            "type": "boolean",
+            "description": "false: the project is not trusted (Pi's trust.json, then defaultProjectTrust), so the file is not loaded."
+          },
+          "error": {
+            "type": "string",
+            "description": "Why the file could not be read; the servers read before stay in use."
+          },
+          "unavailable": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "name",
+                "reason"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "reason": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            }
           }
         },
         "additionalProperties": false
@@ -7278,6 +7654,51 @@
               "error": {
                 "type": "string",
                 "description": "The file cannot be read, or some values in it are invalid; the service keeps using what was read before or the defaults."
+              }
+            },
+            "additionalProperties": false
+          },
+          "project": {
+            "type": "object",
+            "required": [
+              "path",
+              "trusted",
+              "values"
+            ],
+            "description": "Present when projectId is given and that project has a .pi/settings.json.",
+            "properties": {
+              "path": {
+                "type": "string"
+              },
+              "trusted": {
+                "type": "boolean",
+                "description": "false: the project is not trusted, so the file is not loaded."
+              },
+              "values": {
+                "type": "object",
+                "description": "The values the file sets; they apply on top of the global ones to that project's sessions only.",
+                "properties": {
+                  "autoCompaction": {
+                    "type": "boolean"
+                  },
+                  "autoRetry": {
+                    "type": "boolean"
+                  },
+                  "maxRetries": {
+                    "type": "integer"
+                  },
+                  "modelThinkingLevels": {
+                    "type": "object",
+                    "additionalProperties": {
+                      "type": "string"
+                    }
+                  }
+                },
+                "additionalProperties": false
+              },
+              "error": {
+                "type": "string",
+                "description": "The file cannot be read, or some values in it are invalid and do not apply."
               }
             },
             "additionalProperties": false

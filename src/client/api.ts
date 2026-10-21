@@ -209,9 +209,22 @@ export class ApiClient {
     return this.request("DELETE", `/v1/provider-auth/credentials/${encodeURIComponent(provider)}`);
   }
 
-  /** Agent 设置（Pi 全局 settings.json 里的几个字段）；admin 另外拿到文件 hash 和读取错误。 */
-  getAgentSettings(): Promise<import("../shared/agent-settings.js").AgentSettings> {
-    return this.request("GET", "/v1/settings");
+  /**
+   * Agent 设置（Pi 全局 settings.json 里的几个字段）；admin 另外拿到文件 hash 和读取错误。
+   * 给了项目时，另外说明项目 .pi/settings.json 覆盖了哪几项。
+   */
+  getAgentSettings(projectId?: string): Promise<import("../shared/agent-settings.js").AgentSettings> {
+    return this.request("GET", `/v1/settings${projectId === undefined ? "" : `?projectId=${encodeURIComponent(projectId)}`}`);
+  }
+
+  /** 项目是否受信任（Pi 的 trust.json），以及项目里有哪些受信任才加载的文件。 */
+  getProjectTrust(projectId: string): Promise<import("../shared/project-trust.js").ProjectTrustView> {
+    return this.request("GET", `/v1/projects/${encodeURIComponent(projectId)}/trust`);
+  }
+
+  /** 在 trust.json 里给项目记一条信任或不信任（admin）。 */
+  saveProjectTrust(projectId: string, trusted: boolean): Promise<import("../shared/project-trust.js").ProjectTrustView> {
+    return this.request("PUT", `/v1/projects/${encodeURIComponent(projectId)}/trust`, { trusted });
   }
 
   /** 只改给出的项（admin）；hash 对不上时 409，说明文件在别处被改过。 */
@@ -219,21 +232,25 @@ export class ApiClient {
     return this.request("PUT", "/v1/settings", input);
   }
 
-  /** 调用者对需要用户授权的 MCP server 的连接状态。 */
-  listMcpConnections(): Promise<{ servers: import("../shared/project-mcp.js").McpConnection[] }> {
-    return this.request("GET", "/v1/mcp/connections");
+  /**
+   * 调用者对需要用户授权的 MCP server 的连接状态。给了项目时还有这个项目（受信任时）.pi/mcp.json 里的 server，
+   * 它们的授权按项目分开；下面两个方法同理。
+   */
+  listMcpConnections(projectId?: string): Promise<{ servers: import("../shared/project-mcp.js").McpConnection[] }> {
+    return this.request("GET", `/v1/mcp/connections${projectId === undefined ? "" : `?projectId=${encodeURIComponent(projectId)}`}`);
   }
 
   /** 发起授权；页面随后整页跳转到返回的 authorizationUrl，完成后回到 Web 首页并带上 mcp_oauth 结果。 */
-  startMcpOAuth(name: string): Promise<{ authorizationUrl: string }> {
-    return this.request("POST", `/v1/mcp/servers/${encodeURIComponent(name)}/oauth/start`);
+  startMcpOAuth(name: string, projectId?: string): Promise<{ authorizationUrl: string }> {
+    return this.request("POST", `/v1/mcp/servers/${encodeURIComponent(name)}/oauth/start${projectId === undefined ? "" : `?projectId=${encodeURIComponent(projectId)}`}`);
   }
 
-  disconnectMcp(name: string): Promise<void> {
-    return this.request("DELETE", `/v1/mcp/servers/${encodeURIComponent(name)}/connection`, undefined, "void");
+  disconnectMcp(name: string, projectId?: string): Promise<void> {
+    return this.request("DELETE", `/v1/mcp/servers/${encodeURIComponent(name)}/connection${projectId === undefined ? "" : `?projectId=${encodeURIComponent(projectId)}`}`, undefined, "void");
   }
 
-  listModels(): Promise<{
+  /** 给了项目时，modelThinkingLevels 叠加这个项目（受信任时）的 .pi/settings.json，即该项目新会话实际用的档位。 */
+  listModels(projectId?: string): Promise<{
     models: ModelInfo[];
     thinkingLevels: string[];
     defaultModel: ModelInfo | null;
@@ -241,7 +258,7 @@ export class ApiClient {
     /** 按模型的默认思考档位，键是 `provider/modelId`；新会话没选档位时先用它，再用 defaultThinkingLevel。 */
     modelThinkingLevels: Record<string, string>;
   }> {
-    return this.request("GET", "/v1/models");
+    return this.request("GET", `/v1/models${projectId === undefined ? "" : `?projectId=${encodeURIComponent(projectId)}`}`);
   }
 
   /** 宿主访问能力投影：由服务端中央矩阵派生；用于隐藏无写权限的操作入口。 */

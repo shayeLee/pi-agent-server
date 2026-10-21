@@ -11,6 +11,7 @@ import { ProjectSwitcher } from "./components/ProjectSwitcher.js";
 import { useProjectMcp } from "./components/ProjectMcpPanel.js";
 import { useProviderAuth } from "./components/ProviderAuthPanel.js";
 import { useAgentSettings } from "./components/AgentSettingsPanel.js";
+import { useProjectTrust } from "./components/ProjectTrustPanel.js";
 import type { TraceNavigation } from "./components/step-navigation.js";
 import { Chat } from "./components/Chat.js";
 import { Inspector, type InspectorTab } from "./components/Inspector.js";
@@ -217,7 +218,11 @@ export default function App() {
   const projectMcp = useProjectMcp({ api: controller.api, projectId: controller.activeProjectId,
     projectName: controller.projects?.find(project => project.id === controller.activeProjectId)?.name ?? zhCN.project.defaultProject });
   const providerAuth = useProviderAuth({ api: controller.api });
-  const agentSettings = useAgentSettings({ api: controller.api, models: controller.models, onSaved: () => void controller.refreshModels() });
+  const activeProjectName = controller.projects?.find(project => project.id === controller.activeProjectId)?.name ?? zhCN.project.defaultProject;
+  // 信任改了：本项目的 MCP 列表和各模型的默认思考档位都可能变。
+  const projectTrust = useProjectTrust({ api: controller.api, projectId: controller.activeProjectId, projectName: activeProjectName,
+    onChanged: () => { projectMcp.refresh(); void controller.refreshModels(); } });
+  const agentSettings = useAgentSettings({ api: controller.api, models: controller.models, projectId: controller.activeProjectId, onSaved: () => void controller.refreshModels() });
   const themeLabels: Record<ThemeMode, string> = { light: zhCN.sidebar.lightMode, dark: zhCN.sidebar.darkMode, system: zhCN.sidebar.followSystem };
   const commands: Command[] = [
     ...(canCreateSession ? [{ id: "new", group: zhCN.palette.groupActions, label: zhCN.sidebar.newSession, hint: "N", run: newSession }] : []),
@@ -227,6 +232,7 @@ export default function App() {
     ...(["light", "dark", "system"] as ThemeMode[]).map(mode => ({ id: `theme-${mode}`, group: zhCN.palette.groupTheme,
       label: `${zhCN.sidebar.themeMenu}：${themeLabels[mode]}${mode === themeMode ? " ✓" : ""}`, run: () => applyThemeMode(mode) })),
     ...(projectMcp.available ? [{ id: "mcp", group: zhCN.palette.groupSettings, label: zhCN.projectMcp.open, run: projectMcp.openPanel }] : []),
+    ...(projectTrust.available ? [{ id: "project-trust", group: zhCN.palette.groupSettings, label: zhCN.projectTrust.open, run: projectTrust.openPanel }] : []),
     ...(providerAuth.available ? [{ id: "provider-auth", group: zhCN.palette.groupSettings, label: zhCN.providerAuth.open, run: providerAuth.openPanel }] : []),
     ...(activeSession ? [{ id: "copy-id", group: zhCN.palette.groupActions, label: zhCN.palette.copySessionId, run: () => { void navigator.clipboard?.writeText(activeSession.id); } }] : []),
     ...(controller.projects ?? []).map(project => ({ id: `project-${project.id}`, group: zhCN.palette.groupProjects,
@@ -333,13 +339,15 @@ export default function App() {
               <DropdownMenuRadioItem value="dark">{zhCN.sidebar.darkMode}</DropdownMenuRadioItem>
               <DropdownMenuRadioItem value="system">{zhCN.sidebar.followSystem}</DropdownMenuRadioItem>
             </DropdownMenuRadioGroup>
-            {(projectMcp.available || providerAuth.available || agentSettings.available) && <DropdownMenuSeparator />}
+            {(projectMcp.available || projectTrust.available || providerAuth.available || agentSettings.available) && <DropdownMenuSeparator />}
             {agentSettings.available && <DropdownMenuItem data-testid="agent-settings-open" onSelect={agentSettings.openPanel}>{zhCN.agentSettings.open}</DropdownMenuItem>}
             {projectMcp.available && <DropdownMenuItem data-testid="project-mcp-open" onSelect={projectMcp.openPanel}>{zhCN.projectMcp.open}</DropdownMenuItem>}
+            {projectTrust.available && <DropdownMenuItem data-testid="project-trust-open" onSelect={projectTrust.openPanel}>{zhCN.projectTrust.open}</DropdownMenuItem>}
             {providerAuth.available && <DropdownMenuItem data-testid="provider-auth-open" onSelect={providerAuth.openPanel}>{zhCN.providerAuth.open}</DropdownMenuItem>}
           </DropdownMenuContent>
         </DropdownMenu>
         {projectMcp.dialog}
+        {projectTrust.dialog}
         {providerAuth.dialog}
         {agentSettings.dialog}
         {controller.projects === null || controller.activeProjectId === null ? (

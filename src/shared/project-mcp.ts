@@ -22,6 +22,19 @@ export interface ProjectMcpServer {
   readonly updatedAt: number | null;
   /** 项目的设置是为之前同名的另一个 server（地址或命令不同）做的，现在不生效，要重新启用。 */
   readonly changed?: boolean;
+  /** defined：项目 .pi/mcp.json 里定义的 server；overridden：全局 server，项目文件改了它在这个项目里的默认设置。 */
+  readonly projectFile?: "defined" | "overridden";
+}
+
+/** 项目里的 .pi/mcp.json；文件不存在时没有。只有信任的项目才加载它（docs/configuration.md「项目信任」）。 */
+export interface ProjectMcpConfigFile {
+  readonly path: string;
+  /** 项目不受信任时为 false，文件没有加载。 */
+  readonly trusted: boolean;
+  /** 读取失败的原因；这时用的是上一次读成功的内容。 */
+  readonly error?: string;
+  /** 文件里没有用上的项及原因。 */
+  readonly unavailable: readonly { readonly name: string; readonly reason: string }[];
 }
 
 export interface ProjectMcpSettings {
@@ -29,6 +42,7 @@ export interface ProjectMcpSettings {
   readonly configured: boolean;
   readonly canEdit: boolean;
   readonly servers: readonly ProjectMcpServer[];
+  readonly projectConfig?: ProjectMcpConfigFile;
 }
 
 export interface ProjectMcpServerInput {

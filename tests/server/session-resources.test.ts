@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { createSessionCommandLister, extensionCommandsOf, sessionPromptPaths, sessionSkillPaths } from "../../src/server/session-resources.js";
+import { createSessionCommandLister, extensionCommandsOf, sessionPromptPaths, sessionSkillPaths, sessionSystemPromptSources } from "../../src/server/session-resources.js";
 import { loadSessionResourceLoader } from "../../src/server/provider-extensions.js";
 import { ModelRuntime } from "@earendil-works/pi-coding-agent";
 
@@ -45,6 +45,31 @@ describe("session resources", () => {
     write(path.join(projectCwd, ".pi", "prompts", "later.md"), "Later");
     await loader.reload();
     expect(loader.getPrompts().prompts.map(prompt => prompt.name)).toContain("later");
+  });
+
+  it("takes a project's SYSTEM.md and APPEND_SYSTEM.md only when it is trusted, and never the service cwd's", async () => {
+    const { agentDir, projectCwd, serviceCwd } = layout();
+    write(path.join(serviceCwd, ".pi", "SYSTEM.md"), "service prompt must not leak in");
+    write(path.join(projectCwd, ".pi", "SYSTEM.md"), "project prompt");
+    write(path.join(projectCwd, ".pi", "APPEND_SYSTEM.md"), "project addendum");
+    expect(sessionSystemPromptSources({ projectCwd, agentDir, projectTrusted: true })).toEqual({
+      systemPrompt: path.join(projectCwd, ".pi", "SYSTEM.md"), appendSystemPrompt: [path.join(projectCwd, ".pi", "APPEND_SYSTEM.md")],
+    });
+    expect(sessionSystemPromptSources({ projectCwd, agentDir, projectTrusted: false })).toEqual({ systemPrompt: "", appendSystemPrompt: [] });
+    const modelRuntime = await ModelRuntime.create({ authPath: path.join(serviceCwd, "auth.json"), modelsPath: path.join(serviceCwd, "models.json") });
+    const load = (projectTrusted: boolean) => loadSessionResourceLoader(modelRuntime, {
+      extensionCwd: serviceCwd, agentDir, ...sessionSystemPromptSources({ projectCwd, agentDir, projectTrusted }),
+    });
+    // "" is Pi's default prompt: the loader does not go looking under its own (service) cwd.
+    expect((await load(false)).getSystemPrompt()).toBeUndefined();
+    write(path.join(agentDir, "SYSTEM.md"), "user prompt");
+    expect(sessionSystemPromptSources({ projectCwd, agentDir, projectTrusted: false }).systemPrompt).toBe(path.join(agentDir, "SYSTEM.md"));
+    const trusted = await load(true);
+    expect(trusted.getSystemPrompt()).toBe("project prompt");
+    expect(trusted.getAppendSystemPrompt()).toEqual(["project addendum"]);
+    const untrusted = await load(false);
+    expect(untrusted.getSystemPrompt()).toBe("user prompt");
+    expect(untrusted.getAppendSystemPrompt()).toEqual([]);
   });
 
   it("lists built-ins, templates and skill commands without loading extensions", async () => {

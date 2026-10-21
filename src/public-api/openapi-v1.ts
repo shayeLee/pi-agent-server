@@ -34,6 +34,8 @@ export const PUBLIC_API_OPERATIONS = [
   ["/v1/projects/{id}/companion/greeting", "post", "sessions:create"],
   ["/v1/projects/{id}/mcp", "get", "projects:mcp-read"],
   ["/v1/projects/{id}/mcp/servers/{name}", "put", "projects:mcp-write"],
+  ["/v1/projects/{id}/trust", "get", "projects:list"],
+  ["/v1/projects/{id}/trust", "put", "settings:admin"],
   ["/v1/mcp/shared", "get", "mcp:read"],
   ["/v1/mcp/shared/{name}", "put", "mcp:admin"],
   ["/v1/mcp/shared/{name}", "delete", "mcp:admin"],
@@ -126,6 +128,8 @@ const json = (schema: object) => ({ content: { "application/json": { schema } } 
 const ref = (name: string) => ({ "$ref": `#/components/schemas/${name}` });
 const error = (status: number, description: string) => ({ description, ...json(ref("ApiError")) });
 const id = { name: "id", in: "path", required: true, schema: { type: "string" } };
+const oauthProjectQuery = { name: "projectId", in: "query", required: false, schema: { type: "string", minLength: 1, maxLength: 128 }, description: "Required for a server defined in a trusted project's .pi/mcp.json: its authorization belongs to that project. Unknown or hidden projects return 404." };
+const projectQuery = { name: "projectId", in: "query", required: false, schema: { type: "string", minLength: 1, maxLength: 128 }, description: "A project the caller can see: values then include that project's .pi/settings.json when the project is trusted. Unknown or hidden projects return 404." };
 const request = (schema: object, required = true) => ({ required, content: { "application/json": { schema } } });
 
 // IP admission is always mandatory. Bearer is conditionally mandatory only when
@@ -260,7 +264,7 @@ export const openapiV1 = {
       head: automaticHeadOperation("getAccessHead", "access:read", { "200": headJson("Access projection; the GET response body is suppressed.") }),
     },
     "/v1/models": {
-      get: operation("listModels", "models:list", { "200": { description: "Available models.", ...json(ref("ModelList")) } }),
+      get: operation("listModels", "models:list", { "200": { description: "Available models. With projectId, modelThinkingLevels is what that project's new sessions use.", ...json(ref("ModelList")) }, "404": error(404, "projectId names a project the caller cannot see.") }, { parameters: [projectQuery] }),
       head: automaticHeadOperation("listModelsHead", "models:list", { "200": headJson("Available models; the GET response body is suppressed.") }),
     },
     "/v1/projects": {
@@ -302,9 +306,20 @@ export const openapiV1 = {
     },
     "/v1/projects/{id}/mcp": {
       get: operation("getProjectMcp", "projects:mcp-read", {
-        "200": { description: "The shared MCP servers (Pi's global mcp.json) with this project's settings. configured is always true and kept for older clients. canEdit says whether the caller may change them (the shared default project needs admin).", ...json({ type: "object", required: ["configured", "canEdit", "servers"], properties: { configured: { type: "boolean" }, canEdit: { type: "boolean" }, servers: { type: "array", items: ref("ProjectMcpServer") } }, additionalProperties: false }) },
+        "200": { description: "The shared MCP servers (Pi's global mcp.json), plus the servers of the project's .pi/mcp.json when the project is trusted, with this project's settings. configured is always true and kept for older clients. canEdit says whether the caller may change them (the shared default project needs admin). projectConfig is present when the project has a .pi/mcp.json.", ...json({ type: "object", required: ["configured", "canEdit", "servers"], properties: { configured: { type: "boolean" }, canEdit: { type: "boolean" }, servers: { type: "array", items: ref("ProjectMcpServer") }, projectConfig: ref("ProjectMcpConfigFile") }, additionalProperties: false }) },
         "404": error(404, "Project not found."),
       }, { parameters: [id] }),
+    },
+    "/v1/projects/{id}/trust": {
+      get: operation("getProjectTrust", "projects:list", {
+        "200": { description: "Whether the project is trusted (Pi's trust.json, then defaultProjectTrust), and which of the files that load only when trusted it has: .pi/mcp.json, .pi/settings.json, .pi/SYSTEM.md, .pi/APPEND_SYSTEM.md.", ...json(ref("ProjectTrust")) },
+        "404": error(404, "Project not found, or project trust is not configured (code trust_not_configured)."),
+      }, { parameters: [id] }),
+      put: operation("saveProjectTrust", "settings:admin", {
+        "200": { description: "Saved to trust.json as the project's own entry, with the lock and format the pi CLI uses. Sessions pick it up from their next message; prompt files apply to new sessions.", ...json(ref("ProjectTrust")) },
+        "404": error(404, "Project not found, or project trust is not configured (code trust_not_configured)."),
+        "409": error(409, "trust.json is invalid or locked (code trust_unavailable); it is not overwritten."),
+      }, { parameters: [id], requestBody: request(ref("ProjectTrustInput")), ...requestValidation }),
     },
     "/v1/projects/{id}/mcp/servers/{name}": {
       put: operation("saveProjectMcpServer", "projects:mcp-write", {
@@ -322,8 +337,8 @@ export const openapiV1 = {
     "/v1/settings": {
       get: operation("getAgentSettings", "settings:read", {
         "200": { description: "Agent settings read from Pi's global settings.json: values the service uses (Pi's defaults for fields the file leaves out) and those defaults. Admins also get the file path, its hash to send back when saving, and read errors.", ...json(ref("AgentSettings")) },
-        "404": error(404, "Agent settings are not configured (code settings_not_configured)."),
-      }),
+        "404": error(404, "Agent settings are not configured (code settings_not_configured), or projectId names a project the caller cannot see."),
+      }, { parameters: [projectQuery] }),
       put: operation("saveAgentSettings", "settings:admin", {
         "200": { description: "Saved to settings.json. Only the given values change; other fields in the file are kept. Running sessions pick the change up within a few seconds; a new session takes the model's default thinking level unless one is chosen.", ...json(ref("AgentSettings")) },
         "400": error(400, "Invalid values, or settings.json itself is unreadable (code settings_invalid)."),
@@ -346,15 +361,16 @@ export const openapiV1 = {
     },
     "/v1/mcp/connections": {
       get: operation("listMcpConnections", "mcp:connect", {
-        "200": { description: "The caller's connection to every catalog server that needs per-user authorization; empty without such servers.", ...json({ type: "object", required: ["servers"], properties: { servers: { type: "array", items: ref("McpConnection") } }, additionalProperties: false }) },
-      }),
+        "200": { description: "The caller's connection to every catalog server that needs per-user authorization; empty without such servers. With projectId, also the oauth servers of that project's .pi/mcp.json (when trusted); their authorizations are kept per project.", ...json({ type: "object", required: ["servers"], properties: { servers: { type: "array", items: ref("McpConnection") } }, additionalProperties: false }) },
+        "404": error(404, "projectId names a project the caller cannot see."),
+      }, { parameters: [oauthProjectQuery] }),
     },
     "/v1/mcp/servers/{name}/oauth/start": {
       post: operation("startMcpOAuth", "mcp:connect", {
         "200": { description: "Open authorizationUrl in the same tab. The authorization server redirects back to /v1/mcp/oauth/callback, which returns to the Web UI. The pending authorization expires after 10 minutes.", ...json({ type: "object", required: ["authorizationUrl"], properties: { authorizationUrl: { type: "string", format: "uri" } }, additionalProperties: false }) },
         "404": error(404, "No per-user MCP server is configured (code mcp_oauth_not_configured), or the name is not one (code mcp_unknown_server)."),
         "502": error(502, "The authorization server refused client registration (code mcp_oauth_registration_rejected; for example it accepts only https redirect URIs) or cannot be reached (code mcp_oauth_authorization_unavailable)."),
-      }, { parameters: [{ name: "name", in: "path", required: true, schema: { type: "string" } }] }),
+      }, { parameters: [{ name: "name", in: "path", required: true, schema: { type: "string" } }, oauthProjectQuery] }),
     },
     "/v1/mcp/oauth/callback": {
       get: (() => {
@@ -371,7 +387,7 @@ export const openapiV1 = {
       delete: operation("disconnectMcp", "mcp:connect", {
         "204": { description: "Disconnected. The tokens are revoked at the authorization server when it supports revocation; failures there do not block the removal." },
         "404": error(404, "No per-user MCP server is configured (code mcp_oauth_not_configured), or the caller is not connected (code mcp_not_connected)."),
-      }, { parameters: [{ name: "name", in: "path", required: true, schema: { type: "string" } }] }),
+      }, { parameters: [{ name: "name", in: "path", required: true, schema: { type: "string" } }, oauthProjectQuery] }),
     },
     "/v1/provider-auth": {
       get: operation("listProviderAuth", "providers:admin", {
@@ -672,6 +688,22 @@ export const openapiV1 = {
         canEnable: { type: "boolean", description: "Whether the caller may enable it: adminOnly servers need admin. Disabling is always allowed to editors." },
         updatedAt: { type: ["integer", "null"], description: "null while the project uses the catalog defaults." },
         changed: { type: "boolean", description: "The project's setting was made for an earlier server of the same name (another URL or command); it does not apply until saved again." },
+        projectFile: { enum: ["defined", "overridden"], description: "defined: the server comes from the project's .pi/mcp.json. overridden: a shared server whose defaults (enabled, exposure, toolExposure) the project file changes for this project." },
+      }, additionalProperties: false },
+      ProjectTrust: { type: "object", required: ["trusted", "source", "defaultTrust", "canEdit", "files"], properties: {
+        trusted: { type: "boolean" },
+        source: { enum: ["project", "parent", "default"], description: "project: the project's own trust.json entry. parent: the entry of a folder above it. default: no entry, so defaultProjectTrust decides (only always trusts)." },
+        entryPath: { type: "string", description: "The folder whose entry applies, when source is parent." },
+        defaultTrust: { enum: ["ask", "always", "never"] },
+        canEdit: { type: "boolean", description: "Only admins can change trust." },
+        files: { type: "array", items: { type: "object", required: ["name", "exists"], properties: { name: { enum: [".pi/mcp.json", ".pi/settings.json", ".pi/SYSTEM.md", ".pi/APPEND_SYSTEM.md"] }, exists: { type: "boolean" } }, additionalProperties: false } },
+      }, additionalProperties: false },
+      ProjectTrustInput: { type: "object", required: ["trusted"], properties: { trusted: { type: "boolean" } }, additionalProperties: false },
+      ProjectMcpConfigFile: { type: "object", required: ["path", "trusted", "unavailable"], properties: {
+        path: { type: "string" },
+        trusted: { type: "boolean", description: "false: the project is not trusted (Pi's trust.json, then defaultProjectTrust), so the file is not loaded." },
+        error: { type: "string", description: "Why the file could not be read; the servers read before stay in use." },
+        unavailable: { type: "array", items: { type: "object", required: ["name", "reason"], properties: { name: { type: "string" }, reason: { type: "string" } }, additionalProperties: false } },
       }, additionalProperties: false },
       ProjectMcpServerInput: { type: "object", required: ["enabled"], properties: {
         enabled: { type: "boolean" },
@@ -721,6 +753,15 @@ export const openapiV1 = {
         }, additionalProperties: false },
         file: { type: "object", required: ["path", "hash"], description: "Admins only.", properties: {
           path: { type: "string" }, hash: { type: "string" }, error: { type: "string", description: "The file cannot be read, or some values in it are invalid; the service keeps using what was read before or the defaults." },
+        }, additionalProperties: false },
+        project: { type: "object", required: ["path", "trusted", "values"], description: "Present when projectId is given and that project has a .pi/settings.json.", properties: {
+          path: { type: "string" },
+          trusted: { type: "boolean", description: "false: the project is not trusted, so the file is not loaded." },
+          values: { type: "object", description: "The values the file sets; they apply on top of the global ones to that project's sessions only.", properties: {
+            autoCompaction: { type: "boolean" }, autoRetry: { type: "boolean" }, maxRetries: { type: "integer" },
+            modelThinkingLevels: { type: "object", additionalProperties: { type: "string" } },
+          }, additionalProperties: false },
+          error: { type: "string", description: "The file cannot be read, or some values in it are invalid and do not apply." },
         }, additionalProperties: false },
       }, additionalProperties: false },
       AgentSettingsInput: { type: "object", required: ["hash", "values"], properties: {

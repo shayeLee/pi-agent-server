@@ -15,6 +15,7 @@
 - 共享 MCP 来自 Pi 的全局 `mcp.json`（`~/.pi/agent/mcp.json`，用 `pi mcp add` 或 TUI 的 `/mcp` 维护，支持 stdio 与 HTTP），文件改动后自动重新读取，不用重启；admin 也可以在 Web 上增删改（`/v1/mcp/shared`，写回同一个文件）。项目 owner 按项目启用并收紧这些 server（`/v1/projects/:id/mcp`，迁移 v4；同名 server 换了地址或命令后，项目设置停用，要重新确认，迁移 v6）；工具默认经 codemode 调用，脚本排队执行并限时。Web 端从侧栏底部的“设置”菜单打开当前项目的 MCP 设置面板，codemode 卡片列出脚本内部的工具调用。带 `oauth` 的 HTTP server 改用每个用户自己的授权（动态客户端注册，迁移 v5；需要 `PI_PUBLIC_URL` 与 `PI_MCP_TOKEN_KEY_FILE`）：用户在 MCP 面板里连接，只有他自己的私有会话使用这个身份。见 [MCP 接入方案](docs/mcp-integration.md)。
 - 模型登录，对应 Pi TUI 的 `/login` 和 `/logout`：admin 在“设置”菜单的“模型登录”里用 provider 账号登录（OAuth）或填 API key，也可以删除已保存的凭证（`/v1/provider-auth`）。凭证写进 Pi 的 `auth.json`，和 `pi` 命令行共用，新的消息直接生效，不用重启。OAuth 回调落在服务所在机器的 localhost 上；从别的机器打开 Web 时，把浏览器最后跳到的地址粘回面板。
 - Agent 设置，对应 Pi TUI 的 `/settings`：自动压缩、自动重试（含最多重试次数）和按模型的默认思考档位，读自 agentDir 下 Pi 的全局 `settings.json`，和 `pi` 命令行共用。所有人都能在“设置”菜单的“Agent 设置”里查看，admin 可以在那里修改（`/v1/settings`），只写这几个字段，文件里的其他字段原样保留。会话也按文件里的压缩阈值（`compaction.reserveTokens`、`keepRecentTokens` 与按模型的 `modelOverrides`）压缩，和 CLI 一致，这几项 Web 上不能改。运行中的会话几秒内生效。新会话、或会话里切换到另一个模型时，没手动选档位就用该模型自己的思考档位。在此之前会话不读 `settings.json`；之前用 `pi` 命令行写进去的这些值，现在对 Web 会话也会生效。
+- 项目信任，和 `pi` 命令行共用 agentDir 下的 `trust.json`（在 Pi TUI 的信任提示里选择，或由 admin 在“设置”菜单的“项目信任”里修改，`/v1/projects/:id/trust`；没有记录时看 `defaultProjectTrust`，只有 `always` 算信任）。信任的项目才加载它的 `.pi/mcp.json`（并入这个项目的 MCP 列表）、`.pi/settings.json`（Agent 设置的同几项，叠加在全局之上）、`.pi/SYSTEM.md` 和 `.pi/APPEND_SYSTEM.md`（新建会话的系统提示词）。项目 `.pi/mcp.json` 不能替换共享 server、不能引用服务的环境变量，其中定义的 server 默认不启用，要项目 owner 在 MCP 面板里勾选，也可以用 `oauth` 让每个用户按项目各自授权；命令、参数、env 或地址改了要重新勾选。见[配置](docs/configuration.md)的“项目信任”。
 - 默认 SQLite，可显式选择 PostgreSQL；对话保存为 Pi JSONL，同一请求重复提交返回已记录的结果。
 - 可选的「稿纸」风格 Web UI：账本式对话流、运行状态、统计栏与轨迹 Inspector，以及在空白会话迎接你（开场白由默认模型生成，设置 `PI_COMPANION_GREETING=off` 时只用本地句子）、随运行与输入变化表情的灵动线描小猫；它的名字、说话风格和是否收起由服务端按用户保存（迁移 v3）。
 
@@ -24,7 +25,7 @@
 - **Pi 工具默认全部授权**：包括 `bash`、`edit`、`write`。只读请设置 `TOOLS=read,ls,find,grep`，并另行落实文件系统 / 进程隔离。见[配置](docs/configuration.md)。
 - **除非 server 使用按用户 OAuth，MCP 凭证都是共享身份**：凭证写在 `mcp.json`（或它引用的环境变量）里的共享 server，对启用它的每个项目都表现为同一个身份。按用户的 OAuth 凭证归属于客户端 IP（没有账号体系），同一 IP 后面的人共用它们；凭证在数据库里加密，但 `bash`（见下条）能像读其他文件一样读取 `mcp.json` 和 token 加密密钥文件。在 Web 上添加 stdio server 等于在服务器上执行这条命令，所以共享 MCP 只有 admin 能改。多数授权服务器只接受 https 或本机回调地址，通过 IP 访问的局域网部署要配 HTTPS 才能连接。
 - **`bash` 以服务身份运行**：继承服务进程的完整环境变量（包括 provider API key），并能读取服务用户可读的任何文件。授予 `bash` 即等于把这些凭证交给所有用户；真正隔离需要不授予 `bash`，或让它以独立用户 / 在沙箱中运行。设置显式 `TOOLS` 白名单时，MCP 工具只由 `mcp__*` 条目授权，codemode 内发起的调用同样受限。
-- **扩展与插件需显式启用**：Pi 扩展用 `PI_EXTENSION_PATHS`，agent-server 插件用 `PI_PLUGINS`；不设置则不加载。上下文文件、提示词模板与 skills 自动加载，服务中登记的项目对这些资源一律视为受信任。
+- **扩展与插件需显式启用**：Pi 扩展用 `PI_EXTENSION_PATHS`，agent-server 插件用 `PI_PLUGINS`；不设置则不加载。上下文文件、提示词模板与 skills 对所有项目自动加载；项目的 `.pi/mcp.json`、`.pi/settings.json`、`.pi/SYSTEM.md`、`.pi/APPEND_SYSTEM.md` 只在项目受信任时加载；项目扩展始终不加载。
 - **JSONL 暂不自动清理**：删除项目或会话后，对应的 JSONL 文件仍保留。
 - **备份为本机加密备份**：异地容灾仍在规划中。见[备份与恢复](docs/backup-restore.md)。
 - **数据库需先初始化**：服务启动只校验、不迁移。首次部署或版本要求升级时，先按[运维文档](docs/operations.md)处理数据库。

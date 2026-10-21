@@ -73,8 +73,8 @@ export type PiAgentSessionFactoryOptions = {
   readonly defaultModel?: ReturnType<ModelRuntime["getModel"]>;
   readonly defaultThinkingLevel?: string;
   /**
-   * Agent 设置（Pi 全局 settings.json 里的自动压缩、自动重试、按模型的思考档位）。
-   * 没有时会话用 Pi 的默认值，不读任何 settings.json。
+   * Agent 设置（Pi 全局 settings.json 里的自动压缩、自动重试、按模型的思考档位，信任的项目再叠加
+   * 项目 .pi/settings.json）。没有时会话用 Pi 的默认值，不读任何 settings.json。
    */
   readonly agentSettings?: Pick<AgentSettingsFile, "createSettingsManager">;
   readonly customTools?: readonly ToolDefinition[];
@@ -274,7 +274,8 @@ export class PiAgentSessionFactory implements AgentSessionFactory {
     if ((transcriptHasModel || databaseHasModel || !isNewSession) && !model) {
       throw new Error(transcriptHasModel ? "historical session model is unavailable" : "session model is unavailable (no saved or configured default model)");
     }
-    const hostSettings = this.agentSettings?.createSettingsManager();
+    // 信任的项目里 .pi/settings.json 的 Agent 设置叠加在全局之上（docs/configuration.md「项目信任」）。
+    const hostSettings = this.agentSettings?.createSettingsManager(context.projectCwd);
     const settingsManager = hostSettings?.manager ?? SettingsManager.inMemory();
     // A new session without an explicit level takes the model's own default before the service default.
     const modelThinkingLevel = isNewSession && model ? settingsManager.getModelThinkingLevel(model.provider, model.id) : undefined;

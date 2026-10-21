@@ -61,8 +61,11 @@ export function validateProjectMcpSetting(
 export function mcpServerIdentity(server: McpCatalogServer): string {
   const connection = server.connection;
   const parts = connection.type === "http"
-    ? ["http", connection.url]
-    : ["stdio", connection.command, connection.args ?? [], connection.cwd ?? null];
+    // 项目文件里的 oauth 设置也算：换授权服务器或客户端要 owner 重新确认。
+    ? ["http", connection.url, ...(server.projectFile === "defined" ? [server.oauth ?? null] : [])]
+    : ["stdio", connection.command, connection.args ?? [], connection.cwd ?? null,
+      // 项目 .pi/mcp.json 里的 server 连 env 也算：模型能改这个文件，改 env（如 NODE_OPTIONS）同样能换掉运行的代码。
+      ...(server.projectFile === "defined" ? [connection.env ?? {}] : [])];
   return createHash("sha256").update(JSON.stringify(parts)).digest("hex");
 }
 
@@ -110,7 +113,7 @@ export function effectiveMcpServerEntries(
       ...(Object.keys(toolExposure).length > 0 ? { toolExposure } : {}),
       ...(server.timeout !== undefined ? { timeout: server.timeout } : {}),
     } as McpServerConfig;
-    entries.push({ name: server.name, config, source: "pi-agent-server MCP catalog", scope: "global" });
+    entries.push({ name: server.name, config, source: "pi-agent-server MCP catalog", scope: server.projectFile === "defined" ? "project" : "global" });
   }
   return entries;
 }
@@ -131,6 +134,7 @@ export function projectMcpServerViews(
       hiddenTools: setting?.hiddenTools ?? [], adminOnly: server.adminOnly, updatedAt: setting?.updatedAt ?? null,
       ...(isStale(server, setting) ? { changed: true } : {}),
       ...(server.oauth ? { oauthLabel: server.oauth.label } : {}),
+      ...(server.projectFile ? { projectFile: server.projectFile } : {}),
     };
   });
   for (const setting of settings) {

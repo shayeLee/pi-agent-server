@@ -2,6 +2,9 @@
 // 协议交给 SDK 的 authorizeMcp；这里负责：PI_PUBLIC_URL 拼回调地址、内存里的待处理授权表
 // （state 一次性、10 分钟过期、绑定发起者）、回调结果、断开时尽量撤销 token。
 // 任何返回值和错误信息都不含 token、code 或 state。
+// 信任项目的 .pi/mcp.json 定义的 oauth server（docs/mcp-integration.md §15）也走这里：凭证和动态注册的客户端
+// 存在 `project:<项目 ID>:<名称>` 下（全局名称只有字母、数字、_ 和 -，不会撞），每个项目各自授权；
+// 凭证仍然只用于授权时的地址，项目文件换了地址就不再使用。
 
 import {
   authorizeMcp, OAuthIssuerMismatchError, OAuthRegistrationError, type OAuthClientInformationMixed,
@@ -49,9 +52,27 @@ export type McpOAuthCallbackResult =
   | { ok: true; server: string }
   | { ok: false; server?: string; reason: "expired" | "denied" | "issuer_mismatch" | "server_changed" | "exchange_failed" };
 
+/** 项目的目录（全局 server 加上信任项目自己的 server）；不给时只看全局目录。 */
+export interface McpOAuthProject {
+  readonly id: string;
+  readonly catalog: McpCatalog;
+}
+
+/** 项目文件定义的 server 的存储名。 */
+function storageName(server: McpOAuthCatalogServer, projectId: string | undefined): string {
+  return server.projectFile === "defined" && projectId !== undefined ? `project:${projectId}:${server.name}` : server.name;
+}
+
+/** 目录里的 server，以及用存储名代替名称、交给凭证存储的同一个 server。 */
+interface Target {
+  readonly server: McpOAuthCatalogServer;
+  readonly stored: McpOAuthCatalogServer;
+}
+
 interface PendingEntry {
   readonly ownerKey: string;
   readonly serverName: string;
+  readonly projectId?: string;
   readonly serverUrl: string;
   readonly pending: PendingMcpAuthorization;
   readonly expiresAt: number;
@@ -59,6 +80,8 @@ interface PendingEntry {
 
 export interface McpOAuthConnectionsOptions {
   readonly catalog: McpCatalog;
+  /** 授权回调时重新取项目的目录，确认 server 没被换掉。 */
+  readonly projectCatalog?: (projectId: string) => Promise<McpCatalog | undefined>;
   readonly store: McpOAuthStorePort;
   /** parsePublicUrl 的结果。 */
   readonly publicUrl: string;
@@ -86,11 +109,11 @@ export class McpOAuthConnections {
     this.returnUrl = `${options.publicUrl}/`;
   }
 
-  /** 目录中所有 oauth server 的连接状态。 */
-  async list(ownerKey: string): Promise<McpConnectionView[]> {
+  /** 目录中所有 oauth server 的连接状态；给了项目时还有项目自己的 server。 */
+  async list(ownerKey: string, project?: McpOAuthProject): Promise<McpConnectionView[]> {
     const views: McpConnectionView[] = [];
-    for (const server of this.#oauthServers()) {
-      const credential = await this.#options.store.getCredential(ownerKey, server.name);
+    for (const { server, stored } of this.#targets(project)) {
+      const credential = await this.#options.store.getCredential(ownerKey, stored.name);
       const connected = credential !== undefined && credential.serverUrl === server.connection.url;
       views.push({
         name: server.name, label: server.oauth.label, connected,
@@ -102,20 +125,21 @@ export class McpOAuthConnections {
     return views;
   }
 
-  /** 用户已连接（且凭证对应目录当前地址）的 oauth server 名称。 */
-  async connectedServers(ownerKey: string): Promise<Set<string>> {
+  /** 用户已连接（且凭证对应目录当前地址）的 oauth server 名称；给了项目时按项目的目录。 */
+  async connectedServers(ownerKey: string, project?: McpOAuthProject): Promise<Set<string>> {
+    const credentials = new Map((await this.#options.store.listCredentials(ownerKey)).map(credential => [credential.serverName, credential]));
     const names = new Set<string>();
-    for (const credential of await this.#options.store.listCredentials(ownerKey)) {
-      const server = this.#server(credential.serverName);
-      if (server && credential.serverUrl === server.connection.url) names.add(server.name);
+    for (const { server, stored } of this.#targets(project)) {
+      if (credentials.get(stored.name)?.serverUrl === server.connection.url) names.add(server.name);
     }
     return names;
   }
 
   /** 会话里连接 oauth server 用的 AuthProvider；server 不是 oauth server 时为 undefined。 */
-  sessionAuthProvider(ownerKey: string, serverName: string): AuthProvider | undefined {
-    const server = this.#server(serverName);
-    if (!server) return undefined;
+  sessionAuthProvider(ownerKey: string, serverName: string, project?: McpOAuthProject): AuthProvider | undefined {
+    const target = this.#target(serverName, project);
+    if (!target) return undefined;
+    const server = target.stored;
     const secret = server.oauth.clientSecret;
     return createSessionAuthProvider({
       store: this.#options.store, ownerKey, server, redirectUrl: this.callbackUrl, locks: this.#refreshLocks,
@@ -127,9 +151,10 @@ export class McpOAuthConnections {
   }
 
   /** 发起授权，返回对方授权页地址。 */
-  async start(ownerKey: string, serverName: string): Promise<{ authorizationUrl: string } | McpOAuthStartError> {
-    const server = this.#server(serverName);
-    if (!server) return { code: "unknown_server", message: "目录中没有这个需要授权的 MCP server" };
+  async start(ownerKey: string, serverName: string, project?: McpOAuthProject): Promise<{ authorizationUrl: string } | McpOAuthStartError> {
+    const target = this.#target(serverName, project);
+    if (!target) return { code: "unknown_server", message: "目录中没有这个需要授权的 MCP server" };
+    const server = target.stored;
     this.#sweep();
     const pending: PendingMcpAuthorization = {};
     let authorizationUrl: URL | undefined;
@@ -141,7 +166,10 @@ export class McpOAuthConnections {
     } catch (error) {
       return startError(error, server, this.callbackUrl);
     }
-    this.#remember(pending.state, { ownerKey, serverName, serverUrl: server.connection.url, pending, expiresAt: this.#now() + PENDING_TTL_MS });
+    this.#remember(pending.state, {
+      ownerKey, serverName, ...(project && target.stored.name !== serverName ? { projectId: project.id } : {}),
+      serverUrl: server.connection.url, pending, expiresAt: this.#now() + PENDING_TTL_MS,
+    });
     return { authorizationUrl: authorizationUrl.href };
   }
 
@@ -154,7 +182,10 @@ export class McpOAuthConnections {
     this.#pending.delete(query.state!);
     const { serverName } = entry;
     if (query.error !== undefined || !query.code) return { ok: false, server: serverName, reason: "denied" };
-    const server = this.#server(serverName);
+    // 项目的 server 要重新取项目的目录：期间项目文件可能改了，或项目不再受信任。
+    const catalog = entry.projectId === undefined ? undefined : await this.#options.projectCatalog?.(entry.projectId);
+    const target = entry.projectId === undefined ? this.#target(serverName) : catalog ? this.#target(serverName, { id: entry.projectId, catalog }) : undefined;
+    const server = target?.stored;
     if (!server || server.connection.url !== entry.serverUrl) return { ok: false, server: serverName, reason: "server_changed" };
     const provider = this.#provider(ownerKey, server, { pending: entry.pending });
     try {
@@ -168,10 +199,12 @@ export class McpOAuthConnections {
   }
 
   /** 断开：尽量在对方撤销 refresh token 与 access token（并行），然后删除本地凭证。撤销失败不阻止删除。 */
-  async disconnect(ownerKey: string, serverName: string): Promise<boolean> {
-    const credential = await this.#options.store.getCredential(ownerKey, serverName);
+  async disconnect(ownerKey: string, serverName: string, project?: McpOAuthProject): Promise<boolean> {
+    const target = this.#target(serverName, project);
+    const key = target?.stored.name ?? serverName;
+    const credential = await this.#options.store.getCredential(ownerKey, key);
     if (!credential) return false;
-    const server = this.#server(serverName);
+    const server = target?.stored;
     const endpoint = credential.discovery?.authorizationServerMetadata?.revocation_endpoint;
     if (server && credential.serverUrl === server.connection.url && typeof endpoint === "string" && isSecureEndpoint(endpoint)) {
       const client = await this.#provider(ownerKey, server, {}).clientInformation();
@@ -181,7 +214,7 @@ export class McpOAuthConnections {
           .filter(([token]) => token).map(([token, hint]) => this.#revoke(endpoint, client, token!, hint)));
       }
     }
-    return this.#options.store.deleteCredential(ownerKey, serverName);
+    return this.#options.store.deleteCredential(ownerKey, key);
   }
 
   async #revoke(endpoint: string, client: OAuthClientInformationMixed, token: string, hint: string): Promise<void> {
@@ -210,13 +243,19 @@ export class McpOAuthConnections {
     return { signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS), ...(this.#options.fetch ? { fetch: this.#options.fetch } : {}) };
   }
 
-  #oauthServers(): McpOAuthCatalogServer[] {
-    return [...this.#options.catalog.servers.values()].filter(isOAuthServer);
+  #targets(project?: McpOAuthProject): Target[] {
+    return [...(project?.catalog ?? this.#options.catalog).servers.values()].filter(isOAuthServer)
+      .map(server => this.#asTarget(server, project?.id));
   }
 
-  #server(name: string): McpOAuthCatalogServer | undefined {
-    const server = this.#options.catalog.servers.get(name);
-    return server && isOAuthServer(server) ? server : undefined;
+  #target(name: string, project?: McpOAuthProject): Target | undefined {
+    const server = (project?.catalog ?? this.#options.catalog).servers.get(name);
+    return server && isOAuthServer(server) ? this.#asTarget(server, project?.id) : undefined;
+  }
+
+  #asTarget(server: McpOAuthCatalogServer, projectId: string | undefined): Target {
+    const name = storageName(server, projectId);
+    return { server, stored: name === server.name ? server : { ...server, name } };
   }
 
   /** 每个用户最多保留最近 5 个、全服务最多 1000 个待处理授权，超出时丢弃最旧的。 */

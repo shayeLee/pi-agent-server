@@ -24,6 +24,8 @@ const exposureLabel = (exposure: McpExposure | undefined) => exposure ? zhCN.pro
  */
 export function useProjectMcp({ api, projectId, projectName }: { api: McpApi; projectId: string | null; projectName: string }): {
   available: boolean; openPanel: () => void; dialog: ReactNode;
+  /** 重新读取本项目的 MCP 设置（例如项目信任改了之后）。 */
+  refresh: () => void;
 } {
   const [settings, setSettings] = useState<ProjectMcpSettings | null>(null);
   const [connections, setConnections] = useState<Connections>(null);
@@ -37,8 +39,9 @@ export function useProjectMcp({ api, projectId, projectName }: { api: McpApi; pr
     api.getSharedMcp().then(result => { if (current) setCanManageShared(result.canEdit); }, () => {});
     return () => { current = false; };
   }, [api]);
-  const refreshConnections = useCallback(() => api.listMcpConnections().then(
-    result => setConnections(result.servers), () => setConnections(null)), [api]);
+  // 带上项目：项目自己的 .pi/mcp.json 里也可能有需要个人授权的 server，授权按项目分开。
+  const refreshConnections = useCallback(() => api.listMcpConnections(projectId ?? undefined).then(
+    result => setConnections(result.servers), () => setConnections(null)), [api, projectId]);
   useEffect(() => {
     let current = true;
     setSettings(null);
@@ -59,10 +62,10 @@ export function useProjectMcp({ api, projectId, projectName }: { api: McpApi; pr
   const personal = settings?.servers.some(server => server.oauthLabel) ?? false;
   useEffect(() => { if (personal) void refreshConnections(); }, [personal, refreshConnections]);
   const openPanel = useCallback(() => setOpen(true), []);
-  if (!settings?.configured || projectId === null) return { available: false, openPanel, dialog: null };
+  if (!settings?.configured || projectId === null) return { available: false, openPanel, dialog: null, refresh: refreshSettings };
   const close = () => { setOpen(false); setReturned(null); setTab("project"); clearMcpOAuthReturn(); };
   const showShared = canManageShared && tab === "shared";
-  return { available: true, openPanel, dialog: <Modal open={open} onClose={close} title={zhCN.projectMcp.title(projectName)} className="project-mcp-dialog">
+  return { available: true, openPanel, refresh: refreshSettings, dialog: <Modal open={open} onClose={close} title={zhCN.projectMcp.title(projectName)} className="project-mcp-dialog">
     {canManageShared && <div className="project-mcp-tabs" role="tablist">
       {(["project", "shared"] as const).map(id => <button key={id} type="button" role="tab" aria-selected={tab === id} data-testid={`project-mcp-tab-${id}`}
         className={`project-mcp-tab${tab === id ? " is-active" : ""}`} onClick={() => setTab(id)}>{zhCN.projectMcp.tabs[id]}</button>)}
@@ -96,6 +99,7 @@ export function ProjectMcpPanel({ api, projectId, settings, connections = null, 
   return <div className="project-mcp" data-testid="project-mcp-panel">
     <p className="project-mcp-intro">{zhCN.projectMcp.intro}</p>
     {!settings.canEdit && <p className="project-mcp-intro" role="note"><span className="project-mcp-tag">{zhCN.projectMcp.readOnlyTag}</span>{zhCN.projectMcp.readOnly}</p>}
+    {settings.projectConfig && <ProjectConfigNotice config={settings.projectConfig} />}
     {available.length === 0
       ? <p className="project-mcp-empty">{zhCN.projectMcp.empty}</p>
       : <ul className="project-mcp-list">
@@ -114,15 +118,31 @@ export function ProjectMcpPanel({ api, projectId, settings, connections = null, 
   </div>;
 }
 
+/** 项目里的 .pi/mcp.json：信任的项目才加载；没加载、读坏了或有项没用上时说明原因。 */
+function ProjectConfigNotice({ config }: { config: NonNullable<ProjectMcpSettings["projectConfig"]> }) {
+  const text = zhCN.projectMcp.projectFile;
+  return <section className="project-mcp-project-file" data-testid="project-mcp-project-file" aria-label={text.label}>
+    <p className="project-mcp-intro" role="note">
+      {config.trusted ? text.loaded(config.path) : text.untrusted(config.path)}
+    </p>
+    {config.error && <p className="project-mcp-error" role="alert">{text.error(config.error)}</p>}
+    {config.unavailable.length > 0 && <ul className="project-mcp-project-file-unused" aria-label={text.unavailable}>
+      {config.unavailable.map(item => <li key={item.name} className="project-mcp-desc"><span className="project-mcp-tools">{item.name}</span>：{item.reason}</li>)}
+    </ul>}
+  </section>;
+}
+
 /** 个人账号 server 的连接状态与“连接 / 断开”。连接会整页跳到对方授权页。 */
-function ConnectionLine({ api, server, connections, onChanged }: { api: McpApi; server: ProjectMcpServer & { oauthLabel: string }; connections: Connections; onChanged: () => Promise<void> }) {
+function ConnectionLine({ api, projectId, server, connections, onChanged }: {
+  api: McpApi; projectId: string; server: ProjectMcpServer & { oauthLabel: string }; connections: Connections; onChanged: () => Promise<void>;
+}) {
   const [state, setState] = useState<{ kind: "idle" | "connecting" | "disconnecting" } | { kind: "error"; message: string }>({ kind: "idle" });
   const connection = connections?.find(row => row.name === server.name);
   const label = server.oauthLabel;
   async function connect() {
     setState({ kind: "connecting" });
     try {
-      const { authorizationUrl } = await api.startMcpOAuth(server.name);
+      const { authorizationUrl } = await api.startMcpOAuth(server.name, projectId);
       rememberMcpOAuthReturnPath();
       window.location.assign(authorizationUrl);
     } catch (error) {
@@ -132,7 +152,7 @@ function ConnectionLine({ api, server, connections, onChanged }: { api: McpApi; 
   async function disconnect() {
     setState({ kind: "disconnecting" });
     try {
-      await api.disconnectMcp(server.name);
+      await api.disconnectMcp(server.name, projectId);
       await onChanged();
       setState({ kind: "idle" });
     } catch (error) {
@@ -202,7 +222,8 @@ function ServerRow({ api, projectId, server, canEdit, onSaved, connections, onCo
     if (tools.join(",") === current.hiddenTools.join(",") || await save({ hiddenTools: tools })) setEditingTools(null);
   }
 
-  const identity = server.oauthLabel ? zhCN.projectMcp.personal : zhCN.projectMcp.shared;
+  // 项目文件定义的 server 不能引用服务端凭证，不算“共享身份”。
+  const identity = server.oauthLabel ? zhCN.projectMcp.personal : server.projectFile === "defined" ? null : zhCN.projectMcp.shared;
   return <li className={`project-mcp-row${current.enabled ? " is-enabled" : ""}`} data-testid="project-mcp-server" data-server={server.name}>
     <div className="project-mcp-head">
       <input id={`${id}-on`} type="checkbox" className="project-mcp-check" checked={current.enabled} aria-describedby={`${id}-desc`}
@@ -210,8 +231,9 @@ function ServerRow({ api, projectId, server, canEdit, onSaved, connections, onCo
       <label htmlFor={`${id}-on`} className="project-mcp-name">{server.name}</label>
       <span className="project-mcp-meta">
         {server.transport}
-        <span title={server.oauthLabel ? zhCN.projectMcp.personalIdentity : zhCN.projectMcp.sharedIdentity}> · {identity}</span>
+        {identity && <span title={server.oauthLabel ? zhCN.projectMcp.personalIdentity : zhCN.projectMcp.sharedIdentity}> · {identity}</span>}
         {server.adminOnly && <> · {zhCN.projectMcp.adminOnly}</>}
+        {server.projectFile && <span title={zhCN.projectMcp.projectFile.titles[server.projectFile]}> · {zhCN.projectMcp.projectFile.tags[server.projectFile]}</span>}
       </span>
     </div>
     <p id={`${id}-desc`} className="project-mcp-desc">{server.description}</p>
@@ -248,7 +270,7 @@ function ServerRow({ api, projectId, server, canEdit, onSaved, connections, onCo
           {canEdit && <button type="button" className="project-mcp-action" disabled={busy} onClick={() => setEditingTools(current.hiddenTools.join(", "))}>{zhCN.projectMcp.edit}</button>}
         </>}
     </div>}
-    {server.oauthLabel && <ConnectionLine api={api} server={{ ...server, oauthLabel: server.oauthLabel }} connections={connections} onChanged={onConnectionsChanged} />}
+    {server.oauthLabel && <ConnectionLine api={api} projectId={projectId} server={{ ...server, oauthLabel: server.oauthLabel }} connections={connections} onChanged={onConnectionsChanged} />}
     <p className={`project-mcp-status${state.kind === "error" ? " project-mcp-error" : ""}`} role="status">
       {state.kind === "saving" ? zhCN.projectMcp.saving : state.kind === "saved" ? zhCN.projectMcp.saved : state.kind === "error" ? zhCN.projectMcp.saveFailed(state.message) : ""}
     </p>

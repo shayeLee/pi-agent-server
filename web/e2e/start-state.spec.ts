@@ -5,7 +5,7 @@ import { test, expect } from "@playwright/test";
 test.skip(process.env.MOCK_SCENARIO !== "rich", "Requires the isolated rich mock scenario");
 
 const modelsRoute = async (page: import("@playwright/test").Page) => {
-  await page.route("**/v1/models", async (route) => route.fulfill({
+  await page.route(/\/v1\/models(\?|$)/, async (route) => route.fulfill({
     contentType: "application/json",
     body: JSON.stringify({
       models: [{ provider: "fixture", id: "crossband/very-long-model-id-for-visual-qa", name: "Local visual model" }],
@@ -84,7 +84,7 @@ for (const viewport of [
       id: `model-${String(index).padStart(2, "0")}-long-provider-model-id`,
       name: `Fixture Model ${index}`,
     }));
-    await page.route("**/v1/models", async (route) => route.fulfill({
+    await page.route(/\/v1\/models(\?|$)/, async (route) => route.fulfill({
       contentType: "application/json",
       body: JSON.stringify({
         models,

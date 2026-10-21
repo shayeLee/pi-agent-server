@@ -1584,6 +1584,11 @@ details[open] > summary > .details-chevron { transform: rotate(90deg); }
 .project-mcp-returned > span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .project-mcp-returned.project-mcp-error { border-color: var(--danger); color: var(--danger); }
 .project-mcp-changed { color: var(--danger); font-size: var(--fs-meta); }
+/* The project's own .pi/mcp.json: a note above the rows, unused entries as a plain list. */
+.project-mcp-project-file { display: flex; flex-direction: column; gap: 4px; padding: 8px 12px; border: 1px solid var(--line); border-radius: var(--radius-control); background: var(--hl); }
+.project-mcp-project-file > .project-mcp-intro, .project-mcp-project-file > .project-mcp-error { margin: 0; overflow-wrap: anywhere; }
+.project-mcp-project-file-unused { margin: 0; padding: 0; list-style: none; }
+.project-mcp-key.project-trust-file { width: 168px; }
 /* Admins switch between this project's settings and the shared mcp.json; plain mono tabs over a rule. */
 .project-mcp-tabs { display: flex; gap: 20px; margin: -4px 0 16px; border-bottom: 1px solid var(--line); }
 .project-mcp-tab { margin-bottom: -1px; padding: 6px 0; border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: none; color: var(--dim); font-family: var(--font-mono); font-size: var(--fs-meta); cursor: pointer; }
