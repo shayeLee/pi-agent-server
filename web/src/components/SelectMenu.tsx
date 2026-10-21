@@ -1,7 +1,31 @@
 import { zhCN } from "../i18n/zh-CN.js";
-import { useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from "react";
 import { Icon, type IconName } from "./Icon.js";
 import type { KeyboardEvent } from "react";
+
+/** 列表离触发按钮的距离、离视口边缘的最小留白（px）。 */
+const POPUP_GAP = 4;
+const VIEWPORT_MARGIN = 8;
+/** 不支持 Popover API 的环境（旧浏览器、jsdom）不加 popover 属性，退化为 position: fixed。 */
+const SUPPORTS_POPOVER = typeof HTMLElement !== "undefined" && "showPopover" in HTMLElement.prototype;
+
+/**
+ * 把列表摆到锚点旁边：默认在下方，下方放不下且上方更宽裕时翻到上方；
+ * 高度不超过所在一侧的可用空间，水平方向不超出视口。
+ */
+function placePopup(anchor: HTMLElement, popup: HTMLElement): void {
+  const rect = anchor.getBoundingClientRect();
+  popup.style.setProperty("--select-menu-anchor-width", `${rect.width}px`);
+  popup.style.removeProperty("--select-menu-room");
+  const below = window.innerHeight - rect.bottom - POPUP_GAP - VIEWPORT_MARGIN;
+  const above = rect.top - POPUP_GAP - VIEWPORT_MARGIN;
+  const up = popup.offsetHeight > below && above > below;
+  popup.style.setProperty("--select-menu-room", `${Math.max(0, up ? above : below)}px`);
+  const maxLeft = window.innerWidth - VIEWPORT_MARGIN - popup.offsetWidth;
+  popup.style.left = `${Math.max(VIEWPORT_MARGIN, Math.min(rect.left, maxLeft))}px`;
+  popup.style.top = `${up ? rect.top - POPUP_GAP - popup.offsetHeight : rect.bottom + POPUP_GAP}px`;
+  popup.dataset.side = up ? "top" : "bottom";
+}
 
 export type SelectMenuOption = { value: string; label: string; title?: string; testId?: string };
 
@@ -18,6 +42,10 @@ export type SelectMenuProps = {
   value: string;
   onChange: (value: string) => void;
   ariaLabel: string;
+  /** 触发按钮的 id，供外部 `<label htmlFor>` 关联。 */
+  id?: string;
+  /** 选中项没有自己的 title 时，触发按钮的提示。 */
+  title?: string;
   disabled?: boolean;
   testId?: string;
   className?: string;
@@ -25,6 +53,8 @@ export type SelectMenuProps = {
   checkPosition?: "left" | "right";
   chevronIcon?: IconName;
   openChevronIcon?: IconName;
+  /** 列表对齐的元素，默认是触发按钮。 */
+  anchorRef?: RefObject<HTMLElement | null>;
 };
 
 /** 通用受控自绘选择器。 */
@@ -34,6 +64,8 @@ export function SelectMenu({
   value,
   onChange,
   ariaLabel,
+  id: triggerId,
+  title,
   disabled,
   testId,
   className,
@@ -41,6 +73,7 @@ export function SelectMenu({
   checkPosition = "right",
   chevronIcon = "down",
   openChevronIcon,
+  anchorRef,
 }: SelectMenuProps) {
   const [open, setOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState(0);
@@ -51,9 +84,27 @@ export function SelectMenu({
   const listboxId = `${id}-listbox`;
   const selectedIndex = options.findIndex((option) => option.value === value);
   const selected = selectedIndex >= 0 ? options[selectedIndex] : undefined;
-  const itemCount = options.length + (action ? 1 : 0);
+  const hasAction = Boolean(action);
+  const itemCount = options.length + (hasAction ? 1 : 0);
   const isDisabled = disabled || itemCount === 0;
   const classes = ["select-menu", className].filter(Boolean).join(" ");
+
+  // 列表放进 top layer（popover），不会被弹窗、侧栏等滚动容器截住，也能盖在 <dialog> 之上；
+  // 它在 DOM 里仍是本组件的子节点，点外面关闭和焦点逻辑不受影响。
+  useLayoutEffect(() => {
+    const popup = listboxRef.current;
+    const anchor = anchorRef?.current ?? triggerRef.current;
+    if (!open || !popup || !anchor) return;
+    if (SUPPORTS_POPOVER && !popup.matches(":popover-open")) popup.showPopover();
+    const place = () => placePopup(anchor, popup);
+    place();
+    window.addEventListener("resize", place);
+    window.addEventListener("scroll", place, true);
+    return () => {
+      window.removeEventListener("resize", place);
+      window.removeEventListener("scroll", place, true);
+    };
+  }, [open, options.length, hasAction, anchorRef]);
 
   useEffect(() => {
     if (!open) return;
@@ -170,6 +221,7 @@ export function SelectMenu({
     >
       <button
         ref={triggerRef}
+        id={triggerId}
         type="button"
         className="select-menu-trigger chevron-trigger"
         aria-label={ariaLabel}
@@ -178,12 +230,18 @@ export function SelectMenu({
         aria-controls={listboxId}
         data-testid={testId}
         data-value={value}
-        title={selected?.title}
+        title={selected?.title ?? title}
         disabled={isDisabled}
         onClick={() => (open ? closeMenu() : openMenu())}
         onKeyDown={handleTriggerKeyDown}
       >
-        <span className="select-menu-label">{selected?.label ?? placeholder}</span>
+        <span className="select-menu-label">
+          <span className="select-menu-value">{selected?.label ?? placeholder}</span>
+          {/* 和原生 select 一样按最长的选项定宽，切换选项时宽度不跳；文字放在伪元素里，不进 textContent。 */}
+          {[placeholder, ...options.map((option) => option.label)].map((label, index) => (
+            <span key={index} className="select-menu-sizer" data-label={label} aria-hidden="true" />
+          ))}
+        </span>
         <Icon name={open && openChevronIcon ? openChevronIcon : chevronIcon} className="disclosure-chevron" />
       </button>
       {open && !isDisabled && (
@@ -191,6 +249,7 @@ export function SelectMenu({
           ref={listboxRef}
           id={listboxId}
           className="select-menu-listbox"
+          popover={SUPPORTS_POPOVER ? "manual" : undefined}
           role={action ? "menu" : "listbox"}
           aria-label={ariaLabel}
           aria-activedescendant={

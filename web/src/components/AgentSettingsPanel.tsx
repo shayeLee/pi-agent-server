@@ -4,9 +4,9 @@ import {
   AGENT_THINKING_LEVELS, ApiError, MAX_AGENT_RETRIES,
   type AgentSettings, type AgentSettingsValues, type AgentThinkingLevel, type ApiClient, type ModelInfo,
 } from "pi-agent-server/client";
-import { IconSelect } from "./IconSelect.js";
 import { Modal } from "./Modal.js";
 import { errorMessage } from "./ProjectMcpPanel.js";
+import { SelectMenu } from "./SelectMenu.js";
 
 type SettingsApi = Pick<ApiClient, "getAgentSettings" | "saveAgentSettings">;
 
@@ -131,25 +131,24 @@ function ModelThinkingLevels({ id, levels, models, disabled, onChange }: {
   const entries = Object.entries(levels).sort(([a], [b]) => a.localeCompare(b));
   const known = new Set(models.map(model => `${model.provider}/${model.id}`));
   const addable = models.map(model => `${model.provider}/${model.id}`).filter(ref => !(ref in levels));
-  const levelOptions = AGENT_THINKING_LEVELS.map(level => <option key={level} value={level}>{level}</option>);
+  const levelOptions = AGENT_THINKING_LEVELS.map(level => ({ value: level, label: level }));
   return <div className="agent-settings-models">
     {entries.length === 0
       ? <p className="project-mcp-status">{text.noModelThinking}</p>
       : entries.map(([ref, level]) => <div key={ref} className="project-mcp-line agent-settings-model" data-testid="agent-settings-model-row" data-model={ref}>
         <span className="project-mcp-value project-mcp-tools agent-settings-model-ref">{ref}</span>
         {!known.has(ref) && <span className="project-mcp-meta">{text.modelUnavailable}</span>}
-        <IconSelect aria-label={text.levelFor(ref)} value={level} disabled={disabled}
-          onChange={event => onChange({ ...levels, [ref]: event.target.value as AgentThinkingLevel })}>{levelOptions}</IconSelect>
+        <SelectMenu ariaLabel={text.levelFor(ref)} options={levelOptions} value={level} disabled={disabled}
+          onChange={value => onChange({ ...levels, [ref]: value as AgentThinkingLevel })} />
         <button type="button" className="project-mcp-action" disabled={disabled}
           onClick={() => { const { [ref]: _removed, ...rest } = levels; onChange(rest); }}>{text.remove}</button>
       </div>)}
     {!disabled && addable.length > 0 && <div className="project-mcp-line agent-settings-add">
-      <IconSelect id={`${id}-new-model`} aria-label={text.newModel} value={newModel} data-testid="agent-settings-new-model"
-        onChange={event => setNewModel(event.target.value)}>
-        <option value="">{text.chooseModel}</option>
-        {addable.map(ref => <option key={ref} value={ref}>{ref}</option>)}
-      </IconSelect>
-      <IconSelect aria-label={text.newLevel} value={newLevel} onChange={event => setNewLevel(event.target.value as AgentThinkingLevel)}>{levelOptions}</IconSelect>
+      <SelectMenu id={`${id}-new-model`} ariaLabel={text.newModel} testId="agent-settings-new-model"
+        options={addable.map(ref => ({ value: ref, label: ref }))} value={newModel} placeholder={text.chooseModel}
+        onChange={setNewModel} />
+      <SelectMenu ariaLabel={text.newLevel} options={levelOptions} value={newLevel}
+        onChange={value => setNewLevel(value as AgentThinkingLevel)} />
       <button type="button" className="project-mcp-action project-mcp-primary" disabled={!newModel} data-testid="agent-settings-add-model"
         onClick={() => { onChange({ ...levels, [newModel]: newLevel }); setNewModel(""); }}>{text.add}</button>
     </div>}

@@ -1,7 +1,7 @@
 import { zhCN } from "../i18n/zh-CN.js";
 import { useState } from "react";
-import { IconSelect } from "./IconSelect.js";
 import { Icon } from "./Icon.js";
+import { SelectMenu } from "./SelectMenu.js";
 import type { EventLogEntry } from "../types.js";
 import { useFollowBottom } from "../hooks/useFollowBottom.js";
 
@@ -40,6 +40,15 @@ export function EventLog({ entries, onClear, showHeader = true }: EventLogProps)
   const scroll = useFollowBottom(filter, entries);
 
   const filtered = entries.filter((e) => filter === "all" || e.type === filter);
+  const filterSelect = (
+    <SelectMenu
+      testId="event-filter"
+      ariaLabel={zhCN.eventLog.filter}
+      options={[{ value: "all", label: zhCN.toolParameters.all }, ...INTERESTING_TYPES.map((t) => ({ value: t, label: t }))]}
+      value={filter}
+      onChange={setFilter}
+    />
+  );
 
   return (
     <aside className="event-log" data-testid="event-log">
@@ -47,38 +56,14 @@ export function EventLog({ entries, onClear, showHeader = true }: EventLogProps)
         <header className="panel-header">
           <h3>{zhCN.trace.events}</h3>
           <div className="panel-actions">
-            <IconSelect
-              data-testid="event-filter"
-              value={filter}
-              onChange={(e) => setFilter(e.target.value)}
-              aria-label={zhCN.eventLog.filter}
-            >
-              <option value="all">{zhCN.toolParameters.all}</option>
-              {INTERESTING_TYPES.map((t) => (
-                <option key={t} value={t}>
-                  {t}
-                </option>
-              ))}
-            </IconSelect>
+            {filterSelect}
             <button data-testid="event-clear" onClick={onClear}>
               {zhCN.eventLog.clear}</button>
           </div>
         </header>
       ) : (
         <div className="event-log-toolbar">
-          <IconSelect
-            data-testid="event-filter"
-            value={filter}
-            onChange={(e) => setFilter(e.target.value)}
-            aria-label={zhCN.eventLog.filter}
-          >
-            <option value="all">{zhCN.toolParameters.all}</option>
-            {INTERESTING_TYPES.map((t) => (
-              <option key={t} value={t}>
-                {t}
-              </option>
-            ))}
-          </IconSelect>
+          {filterSelect}
           <button data-testid="event-clear" onClick={onClear}>
             {zhCN.eventLog.clear}</button>
         </div>

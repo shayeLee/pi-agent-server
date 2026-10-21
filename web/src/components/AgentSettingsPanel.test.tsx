@@ -82,9 +82,9 @@ describe("AgentSettingsPanel", () => {
     fireEvent.click(within(rows[0]!).getByRole("button", { name: text.remove }));
     await waitFor(() => expect(api.saveAgentSettings).toHaveBeenLastCalledWith({ hash: "h1", values: { modelThinkingLevels: { "openai/gpt-6": "high" } } }));
     // 已设置的模型不再出现在“添加”里。
-    const select = screen.getByTestId("agent-settings-new-model");
-    expect(within(select).queryByRole("option", { name: "openai/gpt-6" })).toBeNull();
-    fireEvent.change(select, { target: { value: "anthropic/claude" } });
+    fireEvent.click(screen.getByTestId("agent-settings-new-model"));
+    expect(screen.queryByRole("option", { name: "openai/gpt-6" })).toBeNull();
+    fireEvent.click(screen.getByRole("option", { name: "anthropic/claude" }));
     fireEvent.click(screen.getByTestId("agent-settings-add-model"));
     await waitFor(() => expect(api.saveAgentSettings).toHaveBeenLastCalledWith({
       hash: "h1", values: { modelThinkingLevels: { "openai/gpt-6": "high", "anthropic/claude": "medium" } },

@@ -501,16 +501,15 @@ textarea::placeholder {
   display: block;
 }
 
-/* Keep option auto-focus from horizontally scrolling the narrow sidebar. */
+.workbench-project-select .select-menu-sizer {
+  display: none;
+}
+
+/* The project list spans the whole project row in the narrow sidebar. */
 .workbench-project-select .select-menu-listbox {
-  position: absolute;
-  top: calc(100% + 4px);
-  left: 0;
-  right: 0;
-  width: 100%;
+  width: var(--select-menu-anchor-width, auto);
   min-width: 0;
-  max-width: 100%;
-  max-height: min(280px, calc(100dvh - 120px));
+  max-height: min(280px, var(--select-menu-room, calc(100dvh - 120px)));
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -1444,9 +1443,6 @@ textarea::placeholder {
 }
 
 .ui-icon { display: inline-block; flex: none; vertical-align: middle; }
-.icon-select { display: inline-grid; align-items: center; position: relative; min-width: 0; }
-.icon-select select { grid-area: 1 / 1; appearance: none; padding-right: 28px; width: 100%; }
-.icon-select > .disclosure-chevron { grid-area: 1 / 1; justify-self: end; margin-right: 8px; pointer-events: none; }
 summary { list-style: none; }
 summary::-webkit-details-marker { display: none; }
 summary.chevron-trigger { gap: 4px; }
@@ -1570,8 +1566,8 @@ details[open] > summary > .details-chevron { transform: rotate(90deg); }
 .project-mcp-value { min-width: 0; overflow-wrap: anywhere; }
 .project-mcp-tools { font-family: var(--font-mono); font-size: var(--fs-step); }
 .project-mcp-muted { color: var(--dim); }
-.project-mcp-line .icon-select select { height: 28px; padding: 0 28px 0 8px; border: 1px solid var(--line); border-radius: var(--radius-control); background: var(--bg); color: var(--ink); font: inherit; font-size: var(--fs-ui); }
-.project-mcp-line .icon-select > .disclosure-chevron { opacity: 1; }
+.project-mcp-line .select-menu-trigger, .shared-mcp-field .select-menu-trigger { min-height: 28px; padding: 0 8px; background: var(--bg); color: var(--ink); font-size: var(--fs-ui); }
+.project-mcp-line .select-menu-trigger > .disclosure-chevron, .shared-mcp-field .select-menu-trigger > .disclosure-chevron { margin-left: auto; opacity: 1; }
 .project-mcp-input { flex: 1 1 200px; min-width: 0; height: 28px; padding: 0 8px; border: 1px solid var(--line); border-radius: var(--radius-control); background: var(--bg); color: var(--ink); font-family: var(--font-mono); font-size: var(--fs-step); }
 .project-mcp-action { padding: 0 2px; border: 0; background: none; color: var(--dim); font: inherit; font-size: var(--fs-meta); text-decoration: underline; text-underline-offset: 3px; text-decoration-color: var(--line); cursor: pointer; }
 .project-mcp-action:hover { color: var(--ink); text-decoration-color: currentColor; }
@@ -1606,8 +1602,6 @@ details[open] > summary > .details-chevron { transform: rotate(90deg); }
 .shared-mcp-field > .project-mcp-key { padding-top: 7px; }
 .shared-mcp-control { display: flex; flex: 1; flex-direction: column; align-items: flex-start; gap: 4px; min-width: 0; }
 .shared-mcp-control > .project-mcp-input { flex: none; box-sizing: border-box; width: 100%; }
-.shared-mcp-field .icon-select select { height: 28px; padding: 0 28px 0 8px; border: 1px solid var(--line); border-radius: var(--radius-control); background: var(--bg); color: var(--ink); font: inherit; font-size: var(--fs-ui); }
-.shared-mcp-field .icon-select > .disclosure-chevron { opacity: 1; }
 .project-mcp-input.shared-mcp-textarea { height: auto; padding: 6px 8px; line-height: 1.5; resize: vertical; }
 .shared-mcp-control > .project-mcp-input.shared-mcp-number { width: 120px; }
 .shared-mcp-pairs { display: flex; flex: 1; flex-direction: column; align-items: flex-start; gap: 4px; min-width: 0; padding-top: 4px; }
@@ -1635,8 +1629,7 @@ details[open] > summary > .details-chevron { transform: rotate(90deg); }
 .agent-settings-models { display: flex; flex-direction: column; gap: 2px; }
 .agent-settings-model-ref { flex: 1 1 200px; }
 .agent-settings-add { padding-top: 4px; }
-.agent-settings-add .icon-select { min-width: 0; max-width: 100%; }
-.agent-settings-add .icon-select select { max-width: 100%; }
+.agent-settings-add .select-menu { max-width: 100%; }
 @media (max-width: 639px) {
   .project-mcp-row > :not(.project-mcp-head) { padding-left: 0; } .project-mcp-key { width: 100%; }
   .shared-mcp-field { flex-direction: column; } .shared-mcp-field > .project-mcp-key { padding-top: 0; } .shared-mcp-indent { padding-left: 0; }
@@ -2510,19 +2503,37 @@ details[open] > summary > .details-chevron { transform: rotate(90deg); }
 }
 
 .select-menu-label {
+  display: grid;
+  min-width: 0;
+}
+
+.select-menu-value,
+.select-menu-sizer {
+  grid-area: 1 / 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+.select-menu-sizer {
+  height: 0;
+  visibility: hidden;
+}
+
+.select-menu-sizer::before {
+  content: attr(data-label);
+}
+
+/* 列表是 top layer 里的 popover，位置由 SelectMenu 按触发按钮算好写进 top/left。 */
 .select-menu-listbox {
-  position: absolute;
+  position: fixed;
   z-index: 60;
-  top: calc(100% + 4px);
-  left: 0;
-  min-width: 100%;
-  max-height: min(280px, calc(100dvh - 32px));
+  inset: auto;
+  margin: 0;
+  color: inherit;
+  min-width: var(--select-menu-anchor-width, 0);
+  max-height: min(280px, var(--select-menu-room, calc(100dvh - 32px)));
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -2694,9 +2705,9 @@ details[open] > summary > .details-chevron { transform: rotate(90deg); }
   border-bottom: 1px solid var(--line);
 }
 
-.event-log-toolbar select,
+.event-log-toolbar .select-menu-trigger,
 .event-log-toolbar button,
-.panel-actions select,
+.panel-actions .select-menu-trigger,
 .panel-actions button {
   padding: 3px var(--space-8);
   border: 1px solid var(--line);
@@ -2706,7 +2717,7 @@ details[open] > summary > .details-chevron { transform: rotate(90deg); }
   font-size: var(--font-micro);
 }
 
-.event-log-toolbar select:hover,
+.event-log-toolbar .select-menu-trigger:hover,
 .event-log-toolbar button:hover,
 .panel-actions button:hover {
   color: var(--accent);
@@ -2840,7 +2851,7 @@ details[open] > summary > .details-chevron { transform: rotate(90deg); }
   font-weight: 600;
 }
 
-.session-config select {
+.session-config .select-menu {
   width: 100%;
   font-size: var(--font-small);
 }
@@ -2867,7 +2878,7 @@ details[open] > summary > .details-chevron { transform: rotate(90deg); }
 }
 
 /* Role overrides for legacy controls; secondary copy keeps --font-small. */
-.new-session, .workbench-new-session, .session-list-header, .project-create button, .project-retry, .composer-submit-notice button, .inspector-tabs button, .panel-header h3, .panel-actions button, .panel-actions select, .event-log-toolbar button, .event-log-toolbar select, .select-menu-trigger, .select-menu-option, .model-thinking-section h2 {
+.new-session, .workbench-new-session, .session-list-header, .project-create button, .project-retry, .composer-submit-notice button, .inspector-tabs button, .panel-header h3, .panel-actions button, .event-log-toolbar button, .select-menu-trigger, .select-menu-option, .model-thinking-section h2 {
   font-size: var(--font-base-sm);
 }
 .model-thinking-option { font-size: var(--font-md); }

@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
+import { zhCN } from "../i18n/zh-CN.js";
 import { SessionConfigBar } from "./SessionConfigBar.js";
 import type { ModelInfo, SessionRecord } from "pi-agent-server/client";
 
@@ -35,16 +36,15 @@ function setup(partial: Partial<Parameters<typeof SessionConfigBar>[0]> = {}) {
 describe("SessionConfigBar（模型 + 思考级别选择）", () => {
   it("默认显示「服务端默认模型」与「默认思考级别」", () => {
     setup();
-    expect((screen.getByTestId("model-select") as HTMLSelectElement).value).toBe("");
-    expect((screen.getByTestId("thinking-level-select") as HTMLSelectElement).value).toBe("");
+    expect(screen.getByTestId("model-select")).toHaveTextContent(zhCN.common.serverDefault);
+    expect(screen.getByTestId("thinking-level-select")).toHaveTextContent(zhCN.common.default);
   });
 
   it("模型选项显示 provider 前缀", () => {
     setup();
-    const options = Array.from(screen.getByTestId("model-select").querySelectorAll("option"));
-    const optionTexts = options.map((o) => o.textContent);
-    expect(optionTexts).toContain("deepseek / DeepSeek V4 Pro");
-    expect(optionTexts).toContain("openai-codex / GPT-5");
+    fireEvent.click(screen.getByTestId("model-select"));
+    expect(screen.getByRole("option", { name: "deepseek / DeepSeek V4 Pro" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "openai-codex / GPT-5" })).toBeInTheDocument();
   });
 
   it("已配置的模型与思考级别回显", () => {
@@ -56,21 +56,21 @@ describe("SessionConfigBar（模型 + 思考级别选择）", () => {
         thinkingLevel: "high",
       },
     });
-    expect((screen.getByTestId("model-select") as HTMLSelectElement).value).toBe("deepseek/v4-pro");
-    expect((screen.getByTestId("thinking-level-select") as HTMLSelectElement).value).toBe("high");
+    expect(screen.getByTestId("model-select")).toHaveAttribute("data-value", "deepseek/v4-pro");
+    expect(screen.getByTestId("thinking-level-select")).toHaveAttribute("data-value", "high");
   });
 
   it("切换模型触发 onChange(modelProvider, modelId)", () => {
     const { onChange } = setup();
-    fireEvent.change(screen.getByTestId("model-select"), {
-      target: { value: "openai-codex/gpt-5" },
-    });
+    fireEvent.click(screen.getByTestId("model-select"));
+    fireEvent.click(screen.getByRole("option", { name: "openai-codex / GPT-5" }));
     expect(onChange).toHaveBeenCalledWith({ modelProvider: "openai-codex", modelId: "gpt-5" });
   });
 
   it("切换思考级别触发 onChange(thinkingLevel)", () => {
     const { onChange } = setup();
-    fireEvent.change(screen.getByTestId("thinking-level-select"), { target: { value: "high" } });
+    fireEvent.click(screen.getByTestId("thinking-level-select"));
+    fireEvent.click(screen.getByRole("option", { name: "high" }));
     expect(onChange).toHaveBeenCalledWith({ thinkingLevel: "high" });
   });
 });

@@ -56,13 +56,16 @@ describe("useProjectMcp", () => {
     fireEvent.click(await screen.findByTestId("project-mcp-open"));
     const form = within(row("docs"));
     // A server that is off shows no settings.
-    expect(form.queryByRole("combobox")).toBeNull();
+    expect(form.queryByRole("button", { name: zhCN.projectMcp.exposure })).toBeNull();
     fireEvent.click(form.getByRole("checkbox", { name: "docs" }));
     await waitFor(() => expect(form.getByRole("status").textContent).toBe(zhCN.projectMcp.saved));
     expect(save).toHaveBeenLastCalledWith("p1", "docs", { enabled: true, exposure: null, hiddenTools: [] });
     // maxExposure caps the choices.
-    expect(form.getAllByRole("option").map(option => option.getAttribute("value"))).toEqual(["", "codemode", "deferred", "hidden"]);
-    fireEvent.change(form.getByRole("combobox", { name: zhCN.projectMcp.exposure }), { target: { value: "hidden" } });
+    fireEvent.click(form.getByRole("button", { name: zhCN.projectMcp.exposure }));
+    const exposures = zhCN.projectMcp.exposures;
+    expect(form.getAllByRole("option").map(option => option.textContent?.replace("✓", ""))).toEqual(
+      [zhCN.projectMcp.defaultExposure(exposures.codemode!), exposures.codemode, exposures.deferred, exposures.hidden]);
+    fireEvent.click(form.getByRole("option", { name: exposures.hidden! }));
     await waitFor(() => expect(save).toHaveBeenLastCalledWith("p1", "docs", { enabled: true, exposure: "hidden", hiddenTools: [] }));
     fireEvent.click(form.getByRole("button", { name: zhCN.projectMcp.edit }));
     fireEvent.change(form.getByRole("textbox", { name: zhCN.projectMcp.hiddenTools }), { target: { value: "write, delete write" } });
@@ -110,7 +113,7 @@ describe("useProjectMcp", () => {
     expect(within(panel).getByRole("note").textContent).toContain("只读");
     expect(within(panel).queryByRole("button", { name: zhCN.projectMcp.edit })).toBeNull();
     for (const control of within(panel).getAllByRole("checkbox")) expect(control).toBeDisabled();
-    expect(within(row("docs")).queryByRole("combobox")).toBeNull();
+    expect(within(row("docs")).queryByRole("button", { name: zhCN.projectMcp.exposure })).toBeNull();
     expect(row("docs").textContent).toContain(zhCN.projectMcp.defaultExposure(zhCN.projectMcp.exposures.codemode!));
     expect(row("gone").textContent).toContain(zhCN.projectMcp.missing);
   });
@@ -220,7 +223,8 @@ describe("shared MCP panel", () => {
     fireEvent.click(screen.getByTestId("shared-mcp-add"));
     const form = within(screen.getByTestId("shared-mcp-form"));
     fireEvent.change(form.getByLabelText(zhCN.sharedMcp.fields.name), { target: { value: "notes" } });
-    fireEvent.change(form.getByLabelText(zhCN.sharedMcp.fields.transport), { target: { value: "stdio" } });
+    fireEvent.click(form.getByLabelText(zhCN.sharedMcp.fields.transport));
+    fireEvent.click(form.getByRole("option", { name: zhCN.sharedMcp.transports.stdio }));
     fireEvent.change(form.getByLabelText(zhCN.sharedMcp.fields.command), { target: { value: "npx" } });
     fireEvent.change(form.getByLabelText(zhCN.sharedMcp.fields.args), { target: { value: "-y\nnotes-mcp\n" } });
     fireEvent.click(form.getByRole("button", { name: zhCN.sharedMcp.save }));

@@ -1,13 +1,14 @@
 import { zhCN } from "../i18n/zh-CN.js";
 import { useCallback, useEffect, useId, useState, type InputHTMLAttributes, type ReactNode } from "react";
 import { ApiError, SHARED_MCP_MASK, type ApiClient, type McpExposure, type SharedMcpList, type SharedMcpServer, type SharedMcpServerConfig } from "pi-agent-server/client";
-import { IconSelect } from "./IconSelect.js";
 import { errorMessage } from "./ProjectMcpPanel.js";
+import { SelectMenu } from "./SelectMenu.js";
 
 type SharedApi = Pick<ApiClient, "getSharedMcp" | "saveSharedMcpServer" | "removeSharedMcpServer">;
 
 const EXPOSURES: readonly McpExposure[] = ["direct", "codemode", "deferred", "hidden"];
 const exposureLabel = (exposure: McpExposure) => zhCN.projectMcp.exposures[exposure] ?? exposure;
+const exposureOptions = EXPOSURES.map(exposure => ({ value: exposure, label: exposureLabel(exposure) }));
 const text = zhCN.sharedMcp;
 
 type Pair = { key: string; value: string };
@@ -212,11 +213,9 @@ function ServerForm({ api, hash, name, server, names, onSaved, onCancel, onReloa
       ? field("name", text.fields.name, textInput("name", { autoFocus: true, required: true, pattern: "[A-Za-z0-9_\\-]+", maxLength: 64, placeholder: text.fields.nameHint }),
         duplicate ? text.fields.duplicate : undefined)
       : <div className="project-mcp-head"><span className="project-mcp-name shared-mcp-name">{name}</span></div>}
-    {field("transport", text.fields.transport, <IconSelect id={`${id}-transport`} value={draft.transport} disabled={busy}
-      onChange={event => set({ transport: event.target.value as Draft["transport"] })}>
-      <option value="http">{text.transports.http}</option>
-      <option value="stdio">{text.transports.stdio}</option>
-    </IconSelect>)}
+    {field("transport", text.fields.transport, <SelectMenu id={`${id}-transport`} ariaLabel={text.fields.transport} value={draft.transport} disabled={busy}
+      options={[{ value: "http", label: text.transports.http }, { value: "stdio", label: text.transports.stdio }]}
+      onChange={value => set({ transport: value as Draft["transport"] })} />)}
     {draft.transport === "http"
       ? <>
         {field("url", text.fields.url, textInput("url", { required: true, type: "url", placeholder: "https://example.com/mcp" }))}
@@ -235,15 +234,11 @@ function ServerForm({ api, hash, name, server, names, onSaved, onCancel, onReloa
       </>}
     <p className="shared-mcp-hint shared-mcp-indent">{text.valueHint}</p>
     {field("description", text.fields.description, textInput("description", { placeholder: text.fields.descriptionHint }))}
-    {field("exposure", text.fields.exposure, <IconSelect id={`${id}-exposure`} value={draft.exposure} disabled={busy} title={zhCN.projectMcp.exposureHint}
-      onChange={event => set({ exposure: event.target.value as McpExposure })}>
-      {EXPOSURES.map(exposure => <option key={exposure} value={exposure}>{exposureLabel(exposure)}</option>)}
-    </IconSelect>)}
-    {field("maxExposure", text.fields.maxExposure, <IconSelect id={`${id}-maxExposure`} value={draft.maxExposure} disabled={busy}
-      onChange={event => set({ maxExposure: event.target.value as Draft["maxExposure"] })}>
-      <option value="">{text.fields.maxExposureAuto}</option>
-      {EXPOSURES.map(exposure => <option key={exposure} value={exposure}>{exposureLabel(exposure)}</option>)}
-    </IconSelect>)}
+    {field("exposure", text.fields.exposure, <SelectMenu id={`${id}-exposure`} ariaLabel={text.fields.exposure} value={draft.exposure} disabled={busy} title={zhCN.projectMcp.exposureHint}
+      options={exposureOptions} onChange={value => set({ exposure: value as McpExposure })} />)}
+    {field("maxExposure", text.fields.maxExposure, <SelectMenu id={`${id}-maxExposure`} ariaLabel={text.fields.maxExposure} value={draft.maxExposure} disabled={busy}
+      options={[{ value: "", label: text.fields.maxExposureAuto }, ...exposureOptions]}
+      onChange={value => set({ maxExposure: value as Draft["maxExposure"] })} />)}
     {field("timeout", text.fields.timeout, textInput("timeout", { type: "number", min: 1, step: "any", inputMode: "decimal", className: "project-mcp-input shared-mcp-number" }))}
     <div className="shared-mcp-field"><span className="project-mcp-key" /><div className="shared-mcp-control shared-mcp-checks">
       {check("adminOnly", text.fields.adminOnly)}

@@ -49,7 +49,8 @@ describe('Inspector steps', () => {
   render(<Inspector {...base} activeTab="events" onClearEvents={clear} entries={[
    {seq:1, type:'text_delta',time:'10:00',data:'text'}, {seq:2,type:'error',time:'10:01',data:{message:'failure'}},
   ]} />);
-  fireEvent.change(screen.getByTestId('event-filter'), {target:{value:'error'}});
+  fireEvent.click(screen.getByTestId('event-filter'));
+  fireEvent.click(screen.getByRole('option', {name:'error'}));
   expect(screen.queryByTestId('event-1')).toBeNull();
   expect(screen.getByTestId('event-2').querySelector('summary')).toBeVisible();
   fireEvent.click(screen.getByTestId('event-clear'));

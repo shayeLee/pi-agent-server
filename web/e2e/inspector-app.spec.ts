@@ -215,9 +215,11 @@ for (const [width, theme] of [[1440, 'light'], [1440, 'dark'], [1280, 'light'], 
 
     await page.getByTestId('inspector-tab-events').click();
     await expect(panel.locator('.event-type')).toContainText(['text_delta', 'completed']);
-    await page.getByTestId('event-filter').selectOption('text_delta');
+    await page.getByTestId('event-filter').click();
+    await page.getByRole('option', { name: 'text_delta' }).click();
     await expect(panel.locator('.event-type')).toHaveText(['text_delta']);
-    await page.getByTestId('event-filter').selectOption('all');
+    await page.getByTestId('event-filter').click();
+    await page.getByRole('option', { name: '全部' }).click();
     await expect(panel.locator('.event-type')).toHaveCount(2);
     await page.getByTestId('event-clear').click();
     await expect(page.getByTestId('event-empty')).toBeVisible();

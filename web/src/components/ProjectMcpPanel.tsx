@@ -2,8 +2,8 @@ import { zhCN } from "../i18n/zh-CN.js";
 import { formatDateTime } from "../i18n/format.js";
 import { useCallback, useEffect, useId, useState, type ReactNode } from "react";
 import type { ApiClient, McpConnection, McpExposure, ProjectMcpServer, ProjectMcpSettings } from "pi-agent-server/client";
-import { IconSelect } from "./IconSelect.js";
 import { Modal } from "./Modal.js";
+import { SelectMenu } from "./SelectMenu.js";
 import { SharedMcpPanel } from "./SharedMcpPanel.js";
 import { clearMcpOAuthReturn, peekMcpOAuthReturn, rememberMcpOAuthReturnPath, type McpOAuthReturn } from "../mcp-oauth-return.js";
 
@@ -219,11 +219,12 @@ function ServerRow({ api, projectId, server, canEdit, onSaved, connections, onCo
     {current.enabled && <div className="project-mcp-line">
       <label className="project-mcp-key" htmlFor={`${id}-exposure`} title={zhCN.projectMcp.exposureHint}>{zhCN.projectMcp.exposure}</label>
       {canEdit
-        ? <IconSelect id={`${id}-exposure`} value={current.exposure} disabled={busy} title={zhCN.projectMcp.exposureHint}
-          onChange={event => void save({ exposure: event.target.value as Setting["exposure"] })}>
-          <option value="">{zhCN.projectMcp.defaultExposure(exposureLabel(server.defaultExposure))}</option>
-          {options.map(exposure => <option key={exposure} value={exposure}>{exposureLabel(exposure)}</option>)}
-        </IconSelect>
+        ? <SelectMenu id={`${id}-exposure`} ariaLabel={zhCN.projectMcp.exposure} value={current.exposure} disabled={busy} title={zhCN.projectMcp.exposureHint}
+          options={[
+            { value: "", label: zhCN.projectMcp.defaultExposure(exposureLabel(server.defaultExposure)) },
+            ...options.map(exposure => ({ value: exposure, label: exposureLabel(exposure) })),
+          ]}
+          onChange={value => void save({ exposure: value as Setting["exposure"] })} />
         : <span className="project-mcp-value">{current.exposure ? exposureLabel(current.exposure) : zhCN.projectMcp.defaultExposure(exposureLabel(server.defaultExposure))}</span>}
     </div>}
     {current.enabled && <div className="project-mcp-line">

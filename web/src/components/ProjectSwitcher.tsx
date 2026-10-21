@@ -17,6 +17,7 @@ export function ProjectSwitcher({ projects, activeId, onSelect, onCreate, childr
   const [name, setName] = useState("");
   const [cwd, setCwd] = useState("");
   const nameInputRef = useRef<HTMLInputElement>(null);
+  const rowRef = useRef<HTMLDivElement>(null);
 
   const active = projects.find((p) => p.id === activeId) ?? projects[0];
 
@@ -45,9 +46,10 @@ export function ProjectSwitcher({ projects, activeId, onSelect, onCreate, childr
 
   return (
     <div className="project-switcher workbench-project-tree" data-testid="project-switcher">
-      <div className="project-row workbench-project-row">
+      <div ref={rowRef} className="project-row workbench-project-row">
         <SelectMenu
           className="workbench-project-select"
+          anchorRef={rowRef}
           chevronIcon="project-chevron-down"
           openChevronIcon="project-chevron-up"
           options={projects.map((project) => ({
