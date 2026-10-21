@@ -184,3 +184,13 @@ it("retries a known failure with the same upload key; network interruption drops
   await retryUnsentAttachment(rejected.localId);
   expect(upload).toHaveBeenCalledTimes(2);
 });
+
+it("declares the image type its bytes carry, not the one its extension implies", async () => {
+  const { draftStore, addUnsentFile } = fixture();
+  const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0]);
+  await addUnsentFile(new File([png], "screenshot.jpg", { type: "image/jpeg" }));
+  const [item] = draftStore.getSnapshot("new:p1").attachments;
+  expect(item?.mediaType).toBe("image/png");
+  expect(item?.image?.mediaType).toBe("image/png");
+  expect(item?.image?.preview.startsWith("data:image/png;base64,")).toBe(true);
+});

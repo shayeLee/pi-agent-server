@@ -5,6 +5,15 @@ import type { createDraftStore } from "../draft-store.js";
 
 type DraftStore = ReturnType<typeof createDraftStore>;
 
+/** The browser types files by extension; the server checks magic bytes, so declare what the bytes are. */
+export function sniffImageMediaType(bytes: Uint8Array, fallback: string): string {
+  const ascii = (offset: number, text: string) => [...text].every((char, index) => bytes[offset + index] === char.charCodeAt(0));
+  if (bytes[0] === 0x89 && ascii(1, "PNG\r\n\x1a\n")) return "image/png";
+  if (bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) return "image/jpeg";
+  if (ascii(0, "RIFF") && ascii(8, "WEBP")) return "image/webp";
+  return fallback;
+}
+
 /** Attachment work follows the local ID when a draft migrates during creation. */
 export function createDraftAttachmentActions({ api, draftStore, currentScope, getProjectId, invalidateRestore }: {
   api: ApiClient;
@@ -72,10 +81,11 @@ export function createDraftAttachmentActions({ api, draftStore, currentScope, ge
     if (check.kind === "image") {
       try {
         const bytes = await fileBytes(file);
+        const mediaType = sniffImageMediaType(bytes, file.type);
         const base64 = btoa(Array.from({ length: Math.ceil(bytes.length / 8192) }, (_, chunk) =>
           String.fromCharCode(...bytes.subarray(chunk * 8192, (chunk + 1) * 8192))).join(""));
         updateAttachment(scope, localId, (current) => ({ ...current, status: "ready",
-          image: { mediaType: file.type, base64, preview: `data:${file.type};base64,${base64}` } }));
+          mediaType, image: { mediaType, base64, preview: `data:${mediaType};base64,${base64}` } }));
       } catch {
         updateAttachment(scope, localId, (current) => ({ ...current, status: "error", error: zhCN.errors.imageRead }));
       }
