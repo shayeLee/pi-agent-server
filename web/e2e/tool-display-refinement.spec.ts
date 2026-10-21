@@ -97,7 +97,11 @@ for (const width of [1280, 390]) for (const theme of ["dark", "light"]) {
     await expect(plain.locator('details, .code-block')).toHaveCount(0);
     await expect(page.locator('.diff-block img, .diff-block script')).toHaveCount(0);
     await page.screenshot({ path: `/tmp/tool-edit-codeblock/${theme}-${width}-clean-diff.png`, fullPage: true });
-    for (const header of await page.locator('[data-tool-call-id^="empty-"] .tool-call-header').all()) await expect(header).toHaveAttribute("aria-expanded", "true");
+    for (const header of await page.locator('[data-tool-call-id^="empty-"] .tool-call-header').all()) {
+      await expect(header).toHaveAttribute("aria-expanded", "false");
+      await header.click();
+      await expect(header).toHaveAttribute("aria-expanded", "true");
+    }
     await expect(page.locator('[data-tool-call-id^="empty-"] .json-block')).toHaveCount(0);
     await expect(page.locator('[data-tool-call-id^="empty-"] dialog[open]')).toHaveCount(0);
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);

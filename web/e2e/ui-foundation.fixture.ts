@@ -1,4 +1,5 @@
 import { expect, type Page } from "@playwright/test";
+import { isOptionalFeature, notFound } from "./optional-features";
 
 export const historyText = "历史会话用于验证 foundation 不影响现有消息布局。";
 const projectId = "foundation-project";
@@ -11,6 +12,7 @@ export async function installFoundationFixture(page: Page, history: boolean) {
   await page.route("**/v1/**", async route => {
     const { pathname } = new URL(route.request().url());
     const json = (body: unknown) => route.fulfill({ contentType: "application/json", body: JSON.stringify(body) });
+    if (isOptionalFeature(pathname)) return route.fulfill(notFound);
     if (route.request().method() === "GET") {
       if (pathname === "/v1/access") return json({ canRead: true, canWrite: true });
       if (pathname === "/v1/projects") return json([{ id: projectId, name: "默认项目", cwd: "/fixture", isDefault: true }]);

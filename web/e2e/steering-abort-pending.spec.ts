@@ -1,4 +1,5 @@
 import { test, expect, type Page, type Route } from "@playwright/test";
+import { isOptionalFeature, notFound } from "./optional-features";
 
 const sessionId = "steering-abort-fixture";
 const requestId = "active-request-fixture";
@@ -31,6 +32,7 @@ async function fixture(page: Page, options: { delayed202?: boolean; abortFails?:
   await page.route("**/v1/**", async route => {
     const req = route.request();
     const path = new URL(req.url()).pathname;
+    if (isOptionalFeature(path)) return route.fulfill(notFound);
     const json = (body: unknown) => route.fulfill({ status: 200, json: body });
     if (req.method() === "GET") {
       if (path === "/v1/access") return json({ canRead: true, canWrite: true });

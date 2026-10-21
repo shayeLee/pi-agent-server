@@ -2,6 +2,7 @@ import { createServer, type Server, type ServerResponse } from "node:http";
 import { mkdir } from "node:fs/promises";
 import { test, expect } from "@playwright/test";
 import type { SseEvent } from "pi-agent-server/client";
+import { isOptionalFeature, notFound } from "./optional-features";
 let server: Server;
 const streams = new Set<ServerResponse>();
 let timer: ReturnType<typeof setInterval>;
@@ -12,6 +13,7 @@ function emit(value: SseEvent) { for (const stream of streams) stream.write(`id:
 test.beforeAll(async () => {
   server = createServer((req, res) => {
     const path = new URL(req.url!, "http://fixture").pathname;
+    if (isOptionalFeature(path)) { res.writeHead(notFound.status, { "Content-Type": notFound.contentType }); return res.end(notFound.body); }
     const json = (value: unknown) => { res.writeHead(200, { "Content-Type": "application/json" }); res.end(JSON.stringify(value)); };
     if (path === "/v1/access") return json({ canRead: true, canWrite: true });
     if (path === "/v1/projects") return json([{ id: projectId, name: "滚动隔离", cwd: "/fixture", isDefault: true }]);

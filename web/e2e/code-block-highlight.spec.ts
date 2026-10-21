@@ -7,7 +7,9 @@ for (const width of [1280, 390]) for (const theme of ["light", "dark"]) {
     await context.grantPermissions(["clipboard-read", "clipboard-write"]);
     await page.setViewportSize({ width, height: width === 390 ? 844 : 1024 });
     await page.goto(`/visual-fixtures/code-block.html?theme=${theme}`);
-    await expect(page.locator(".tool-call-header")).toHaveAttribute("aria-expanded", "true");
+    // A running step starts collapsed; open it to follow the snapshots.
+    await expect(page.locator(".tool-call-header")).toHaveAttribute("aria-expanded", "false");
+    await page.locator(".tool-call-header").click();
     const result = page.locator(".tool-result-text");
     const source = result.locator("pre");
     await expect(source).toHaveText('<!doctype html>\n<html lang="zh-CN">\n');

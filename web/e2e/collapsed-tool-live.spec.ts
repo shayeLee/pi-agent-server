@@ -36,7 +36,10 @@ test("actual SSE: collapsed bash/wait snapshots, child semantics, previews, pref
   await mkdir("/tmp/expanded-header-preview", { recursive: true });
   emit({ type: "thinking_delta", text: "检查 header 预览来源\n" + "长思考内容".repeat(30) });
   const thinkingHeader = page.locator(".thinking-header");
-  await expect(thinkingHeader).toHaveAttribute("aria-expanded", "true");
+  // Thinking starts collapsed even while streaming; only the reader opens it.
+  await expect(thinkingHeader).toHaveAttribute("aria-expanded", "false");
+  await expect(page.locator(".thinking-body")).toHaveCount(0);
+  await thinkingHeader.click();
   const thinkingText = await page.locator(".thinking-body").textContent();
   await expect(thinkingHeader.locator(".thinking-summary")).toHaveCount(0);
   await thinkingHeader.click();
@@ -47,9 +50,11 @@ test("actual SSE: collapsed bash/wait snapshots, child semantics, previews, pref
   const start = (id: string, name: string, args: unknown) => emit({ type: "tool_start", toolCallId: id, toolName: name, args });
   const update = (id: string, name: string, text: string) => emit({ type: "tool_update", toolCallId: id, toolName: name, partialResult: result(text) });
   const end = (id: string, name: string, text: string, details?: unknown, isError = false) => emit({ type: "tool_end", toolCallId: id, toolName: name, result: result(text, details), isError });
-  // No header interaction: real tool_start/update/end controls the default lifecycle.
+  // A running step starts collapsed too; opened by hand, it follows the live snapshots.
   start("auto", "bash", { command: "printf 'stream snapshots'" });
-  await expect(card("auto").locator(".tool-call-header")).toHaveAttribute("aria-expanded", "true");
+  await expect(card("auto").locator(".tool-call-header")).toHaveAttribute("aria-expanded", "false");
+  await expect(card("auto").locator(".tool-call-body")).toHaveCount(0);
+  await card("auto").locator(".tool-call-header").click();
   for (const text of ["first snapshot\n", "first snapshot\nlatest snapshot\n"]) {
     update("auto", "bash", text);
     await expect(card("auto").getByTestId("tool-result-text").locator("pre")).toHaveText(text);
@@ -87,9 +92,9 @@ test("actual SSE: collapsed bash/wait snapshots, child semantics, previews, pref
     }
     await page.screenshot({ path: `/tmp/tool-auto-expand/${theme}-${width}-running.png` });
   }
-  // Screenshot toggles are user interaction; use a fresh untouched tool for auto-close assertions.
+  // An untouched step stays collapsed through its whole lifecycle.
   start("untouched", "bash", { command: "printf delayed" });
-  await expect(card("untouched").locator(".tool-call-header")).toHaveAttribute("aria-expanded", "true");
+  await expect(card("untouched").locator(".tool-call-header")).toHaveAttribute("aria-expanded", "false");
   end("untouched", "bash", "finished");
   await expect(card("untouched").locator(".tool-call-header")).toHaveAttribute("aria-expanded", "false");
   await card("auto").locator(".tool-call-header").click();
@@ -105,8 +110,7 @@ test("actual SSE: collapsed bash/wait snapshots, child semantics, previews, pref
   await page.setViewportSize({ width: 1280, height: 900 });
   const bashCommand = "printf 'first\\nsecond\\n' && echo '" + "very-long-command ".repeat(30) + "'\n# preserved second command line";
   start("bash", "bash", { command: bashCommand, timeout: 0 });
-  await expect(card("bash").locator(".tool-call-header")).toHaveAttribute("aria-expanded", "true");
-  await card("bash").locator(".tool-call-header").click(); // User explicitly chooses a collapsed stream.
+  await expect(card("bash").locator(".tool-call-header")).toHaveAttribute("aria-expanded", "false");
   for (const text of ["first\n", "first\nsecond\n\n"]) {
     update("bash", "bash", text);
     await expect(card("bash").locator(".tool-summary-preview")).toContainText(text.includes("second") ? "second" : "first");
@@ -123,7 +127,7 @@ test("actual SSE: collapsed bash/wait snapshots, child semantics, previews, pref
   await expect(card("launch").locator(".tool-summary-preview")).not.toContainText("completed");
   await expect(card("launch").getByRole("img", { name: "已完成" })).toBeVisible();
   start("wait", "subagent_wait", { runIds: ["r1", "r2"] });
-  // A running subagent_wait starts closed: the live subagent panel shows its progress.
+  // A running subagent_wait starts closed like every step; the live subagent panel shows its progress.
   await expect(card("wait").locator(".tool-call-header")).toHaveAttribute("aria-expanded", "false");
   for (const text of ["0/2 settled after 1s\nrun r1 (scout): reading\nrun r2 (worker): starting", "1/2 settled after 2s\nrun r2 (worker): testing"]) {
     update("wait", "subagent_wait", text);

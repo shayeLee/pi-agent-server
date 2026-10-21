@@ -22,11 +22,11 @@ for (const theme of ["light", "dark"]) {
       }
     }
     const region = page.getByTestId("cancel-region");
-    await expect(region.locator(cursor)).toHaveCount(3);
     await expect(page.getByTestId("thinking-cancel-empty-thinking")).toHaveCount(0);
-    // Keep thinking manually open across cancellation so hidden content cannot mask a stale cursor.
+    // Thinking starts collapsed even while streaming. Open it and keep it open across
+    // cancellation so hidden content cannot mask a stale cursor.
     await region.getByRole("button", { name: "思考过程" }).click();
-    await region.getByRole("button", { name: "思考过程" }).click();
+    await expect(region.locator(cursor)).toHaveCount(3);
     await page.screenshot({ path: testInfo.outputPath(`cursor-${theme}-before.png`), fullPage: true });
     await page.getByRole("button", { name: "模拟取消 / 放弃" }).click();
     await expect(region.locator(cursor)).toHaveCount(0);

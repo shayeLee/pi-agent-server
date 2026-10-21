@@ -57,7 +57,7 @@ test("Reading-first local fixture: file upload, explicit first send, theme and p
     await page.setViewportSize(viewport);
     const layout = await page.evaluate(() => {
       const rect = (selector: string) => document.querySelector<HTMLElement>(selector)!.getBoundingClientRect();
-      const title = rect(".workbench-welcome-copy");
+      const title = rect(".companion-welcome");
       const footer = rect(".chat-footer");
       const targets = ["[data-testid=composer-input]", '[aria-label="添加附件"]', '[data-testid=send-button]'];
       const targetRects = targets.map((selector) => rect(selector));

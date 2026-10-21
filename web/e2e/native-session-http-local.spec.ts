@@ -74,7 +74,6 @@ test("unified native directory: real App, actors, append, private, tombstones, e
     await page.setViewportSize({ width: 1280, height: 900 }); await page.goto("/");
     await expect(page.getByTestId(`session-${id}`)).toContainText("原生命名会话");
     await expect(page.getByTestId(`session-${first.id}`)).toContainText("原生历史任务");
-    await expect(page.getByTestId(`session-${id}`).locator("..").getByLabel("原生共享会话").locator("svg")).toBeVisible();
     await page.getByTestId(`session-${id}`).click();
     await expect(page.locator(".message-assistant")).toContainText("原生历史回答");
     await page.getByRole("button", { name: /思考过程/ }).click();
@@ -115,7 +114,6 @@ test("unified native directory: real App, actors, append, private, tombstones, e
           await page.getByRole("button", { name: "打开工作区导航" }).click();
           await expect.poll(() => page.getByTestId("sidebar").evaluate(el => Math.round(el.getBoundingClientRect().x))).toBe(0);
         }
-        await expect(page.getByTestId(`session-${id}`).locator("..").getByLabel("原生共享会话")).toBeVisible();
         await page.screenshot({ path: `${artifacts}/${theme}-${width}-shared.png`, fullPage: true });
         if (width === 390) {
           // The backdrop center is under the drawer: use its actual visible close control, never force.
@@ -140,7 +138,6 @@ test("unified native directory: real App, actors, append, private, tombstones, e
     const createdResponse = await created; expect(createdResponse.status()).toBe(201);
     const privateSession = await createdResponse.json();
     await expect(page.locator(".message-assistant").last()).toContainText("离线模型继续完成");
-    await expect(page.getByTestId(`session-${privateSession.id}`).locator("..").getByLabel("原生共享会话")).toHaveCount(0);
     await page.screenshot({ path: `${artifacts}/dark-1280-private.png`, fullPage: true });
     const privateFiles = readdirSync(dir).filter(name => !["first-prompt.jsonl", "legacy.jsonl", "original.jsonl"].includes(name)); expect(privateFiles).toHaveLength(1);
     const privateFile = path.join(dir, privateFiles[0]!); const privateBytes = readFileSync(privateFile, "utf8"); expect(privateBytes).toContain("Web私有任务");

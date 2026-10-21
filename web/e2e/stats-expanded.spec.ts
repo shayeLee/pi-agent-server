@@ -1,6 +1,7 @@
 import { createServer, type Server, type ServerResponse } from "node:http";
 import { mkdir, writeFile } from "node:fs/promises";
 import { test, expect } from "@playwright/test";
+import { isOptionalFeature, notFound } from "./optional-features";
 const tokens = { input: 123456, output: 2345, cacheRead: 80000, cacheWrite: 2000, totalTokens: 207801, costUsdEstimate: 0.0123456789 };
 const usageSnapshot = {
   lastResponse: { ...tokens, ordinal: 2, cacheHitPercent: 38.938773290, speed: { outputTokens: 2345, generationDurationMs: 5000, tokensPerSecond: 469 } },
@@ -17,6 +18,7 @@ test.beforeAll(async () => {
   await mkdir("/tmp/stats-single-line", { recursive: true });
   server = createServer((req, res) => {
     const path = new URL(req.url!, "http://fixture").pathname;
+    if (isOptionalFeature(path)) { res.writeHead(notFound.status, { "Content-Type": notFound.contentType }); return res.end(notFound.body); }
     const json = (value: unknown) => { res.writeHead(200, { "Content-Type": "application/json" }); res.end(JSON.stringify(value)); };
     if (path === "/v1/access") return json({ canRead: true, canWrite: true });
     if (path === "/v1/projects") return json([{ id: projectId, name: "Stats", cwd: "/fixture", isDefault: true }]);

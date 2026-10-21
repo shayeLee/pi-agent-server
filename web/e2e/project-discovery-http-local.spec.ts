@@ -144,7 +144,10 @@ test("two unregistered Pi workspaces switch histories; zero/excluded hidden; exp
     await page.screenshot({ path: "/tmp/pi-project-discovery/new-project-first-send.png", fullPage: true });
     expect(posts).toEqual([202, 202, 202, 202]);
     expect(isolation.blocked).toEqual([]);
-    expect(isolation.selections.filter(row => row.operation === "streamSimple")).toHaveLength(5);
+    // Message turns and companion greetings both infer; every call stays on the offline fixture model.
+    const inference = isolation.selections.filter(row => row.operation === "streamSimple");
+    expect(inference.length).toBeGreaterThanOrEqual(posts.length);
+    expect(inference.every(row => row.provider === "native-fixture" && row.id === "offline")).toBe(true);
     await page.screenshot({ path: "/tmp/pi-project-discovery/final.png", fullPage: true });
     await page.goto("about:blank");
     await app.close();

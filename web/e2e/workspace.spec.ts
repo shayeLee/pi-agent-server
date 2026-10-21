@@ -187,12 +187,16 @@ test('session whole-row hit boundaries, keyboard and independent actions', async
     expect(await count()).toBe(1);
   }
   await reset();
-  page.once('dialog', dialog => dialog.dismiss());
-  // Row actions live in the ⋯ menu (DESIGN.md §7).
+  // Row actions live in the ⋯ menu (DESIGN.md §7); rename opens an in-app dialog.
   await page.getByTestId('session-menu-fixture-1').click();
   await page.getByTestId('rename-fixture-1').click();
+  await expect(page.getByTestId('rename-input')).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(page.getByTestId('rename-input')).toBeHidden();
   expect(await count()).toBe(0);
   const download = page.waitForEvent('download');
+  // The ⋯ button is revealed by hovering (or focusing) its row.
+  await page.getByTestId('session-fixture-1').hover();
   await page.getByTestId('session-menu-fixture-1').click();
   await page.getByTestId('export-fixture-1').click();
   await download;

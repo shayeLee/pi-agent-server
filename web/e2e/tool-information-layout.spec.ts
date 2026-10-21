@@ -132,11 +132,16 @@ for (const theme of ['dark', 'light']) for (const width of [1280, 390]) {
     emit({ type: 'thinking_delta', text: '检查可用代理，保留工具调用的真实时间顺序。' });
     emit({ type: 'tool_start', toolCallId: 'mixed-bash', toolName: 'bash', args: { command: 'ls -la .pi/agents' } });
     const bash = page.locator('[data-tool-call-id="mixed-bash"]');
+    // Steps start collapsed while running; open this one to read its live output.
+    await expect(bash.locator('.tool-call-header')).toHaveAttribute('aria-expanded', 'false');
+    await bash.locator('.tool-call-header').click();
     emit({ type: 'tool_update', toolCallId: 'mixed-bash', toolName: 'bash', partialResult: result('designer.md\nworker.md') });
     await expect(bash.getByTestId('tool-result-text')).toContainText('worker.md');
     await expect(bash.getByTestId('tool-name')).toHaveText('bash');
     await page.screenshot({ path: `/tmp/tool-block-actual/${theme}-${width}-streaming.png` });
     emit({ type: 'tool_end', toolCallId: 'mixed-bash', toolName: 'bash', result: result('designer.md\nworker.md'), isError: false });
+    await expect(bash).toHaveAttribute('data-done', 'true');
+    await bash.locator('.tool-call-header').click();
     await expect(bash.locator('.tool-call-header')).toHaveAttribute('aria-expanded', 'false');
     emit({ type: 'text_delta', text: '可用代理：designer、worker。接下来检查排版与完整结果。' });
     emit({ type: 'tool_start', toolCallId: 'mixed-agent', toolName: 'subagent', args: { agent: 'designer', task: '检查轻量工具块与正文的信息层级' } });
@@ -220,9 +225,9 @@ for (const theme of ['dark', 'light']) for (const width of [1280, 390]) {
     for (const [id, toolName, args, output] of cases) {
       emit({ type: 'tool_start', toolCallId: id, toolName, args });
       const item = page.locator(`[data-tool-call-id="${id}"]`);
-      await expect(item.locator('.tool-call-header')).toHaveAttribute('aria-expanded', 'true');
-      // Explicit user preference must win over tool_end.
-      await item.locator('.tool-call-header').click(); await item.locator('.tool-call-header').click();
+      await expect(item.locator('.tool-call-header')).toHaveAttribute('aria-expanded', 'false');
+      // Opened by hand, it stays open through tool_end.
+      await item.locator('.tool-call-header').click();
       emit({ type: 'tool_end', toolCallId: id, toolName, result: output, isError: false });
       await expect(item).toHaveAttribute('data-done', 'true');
       await expect(item.locator('.tool-call-header')).toHaveAttribute('aria-expanded', 'true');

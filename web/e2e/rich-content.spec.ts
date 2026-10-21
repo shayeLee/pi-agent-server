@@ -10,9 +10,9 @@ for (const width of [1280, 390]) {
       await expect(page.getByTestId("thinking-body-thinking-fixture")).toContainText("错误边界");
       for (const card of await page.getByTestId("tool-call-card").all()) {
         const header = card.locator(".tool-call-header");
-        const done = await card.getAttribute("data-done") === "true";
-        await expect(header).toHaveAttribute("aria-expanded", String(!done));
-        if (done) await header.click();
+        // Running or done, every step starts collapsed until the reader opens it.
+        await expect(header).toHaveAttribute("aria-expanded", "false");
+        await header.click();
         await expect(card.locator(".tool-call-header")).toHaveAttribute("aria-expanded", "true");
         await expect(card.locator(".tool-call-body")).toBeVisible();
       }

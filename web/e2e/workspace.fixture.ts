@@ -1,4 +1,5 @@
 import type { Page } from '@playwright/test';
+import { isOptionalFeature, notFound } from "./optional-features";
 export async function workspaceFixture(page: Page, command = 'printf "fixture output"', resetStorage = true) {
   const unexpected: string[] = [];
   if (resetStorage) await page.addInitScript(() => { localStorage.clear(); sessionStorage.clear(); });
@@ -10,6 +11,7 @@ export async function workspaceFixture(page: Page, command = 'printf "fixture ou
   await page.route('**/v1/**', async route => {
     const path = new URL(route.request().url()).pathname;
     const json = (value: unknown) => route.fulfill({ contentType: 'application/json', body: JSON.stringify(value) });
+    if (isOptionalFeature(path)) return route.fulfill(notFound);
     if (route.request().method() === 'GET') {
       if (path === '/v1/access') return json({ canRead: true, canWrite: true });
       if (path === '/v1/projects') return json([{ id: 'fixture-project', name: '隔离 UI 项目', cwd: '/fixture', isDefault: true }]);

@@ -42,10 +42,11 @@ test("多项目：创建额外项目 → 建会话归属项目 → 切换项目�
   await expect(page.getByTestId("abort-button")).toHaveCount(0);
 
   const uniqueTitle = `项目会话-${Date.now()}`;
-  page.once("dialog", (d) => d.accept(uniqueTitle));
-  // Rename lives in the row's ⋯ menu (DESIGN.md §7).
+  // Rename lives in the row's ⋯ menu (DESIGN.md §7) and opens an in-app dialog.
   await page.locator('[data-testid^="session-menu-"]').first().click();
-  await page.locator('[data-testid^="rename-"]').click();
+  await page.getByRole("menuitem", { name: "重命名" }).click();
+  await page.getByTestId("rename-input").fill(uniqueTitle);
+  await page.getByTestId("rename-save").click();
   await expect(page.getByText(uniqueTitle).first()).toBeVisible();
 
   // 切回默认项目：不该出现额外项目的会话

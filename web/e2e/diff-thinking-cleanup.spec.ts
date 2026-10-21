@@ -14,7 +14,9 @@ for (const width of [1280, 390]) for (const theme of ["light", "dark"]) {
     await page.getByRole("button", { name: "真实思考到达" }).click();
     const thinking = page.getByTestId("thinking-late");
     await expect(thinking.locator(".thinking-summary")).toHaveCount(0);
-    await expect(thinking.getByRole("button")).toHaveAttribute("aria-expanded", "true");
+    // Thinking starts collapsed even while streaming; only the reader opens it.
+    await expect(thinking.getByRole("button")).toHaveAttribute("aria-expanded", "false");
+    await thinking.getByRole("button").click();
     expect(await thinking.locator(".thinking-body").textContent()).toBe(original.fullThinking);
     const style = await thinking.locator(".thinking-body").evaluate(el => {
       const computed = getComputedStyle(el);
@@ -28,6 +30,8 @@ for (const width of [1280, 390]) for (const theme of ["light", "dark"]) {
     await expect(thinking.getByRole("button")).toHaveAttribute("aria-expanded", "false");
     const edit = page.locator('[data-tool-call-id="edit"]');
     await expect(edit.locator(".tool-summary-preview")).toHaveAttribute("title", original.args.path + " · 5 项修改");
+    // The running edit starts collapsed too; open it to read the diff.
+    await edit.locator(".tool-call-header").click();
     await expect(edit.locator(".diff-block")).toHaveCount(5);
     await expect(edit.locator("dt, details, .code-block, ol")).toHaveCount(0);
     await expect(edit.getByText("片段相同（无修改）")).toBeVisible();

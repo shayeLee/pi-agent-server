@@ -1,5 +1,6 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import { expect, test, type Page } from "@playwright/test";
+import { isOptionalFeature, notFound } from "./optional-features";
 
 // Generated 32x32 orange PNG, no user images or sessions.
 const png = "iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAIAAAD8GO2jAAAAKklEQVR4nGP4n2ZMU8QwasGoBaMWjFowasGoBaMWjFowasGoBaMWDBULAIAlYFtUlL3ZAAAAAElFTkSuQmCC";
@@ -27,6 +28,7 @@ for (const count of [1, 2]) test(`accepted ${count} image(s): composer clears, t
   await page.route("**/v1/**", async (route) => {
     const request = route.request();
     const path = new URL(request.url()).pathname;
+    if (isOptionalFeature(path)) return route.fulfill(notFound);
     const json = (value: unknown, status = 200) => route.fulfill({ status, contentType: "application/json", body: JSON.stringify(value) });
     const session = { id: sessionId, ownerKey: "fixture", projectId, title: "图片测试", createdAt: 1, updatedAt: 1,
       modelProvider: null, modelId: null, thinkingLevel: null, systemPrompt: null };
@@ -91,11 +93,9 @@ for (const count of [1, 2]) test(`accepted ${count} image(s): composer clears, t
   await page.screenshot({ path: `/tmp/sent-image-fix/restored-preview-${count}.png` });
   await page.keyboard.press("Escape");
   await page.getByTestId(`session-${sessionId}`).hover();
-  const dialog = page.waitForEvent("dialog");
   await page.getByTestId(`session-menu-${sessionId}`).click();
-  const renameClick = page.getByTestId(`rename-${sessionId}`).click();
-  const prompt = await dialog;
-  expect(prompt.type()).toBe("prompt");
-  await prompt.dismiss();
-  await renameClick;
+  await page.getByTestId(`rename-${sessionId}`).click();
+  await expect(page.getByRole("dialog", { name: "重命名" })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("dialog", { name: "重命名" })).toHaveCount(0);
 });

@@ -51,7 +51,7 @@ for (const { theme, width } of [{ theme: 'light', width: 1280 }, { theme: 'dark'
     emit({ type: 'tool_start', toolCallId: id, toolName: 'subagent', args });
     const card = page.locator(`[data-tool-call-id="${id}"]`);
     const header = card.locator('.tool-call-header');
-    await expect(header).toHaveAttribute('aria-expanded', 'true');
+    await expect(header).toHaveAttribute('aria-expanded', 'false');
     emit({ type: 'tool_end', toolCallId: id, toolName: 'subagent', result, isError: false });
     await expect(header).toHaveAttribute('aria-expanded', 'false');
     await expect(card.locator('.tool-parallel-count')).toHaveCount(count ? 1 : 0);

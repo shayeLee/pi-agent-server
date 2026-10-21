@@ -53,7 +53,10 @@ test("真实定时 SSE 在完成前显示两次可读快照，最终替换且无
   await page.getByTestId("composer-input").fill("运行隔离工具");
   await page.getByTestId("send-button").click();
   const card = page.getByTestId("tool-call-card");
-  await expect(card.locator(".tool-call-header")).toHaveAttribute("aria-expanded", "true");
+  const header = card.locator(".tool-call-header");
+  // A running step starts collapsed; opened by hand, it stays open through completion.
+  await expect(header).toHaveAttribute("aria-expanded", "false");
+  await header.click();
   const output = card.getByTestId("tool-result-text").locator('.code-block[data-language="bash"] pre');
   await expect(output).toHaveText("第一行\n");
   // While streaming, the stop button is the primary control (restored in b412ef105).
@@ -85,8 +88,6 @@ test("真实定时 SSE 在完成前显示两次可读快照，最终替换且无
   expect(finalSent).toBe(false);
   expect(await output.textContent()).toBe("第一行\n第二行\n");
   await page.screenshot({ path: "/tmp/tool-streaming-readable/02-second.png" });
-  const header = card.locator(".tool-call-header");
-  await header.click(); await header.click(); // Explicitly keep the result open on completion.
   await expect(card).toHaveAttribute("data-done", "true");
   await expect(output).toHaveText("最终结果\n完整原文");
   await expect(card.locator('.tool-call-body > :not(section)')).toHaveCount(0);

@@ -45,9 +45,9 @@ for (const { theme, width } of [{ theme: "light", width: 1280 }, { theme: "dark"
     emit({ type: "tool_start", toolCallId: toolName, toolName, args });
     const card = page.locator(`[data-tool-call-id="${toolName}"]`);
     const header = card.locator(".tool-call-header");
-    // A running subagent_wait starts closed: the live subagent panel shows its progress.
-    if (toolName === "subagent_wait") { await expect(header).toHaveAttribute("aria-expanded", "false"); await header.click(); }
-    else { await expect(header).toHaveAttribute("aria-expanded", "true"); await header.click(); await header.click(); }
+    // Every running step starts closed; the reader opens it to follow the output.
+    await expect(header).toHaveAttribute("aria-expanded", "false");
+    await header.click();
     emit({ type: "tool_update", toolCallId: toolName, toolName, partialResult: result("## 正在检查") });
     await expect(card.getByRole("heading", { name: "正在检查" })).toBeVisible();
     await card.scrollIntoViewIfNeeded();

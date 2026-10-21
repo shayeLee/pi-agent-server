@@ -107,7 +107,8 @@ for (const editDuringAdmission of [false, true]) test(`new session slow admissio
   await input.fill('Hi');
   await page.getByTestId('send-button').click();
   await expect.poll(() => posts.filter(path => path.endsWith('/messages')).length).toBe(1);
-  await expect(input).toHaveValue('Hi');
+  // The in-flight text reads as sent: the editor looks empty until a failure would give it back.
+  await expect(input).toHaveValue('');
   await expect(page.getByTestId('primary-submission-status')).toHaveCount(0);
   await expect(page.getByTestId('phase-queued')).toHaveCount(0);
   await expect(page.getByRole('group',{name:'运行时发送模式'})).toHaveCount(0);
@@ -127,7 +128,7 @@ for (const editDuringAdmission of [false, true]) test(`new session slow admissio
   if (admissionMode === 'sse-first') {
     await page.evaluate(id => (window as any).__admissionEmit({type:'status',phase:'agent_start',requestId:id}), requestId);
     await expect(page.getByTestId('abort-button')).toBeVisible();
-    await expect(input).toHaveValue(editDuringAdmission ? '准入期间的新草稿' : 'Hi');
+    await expect(input).toHaveValue(editDuringAdmission ? '准入期间的新草稿' : '');
     await input.press('Enter');
     expect(posts.filter(path => /messages|steer|follow-ups/.test(path))).toEqual(['/v1/sessions/slow-new/messages']);
     await page.screenshot({path:info.outputPath('new-primary-sse-before-http.png')});

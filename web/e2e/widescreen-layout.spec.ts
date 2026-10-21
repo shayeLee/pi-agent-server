@@ -24,10 +24,10 @@ for (const viewport of [{ width: 1920, height: 871, dpr: 2 }, { width: 2470, hei
       expect(app!.x).toBe(0);
       expect(app!.width).toBe(viewport.width);
       const start = (await composer.boundingBox())!;
-      const hintText = (await page.locator('.workbench-welcome-copy').boundingBox())!;
-      // Ledger layout: the start hint shares the Composer's left edge and sits right above it.
-      expect(Math.abs(hintText.x - start.x)).toBeLessThan(1);
-      expect(start.y).toBeGreaterThanOrEqual(hintText.y + hintText.height);
+      const welcome = (await page.getByTestId('companion-welcome').boundingBox())!;
+      // The blank-session welcome is centred on the Composer's column and sits above it.
+      expect(Math.abs(welcome.x + welcome.width / 2 - (start.x + start.width / 2))).toBeLessThan(1);
+      expect(start.y).toBeGreaterThanOrEqual(welcome.y + welcome.height);
       if (viewport.width >= 1180) expect((await box('aside.sidebar'))!.x).toBe(0);
       const prefix = `/tmp/widescreen-layout/${viewport.width}x${viewport.height}-dpr${viewport.dpr}-${theme}`;
       await page.screenshot({ path: `${prefix}-start.png` });

@@ -12,9 +12,8 @@ for (const width of [1280, 390]) for (const theme of ["dark", "light"]) {
       return { partial, final };
     });
     const header = page.locator(".tool-call-header");
-    await expect(header).toHaveAttribute("aria-expanded", "true");
-    await header.click();
-    await header.click(); // Explicit manual expansion survives completion.
+    await expect(header).toHaveAttribute("aria-expanded", "false");
+    await header.click(); // Opened by hand, it stays open through completion.
     const output = page.getByTestId("tool-result-text");
     expect(await output.locator('[data-language="bash"] pre').textContent()).toBe(originals.partial);
     await expect(page.getByRole("button", { name: "Markdown 展示" })).toHaveCount(0);
