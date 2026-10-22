@@ -142,7 +142,7 @@ describe("authorized SDK usage snapshots", () => {
     let state = applySseEvent(createChatState(), event!);
     expect(state.stats?.lastResponse?.speed.tokensPerSecond).toBe(16);
     state = applySseEvent(state, { type: "status", phase: "agent_start" });
-    expect(state.stats?.lastResponse).toBeNull(); expect(state.stats?.context).toBeNull();
+    expect(state.stats?.lastResponse).toBeNull();
     state = applySseEvent(state, { type: "usage", promptTokens: 1, completionTokens: 2, totalTokens: 3, durationMs: 4, ttftMs: 1 });
     expect(state.stats).toEqual({ promptTokens: 1, completionTokens: 2, totalTokens: 3, durationMs: 4, ttftMs: 1, execution: event?.type === "usage" ? event.execution : undefined });
     runtime.dispose();

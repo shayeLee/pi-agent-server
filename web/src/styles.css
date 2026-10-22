@@ -2270,6 +2270,7 @@ details[open] > summary > .details-chevron { transform: rotate(90deg); }
 .stats-cluster { display: inline-flex; align-items: center; gap: 5px; }
 .stats-cluster .ui-icon { flex: none; }
 .stats-context[data-warn] { color: var(--warning); }
+.stats-context[data-empty] { color: var(--faint); }
 /* Items that do not fit are dropped by StatsBar (SUMMARY_DROP_ORDER); separators follow the shown ones. */
 .stats-summary [data-dropped] { display: none; }
 .stats-item:not([data-dropped]) ~ .stats-item:not([data-dropped])::before { content: " · "; white-space: pre; }
@@ -2281,6 +2282,8 @@ details[open] > summary > .details-chevron { transform: rotate(90deg); }
 .stats-hint:hover { color: var(--ink); }
 /* One label column width for every section, so values line up down the dialog. */
 .stats-section dl { display: grid; grid-template-columns: 5em minmax(0, 1fr); gap: 4px 16px; margin: 0; }
+.stats-section dl[data-columns="2"] { grid-template-columns: 5em minmax(0, 1fr) minmax(0, 1fr); }
+.stats-row-head dd { color: var(--dim); font-size: var(--fs-meta); }
 .stats-row { display: contents; }
 .stats-row dt { color: var(--dim); }
 .stats-row dd { margin: 0; color: var(--ink); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }

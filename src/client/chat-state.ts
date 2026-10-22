@@ -172,7 +172,8 @@ export function applySseEvent(state: ChatState, event: SseEvent, now: () => numb
         done: true,
       }, call => call.nested ? { nested: settleNestedCalls(call.nested) } : {});
     case "status": {
-      const stats = event.phase === "agent_start" && state.stats ? { ...state.stats, lastResponse: null, context: null } : state.stats;
+      // The context keeps its last measurement while a run goes on; the run's usage event replaces it.
+      const stats = event.phase === "agent_start" && state.stats ? { ...state.stats, lastResponse: null } : state.stats;
       return { ...state, activeToolCallIds: event.phase === "agent_start" ? [] : state.activeToolCallIds, modelOutput: event.phase === "agent_start" ? null : state.modelOutput,
         ...(event.phase === "agent_start" ? { runProgress: null } : {}), phase: "streaming", stats: event.execution === undefined ? stats : {
         durationMs: NaN, ttftMs: NaN, promptTokens: null, completionTokens: null, totalTokens: null,
@@ -195,6 +196,8 @@ export function applySseEvent(state: ChatState, event: SseEvent, now: () => numb
           ...(event.context !== undefined ? { context: event.context } : {}),
           ...(event.currentPrompt !== undefined ? { currentPrompt: event.currentPrompt } : {}),
           ...(event.subagentTotals !== undefined ? { subagentTotals: event.subagentTotals } : {}),
+          ...(event.branchTotals !== undefined ? { branchTotals: event.branchTotals } : {}),
+          ...(event.subagentAllTotals !== undefined ? { subagentAllTotals: event.subagentAllTotals } : {}),
           ...(event.execution !== undefined || state.stats?.execution !== undefined ? { execution: mergeExecution(state.stats?.execution, event.execution) } : {}),
         },
       };

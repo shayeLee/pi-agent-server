@@ -44,6 +44,28 @@ describe("summary bar while idle", () => {
     expect(screen.getByTestId("stat-summary-session-cost")).toHaveTextContent(formatUsd(0.004 + 0.003));
   });
 
+  it("follows the current branch in the summary and splits the details only when the scopes differ", () => {
+    const forked: UsageStats = { ...stats, branchTotals: { ...tokens(5000, 0.001), scope: "branch" },
+      subagentTotals: { ...tokens(2000, 0.002), runs: 1, calls: 2 }, subagentAllTotals: { ...tokens(6000, 0.005), runs: 3, calls: 6 } };
+    const view = render(<StatsBar stats={forked} timeline={timeline} />);
+    expect(screen.getByTestId("stat-summary-session-tokens")).toHaveTextContent(`会话 ${formatCompact(5000)} tok（子代理 ${formatCompact(2000)}）`);
+    expect(screen.getByTestId("stat-summary-session-cost")).toHaveTextContent(formatUsd(0.001 + 0.002));
+    openDetails();
+    expect(screen.getByTestId("stat-session-tokens")).toHaveTextContent(formatCompact(5000));
+    expect(screen.getByTestId("stat-session-tokens-all")).toHaveTextContent(formatCompact(13000));
+    // Task counts exist only for the whole file, user messages only for the loaded branch.
+    expect(screen.getByTestId("stat-session-tasks")).toHaveTextContent("—");
+    expect(screen.getByTestId("stat-session-tasks-all")).toHaveTextContent("2 次");
+    expect(screen.getByTestId("stat-session-messages-all")).toHaveTextContent("—");
+    expect(screen.getByTestId("stat-subagent-runs")).toHaveTextContent("1");
+    expect(screen.getByTestId("stat-subagent-runs-all")).toHaveTextContent("3");
+    fireEvent.click(screen.getByRole("button", { name: "关闭对话框" }));
+    view.rerender(<StatsBar stats={{ ...stats, branchTotals: { ...stats.sessionTotals!, scope: "branch" } }} timeline={timeline} />);
+    openDetails();
+    expect(screen.getByTestId("stat-session-tokens")).toHaveTextContent(formatCompact(13000));
+    expect(screen.queryByTestId("stat-session-tokens-all")).toBeNull();
+  });
+
   it("hides the cost of an unpriced model instead of showing zero", () => {
     render(<StatsBar stats={{ ...stats, sessionTotals: { ...tokens(13000, 0), scope: "allEntries" } }} timeline={timeline} />);
     expect(screen.queryByTestId("stat-summary-session-cost")).toBeNull();
@@ -66,7 +88,8 @@ describe("summary bar while idle", () => {
 
   it("omits what is unknown rather than inventing zero", () => {
     const view = render(<StatsBar stats={null} timeline={[]} />);
-    expect(view.container.querySelector(".stats-cluster")).toBeNull();
+    expect(screen.getByTestId("stat-summary-context")).toHaveTextContent("上下文 —");
+    expect(screen.queryByTestId("stat-summary-tasks")).toBeNull();
     view.rerender(<StatsBar stats={{ ...stats, execution: null, sessionTotals: null, context: { tokens: null, window: null, percent: 3, estimate: true } }} timeline={[]} />);
     expect(screen.queryByTestId("stat-summary-tasks")).toBeNull();
     expect(screen.queryByTestId("stat-summary-session-tokens")).toBeNull();

@@ -19,6 +19,8 @@ export type ChatStore = {
   /** The open extension-command question read on (re)connect; null when there is none. */
   restoreCommandPrompt(prompt: import("../shared/commands.js").CommandPrompt | null): ChatState;
   restoreExecution(execution: import("./types.js").ExecutionSnapshot | null | undefined): ChatState;
+  /** Adopt a loaded usage snapshot as the live stats (a run is starting and will refresh them). */
+  restoreUsage(snapshot: import("../core/usage-snapshot.js").UsageSnapshot): ChatState;
   /** Set or clear the most recent chat error. */
   setError(error: string | null): ChatState;
   /** Remove a still-pending optimistic user message after a failed send. */
@@ -59,6 +61,10 @@ export function createChatStore(initialState: ChatState = createChatState()): Ch
     restoreExecution: (execution) => execution === undefined ? state : update({ ...state, stats: {
       durationMs: NaN, ttftMs: NaN, promptTokens: null, completionTokens: null, totalTokens: null,
       ...state.stats, execution: mergeExecution(state.stats?.execution, execution),
+    } }),
+    restoreUsage: (snapshot) => update({ ...state, stats: {
+      durationMs: NaN, ttftMs: NaN, promptTokens: null, completionTokens: null, totalTokens: null,
+      ...state.stats, ...snapshot, execution: mergeExecution(state.stats?.execution, snapshot.execution),
     } }),
     restoreHistory: (timeline) => update({ ...state, modelOutput: null, compaction: finishCompaction(state.compaction, "unknown"), activeToolCallIds: [], timeline }),
     setError: (error) => update({ ...state, error, compaction: error ? finishCompaction(state.compaction, "unknown") : state.compaction, modelOutput: error ? null : state.modelOutput }),

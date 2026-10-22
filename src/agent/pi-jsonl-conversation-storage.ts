@@ -15,6 +15,7 @@ import {
   type SessionHeader,
 } from "@earendil-works/pi-coding-agent";
 import { projectExecutionSnapshot } from "./execution-metrics.js";
+import { projectColdUsage, type ColdUsageOptions } from "./cold-usage-snapshot.js";
 import { projectColdSessionSteps } from "./session-steps-projector.js";
 import { projectExportSnapshot } from "./session-export.js";
 import { readSessionCwdIdentity, type SessionCwdIdentity } from "./session-cwd-identity.js";
@@ -182,7 +183,7 @@ export function openPiRuntimeSessionFile(
 }
 
 /** 只读解析 Pi JSONL，返回与活 AgentAdapter 相同的导出投影。 */
-export async function readPiJsonlExport(conversationRef: string | null): Promise<unknown> {
+export async function readPiJsonlExport(conversationRef: string | null, usage?: ColdUsageOptions): Promise<unknown> {
   if (conversationRef === null) return { messages: [], timeline: [], usageSnapshot: { execution: projectExecutionSnapshot([]) } };
   const before = fileFingerprint(conversationRef);
   let messages: unknown;
@@ -197,7 +198,7 @@ export async function readPiJsonlExport(conversationRef: string | null): Promise
       const manager = buildPersistedSessionManager(conversationRef, parsed as SessionEntry[]);
       // getBranch() is the SDK's selected current path: orphaned sibling branches never leak.
       messages = { ...projectExportSnapshot(manager.buildSessionContext().messages as unknown[], manager.getBranch()),
-        usageSnapshot: { execution: projectExecutionSnapshot(manager.getEntries()) } };
+        usageSnapshot: { execution: projectExecutionSnapshot(manager.getEntries()), ...projectColdUsage(manager, usage) } };
     }
   } catch (error) {
     throw new Error("会话历史读取失败", { cause: error });
@@ -377,7 +378,7 @@ export class PiJsonlConversationStorage implements ConversationStorage {
   async readExport(conversation: ConversationDescriptor, context: ConversationReadContext): Promise<unknown> {
     if (this.isUnified(conversation.conversationRef)) return this.unifiedStorage!.readExport(await this.unifiedConversation(conversation, context), context);
     this.assertReadReference(conversation, context);
-    return readPiJsonlExport(conversation.conversationRef);
+    return readPiJsonlExport(conversation.conversationRef, context.usage);
   }
 
   private subagentCache = new Map<string, { fingerprint: string; entries: SessionEntry[] }>();

@@ -7,6 +7,7 @@ import { NativeSessionFd, nativeEntries } from "./native-session-fd.js";
 import { projectColdSessionSteps } from "./session-steps-projector.js";
 import { projectExportSnapshot } from "./session-export.js";
 import { projectExecutionSnapshot } from "./execution-metrics.js";
+import { projectColdUsage } from "./cold-usage-snapshot.js";
 import { firstUserPrompt } from "../client/session-title.js";
 import { canonicalCwdIdentity } from "../core/native-session-policy.js";
 
@@ -77,7 +78,7 @@ export class NativePiConversationStorage implements ConversationStorage {
     try {
       const manager = SessionManager.inMemory(binding.cwd, undefined, nativeEntries(fd));
       const result = { ...projectExportSnapshot(manager.buildSessionContext().messages as unknown[], manager.getBranch()),
-        usageSnapshot: { execution: projectExecutionSnapshot(manager.getEntries()) } };
+        usageSnapshot: { execution: projectExecutionSnapshot(manager.getEntries()), ...projectColdUsage(manager, context.usage) } };
       fd.check();
       return result;
     } finally { fd.close(); }

@@ -41,4 +41,9 @@ export class PiModelRuntimeCatalog implements ModelCatalogPort {
     const models = await withTimeout(this.runtime.getAvailable(provider), AVAILABILITY_TIMEOUT_MS);
     return models.some((model) => String(model.provider) === provider && model.id === modelId);
   }
+
+  contextWindow(provider: string, modelId: string): number | null {
+    const window = (this.runtime.getModel(provider, modelId) as { contextWindow?: unknown } | undefined)?.contextWindow;
+    return typeof window === "number" && Number.isFinite(window) && window > 0 ? window : null;
+  }
 }

@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { formatCompact } from "./i18n/format.js";
 import { render, screen, fireEvent, waitFor, act, within } from "@testing-library/react";
 import App, { TRACE_DEFAULT_MIN_WIDTH } from "./App.js";
 import { themePreferenceKey } from "./theme-preference.js";
@@ -1724,7 +1725,17 @@ describe("rich usage export hydration", () => {
     fireEvent.click(screen.getByTestId("model-thinking-trigger"));
     fireEvent.click(screen.getByRole("radio", { name: /DeepSeek V4 Pro/ }));
     await waitFor(() => expect(api.updateSessionConfig).toHaveBeenCalled());
-    expect(screen.queryByTestId("stat-summary-context")).toBeNull();
+    expect(screen.getByTestId("stat-summary-context")).toHaveTextContent("上下文 —");
+  });
+  it("keeps the loaded context while a run goes on", async () => {
+    const api = await enterIntranet();
+    api.exportSession.mockResolvedValue({ messages: [{ role: "user", text: "usage fixture" }], usageSnapshot });
+    fireEvent.click(screen.getByTestId("session-s1"));
+    await waitFor(() => expect(screen.getByTestId("stat-summary-context")).toHaveTextContent(`120 / ${formatCompact(10000)}`));
+    await waitFor(() => expect(mocks.sse.onEvent).toBeTypeOf("function"));
+    act(() => mocks.sse.onEvent?.({ type: "status", phase: "agent_start", requestId: "elsewhere" }));
+    expect(screen.getByTestId("stats-bar").querySelector(".stats-summary")).toHaveAttribute("data-running", "true");
+    expect(screen.getByTestId("stat-summary-context")).toHaveTextContent(`120 / ${formatCompact(10000)}`);
   });
   it("ignores a delayed session A export after switching to B without runtime usage", async () => {
     const api = await enterIntranet();

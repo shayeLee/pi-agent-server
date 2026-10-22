@@ -70,7 +70,8 @@ describe("PiJsonlConversationStorage（只读导出解析）", () => {
       subscribe: () => () => {},
     } as unknown as AgentSessionLike);
     expect(await resumedAdapter.exportSession()).toEqual({ ...exported,
-      usageSnapshot: { lastResponse: null, sessionTotals: null, context: null, execution: resumedAdapter.getExecutionSnapshot(), currentPrompt: null, subagentTotals: null } });
+      usageSnapshot: { lastResponse: null, sessionTotals: null, context: null, execution: resumedAdapter.getExecutionSnapshot(), currentPrompt: null, subagentTotals: null,
+        branchTotals: { scope: "branch", input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, costUsdEstimate: 0 }, subagentAllTotals: null } });
 
     // A live fake without SessionManager has no selected-branch provenance, so this checks only
     // the legacy text projection; it does not imply that the supplied messages lack thinking.

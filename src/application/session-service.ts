@@ -16,6 +16,7 @@ import { getProjectAccess } from "./project-access.js";
 import { PLUGIN_RUN_TURN_LIMITS } from "../plugin/contract.js";
 import { readPiSessionCwdIdentity } from "../agent/pi-jsonl-conversation-storage.js";
 import type { ImageInput } from "../agent/agent-adapter.js";
+import type { ConversationReadContext } from "./ports/conversation-port.js";
 import { canonicalCwdIdentity } from "../core/native-session-policy.js";
 import { InvalidProjectCwdError } from "../core/project-cwd-error.js";
 import { payloadFingerprint } from "../core/payload-fingerprint.js";
@@ -683,6 +684,16 @@ export class SessionService {
    * ConversationStorage 只读解析（与活会话导出同一 role/text 投影），绝不
    * createAdapter / 写 DB / 改写会话历史。
    */
+  /** What a read-only export needs to estimate context usage like a live session would. */
+  private coldUsageOptions(record: { modelProvider?: string | null; modelId?: string | null }): ConversationReadContext["usage"] {
+    const catalog = this.deps.modelCatalog;
+    if (!catalog?.contextWindow) return undefined;
+    const fallbackModel = record.modelProvider != null && record.modelId != null
+      ? { provider: record.modelProvider, modelId: record.modelId }
+      : this.deps.defaultModel ? { provider: this.deps.defaultModel.provider, modelId: this.deps.defaultModel.id } : null;
+    return { fallbackModel, contextWindow: (provider, modelId) => catalog.contextWindow!(provider, modelId) };
+  }
+
   async exportSession(ownerKey: string, id: string): Promise<{ messages: unknown; timeline: unknown[]; lastEventId: number; usageSnapshot?: import("../core/usage-snapshot.js").UsageSnapshot; compaction?: import("../shared/events.js").CompactionState } | null> {
     const record = await this.findOwned(ownerKey, id);
     if (!record) return null;
@@ -711,6 +722,7 @@ export class SessionService {
       const exported = normalizeExportSnapshot(await this.deps.conversationStorage.require(conversation).readExport(conversation, {
         sessionId: record.id,
         projectId: record.projectId,
+        usage: this.coldUsageOptions(record),
       }));
       return { ...exported, lastEventId: 0 };
     } catch (error) {

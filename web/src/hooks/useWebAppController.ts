@@ -159,6 +159,8 @@ export function useWebAppController() {
   const getChatSnapshot = useCallback(() => chatStore.getState(), [chatStore]);
   const rawChatState = useSyncExternalStore(subscribeChat, getChatSnapshot, getChatSnapshot);
   const [usageSnapshots, setUsageSnapshots] = useState<Record<string, UsageSnapshot | undefined>>({});
+  const usageSnapshotsRef = useRef(usageSnapshots);
+  usageSnapshotsRef.current = usageSnapshots;
   const [invalidContexts, setInvalidContexts] = useState<ReadonlySet<string>>(new Set());
   const usageRevisionRef = useRef(new Map<string, number>());
   function invalidateContext(id: string): void {
@@ -517,9 +519,16 @@ export function useWebAppController() {
           clearSubmittedInputs(confirmed.scope, confirmed);
         }
       }
-      if (ownsSseEvent(store.getState(), event) && (event.type === "usage" || (event.type === "status" && event.phase === "agent_start"))) {
+      if (ownsSseEvent(store.getState(), event) && event.type === "status" && event.phase === "agent_start") {
+        // A run starts: the loaded snapshot hands its still-valid parts to the live stats, so the
+        // context stays visible until the run's own usage event replaces it.
+        const loaded = usageSnapshotsRef.current[sessionId];
+        if (loaded) store.restoreUsage(loaded);
         setUsageSnapshots(previous => ({ ...previous, [sessionId]: undefined }));
-        if (event.type === "usage") setInvalidContexts(previous => { const next = new Set(previous); next.delete(sessionId); return next; });
+      }
+      if (ownsSseEvent(store.getState(), event) && event.type === "usage") {
+        setUsageSnapshots(previous => ({ ...previous, [sessionId]: undefined }));
+        setInvalidContexts(previous => { const next = new Set(previous); next.delete(sessionId); return next; });
       }
       applyControlEvent(sessionId, store, event);
       logEvent(event);

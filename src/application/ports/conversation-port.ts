@@ -88,6 +88,11 @@ export type ConversationReferenceRecord = {
 export type ConversationReadContext = {
   readonly sessionId: string;
   readonly projectId: string;
+  /** Lets a read-only export report context usage: the session's recorded model and a window lookup. */
+  readonly usage?: {
+    readonly fallbackModel?: { readonly provider: string; readonly modelId: string } | null;
+    readonly contextWindow?: (provider: string, modelId: string) => number | null;
+  };
 };
 
 export interface ConversationStorage {

@@ -6,8 +6,8 @@
 
 共享类型：`src/core/usage-snapshot.ts`，从 client 和 public contract 导出。
 
-- 结算 SSE `type: "usage"` 保留原字段 `promptTokens/completionTokens/totalTokens: number | null`、`durationMs/ttftMs: number`、`requestId`，新增 **optional** `lastResponse`、`sessionTotals`、`context`、`execution`、`currentPrompt`、`subagentTotals`；`status` 可带同样的 optional `execution` 快照。
-- `GET /v1/sessions/:id/export` 新增 **optional** `usageSnapshot: UsageSnapshot`。token/速度/context 由已有 runtime 的真实 Pi adapter 提供；沿用当前 owner/session 授权和只读 export 路径，不为刷新创建 runtime。执行计数也由无 runtime 的只读 JSONL export 恢复；缺失不能当作 0。新建/恢复的 adapter 尚无本轮响应时 `lastResponse: null`，不恢复或推算历史速度。
+- 结算 SSE `type: "usage"` 保留原字段 `promptTokens/completionTokens/totalTokens: number | null`、`durationMs/ttftMs: number`、`requestId`，新增 **optional** `lastResponse`、`sessionTotals`、`branchTotals`、`context`、`execution`、`currentPrompt`、`subagentTotals`、`subagentAllTotals`；`status` 可带同样的 optional `execution` 快照。
+- `GET /v1/sessions/:id/export` 新增 **optional** `usageSnapshot: UsageSnapshot`。token/速度/context 由已有 runtime 的真实 Pi adapter 提供；沿用当前 owner/session 授权和只读 export 路径，不为刷新创建 runtime。无 runtime 的只读 JSONL export 也恢复执行计数、`sessionTotals`、`branchTotals`、`context`、`subagentTotals` 与 `subagentAllTotals`（`src/agent/cold-usage-snapshot.ts` 按 Pi `getSessionStats` / `getContextUsage` 的同一规则从已存条目计算；模型按 transcript → 数据库记录 → 服务默认模型取，窗口来自模型目录，查不到窗口时 `context` 为 null）；缺失不能当作 0。新建/恢复的 adapter 尚无本轮响应时 `lastResponse: null`，不恢复或推算历史速度。
 - 快照外层可缺省（旧 adapter/服务兼容）；对象内如下字段都存在，但数字可为 null；对象自身可为 null。null/缺失均表示未知，0 为有效 SDK 测量。前端不得把 unknown 当 0。
 
 ```ts
@@ -40,9 +40,10 @@ type UsageSnapshot = {
 - `cacheHitPercent = cacheRead / (input + cacheRead + cacheWrite) * 100`。必须三项都有效且分母有限、大于零；否则 null。
 - `costUsdEstimate` 是 SDK 基于模型价格的 USD **估算**（末次为 `usage.cost.total`，累计为 `getSessionStats().cost`）。SDK 返回 0 就传 0，不宣称实际免费或实际账单。缺失、负数、NaN/Infinity 为 null。
 - `sessionTotals` 直接投影 SDK `getSessionStats()`：当前 session 文件 **allEntries**，不是 active branch，也不是所有用户 session。包括旧分支、压缩前消息、压缩/分支摘要 usage、standalone usage 和带 usage 的 toolResult。`tokens.total → totalTokens` 是 SDK 的总数；宿主不再把 subagent ledger 加进来，避免重复。它不是只统计本轮，亦不表示已从供应商核实费用。
+- `branchTotals` 按与 `sessionTotals` 相同的规则只累加**当前分支**（`getBranch()`）上的条目，`scope: "branch"`；Pi 没有对应 API，由宿主 `entryUsageTotals` 计算。会话从未分叉时两者相同。
 - `currentPrompt` 是当前 host prompt 内**每次模型调用**（每个 assistant `message_end`）的 usage 逐字段相加，`calls` 为已完成调用数。任一调用缺某字段，该字段即为 null（未知不当 0）。adapter 观察到本次运行时逐事件累加；未观察到事件（兼容 fallback）时从本次 prompt 新增的 assistant 消息重建；服务重启后没有本次 prompt，返回 null。下一次 prompt、导航、dispose 清零。
-- `subagentTotals` 汇总**当前分支** `agent-team:transcript` custom entry 中已完成（`complete: true`）的 assistant 消息 usage，每条消息按其最后存储版本计一次；`runs` 为分支上的子代理运行数，`calls` 为已完成的子代理模型调用数。子代理是独立会话，这部分**不在** `sessionTotals` 内，两者相加不会重复。分支上没有子代理时为 null；仅有旧版 agent-team 工具结果、没有 transcript 的运行不计入。
-- `context` 是每次直接读取 SDK `getContextUsage()` 的当前上下文估算，非累计。`contextWindow → window`；未知/无模型/读取失败返回 null；无效或零 window 不形成 percent。SDK 在 compaction 后无新有效 assistant usage 时可保留 window 而 tokens/percent 为 null。宿主不缓存 context，因此结算/export 在压缩、模型切换、导航后不会复用旧 context。
+- `subagentTotals` 汇总**当前分支** `agent-team:transcript` custom entry 中已完成（`complete: true`）的 assistant 消息 usage，每条消息按其最后存储版本计一次；`runs` 为分支上的子代理运行数，`calls` 为已完成的子代理模型调用数。`subagentAllTotals` 用同一规则统计 session 文件的**所有条目**（含已离开的旧分支）。两者各自独立、口径完整，不混用范围。子代理是独立会话，这部分**不在** `sessionTotals` / `branchTotals` 内，相加不会重复。对应范围内没有子代理时为 null；仅有旧版 agent-team 工具结果、没有 transcript 的运行不计入。
+- `context` 是每次直接读取 SDK `getContextUsage()`（无 runtime 时为同规则的只读计算）的当前上下文估算，非累计。`contextWindow → window`；未知/无模型/读取失败返回 null；无效或零 window 不形成 percent。SDK 在 compaction 后无新有效 assistant usage 时可保留 window 而 tokens/percent 为 null。宿主不缓存 context，因此结算/export 在压缩、模型切换、导航后不会复用旧 context。
 
 ## 实际执行轮与 model turns
 
@@ -67,7 +68,7 @@ SSE `tool_end`、export timeline `tool_result`、client `ToolCall` 支持 `durat
 - 可靠性阈值明确为 **10ms**：小于 10ms（包括零）速度为 null，原始非负 duration 可保留；10ms 本身有效。不将 duration 截成 250ms，不把速度封顶为 1000，不按字符估算 output，不四舍五入协议值。无 start/非空 delta、倒退/非法时钟、无有效 output → 相应速度未知。
 - host `prompt()` 起始清上一轮 lastResponse；最后 assistant 即使 error/aborted，只要最终 usage 有效仍可信。最新消息缺失或非法 usage 不回溯前一次 assistant。最新开始但未结束返回 null。事件权威路径不受 compaction 换掉 messages 前缀影响。
 - 无事件的兼容 fake/adapter fallback 仅看本次 prompt 新增的末次 assistant，保留全零；前缀被替换时返回 unknown，绝不回捞历史。此 fallback 无法获取 ordinal/计时，二者为 null。
-- shared client reducer 在 `status.agent_start` 清 `lastResponse/context`，结算 `usage` 原样保留新字段，旧事件仍接受。sessionTotals 可保留但须标“上次快照”。前端切换 session/导航/模型变更时也须清或重新读取 export 的 context，不跨 session 复用；只读历史 export 缺失统计要显示未知。实际 token/context 快照不是逐 delta 推送，也没有主动模型/导航 context SSE；结算及已有 runtime export 才是这些快照的采样点。实时字符估算使用下述独立事件，不写入 usage。
+- shared client reducer 在 `status.agent_start` 清 `lastResponse`，`context` 保留上一次的值直到本次结算 `usage` 替换（前端同时把已加载的 export 快照交给实时统计，避免运行中上下文消失）；结算 `usage` 原样保留新字段，旧事件仍接受。sessionTotals 可保留但须标“上次快照”。前端切换 session/导航/模型变更时也须清或重新读取 export 的 context，不跨 session 复用；只读历史 export 缺失统计要显示未知。实际 token/context 快照不是逐 delta 推送，也没有主动模型/导航 context SSE；结算及已有 runtime export 才是这些快照的采样点。实时字符估算使用下述独立事件，不写入 usage。
 - 原 `durationMs` 含工具执行与 usage 等待，原 `ttftMs` 仍是首正文/thinking延迟（无 delta 的历史回填保留）；都**不能作为新速度的分母**。usage 超时/异常不阻塞槽位释放，不虚造统计。
 
 ## 流式活动与速度估算
@@ -84,10 +85,10 @@ SSE `tool_end`、export timeline `tool_result`、client `ToolCall` 支持 `durat
 
 Composer 下方一行，从左到右三组（DESIGN.md §3.1）；点击打开统计详情。数字统一格式（`web/src/i18n/format.ts`）：一万以下显示完整整数（`4403`），以上按 locale 缩写并保留三位有效数字（`1.3万`、`6.46亿`），百分比不带空格（`0.44%`、`95%`），费用为 `$0.0042`。
 
-- **空闲**：`2 次任务 · 3 次调用 · 工具 1 次`（`execution` 的 loops / turns；工具为当前已加载分支）｜`会话 1.3万 tok（子代理 8000） · 缓存 67% · $0.004`（`sessionTotals`；缓存命中按会话累计计算；费用为会话加子代理，模型未计价——费用为 0 但有用量——时不显示）｜`上下文 4400 / 100万`（`context.tokens / window`，缺任一时退回百分比；占用 ≥80% 显示警示色）。
+- **空闲**：`2 次任务 · 3 次调用 · 工具 1 次`（`execution` 的 loops / turns；工具为当前已加载分支）｜`会话 1.3万 tok（子代理 8000） · 缓存 67% · $0.004`（当前分支：`branchTotals` 与 `subagentTotals`，旧服务没有 `branchTotals` 时退回 `sessionTotals`；缓存命中按会话累计计算；费用为会话加子代理，模型未计价——费用为 0 但有用量——时不显示）｜`上下文 4400 / 100万`（`context.tokens / window`，缺任一时退回百分比；占用 ≥80% 显示警示色；没有 context 时显示占位 `上下文 —` 并在悬停说明原因，不整项消失）。运行中上下文保留上一次的值。
 - **运行中**：左组换成 `本次 第 4 次调用 · 工具 6 次 · ~124 tok/s`（`model_output_progress.ordinal`、本次用户消息之后的工具、2 秒活动窗口内的估算速度）；中组在本次首个调用完成后换成 `本次 5200 tok`（`promptTokens`），之前仍显示会话累计。
 - **放不下一行时**（窄屏或数字很长）：按 `SUMMARY_DROP_ORDER` 依次隐藏工具数、缓存命中、调用数、费用、任务数、实时速度、本次调用序号，直到一行放得下；会话 / 本次用量和上下文始终保留。按实际宽度测量（ResizeObserver），不按视口断点；分隔符由 CSS 生成，跟随仍显示的项。
-- **详情**：按口径分组的两列定义列表，口径说明收进各组标题旁的 ⓘ。分组为本次任务（状态、模型调用、工具调用、用量、耗时、首字延迟）、末次模型调用（用量、明细、缓存命中、输出速度；运行中标「上次任务」）、会话累计（任务、模型调用、用户消息、用量、明细、缓存命中、费用；`recorded` 覆盖时标「仅含开始记录之后」）、子代理、工具（次数、失败、耗时合计、按工具名分布）、上下文。旧服务只给 `promptTokens/completionTokens/totalTokens` 时，末次模型调用退回显示这三个值。
+- **详情**：按口径分组的两列定义列表，口径说明收进各组标题旁的 ⓘ。分组为本次任务（状态、模型调用、工具调用、用量、耗时、首字延迟）、末次模型调用（用量、明细、缓存命中、输出速度；运行中标「上次任务」）、会话累计（任务、模型调用、用户消息、用量、明细、缓存命中、费用；`recorded` 覆盖时标「仅含开始记录之后」）、子代理（会话累计与子代理在当前分支和全部分支不同时分「当前分支 / 全部分支」两列，缺一侧显示 `—`；任务数和调用数只有全部分支口径，用户消息只有当前分支口径；相同时只显示一列）、工具（次数、失败、耗时合计、按工具名分布）、上下文。旧服务只给 `promptTokens/completionTokens/totalTokens` 时，末次模型调用退回显示这三个值。
 
 ## 验证
 

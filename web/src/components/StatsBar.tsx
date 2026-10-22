@@ -29,7 +29,8 @@ const count = formatCompact;
 const priced = (tokens: UsageTokens | null | undefined) => validMetric(tokens?.costUsdEstimate) && (tokens.costUsdEstimate > 0 || tokens.totalTokens === 0);
 const costText = (tokens: UsageTokens) => priced(tokens) ? formatUsd(tokens.costUsdEstimate!) : validMetric(tokens.costUsdEstimate) ? zhCN.stats.unpriced : null;
 
-type Row = { id: string; label: string; value: ReactNode; title?: string };
+/** `alt` is the all-branches value when a section shows both scopes; a missing side shows as `—`. */
+type Row = { id: string; label: string; value?: ReactNode; title?: string; alt?: ReactNode; altTitle?: string };
 function tokenRows(tokens: UsageTokens | null | undefined, prefix: string): Row[] {
   if (!tokens) return [];
   const rows: Row[] = [];
@@ -43,13 +44,30 @@ function tokenRows(tokens: UsageTokens | null | undefined, prefix: string): Row[
   return rows;
 }
 
-function Section({ id, title, hint, rows }: { id: string; title: ReactNode; hint: string; rows: Row[] }) {
+/** Rows of one scope beside the same rows of another, matched by id. */
+function pairRows(current: Row[], all: Row[]): Row[] {
+  const ids = [...current.map(row => row.id), ...all.map(row => row.id).filter(id => !current.some(row => row.id === id))];
+  return ids.map(id => {
+    const left = current.find(row => row.id === id);
+    const right = all.find(row => row.id === id);
+    return { id, label: (left ?? right)!.label, value: left?.value, title: left?.title, alt: right?.value, altTitle: right?.title };
+  });
+}
+const sameTokens = (a: UsageTokens | null | undefined, b: UsageTokens | null | undefined) =>
+  (a ?? null) === (b ?? null) || (!!a && !!b && a.input === b.input && a.output === b.output && a.cacheRead === b.cacheRead &&
+    a.cacheWrite === b.cacheWrite && a.totalTokens === b.totalTokens && a.costUsdEstimate === b.costUsdEstimate);
+
+function Section({ id, title, hint, rows, columns }: { id: string; title: ReactNode; hint: string; rows: Row[]; columns?: [string, string] }) {
   if (!rows.length) return null;
   return <section className="stats-section" data-testid={`stats-section-${id}`}>
     <h3>{title}<span className="stats-hint" title={hint} aria-label={hint} role="img"><Icon name="info" size={14} /></span></h3>
-    <dl>{rows.map(row => <div key={row.id} className="stats-row" data-testid={`stat-${row.id}`}>
-      <dt>{row.label}</dt><dd title={row.title}>{row.value}</dd>
-    </div>)}</dl>
+    <dl data-columns={columns ? "2" : undefined}>
+      {columns && <div className="stats-row stats-row-head" aria-hidden="true"><dt /><dd>{columns[0]}</dd><dd>{columns[1]}</dd></div>}
+      {rows.map(row => <div key={row.id} className="stats-row" data-testid={`stat-${row.id}`}>
+        <dt>{row.label}</dt><dd title={row.title}>{row.value ?? "—"}</dd>
+        {columns && <dd title={row.altTitle} data-testid={`stat-${row.id}-all`}>{row.alt ?? "—"}</dd>}
+      </div>)}
+    </dl>
   </section>;
 }
 
@@ -100,7 +118,11 @@ export function StatsBar({ stats, timeline, streamLost = false, pending = false,
   const turns = execution?.coverage === "complete" ? execution.totalTurns : execution?.recordedTurns;
   const partial = execution?.coverage === "recorded" ? zhCN.stats.partial : "";
   const totals = stats?.sessionTotals;
+  // The summary follows the conversation on screen: the current branch, else (older servers) the whole file.
+  const branchTotals = stats?.branchTotals;
+  const shownTotals = branchTotals ?? totals;
   const subagents = stats?.subagentTotals;
+  const subagentsAll = stats?.subagentAllTotals;
   const prompt = stats?.currentPrompt;
   const context = stats?.context;
   const speed = modelOutput?.tokensPerSecondEstimate;
@@ -119,12 +141,12 @@ export function StatsBar({ stats, timeline, streamLost = false, pending = false,
   // Middle: what it cost. Running: this task so far; otherwise the whole session.
   const usage: { id: string; text: string }[] = [];
   if (pending && validMetric(runProgress?.promptTokens)) usage.push({ id: "task-tokens", text: `${zhCN.stats.current} ${formatTokens(runProgress.promptTokens)}` });
-  else if (validMetric(totals?.totalTokens)) {
+  else if (validMetric(shownTotals?.totalTokens)) {
     const share = validMetric(subagents?.totalTokens) && subagents.totalTokens > 0 ? `（${zhCN.stats.subagentShare(formatCompact(subagents.totalTokens))}）` : "";
-    usage.push({ id: "session-tokens", text: `${zhCN.stats.session} ${formatTokens(totals.totalTokens)}${share}` });
-    const hit = cacheShare(totals.input, totals.cacheRead, totals.cacheWrite);
+    usage.push({ id: "session-tokens", text: `${zhCN.stats.session} ${formatTokens(shownTotals.totalTokens)}${share}` });
+    const hit = cacheShare(shownTotals.input, shownTotals.cacheRead, shownTotals.cacheWrite);
     if (hit !== null) usage.push({ id: "session-cache", text: `${zhCN.stats.cache} ${formatPercent(hit)}` });
-    const cost = priced(totals) ? totals.costUsdEstimate! + (priced(subagents) ? subagents!.costUsdEstimate! : 0) : null;
+    const cost = priced(shownTotals) ? shownTotals.costUsdEstimate! + (priced(subagents) ? subagents!.costUsdEstimate! : 0) : null;
     if (cost !== null && cost > 0) usage.push({ id: "session-cost", text: formatUsd(cost) });
   }
   // Right: how full the context is.
@@ -135,7 +157,7 @@ export function StatsBar({ stats, timeline, streamLost = false, pending = false,
     : contextUnknown ? `? / ${formatCompact(context!.window!)}` : null;
   const nearFull = validMetric(context?.percent) && context.percent >= CONTEXT_WARN_PERCENT;
   const contextTitle = [validMetric(context?.percent) ? `${zhCN.stats.occupied} ${formatPercent(context.percent)}` : "", nearFull ? zhCN.stats.contextNearFull : "",
-    contextUnknown ? zhCN.stats.contextUnknown : ""].filter(Boolean).join("。");
+    contextUnknown ? zhCN.stats.contextUnknown : "", contextText === null ? zhCN.stats.contextUnavailable : ""].filter(Boolean).join("。");
 
   // Separators come from CSS, so they follow whichever items are still shown.
   const joined = (items: { id: string; text: string }[]) => items.map(item => <span key={item.id} className={`stats-item stats-item-${item.id}`}>
@@ -165,17 +187,26 @@ export function StatsBar({ stats, timeline, streamLost = false, pending = false,
     ...(validMetric(responseSpeed?.tokensPerSecond) ? [{ id: "last-speed", label: zhCN.stats.speed, value: formatSpeed(responseSpeed.tokensPerSecond) }] : []),
   ];
   const userMessages = timeline.filter(item => item.kind === "message" && item.role === "user").length;
-  const sessionRows: Row[] = [
+  // Task and call counts cover the whole file; the user message count is the loaded (current) branch.
+  const executionRows: Row[] = [
     ...(validMetric(loops) ? [{ id: "session-tasks", label: zhCN.stats.taskCount, value: zhCN.stats.count(count(loops)) + partial }] : []),
     ...(validMetric(turns) ? [{ id: "session-calls", label: zhCN.stats.modelCalls, value: zhCN.stats.count(count(turns)) + partial }] : []),
-    { id: "session-messages", label: zhCN.stats.userMessages, value: zhCN.stats.messageCount(count(userMessages)) },
-    ...tokenRows(totals, "session-"),
   ];
-  const subagentRows: Row[] = subagents ? [
-    { id: "subagent-runs", label: zhCN.stats.runs, value: zhCN.stats.runCount(count(subagents.runs)) },
-    { id: "subagent-calls", label: zhCN.stats.modelCalls, value: zhCN.stats.count(count(subagents.calls)) },
-    ...tokenRows(subagents, "subagent-"),
+  const messageRow: Row = { id: "session-messages", label: zhCN.stats.userMessages, value: zhCN.stats.messageCount(count(userMessages)) };
+  // Both scopes side by side only when they differ (a session forked in the Pi CLI); otherwise one column.
+  const sessionSplit = !!branchTotals && !!totals && !sameTokens(branchTotals, totals);
+  const sessionRows: Row[] = sessionSplit
+    ? [...executionRows.map(row => ({ ...row, value: undefined, alt: row.value })), messageRow, ...pairRows(tokenRows(branchTotals, "session-"), tokenRows(totals, "session-"))]
+    : [...executionRows, messageRow, ...tokenRows(totals, "session-")];
+  const subagentScopeRows = (usage: typeof subagents): Row[] => usage ? [
+    { id: "subagent-runs", label: zhCN.stats.runs, value: zhCN.stats.runCount(count(usage.runs)) },
+    { id: "subagent-calls", label: zhCN.stats.modelCalls, value: zhCN.stats.count(count(usage.calls)) },
+    ...tokenRows(usage, "subagent-"),
   ] : [];
+  const subagentSplit = subagentsAll !== undefined && !((subagents ?? null) === (subagentsAll ?? null) ||
+    (!!subagents && !!subagentsAll && subagents.runs === subagentsAll.runs && subagents.calls === subagentsAll.calls && sameTokens(subagents, subagentsAll)));
+  const subagentRows: Row[] = subagentSplit ? pairRows(subagentScopeRows(subagents), subagentScopeRows(subagentsAll)) : subagentScopeRows(subagents);
+  const scopes: [string, string] = [zhCN.stats.currentBranch, zhCN.stats.allBranches];
   const byName = new Map<string, number>();
   for (const item of allTools) byName.set(item.call.toolName, (byName.get(item.call.toolName) ?? 0) + 1);
   const failures = allTools.filter(item => item.call.done && item.call.isError).length;
@@ -197,19 +228,20 @@ export function StatsBar({ stats, timeline, streamLost = false, pending = false,
         {activity.length > 0 && <span className="stats-cluster stats-activity"><Icon name="activity" /><span>{joined(activity)}</span></span>}
         {usage.length > 0 && <span className="stats-cluster stats-usage"><Icon name="tokens" /><span>{joined(usage)}</span></span>}
       </span>}
-      {contextText && <span className="stats-group-right">
-        <span className="stats-cluster stats-context" data-warn={nearFull ? "true" : undefined} title={contextTitle || undefined}>
-          <Icon name="context" /><span data-testid="stat-summary-context">{zhCN.stats.context} {contextText}</span>
+      {/* Always shown: a missing reading is a placeholder, never a vanished item. */}
+      <span className="stats-group-right">
+        <span className="stats-cluster stats-context" data-warn={nearFull ? "true" : undefined} data-empty={contextText === null ? "true" : undefined} title={contextTitle || undefined}>
+          <Icon name="context" /><span data-testid="stat-summary-context">{zhCN.stats.context} {contextText ?? "—"}</span>
         </span>
-      </span>}
+      </span>
     </button>
   </div>
   <Modal open={details} onClose={() => setDetails(false)} title={zhCN.stats.details}>
     <div className="stats-detail-content">
       <Section id="task" title={zhCN.stats.currentTask} hint={zhCN.stats.currentTaskHint} rows={taskRows} />
       <Section id="last" title={<>{zhCN.stats.lastCall}{pending && <span className="stats-note">{zhCN.stats.previousRun}</span>}</>} hint={zhCN.stats.lastCallHint} rows={lastRows} />
-      <Section id="session" title={zhCN.stats.sessionTotals} hint={zhCN.stats.sessionTotalsHint} rows={sessionRows} />
-      <Section id="subagents" title={zhCN.stats.subagents} hint={zhCN.stats.subagentsHint} rows={subagentRows} />
+      <Section id="session" title={zhCN.stats.sessionTotals} hint={zhCN.stats.sessionTotalsHint} rows={sessionRows} columns={sessionSplit ? scopes : undefined} />
+      <Section id="subagents" title={zhCN.stats.subagents} hint={zhCN.stats.subagentsHint} rows={subagentRows} columns={subagentSplit ? scopes : undefined} />
       <Section id="tools" title={zhCN.stats.toolsSection} hint={zhCN.stats.toolsHint} rows={toolRows} />
       <Section id="context" title={zhCN.stats.context} hint={zhCN.stats.contextHint} rows={contextRows} />
     </div>

@@ -8623,6 +8623,16 @@
               }
             ]
           },
+          "branchTotals": {
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/BranchUsageTotals"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "context": {
             "oneOf": [
               {
@@ -8644,6 +8654,18 @@
             ]
           },
           "subagentTotals": {
+            "description": "Child agents on the current branch.",
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/SubagentUsage"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "subagentAllTotals": {
+            "description": "Child agents on every branch of the session file.",
             "oneOf": [
               {
                 "$ref": "#/components/schemas/SubagentUsage"
@@ -8824,6 +8846,68 @@
         },
         "additionalProperties": false
       },
+      "BranchUsageTotals": {
+        "type": "object",
+        "description": "Session totals counted over the current branch only.",
+        "required": [
+          "input",
+          "output",
+          "cacheRead",
+          "cacheWrite",
+          "totalTokens",
+          "costUsdEstimate",
+          "scope"
+        ],
+        "properties": {
+          "input": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "output": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "cacheRead": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "cacheWrite": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "totalTokens": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "costUsdEstimate": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0,
+            "description": "SDK model-price estimate in USD, not an invoice; zero does not establish free service."
+          },
+          "scope": {
+            "const": "branch"
+          }
+        },
+        "additionalProperties": false
+      },
       "PromptUsage": {
         "type": "object",
         "description": "Every model call of the current host prompt, summed; a field is null once any call lacks it. Null when this process did not run the prompt.",
@@ -8889,7 +8973,7 @@
       },
       "SubagentUsage": {
         "type": "object",
-        "description": "Child agent model calls on the current branch (completed assistant messages), summed. Not included in sessionTotals.",
+        "description": "Child agent model calls (completed assistant messages), summed. Not included in sessionTotals or branchTotals.",
         "required": [
           "input",
           "output",
@@ -10262,6 +10346,16 @@
                   }
                 ]
               },
+              "branchTotals": {
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/BranchUsageTotals"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
               "context": {
                 "oneOf": [
                   {
@@ -10283,6 +10377,18 @@
                 ]
               },
               "subagentTotals": {
+                "description": "Child agents on the current branch.",
+                "oneOf": [
+                  {
+                    "$ref": "#/components/schemas/SubagentUsage"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              },
+              "subagentAllTotals": {
+                "description": "Child agents on every branch of the session file.",
                 "oneOf": [
                   {
                     "$ref": "#/components/schemas/SubagentUsage"

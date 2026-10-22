@@ -27,6 +27,7 @@ import { EMPTY_USAGE_TOKENS, addUsageTokens, cacheHitPercent, nonnegative, respo
 import type { Usage } from "@earendil-works/pi-ai";
 import type { SessionManager } from "@earendil-works/pi-coding-agent";
 import { ExecutionMetrics } from "./execution-metrics.js";
+import { entryUsageTotals } from "./cold-usage-snapshot.js";
 import { SessionStepsProjector } from "./session-steps-projector.js";
 
 /** Coalescing window for steps_changed / subagents_changed: streamed output would otherwise signal on every delta. */
@@ -1036,9 +1037,15 @@ export class PiAgentAdapter implements AgentAdapter {
       const message = this.latestPromptAssistant();
       if (message) lastResponse = this.projectResponse(message.usage, null, null);
     }
+    const manager = this.session.sessionManager;
+    let branchTotals: UsageSnapshot["branchTotals"] = null;
     let subagentTotals: UsageSnapshot["subagentTotals"] = null;
-    try { subagentTotals = subagentUsage(this.session.sessionManager?.getBranch() ?? []); } catch { /* unknown */ }
-    return { lastResponse, sessionTotals, context, execution: this.getExecutionSnapshot(), currentPrompt: this.currentPromptUsage(), subagentTotals };
+    let subagentAllTotals: UsageSnapshot["subagentAllTotals"] = null;
+    try { if (manager) branchTotals = entryUsageTotals(manager.getBranch(), "branch"); } catch { /* unknown */ }
+    try { subagentTotals = subagentUsage(manager?.getBranch() ?? []); } catch { /* unknown */ }
+    try { if (manager?.getEntries) subagentAllTotals = subagentUsage(manager.getEntries()); } catch { /* unknown */ }
+    return { lastResponse, sessionTotals, branchTotals, context, execution: this.getExecutionSnapshot(), currentPrompt: this.currentPromptUsage(),
+      subagentTotals, subagentAllTotals };
   }
 
   /** Live accumulation when this process saw the run; otherwise rebuilt from the prompt's messages. */

@@ -9,4 +9,6 @@ export interface ModelCatalogPort {
   getAvailable(): Promise<readonly ModelDescriptor[]>;
   /** 判断指定 provider+modelId 是否可用（创建/切换会话前校验）。 */
   isAvailable(provider: string, modelId: string): Promise<boolean>;
+  /** Context window of a registered model (credentials not required); null when unknown. */
+  contextWindow?(provider: string, modelId: string): number | null;
 }

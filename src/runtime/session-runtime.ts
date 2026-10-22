@@ -1491,6 +1491,8 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
       ...(usage?.execution !== undefined ? { execution: usage.execution } : {}),
       ...(usage?.currentPrompt !== undefined ? { currentPrompt: usage.currentPrompt } : {}),
       ...(usage?.subagentTotals !== undefined ? { subagentTotals: usage.subagentTotals } : {}),
+      ...(usage?.branchTotals !== undefined ? { branchTotals: usage.branchTotals } : {}),
+      ...(usage?.subagentAllTotals !== undefined ? { subagentAllTotals: usage.subagentAllTotals } : {}),
       promptTokens: usage?.promptTokens ?? null,
       completionTokens: usage?.completionTokens ?? null,
       totalTokens: usage?.totalTokens ?? null,

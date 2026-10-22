@@ -34,11 +34,15 @@ export type UsageSnapshot = {
   execution?: ExecutionSnapshot | null;
   lastResponse?: LastResponseUsage | null;
   sessionTotals?: (UsageTokens & { scope: "allEntries" }) | null;
+  /** The same totals for the current branch only (what the conversation on screen cost); absent on older servers. */
+  branchTotals?: (UsageTokens & { scope: "branch" }) | null;
   context?: { tokens: number | null; window: number | null; percent: number | null; estimate: true } | null;
   /** Absent on older servers; null when no prompt ran in this process (e.g. after a restart). */
   currentPrompt?: PromptUsage | null;
-  /** Not included in sessionTotals; null when the branch has no child agent runs. */
+  /** Child agents on the current branch. Not included in sessionTotals; null when the branch has no child agent runs. */
   subagentTotals?: SubagentUsage | null;
+  /** Child agents on every branch of the session file; null when it has none. Absent on older servers. */
+  subagentAllTotals?: SubagentUsage | null;
 };
 
 export const EMPTY_USAGE_TOKENS: UsageTokens = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, costUsdEstimate: 0 };

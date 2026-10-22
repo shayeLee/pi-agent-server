@@ -13,9 +13,11 @@ const snapshotProperties = {
   execution: { oneOf: [{ $ref: "#/components/schemas/ExecutionSnapshot" }, { type: "null" }] },
   lastResponse: { oneOf: [{ $ref: "#/components/schemas/LastResponseUsage" }, { type: "null" }] },
   sessionTotals: { oneOf: [{ $ref: "#/components/schemas/SessionUsageTotals" }, { type: "null" }] },
+  branchTotals: { oneOf: [{ $ref: "#/components/schemas/BranchUsageTotals" }, { type: "null" }] },
   context: { oneOf: [{ $ref: "#/components/schemas/ContextUsage" }, { type: "null" }] },
   currentPrompt: { oneOf: [{ $ref: "#/components/schemas/PromptUsage" }, { type: "null" }] },
-  subagentTotals: { oneOf: [{ $ref: "#/components/schemas/SubagentUsage" }, { type: "null" }] },
+  subagentTotals: { description: "Child agents on the current branch.", oneOf: [{ $ref: "#/components/schemas/SubagentUsage" }, { type: "null" }] },
+  subagentAllTotals: { description: "Child agents on every branch of the session file.", oneOf: [{ $ref: "#/components/schemas/SubagentUsage" }, { type: "null" }] },
 } as const;
 
 // Explicit application operations registered by the host. Fastify exposes the GET
@@ -858,8 +860,9 @@ export const openapiV1 = {
         }, additionalProperties: false },
       }, additionalProperties: false },
       SessionUsageTotals: { type: "object", required: [...Object.keys(usageTokenProperties), "scope"], properties: { ...usageTokenProperties, scope: { const: "allEntries" } }, additionalProperties: false },
+      BranchUsageTotals: { type: "object", description: "Session totals counted over the current branch only.", required: [...Object.keys(usageTokenProperties), "scope"], properties: { ...usageTokenProperties, scope: { const: "branch" } }, additionalProperties: false },
       PromptUsage: { type: "object", description: "Every model call of the current host prompt, summed; a field is null once any call lacks it. Null when this process did not run the prompt.", required: [...Object.keys(usageTokenProperties), "calls"], properties: { ...usageTokenProperties, calls: { type: "integer", minimum: 0 } }, additionalProperties: false },
-      SubagentUsage: { type: "object", description: "Child agent model calls on the current branch (completed assistant messages), summed. Not included in sessionTotals.", required: [...Object.keys(usageTokenProperties), "runs", "calls"], properties: { ...usageTokenProperties, runs: { type: "integer", minimum: 1 }, calls: { type: "integer", minimum: 0 } }, additionalProperties: false },
+      SubagentUsage: { type: "object", description: "Child agent model calls (completed assistant messages), summed. Not included in sessionTotals or branchTotals.", required: [...Object.keys(usageTokenProperties), "runs", "calls"], properties: { ...usageTokenProperties, runs: { type: "integer", minimum: 1 }, calls: { type: "integer", minimum: 0 } }, additionalProperties: false },
       ContextUsage: { type: "object", required: ["tokens", "window", "percent", "estimate"], properties: { tokens: measurementNumber, window: { type: ["number", "null"], exclusiveMinimum: 0 }, percent: measurementNumber, estimate: { const: true } }, additionalProperties: false },
       Export: { type: "object", required: ["messages", "timeline", "lastEventId"], properties: { messages: { type: "array", items: ref("ExportMessage"), description: "Legacy message projection. Pi transcripts include sourceId; no text-based timeline association is permitted." }, timeline: { type: "array", items: ref("TimelineItem"), description: "Current-branch, block-ordered history. Thinking content is preserved verbatim; tool text/JSON is not host-truncated." }, lastEventId: { type: "integer", minimum: 0 }, usageSnapshot: ref("UsageSnapshot"), compaction: ref("CompactionState") }, additionalProperties: false },
       CompactionState: { type: "object", required: ["status", "reason"], properties: {
