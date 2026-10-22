@@ -8,7 +8,9 @@ import { assertCliMigrationHead, parseMode, readPostgresTarget, redactedMessage 
 import { resolveMigrationCliPaths, summarizePostgresTarget } from "../../src/storage/storage-config.js";
 import { migrationDefinitions } from "../../src/storage/migration-manifest.js";
 
-describe("offline migration CLI", () => {
+// These cases spawn the real CLI (pnpm exec tsx) up to three times each: about 3s alone, but
+// past the default 5s when the whole suite runs in parallel. The budget covers that load.
+describe("offline migration CLI", { timeout: 30_000 }, () => {
   it("requires an explicit absolute AGENT_CWD and rejects relative path combinations", () => {
     expect(() => resolveMigrationCliPaths({ DB_PATH: "relative.db" }, process.cwd())).toThrow(/absolute AGENT_CWD/);
     expect(() => resolveMigrationCliPaths({ AGENT_CWD: "/workspace", DB_PATH: "relative.db" }, process.cwd())).toThrow(/relative DB_PATH/);
