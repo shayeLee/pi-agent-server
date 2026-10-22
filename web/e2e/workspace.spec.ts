@@ -180,7 +180,11 @@ test('session whole-row hit boundaries, keyboard and independent actions', async
     } else if (hit === 'right-edge') {
       const row = (await select.boundingBox())!;
       await page.mouse.click(row.x + row.width - 2, row.y + 2);
-    } else if (hit === 'time') await page.getByTestId('session-time-fixture-0').click();
+    } else if (hit === 'time') {
+      // Hover swaps the time for ⋯ in place (DESIGN.md §7), so aim at the time's left end,
+      // which a short time like "10分钟" leaves outside the menu button.
+      await page.getByTestId('session-time-fixture-0').click({ position: { x: 2, y: 6 } });
+    }
     else if (hit === 'title') await select.locator('.session-title').click();
     else { await select.focus(); await page.keyboard.press(hit); }
     await expect(select).toHaveAttribute('aria-current', 'true');
