@@ -115,7 +115,8 @@ export function ConversationMinimap({timeline, viewport, onNavigate}: {
     document.addEventListener('keydown', handleKeyDown);
     return () => document.removeEventListener('keydown', handleKeyDown);
   }, [preview, turns]);
-  if (!turns.length) return null;
+  // A single turn has nowhere to navigate; a lone tick reads as a stray mark.
+  if (turns.length < 2) return null;
   const selectedIndex = turns.findIndex(turn => turn.id === preview?.id);
   const selected = turns[selectedIndex];
   const bulgeCenter = selectedIndex >= 0 ? selectedIndex : Math.max(0, turns.findIndex(turn => turn.id === active));

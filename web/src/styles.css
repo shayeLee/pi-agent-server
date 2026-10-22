@@ -1787,6 +1787,12 @@ details[open] > summary > .details-chevron { transform: rotate(90deg); }
   background: var(--card);
 }
 
+/* On dark pages a full --ink frame is the brightest line on screen; idle it at --dim
+   and bring --ink back while typing. */
+[data-theme="dark"] .composer:not(:focus-within) {
+  border-color: var(--dim);
+}
+
 .composer textarea {
   min-height: 40px;
   max-height: min(260px, 40dvh);      /* 约 12 行，超出内部滚动（组件负责增高） */
@@ -3616,7 +3622,8 @@ details[open] > summary > .details-chevron { transform: rotate(90deg); }
 .composer-hint { font-family: var(--font-mono); font-size: var(--fs-meta); color: var(--faint); white-space: nowrap; }
 .composer-hint.is-armed { color: var(--err); }
 .send-button { width: auto; min-width: 64px; height: 28px; padding: 0 10px; font-family: var(--font-mono); font-size: var(--fs-meta); }
-.send-button:disabled { background: var(--hl); color: var(--faint); }
+/* The muted chip already says "disabled"; the global 0.45 fade on top made it vanish on dark pages. */
+.send-button:disabled { background: var(--hl); color: var(--faint); opacity: 1; }
 .send-button[data-testid="abort-button"] { background: var(--ink); color: var(--invert); }
 /* Drawn, not a ■ glyph: font fallback sized and baselined the glyph out of step with the label. */
 .send-button-visual > .stop-glyph { flex: none; width: 8px; height: 8px; margin-right: 6px; background: currentColor; }
@@ -3735,7 +3742,7 @@ details[open] > summary > .details-chevron { transform: rotate(90deg); }
 .session-item { margin-bottom: 0; }
 .session-item.active { background: var(--hl); }
 .session-item:hover { background: var(--hl); }
-.session-select { gap: 10px; min-height: 34px; padding: 6px 12px 6px 16px; }
+.session-select { gap: 8px; min-height: 34px; padding: 6px 12px 6px 14px; }
 .session-glyph { flex: 0 0 10px; font-family: var(--font-mono); font-size: var(--fs-meta); color: var(--dim); text-align: center; }
 .session-item.running .session-glyph { color: var(--acc); animation: ledger-breathe 1.6s ease-in-out infinite; }
 .session-title { font-size: var(--fs-ui); color: var(--ink); }

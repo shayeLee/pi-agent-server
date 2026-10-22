@@ -68,7 +68,7 @@ describe("SessionList（会话列表）", () => {
     expect(time1).toHaveAttribute("title", formatFullSessionTime(sessions[0]!.updatedAt));
     expect(time1).toHaveAttribute("dateTime", new Date(sessions[0]!.updatedAt).toISOString());
 
-    expect(time2).toHaveTextContent("15分钟前");
+    expect(time2).toHaveTextContent("15分钟");
     expect(time2).toHaveAttribute("title", formatFullSessionTime(sessions[1]!.updatedAt));
     expect(time2).toHaveAttribute("dateTime", new Date(sessions[1]!.updatedAt).toISOString());
   });
@@ -143,17 +143,17 @@ describe("SessionList（会话列表）", () => {
     // 未来时间展示真实绝对时间，不伪造刚刚
     expect(formatSessionTime(base + 5000, base)).toBe(formatFullSessionTime(base + 5000));
 
-    // 分钟前 (1 ~ 59 min)
-    expect(formatSessionTime(base - 60 * 1000, base)).toBe("1分钟前");
-    expect(formatSessionTime(base - 59 * 60 * 1000, base)).toBe("59分钟前");
+    // 分钟 (1 ~ 59 min)
+    expect(formatSessionTime(base - 60 * 1000, base)).toBe("1分钟");
+    expect(formatSessionTime(base - 59 * 60 * 1000, base)).toBe("59分钟");
 
-    // 小时前 (1 ~ 23 hour)
-    expect(formatSessionTime(base - 60 * 60 * 1000, base)).toBe("1小时前");
-    expect(formatSessionTime(base - 23 * 60 * 60 * 1000, base)).toBe("23小时前");
+    // 小时 (1 ~ 23 hour)
+    expect(formatSessionTime(base - 60 * 60 * 1000, base)).toBe("1小时");
+    expect(formatSessionTime(base - 23 * 60 * 60 * 1000, base)).toBe("23小时");
 
-    // 天前 (1 ~ 29 day)
-    expect(formatSessionTime(base - 24 * 60 * 60 * 1000, base)).toBe("1天前");
-    expect(formatSessionTime(base - 29 * 24 * 60 * 60 * 1000, base)).toBe("29天前");
+    // 天 (1 ~ 29 day)
+    expect(formatSessionTime(base - 24 * 60 * 60 * 1000, base)).toBe("1天");
+    expect(formatSessionTime(base - 29 * 24 * 60 * 60 * 1000, base)).toBe("29天");
 
     // 超过30天，同一年：短日期 M月D日
     const sameYearOld = new Date("2025-01-15T08:00:00.000Z").getTime();

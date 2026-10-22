@@ -221,3 +221,10 @@ it('suppresses previews during navigation and requires pointer movement to reope
   expect(vi.getTimerCount()).toBe(0);
   vi.useRealTimers();
 });
+
+it('stays hidden until there are two turns to move between', () => {
+  const {rerender} = render(<ConversationMinimap timeline={timeline.slice(0, 3)} viewport={{current:document.createElement('div')}} onNavigate={vi.fn()} />);
+  expect(screen.queryByRole('navigation')).toBeNull();
+  rerender(<ConversationMinimap timeline={timeline} viewport={{current:document.createElement('div')}} onNavigate={vi.fn()} />);
+  expect(screen.getAllByRole('button')).toHaveLength(2);
+});
