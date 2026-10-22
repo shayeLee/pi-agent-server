@@ -648,6 +648,7 @@ export const openapiV1 = {
       } },
       SubagentRun: { type: "object", required: ["id", "runId", "agent", "task", "startedAt", "status", "revision"], properties: {
         id: { type: "string" }, runId: { type: "string" }, agent: { type: "string" }, task: { type: "string" }, startedAt: { type: "number" }, endedAt: { type: "number" },
+        backend: { type: "string", enum: ["pi", "claude"] }, canSteer: { type: "boolean" },
         status: { type: "string", enum: ["running", "completed", "failed", "stopped", "unknown"] }, model: { type: "string" }, thinkingLevel: { type: "string" }, revision: { type: "integer" }, streamRevision: { type: "integer" }, legacy: { type: "boolean" },
       }, additionalProperties: false },
       SubagentSnapshot: { type: "object", required: ["sessionId", "runs"], properties: {

@@ -39,8 +39,10 @@ const TAGS = {
  * visibility; every item keeps its original order and navigation anchor.
  * Reducer preserves unchanged item identities, so only live/changed rows render.
  */
-export const Timeline = memo(function Timeline({ timeline, live = false, ready = true, tail, pending }: {
+export const Timeline = memo(function Timeline({ timeline, live = false, ready = true, tail, pending, assistantTag = TAGS.assistant }: {
   timeline: ChatState["timeline"];
+  /** Who the assistant rows are: PI by default, another agent (e.g. a Claude subagent) when it speaks. */
+  assistantTag?: readonly [string, string];
   /**
    * What PI is doing before its first words (DESIGN.md §5.3). It joins the live PI entry, or opens
    * one where the reply will appear, so the reply later starts on the same line instead of below it.
@@ -76,10 +78,10 @@ export const Timeline = memo(function Timeline({ timeline, live = false, ready =
   if (!pending || joinsEntry) pendingSince.current = null;
   else pendingSince.current ??= new Date().toISOString();
   const pendingClock = formatClock(pendingSince.current ?? undefined);
-  const [piTag, piLabel] = TAGS.assistant;
+  const [piTag, piLabel] = assistantTag;
   return <div className="timeline ledger" data-testid="message-list">
     {entries.map(entry => <LedgerRow key={entry.id} entry={entry} observed={observed}
-      liveTail={live && entry === lastEntry} tail={live && entry === lastEntry && entry.role === "assistant" ? tail : undefined}
+      assistantTag={assistantTag} liveTail={live && entry === lastEntry} tail={live && entry === lastEntry && entry.role === "assistant" ? tail : undefined}
       pending={entry === lastEntry && joinsEntry ? pending : undefined} />)}
     {pending && !joinsEntry && <div className="ledger-entry" data-role="assistant">
       <div className="ledger-time">{pendingClock && <time dateTime={pendingSince.current!} title={pendingClock.title}>{pendingClock.text}</time>}</div>
@@ -89,7 +91,7 @@ export const Timeline = memo(function Timeline({ timeline, live = false, ready =
   </div>;
 });
 
-function LedgerRow({ entry, observed, liveTail, tail, pending }: { entry: LedgerEntry; observed: ReadonlyMap<string, string>; liveTail: boolean; tail?: ReactNode; pending?: ReactNode }) {
+function LedgerRow({ entry, observed, assistantTag, liveTail, tail, pending }: { entry: LedgerEntry; observed: ReadonlyMap<string, string>; assistantTag: readonly [string, string]; liveTail: boolean; tail?: ReactNode; pending?: ReactNode }) {
   const clock = formatClock(entry.timestamp);
   const first = entry.segments[0];
   // In a subagent conversation the host agent's turns carry their kind (initial task / steer).
@@ -98,7 +100,7 @@ function LedgerRow({ entry, observed, liveTail, tail, pending }: { entry: Ledger
   // A person's steer keeps the YOU tag; the gutter still names it as a steer.
   const userInput = entry.role === "user" && first?.kind !== "work" && first?.item.kind === "message" ? first.item.userInput : undefined;
   const note = host ?? (userInput ? zhCN.subagents.inputKind[userInput] : null);
-  const [tag, label] = host ? [zhCN.ledger.host, zhCN.ledger.hostLabel(host)] : TAGS[entry.role];
+  const [tag, label] = host ? [zhCN.ledger.host, zhCN.ledger.hostLabel(host)] : entry.role === "assistant" ? assistantTag : TAGS[entry.role];
   const lastSegment = entry.segments[entry.segments.length - 1];
   return <div className="ledger-entry" data-role={entry.role}>
     <div className="ledger-time">{clock && <time dateTime={entry.timestamp} title={clock.title}>{clock.text}</time>}

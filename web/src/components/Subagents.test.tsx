@@ -101,6 +101,35 @@ describe("SubagentChat steer box", () => {
     expect(input).toHaveValue("只检查侧栏");
   });
 
+  it("labels a Claude run's replies CLAUDE and a Pi run's replies PI", () => {
+    const reply: SubagentConversation["timeline"] = [{ kind: "message", id: "a", role: "assistant", text: "检查完毕", streaming: false, timestamp: "2026-10-15T02:38:07.000Z" }];
+    const view = (patch: Partial<SubagentRun>) => render(<SubagentChat conversation={{ ...conversation(patch), timeline: reply }} loading={false} error={null}
+      title="主会话" inspectorOpen={false} onBack={vi.fn()} onToggleInspector={vi.fn()} />);
+    const claude = view({ backend: "claude" });
+    expect(claude.container.querySelector('[data-role="assistant"] .ledger-tag')).toHaveTextContent("CLAUDE");
+    expect(claude.container.querySelector('[data-role="assistant"] .ledger-tag')).toHaveAttribute("aria-label", "Claude 回复");
+    claude.unmount();
+    expect(view({}).container.querySelector('[data-role="assistant"] .ledger-tag')).toHaveTextContent("PI");
+  });
+
+  it("steers a running Claude run that has a control channel, like a Pi run", async () => {
+    const { onSteer, input } = renderChat({ id: "claude-1", status: "running", endedAt: undefined, backend: "claude", canSteer: true });
+    expect(input).toHaveAttribute("placeholder", "引导子代理，下一回合前送达");
+    fireEvent.change(input, { target: { value: "也检查 b.ts" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+    await waitFor(() => expect(input).toHaveValue(""));
+    expect(onSteer).toHaveBeenCalledWith("claude-1", "也检查 b.ts");
+  });
+
+  it("disables steering for a Claude run without a control channel", () => {
+    const { input, send, onSteer } = renderChat({ status: "running", endedAt: undefined, backend: "claude", canSteer: false });
+    expect(input).toBeDisabled();
+    expect(input).toHaveAttribute("placeholder", "此子代理暂不支持运行中引导");
+    expect(send).toBeDisabled();
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(onSteer).not.toHaveBeenCalled();
+  });
+
   it("is disabled once the run has ended, and says why", () => {
     const { input, send } = renderChat({ status: "completed" });
     expect(input).toBeDisabled();

@@ -10,6 +10,8 @@ import { errorMessage } from "./ProjectMcpPanel.js";
 
 /** The Ledger's step glyphs (DESIGN.md §5.1), so subagents read like the steps that started them. */
 const glyphs = { running: "◐", completed: "✓", failed: "✗", stopped: "⊘", unknown: "·" };
+/** A Claude subagent speaks as CLAUDE, so its replies are not mistaken for Pi's. */
+const CLAUDE_TAG = [zhCN.ledger.claude, zhCN.ledger.claudeLabel] as const;
 function SubagentStatusIcon({ status }: { status: SubagentRun["status"] }) {
   const label = zhCN.subagents.status[status];
   return <span className={`subagent-glyph is-${status}`} role="img" aria-label={label} title={label}>
@@ -46,7 +48,7 @@ function SubagentSteer({ run, canWrite, onSteer }: { run: SubagentRun; canWrite:
   const [text, setText] = useState("");
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const steerable = run.status === "running" && !run.legacy;
+  const steerable = run.status === "running" && !run.legacy && run.canSteer !== false;
   const canSend = canWrite && steerable && !sending && text.trim() !== "";
   const send = async () => {
     if (!canSend) return;
@@ -59,7 +61,7 @@ function SubagentSteer({ run, canWrite, onSteer }: { run: SubagentRun; canWrite:
     if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing || event.keyCode === 229) return;
     event.preventDefault(); void send();
   };
-  const placeholder = run.legacy ? zhCN.subagents.steer.legacy : steerable ? zhCN.subagents.steer.placeholder : zhCN.subagents.steer.ended;
+  const placeholder = run.legacy ? zhCN.subagents.steer.legacy : run.status === "running" && run.canSteer === false ? zhCN.subagents.steer.unsupported : steerable ? zhCN.subagents.steer.placeholder : zhCN.subagents.steer.ended;
   return <div className="chat-footer subagent-steer">
     <div className="composer-stack"><div className="composer" data-testid="subagent-steer">
       {error && <div className="composer-submit-notice" role="alert">{error}</div>}
@@ -105,7 +107,7 @@ export function SubagentChat({ conversation, loading, error, title, inspectorOpe
         {!loading && !error && !conversation && <p>{zhCN.subagents.unavailable}</p>}
         {conversation && <>
           {run?.status === "unknown" && <p className="subagent-notice">{zhCN.subagents.unknownStatus}</p>}
-          <Timeline timeline={conversation.timeline} />
+          <Timeline timeline={conversation.timeline} assistantTag={run?.backend === "claude" ? CLAUDE_TAG : undefined} />
           {/* Inputs not yet in the transcript: the same ledger row, with the delivery state in the gutter. */}
           {conversation.inputs.some(i => i.delivery !== "delivered") && <div className="ledger subagent-pending-inputs">
             {conversation.inputs.filter(i => i.delivery !== "delivered").map(input => {

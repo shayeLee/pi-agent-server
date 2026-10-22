@@ -4,6 +4,7 @@ export const SUBAGENT_TRANSCRIPT = "agent-team:transcript";
 export type SubagentStatus = "running" | "completed" | "failed" | "stopped" | "unknown";
 export type SubagentRun = {
   id: string; runId: string; agent: string; task: string; startedAt: number; endedAt?: number;
+  backend?: "pi" | "claude"; canSteer?: boolean;
   status: SubagentStatus; model?: string; thinkingLevel?: string; revision: number; streamRevision?: number; legacy?: boolean;
 };
 export type SubagentInput = {

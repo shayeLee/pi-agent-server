@@ -18,6 +18,8 @@ export function projectSubagents(sessionId: string, entries: readonly unknown[],
     const p = e.payload;
     if (e.kind === "start" && !runs.has(e.id) && typeof p.agent === "string" && typeof p.task === "string") {
       runs.set(e.id, { run: { id: e.id, runId: String(p.runId), agent: p.agent, task: p.task,
+        ...(p.backend === "pi" || p.backend === "claude" ? { backend: p.backend } : {}),
+        ...(typeof p.canSteer === "boolean" ? { canSteer: p.canSteer } : {}),
         startedAt: p.startedAt, model: p.model, thinkingLevel: p.thinkingLevel, status: "unknown", revision: 0 }, messages: new Map(), tools: new Map(),
         inputs: [{ id: `${e.id}:initial`, text: p.task, kind: "initial", source: "host", order: e.seq, timestamp: e.timestamp, delivery: "submitted" }] });
     }

@@ -6580,6 +6580,16 @@
           "endedAt": {
             "type": "number"
           },
+          "backend": {
+            "type": "string",
+            "enum": [
+              "pi",
+              "claude"
+            ]
+          },
+          "canSteer": {
+            "type": "boolean"
+          },
           "status": {
             "type": "string",
             "enum": [
