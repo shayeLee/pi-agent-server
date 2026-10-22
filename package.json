@@ -72,6 +72,7 @@
     "build:file-ops": "node scripts/dist-hygiene.mjs clean dist-file-ops && tsc -p tsconfig.file-ops.json && node scripts/smoke-file-ops-compiled.mjs && node scripts/smoke-file-ops-package.mjs",
     "build:reconcile-jsonl": "node scripts/dist-hygiene.mjs clean dist-reconcile && tsc -p tsconfig.reconcile-jsonl.json && node scripts/smoke-reconcile-jsonl-compiled.mjs && node scripts/smoke-reconcile-jsonl-package.mjs",
     "build:owner-transfer": "node scripts/dist-hygiene.mjs clean dist-owner-transfer && tsc -p tsconfig.owner-transfer.json && node scripts/smoke-owner-transfer-compiled.mjs && node scripts/smoke-owner-transfer-package.mjs",
+    "build:bridge": "node scripts/dist-hygiene.mjs clean dist-bridge && tsc -p tsconfig.bridge.json",
     "build:drill": "node scripts/dist-hygiene.mjs clean dist-drill && tsc -p tsconfig.drill.json && node scripts/smoke-drill-compiled.mjs && node scripts/smoke-drill-package.mjs",
     "test:age": "node scripts/test-age-real.mjs",
     "test:restore-real": "pnpm test:age && cross-env PI_RUN_REAL_AGE_RESTORE=1 vitest run tests/backup/restore-core.test.ts",

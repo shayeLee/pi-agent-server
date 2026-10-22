@@ -60,7 +60,7 @@ Apart from this README, the documents under `docs/` are mostly in Chinese.
 
 | Topic | Documents |
 | --- | --- |
-| Using | [Web UI](docs/web-ui.md) · [Native Pi sessions](docs/native-sessions.md) · [Subagent conversations](docs/subagent-conversations.md) · [Design spec](DESIGN.md) |
+| Using | [Web UI](docs/web-ui.md) · [Native Pi sessions](docs/native-sessions.md) · [Subagent conversations](docs/subagent-conversations.md) · [Claude Desktop bridge](docs/claude-desktop-bridge.md) · [Design spec](DESIGN.md) |
 | Interfaces | [API overview](docs/api.md) · [OpenAPI spec](openapi/v1.json) · [Control queues](docs/control-queues.md) · [Session steps and Inspector](docs/session-steps.md) · [Usage measurement](docs/usage-measurement.md) · [Plugin integration](docs/plugin-integration.md) |
 | Deployment and operations | [Operations](docs/operations.md) · [Configuration and access control](docs/configuration.md) · [IP access control](docs/ip-rbac-design.md) · [Backup and restore](docs/backup-restore.md) |
 | Development | [Local development](docs/development.md) · [Testing commands](docs/testing.md) · [Architecture](docs/architecture.md) · [Database design](docs/database-design.md) · [SDK boundaries](docs/pi-sdk-api.md) · [ADR index](docs/decisions/README.md) |

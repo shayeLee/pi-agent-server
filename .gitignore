@@ -17,6 +17,7 @@ dist-file-ops
 dist-reconcile
 dist-owner-transfer
 dist-drill
+dist-bridge
 web/test-results
 web/dist-ops-viewer/
 

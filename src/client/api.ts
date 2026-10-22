@@ -305,8 +305,9 @@ export class ApiClient {
     return this.request("POST", `/v1/sessions/${sessionId}/control-queue/${encodeURIComponent(controlId)}/promote`, identity);
   }
 
-  abort(sessionId: string): Promise<void> {
-    return this.request("POST", `/v1/sessions/${sessionId}/abort`);
+  /** With `requestId`, the server aborts only that turn and answers 409 when another one is running. */
+  abort(sessionId: string, requestId?: string): Promise<void> {
+    return this.request("POST", `/v1/sessions/${sessionId}/abort`, requestId === undefined ? undefined : { requestId });
   }
 
   getSystemPrompt(id: string): Promise<import("../shared/system-prompt.js").SessionSystemPrompt> {

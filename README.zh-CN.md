@@ -60,7 +60,7 @@ pnpm web                     # 可选：Web UI
 
 | 主题 | 文档 |
 | --- | --- |
-| 使用 | [Web UI](docs/web-ui.md) · [Pi 原生会话](docs/native-sessions.md) · [子代理会话](docs/subagent-conversations.md) · [设计规范](DESIGN.md) |
+| 使用 | [Web UI](docs/web-ui.md) · [Pi 原生会话](docs/native-sessions.md) · [子代理会话](docs/subagent-conversations.md) · [Claude Desktop 桥接](docs/claude-desktop-bridge.md) · [设计规范](DESIGN.md) |
 | 接口 | [API 概览](docs/api.md) · [OpenAPI 规范](openapi/v1.json) · [控制队列](docs/control-queues.md) · [会话步骤与 Inspector](docs/session-steps.md) · [统计契约](docs/usage-measurement.md) · [插件接入](docs/plugin-integration.md) |
 | 部署与运维 | [运维](docs/operations.md) · [配置与访问控制](docs/configuration.md) · [IP 访问控制](docs/ip-rbac-design.md) · [备份与恢复](docs/backup-restore.md) |
 | 开发 | [本地开发](docs/development.md) · [测试命令清单](docs/testing.md) · [架构](docs/architecture.md) · [数据库设计](docs/database-design.md) · [SDK 边界](docs/pi-sdk-api.md) · [ADR 索引](docs/decisions/README.md) |
