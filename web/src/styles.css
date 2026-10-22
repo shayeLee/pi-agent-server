@@ -3582,6 +3582,8 @@ details[open] > summary > .details-chevron { transform: rotate(90deg); }
 @container chat (max-width: 640px) {
   .tool-step .tool-call-header .tool-name, .thinking-step .thinking-label { flex-basis: auto; min-width: 0; max-width: 40%; }
   .tool-step .tool-duration { display: none; }
+  /* Duration and toggle are both hidden here, so drop the empty slot and its gap: the summary gets the room. */
+  .tool-step .tool-header-icons { display: none; }
   .tool-step .tool-call-body, .thinking-step .thinking-body { padding-left: 0; }
 }
 
