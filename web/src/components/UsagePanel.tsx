@@ -163,14 +163,24 @@ function Chart({ report, series, metric, selected, onSelect, label }: { report: 
   </figure>;
 }
 
+/** Rows listed in a tooltip before the rest are summed into one. */
+const TOOLTIP_MODELS = 8;
+
 function Tooltip({ bucket, report, series, metric, position }: { bucket: UsageBucket; report: UsageReport; series: Series[]; metric: Metric; position: number }) {
-  const parts = stack(bucket, series, metric).reverse();
+  // Name every model of the period, not the chart's "other" series: the tooltip is where a folded model is identified.
+  const slots = new Map(series.map(s => [s.key, s.slot]));
+  const rows = bucket.models.map(row => ({ row, value: amount(row, metric) })).filter(({ value }) => value > 0).sort((a, b) => b.value - a.value);
+  const shown = rows.length > TOOLTIP_MODELS ? rows.slice(0, TOOLTIP_MODELS - 1) : rows;
+  const rest = rows.slice(shown.length);
   return <div className="usage-tooltip" role="presentation" style={{ left: `${position * 100}%` }} data-side={position > 0.5 ? "left" : "right"}>
     <strong>{formatUsagePeriod(bucket.start, report.period, true)}</strong>
     <span className="usage-tooltip-total">{amountText(amount(bucket.totals, metric), metric)}</span>
-    {parts.map(part => <span key={part.series.key} className="usage-tooltip-row">
-      <span className={swatchClass(part.series.slot)} aria-hidden="true" /><span>{part.series.label}</span><span>{amountText(part.value, metric)}</span>
+    {shown.map(({ row, value }) => <span key={modelKey(row)} className="usage-tooltip-row">
+      <span className={swatchClass(slots.get(modelKey(row)) ?? null)} aria-hidden="true" /><span>{modelName(row)}</span><span>{amountText(value, metric)}</span>
     </span>)}
+    {rest.length > 0 && <span className="usage-tooltip-row">
+      <span className={swatchClass(null)} aria-hidden="true" /><span>{text.otherModels(rest.length)}</span><span>{amountText(rest.reduce((sum, { value }) => sum + value, 0), metric)}</span>
+    </span>}
   </div>;
 }
 

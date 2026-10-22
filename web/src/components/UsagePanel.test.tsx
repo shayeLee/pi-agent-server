@@ -62,6 +62,10 @@ describe("UsagePanel", () => {
     const legend = await panel.findByTestId("usage-legend");
     expect(within(legend).getAllByRole("listitem").map(item => item.textContent)).toEqual(["p/a", "p/b", "p/c", "p/d", text.other]);
     expect(within(panel.getByTestId("usage-table")).getByText("p/f")).toBeTruthy();
+    // The tooltip names a model the chart folded into "other".
+    fireEvent.mouseEnter(panel.getByTestId("usage-chart").querySelectorAll(".usage-bar")[1]!);
+    const tooltip = panel.getByTestId("usage-chart").querySelector(".usage-tooltip")!;
+    expect([...tooltip.querySelectorAll(".usage-tooltip-row > span:nth-child(2)")].map(name => name.textContent)).toEqual(["p/a", "p/b", "p/c", "p/d", "p/e", "p/f"]);
   });
 
   it("says when the range has no calls, and offers a retry after a failure", async () => {

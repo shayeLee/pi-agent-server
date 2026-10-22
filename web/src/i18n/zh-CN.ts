@@ -753,6 +753,7 @@ export const zhCN = {
     sessions: (n: number) => `${n} 个`,
     unread: (n: number) => `${n} 个会话文件读取失败，未计入`,
     other: "其他",
+    otherModels: (n: number) => `其他 ${n} 个模型`,
     unknownModel: "未知模型",
     chartLabel: { day: "每天各模型用量", week: "每周各模型用量", month: "每月各模型用量" },
     tableAll: (span: string) => `最近 ${span}`,
