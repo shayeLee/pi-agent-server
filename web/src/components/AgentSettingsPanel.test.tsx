@@ -51,6 +51,14 @@ describe("AgentSettingsPanel", () => {
     expect(screen.queryByTestId("agent-settings-open")).toBeNull();
   });
 
+  it("opens with the prefetched settings while its own read is still on the way", async () => {
+    let calls = 0;
+    const { api } = setup({ getAgentSettings: vi.fn(() => ++calls === 1 ? Promise.resolve(settings()) : new Promise<AgentSettings>(() => {})) });
+    await openPanel();
+    expect(screen.getByTestId("agent-settings-compaction")).toBeInTheDocument();
+    expect(api.getAgentSettings).toHaveBeenCalledTimes(2);
+  });
+
   it("saves a toggle with the file hash and tells the app", async () => {
     const { api, onSaved } = setup();
     await openPanel();

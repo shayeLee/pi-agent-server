@@ -85,6 +85,8 @@ export type SessionServiceDeps = {
   /** Optional only for hosts that have not enabled non-image uploads. */
   uploads?: UploadService;
   idempotencyRepo?: IdempotencyStorePort;
+  /** Writes a short title from the first prompt for untitled sessions; omitted = keep showing the prompt. */
+  sessionTitler?: { title(prompt: string): Promise<string | null> };
   /** 由 composition root 提供，便于隔离 ID 生成策略。 */
   createId: () => string;
   /** 由 composition root 提供，便于测试并隔离时钟。 */
@@ -124,6 +126,8 @@ export class SessionService {
   private readonly deletingProjects = new Set<string>();
   /** Service-level preflight prevents a mismatched retry from binding extra files before runtime rejects it. */
   private readonly requestFingerprints = new Map<string, string>();
+  /** Sessions already given an automatic-title attempt in this process: at most one model call each. */
+  private readonly titleAttempts = new Set<string>();
 
   constructor(private readonly deps: SessionServiceDeps) {
     deps.nativeSessions?.onRevoked?.(id => {
@@ -493,11 +497,13 @@ export class SessionService {
       const record = await this.findOwned(ownerKey, id);
       if (!record) return null;
       const current = await this.deps.sessions.updateTitleIfEmpty(record.ownerKey, id, title, this.deps.now());
+      if (current?.title === title) this.announceTitle(id, title);
       return current ? toSessionDto(current) : null;
     }
     if (!(await this.findOwned(ownerKey, id))) return null;
     await this.deps.sessions.update(id, { title, updatedAt: this.deps.now() });
     const updated = await this.deps.sessions.get(id);
+    if (updated) this.announceTitle(id, updated.title);
     return updated ? toSessionDto(updated) : null;
   }
 
@@ -544,6 +550,30 @@ export class SessionService {
     await this.deps.sessions.update(id, patch);
     const updated = await this.deps.sessions.get(id);
     return updated ? { kind: "updated", session: toSessionDto(updated) } : { kind: "not-found" };
+  }
+
+  /** Pages see renames at once; a session without a live runtime has no open stream to tell. */
+  private announceTitle(id: string, title: string): void {
+    try { this.deps.registry.get(id)?.runtime.announceTitle?.(title); } catch { /* best effort */ }
+  }
+
+  /**
+   * Fire-and-forget: the first message to an untitled Web session asks the default model for a
+   * short title from the session's first prompt. Native (CLI-shared) sessions keep their own
+   * naming, a stored or native name is never replaced, and a concurrent rename wins.
+   */
+  private autoTitle(ownerKey: string, record: SessionRecord, prompt: string): void {
+    const titler = this.deps.sessionTitler;
+    if (!titler || record.origin === "native" || record.title.trim() || this.titleAttempts.has(record.id)) return;
+    this.titleAttempts.add(record.id);
+    void (async () => {
+      const storage = this.deps.conversationStorage?.get(record);
+      const context = { sessionId: record.id, projectId: record.projectId };
+      if (await storage?.readTitle?.(record, context)) return;
+      const first = await storage?.readFirstPrompt?.(record, context);
+      const title = await titler.title(first?.trim() ? first : prompt);
+      if (title) await this.renameSession(ownerKey, record.id, title, { onlyIfEmpty: true });
+    })().catch(() => { /* the list keeps showing the first prompt */ });
   }
 
   async submitMessage(
@@ -599,6 +629,7 @@ export class SessionService {
       } : undefined;
       const decision = await entry.runtime.submitMessage({ ...input, prompt, fileIds, userId: ownerKey, idempotencyActor,
         ...(beforeAccept ? { beforeAccept } : {}) });
+      if (decision.kind === "run" || decision.kind === "queued") this.autoTitle(ownerKey, owned, input.prompt);
       if (added && (decision.kind === "rejected" || decision.kind === "conflict")) {
         this.requestFingerprints.delete(key);
       }

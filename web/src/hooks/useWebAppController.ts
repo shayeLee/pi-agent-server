@@ -494,6 +494,11 @@ export function useWebAppController() {
     onEvent: (sessionId, store, event) => {
       if (event.type === "steps_changed") setStepsPosition(`${sessionId}:${event.projectionId}:${event.revision}`);
       if (event.type === "subagents_changed") setSubagentsPosition(`${sessionId}:${event.revision}`);
+      if (event.type === "title_changed") {
+        // A rename elsewhere or the automatic title: a list read that started earlier must not revert it.
+        explicitTitlesRef.current.set(sessionId, event.title);
+        setSessions((previous) => previous?.map((row) => row.id === sessionId ? { ...row, title: event.title } : row) ?? null);
+      }
       if (ownsSseEvent(store.getState(), event) && (event.type === "queued" || event.type === "status" || event.type === "compaction_start") && event.requestId) {
         // Input ownership can remain in new:<project> after navigation during creation.
         // Match transport identity, never editor text or the currently selected scope.

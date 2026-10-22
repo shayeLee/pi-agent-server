@@ -38,6 +38,7 @@ export PI_ALLOWED_CLIENT_CIDRS=127.0.0.0/8,10.0.0.0/8
 | `PI_MODEL_PROVIDER` / `PI_MODEL_API_KEY` | 未设置 | 默认 provider 运行时凭证注入 |
 | `PI_DEFAULT_MODEL` | 未设置 | `provider/modelId` |
 | `PI_DEFAULT_THINKING_LEVEL` | Pi 默认值 | `off` 至 `max` |
+| `PI_SESSION_AUTO_TITLE` | 开启 | 设为 `off` 时不再自动起会话标题，侧栏继续显示首条消息的开头。开启时，没有标题的 Web 会话在收到消息后由默认模型依据首条消息写一个不超过 20 字的标题，每个会话每次服务启动最多调用一次；用户改名、插件标题与原生会话名优先，不会被覆盖；原生（CLI 共享）会话不自动起标题。未配置默认模型时不生效 |
 | `PI_COMPANION_GREETING` | 开启 | 设为 `off` 时，空白会话的数字人不再调用默认模型写开场白，只用本地句子。开启时每个用户、项目和情境组合约 30 分钟最多调用一次 |
 | `PI_SYSTEM_PROMPT` | Pi 默认提示词 | 可选的系统提示词整体覆盖；保留既有语义 |
 | `PI_APPEND_SYSTEM` | 未设置 | 追加系统提示词原文，**不是路径**；空白不追加。先于文件原文和能力片段追加。修改后重启并新建会话；见 [SDK 提示词边界](pi-sdk-api.md#35-资源加载与系统提示词安全边界)。 |

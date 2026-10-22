@@ -17,7 +17,7 @@
 - Agent 设置，对应 Pi TUI 的 `/settings`：自动压缩、自动重试（含最多重试次数）和按模型的默认思考档位，读自 agentDir 下 Pi 的全局 `settings.json`，和 `pi` 命令行共用。所有人都能在“设置”菜单的“Agent 设置”里查看，admin 可以在那里修改（`/v1/settings`），只写这几个字段，文件里的其他字段原样保留。会话也按文件里的压缩阈值（`compaction.reserveTokens`、`keepRecentTokens` 与按模型的 `modelOverrides`）压缩，和 CLI 一致，这几项 Web 上不能改。运行中的会话几秒内生效。新会话、或会话里切换到另一个模型时，没手动选档位就用该模型自己的思考档位。在此之前会话不读 `settings.json`；之前用 `pi` 命令行写进去的这些值，现在对 Web 会话也会生效。
 - 项目信任，和 `pi` 命令行共用 agentDir 下的 `trust.json`（在 Pi TUI 的信任提示里选择，或由 admin 在“设置”菜单的“项目信任”里修改，`/v1/projects/:id/trust`；没有记录时看 `defaultProjectTrust`，只有 `always` 算信任）。信任的项目才加载它的 `.pi/mcp.json`（并入这个项目的 MCP 列表）、`.pi/settings.json`（Agent 设置的同几项，叠加在全局之上）、`.pi/SYSTEM.md` 和 `.pi/APPEND_SYSTEM.md`（新建会话的系统提示词）。项目 `.pi/mcp.json` 不能替换共享 server、不能引用服务的环境变量，其中定义的 server 默认不启用，要项目 owner 在 MCP 面板里勾选，也可以用 `oauth` 让每个用户按项目各自授权；命令、参数、env 或地址改了要重新勾选。见[配置](docs/configuration.md)的“项目信任”。
 - 默认 SQLite，可显式选择 PostgreSQL；对话保存为 Pi JSONL，同一请求重复提交返回已记录的结果。
-- 可选的「稿纸」风格 Web UI：账本式对话流、运行状态、统计栏与轨迹 Inspector，以及在空白会话迎接你（开场白由默认模型生成，设置 `PI_COMPANION_GREETING=off` 时只用本地句子）、随运行与输入变化表情的灵动线描小猫；它的名字、说话风格和是否收起由服务端按用户保存（迁移 v3）。
+- 可选的「稿纸」风格 Web UI：账本式对话流、运行状态、统计栏与轨迹 Inspector，由默认模型依据首条消息自动起的简短会话标题（设置 `PI_SESSION_AUTO_TITLE=off` 时继续显示首条消息），以及在空白会话迎接你（开场白由默认模型生成，设置 `PI_COMPANION_GREETING=off` 时只用本地句子）、随运行与输入变化表情的灵动线描小猫；它的名字、说话风格和是否收起由服务端按用户保存（迁移 v3）。
 
 ## 当前边界
 

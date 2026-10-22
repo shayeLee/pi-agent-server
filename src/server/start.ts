@@ -5,6 +5,7 @@
 //   生产部署应通过 PI_AUTH_PATH 指向服务端独立凭证）；服务端默认模型 API key 可从环境变量注入（setRuntimeApiKey，不落盘）。
 
 import { CompanionGreeter, CompanionGreetingError, type CompanionCompletion } from "../application/companion-greeter.js";
+import { SessionTitler } from "../application/session-titler.js";
 import { homedir } from "node:os";
 import { resolveHostToolSelection, resolveSdkToolConfig } from "../agent/tool-selection.js";
 import { createMcpToolBoundaryExtension } from "../agent/mcp-tool-boundary.js";
@@ -155,6 +156,8 @@ export type StartConfig = {
   defaultModel?: { provider: string; id: string };
   /** The blank-session companion writes its opening line with the default model (on by default). */
   companionGreeting?: boolean;
+  /** Default model writes short titles for untitled sessions (PI_SESSION_AUTO_TITLE). */
+  sessionAutoTitle?: boolean;
   /** 默认思考级别；仅未被会话配置覆盖的新会话使用。 */
   defaultThinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
   /** 可选系统提示词覆盖；未设置时使用 Pi SDK 内置默认提示词。 */
@@ -897,6 +900,9 @@ export async function startServer(config: StartConfig) {
     nativeSessions,
     createAdapter: (sessionId) => sessionConversationCoordinator.createAdapter(sessionId),
     listSessionCommands: async (projectCwd: string) => [...await listResourceCommands(projectCwd), ...extensionCommands],
+    ...(resolvedDefaultModel && config.sessionAutoTitle !== false
+      ? { sessionTitler: new SessionTitler({ complete: completeWith(modelRuntime, resolvedDefaultModel) }) }
+      : {}),
     ...(resolvedDefaultModel && config.companionGreeting !== false
       ? { companionGreeter: new CompanionGreeter({ complete: completeWith(modelRuntime, resolvedDefaultModel) }) }
       : {}),

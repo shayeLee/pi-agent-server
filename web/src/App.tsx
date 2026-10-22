@@ -191,13 +191,20 @@ export default function App() {
     setTheme(resolveTheme(mode));
     writeThemeMode(mode);
   };
-  const newSession = () => { if (canCreateSession) { closeMobileSidebar(); controller.createSession(); } };
+  const visibleChat = () => document.querySelector<HTMLElement>('.chat:not([hidden])');
+  const focusComposer = () => visibleChat()?.querySelector<HTMLTextAreaElement>('[data-testid="composer-input"]')?.focus();
+  // A new session is for typing; touch screens skip this so the keyboard does not jump up uninvited.
+  const newSession = () => {
+    if (!canCreateSession) return;
+    closeMobileSidebar();
+    controller.createSession();
+    if (!window.matchMedia?.("(pointer: coarse)").matches) requestAnimationFrame(focusComposer);
+  };
   const openSearch = () => {
     if (window.matchMedia?.("(max-width: 1179px)").matches) setMobileSidebarOpen(true);
     else setSidebarCollapsed(false);
     setSearchRequest(value => value + 1);
   };
-  const visibleChat = () => document.querySelector<HTMLElement>('.chat:not([hidden])');
   const shortcutHandlers = {
     palette: () => setPaletteOpen(true),
     help: () => setHelpOpen(true),
@@ -205,7 +212,7 @@ export default function App() {
     search: openSearch,
     toggleTrace: () => { if (activeSession) toggleInspector(); },
     toggleSidebar,
-    focusComposer: () => visibleChat()?.querySelector<HTMLTextAreaElement>('[data-testid="composer-input"]')?.focus(),
+    focusComposer,
     toggleWork: () => Array.from(visibleChat()?.querySelectorAll<HTMLButtonElement>(".work-header") ?? []).at(-1)?.click(),
     latest: () => {
       const chat = visibleChat();
@@ -231,6 +238,8 @@ export default function App() {
     { id: "sidebar", group: zhCN.palette.groupView, label: zhCN.palette.toggleSidebar, hint: "⌘B", run: toggleSidebar },
     ...(["light", "dark", "system"] as ThemeMode[]).map(mode => ({ id: `theme-${mode}`, group: zhCN.palette.groupTheme,
       label: `${zhCN.sidebar.themeMenu}：${themeLabels[mode]}${mode === themeMode ? " ✓" : ""}`, run: () => applyThemeMode(mode) })),
+    // Same items, same order as the Settings menu.
+    ...(agentSettings.available ? [{ id: "agent-settings", group: zhCN.palette.groupSettings, label: zhCN.agentSettings.open, run: agentSettings.openPanel }] : []),
     ...(projectMcp.available ? [{ id: "mcp", group: zhCN.palette.groupSettings, label: zhCN.projectMcp.open, run: projectMcp.openPanel }] : []),
     ...(projectTrust.available ? [{ id: "project-trust", group: zhCN.palette.groupSettings, label: zhCN.projectTrust.open, run: projectTrust.openPanel }] : []),
     ...(providerAuth.available ? [{ id: "provider-auth", group: zhCN.palette.groupSettings, label: zhCN.providerAuth.open, run: providerAuth.openPanel }] : []),
@@ -376,7 +385,7 @@ export default function App() {
                 disabled={!canCreateSession}
                 title={controller.creationNotice ?? undefined}
                 aria-describedby={controller.creationNotice ? "project-creation-notice" : undefined}
-                onClick={() => { closeMobileSidebar(); controller.createSession(); }}
+                onClick={newSession}
               >
                 <Icon name="plus" className="new-session-icon" />
                 <span className="new-session-label">{zhCN.sidebar.newSession}</span>

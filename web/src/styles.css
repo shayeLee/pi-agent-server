@@ -3381,7 +3381,11 @@ details[open] > summary > .details-chevron { transform: rotate(90deg); }
 /* Keep native scrolling without a visible scrollbar; reserve a separate navigation rail. */
 .chat { --reading-inline-inset: var(--space-24); }
 .chat-footer { padding-left: var(--reading-inline-inset); padding-right: calc(var(--reading-inline-inset) + var(--minimap-gutter)); }
-@media (max-width: 640px) { .chat { --reading-inline-inset: var(--space-16); } }
+/* Phones: the minimap's 6-10px ticks are no touch target, and its gutter made the column lopsided (16px left, 38px right). */
+@media (max-width: 640px) {
+  .chat { --reading-inline-inset: var(--space-16); --minimap-gutter: 0px; }
+  .chat .conversation-minimap, .chat .minimap-preview { display: none; }
+}
 .chat-scroll-region { position: relative; display: flex; flex: 1; min-height: 0; min-width: 0; padding-right: var(--minimap-gutter); }
 .chat-scroll-region > .chat-body { min-width: 0; scrollbar-width: none; }
 .chat-scroll-region > .chat-body::-webkit-scrollbar { display: none; width: 0; height: 0; }

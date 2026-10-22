@@ -9836,6 +9836,24 @@
             "type": "object",
             "required": [
               "type",
+              "title"
+            ],
+            "properties": {
+              "type": {
+                "const": "title_changed"
+              },
+              "title": {
+                "type": "string",
+                "maxLength": 200
+              }
+            },
+            "additionalProperties": false,
+            "description": "The session title changed: renamed through PATCH /v1/sessions/{id}, by a plugin, or set automatically from the first prompt by the default model. Sent only while the session has a live runtime. Session-level, never request-owned."
+          },
+          {
+            "type": "object",
+            "required": [
+              "type",
               "version",
               "notificationId",
               "runIds",

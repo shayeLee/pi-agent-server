@@ -69,6 +69,8 @@ const mocks = vi.hoisted(() => {
   // 服务端是否配置了 MCP 目录（决定“设置”菜单里有没有 MCP 服务）。
   let projectMcpConfigured = false;
   function setProjectMcpConfigured(v: boolean): void { projectMcpConfigured = v; }
+  let agentSettingsAvailable = false;
+  function setAgentSettingsAvailable(v: boolean): void { agentSettingsAvailable = v; }
 
   // 项目列表主动失败（模拟 GET /v1/projects 报错）
   let projectsFailure: Error | null = null;
@@ -146,7 +148,9 @@ const mocks = vi.hoisted(() => {
     // 非 admin 读不到模型登录列表，设置菜单里没有这一项。
     listProviderAuth = vi.fn(() => Promise.reject(new Error("HTTP 403")));
     // 没有配置 Agent 设置时设置菜单里也没有这一项；面板本身见 AgentSettingsPanel.test.tsx。
-    getAgentSettings = vi.fn(() => Promise.reject(new Error("HTTP 404")));
+    getAgentSettings = vi.fn(() => agentSettingsAvailable
+      ? Promise.resolve({ canEdit: false, values: { autoCompaction: true, autoRetry: true, maxRetries: 3, modelThinkingLevels: {} }, defaults: { autoCompaction: true, autoRetry: true, maxRetries: 3 } })
+      : Promise.reject(new Error("HTTP 404")));
     saveAgentSettings = vi.fn();
     // 没有配置项目信任时设置菜单里也没有这一项；面板本身见 ProjectTrustPanel.test.tsx。
     getProjectTrust = vi.fn(() => Promise.reject(new Error("HTTP 404")));
@@ -246,6 +250,7 @@ const mocks = vi.hoisted(() => {
     setProjectListPending,
     setProjectsFail,
     setProjectMcpConfigured,
+    setAgentSettingsAvailable,
     deferSessionsFor,
     releaseDeferredSessions,
     resetDeferredSessions,
@@ -282,6 +287,7 @@ beforeEach(() => {
   mocks.setProjectListPending(false);
   mocks.setProjectsFail(false);
   mocks.setProjectMcpConfigured(false);
+  mocks.setAgentSettingsAvailable(false);
   mocks.resetDeferredSessions();
 });
 
@@ -318,6 +324,17 @@ describe("App（顶层流程）", () => {
     fireEvent.keyDown(screen.getByTestId("settings-toggle"), { key: "ArrowDown" });
     expect(await screen.findByRole("menuitemradio", { name: "跟随系统" })).toBeInTheDocument();
     expect(screen.queryByRole("menuitem", { name: "MCP 服务" })).toBeNull();
+  });
+  it("命令面板列出与设置菜单相同的设置项，包括 Agent 设置", async () => {
+    mocks.setAgentSettingsAvailable(true);
+    await enterIntranet();
+    fireEvent.keyDown(screen.getByTestId("settings-toggle"), { key: "ArrowDown" });
+    expect(await screen.findByRole("menuitem", { name: "Agent 设置" })).toBeInTheDocument();
+    fireEvent.keyDown(document.activeElement ?? document.body, { key: "Escape" });
+    fireEvent.keyDown(document.body, { key: "k", metaKey: true });
+    const palette = await screen.findByTestId("command-palette");
+    fireEvent.click(within(palette).getByText("Agent 设置"));
+    expect(await screen.findByTestId("agent-settings-panel")).toBeInTheDocument();
   });
   it("服务配置了 MCP 时，设置菜单里的 MCP 服务打开当前项目的面板", async () => {
     mocks.setProjectMcpConfigured(true);
@@ -640,6 +657,13 @@ describe("App（顶层流程）", () => {
     expect(input).toHaveValue('sidebar draft');
   });
 
+  it("title_changed 立即更新侧栏与题头标题", async () => {
+    await enterChat();
+    act(() => mocks.sse.onEvent?.({ type: "title_changed", title: "修复登录跳转" }));
+    expect(within(screen.getByTestId("session-s1")).getByText("修复登录跳转")).toBeInTheDocument();
+    expect(screen.getByTestId("chat-header")).toHaveTextContent("修复登录跳转");
+  });
+
   it("打开 Inspector 与主题菜单不改变事件流或触发额外检查请求", async () => {
     await enterChat();
     act(() => mocks.sse.onEvent?.({ type: "text_delta", text: "event fixture" }));
@@ -809,6 +833,13 @@ describe("App（顶层流程）", () => {
     fireEvent.click(screen.getByTestId("new-session"));
     expect(screen.getByTestId("no-session-hint")).toBeInTheDocument();
     expect(inst.createSession).not.toHaveBeenCalled();
+  });
+
+  it("新建后光标直接落在输入框，可以立刻打字", async () => {
+    await enterIntranet();
+    fireEvent.click(screen.getByTestId("session-s1"));
+    fireEvent.click(screen.getByTestId("new-session"));
+    await waitFor(() => expect(document.activeElement).toBe(document.querySelector('.chat:not([hidden]) [data-testid="composer-input"]')));
   });
 
   it("首次发送附件后新建会话不会复现已提交的页面起始态附件", async () => {

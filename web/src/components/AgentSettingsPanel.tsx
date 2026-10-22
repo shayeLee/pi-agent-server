@@ -20,27 +20,32 @@ const text = zhCN.agentSettings;
 export function useAgentSettings({ api, models, projectId = null, onSaved }: {
   api: SettingsApi; models: readonly ModelInfo[]; projectId?: string | null; onSaved?: () => void;
 }): { available: boolean; openPanel: () => void; dialog: ReactNode } {
-  const [available, setAvailable] = useState(false);
+  // The availability probe doubles as a prefetch: the panel opens with content instead of an
+  // empty frame that jumps to full height when its own read lands.
+  const [prefetched, setPrefetched] = useState<AgentSettings | null>(null);
   const [open, setOpen] = useState(false);
   useEffect(() => {
     let current = true;
-    api.getAgentSettings().then(() => { if (current) setAvailable(true); }, () => {});
+    api.getAgentSettings(projectId ?? undefined).then(result => { if (current) setPrefetched(result); }, () => {});
     return () => { current = false; };
-  }, [api]);
+  }, [api, projectId]);
   const openPanel = useCallback(() => setOpen(true), []);
+  const available = prefetched !== null;
   if (!available) return { available, openPanel, dialog: null };
   return { available, openPanel, dialog: <Modal open={open} onClose={() => setOpen(false)} title={text.title} className="project-mcp-dialog">
-    {open && <AgentSettingsPanel api={api} models={models} projectId={projectId} onSaved={onSaved} />}
+    {open && <AgentSettingsPanel api={api} models={models} projectId={projectId} onSaved={onSaved} initial={prefetched} />}
   </Modal> };
 }
 
 type SaveState = { kind: "idle" | "saving" } | { kind: "error"; message: string; conflict: boolean };
 
-export function AgentSettingsPanel({ api, models, projectId = null, onSaved }: {
+export function AgentSettingsPanel({ api, models, projectId = null, onSaved, initial = null }: {
   api: SettingsApi; models: readonly ModelInfo[]; projectId?: string | null; onSaved?: () => void;
+  /** Shown at once and replaced by the panel's own fresh read. */
+  initial?: AgentSettings | null;
 }) {
   const id = useId();
-  const [settings, setSettings] = useState<AgentSettings | null>(null);
+  const [settings, setSettings] = useState<AgentSettings | null>(initial);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [state, setState] = useState<SaveState>({ kind: "idle" });
   const load = useCallback(() => api.getAgentSettings(projectId ?? undefined).then(

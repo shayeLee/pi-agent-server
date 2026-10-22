@@ -91,6 +91,8 @@ export type ServerDeps = {
   listSessionCommands?: (projectCwd: string) => Promise<import("../shared/commands.js").SessionCommandInfo[]>;
   /** Writes the blank-session companion's opening line; absent when no default model is configured. */
   companionGreeter?: Pick<CompanionGreeter, "greet">;
+  /** Short titles for untitled sessions from their first prompt; absent = the list shows the prompt. */
+  sessionTitler?: { title(prompt: string): Promise<string | null> };
   /** Keeps the companion's persona per caller; without it the page keeps the persona per browser. */
   companionPersonas?: import("../application/ports/companion-persona-store-port.js").CompanionPersonaStorePort;
   /** MCP 目录与项目设置；缺省时项目 MCP 接口返回未配置（测试用）。 */
@@ -530,6 +532,7 @@ export function buildApp(deps: ServerDeps): FastifyInstance {
     nativeSessions: deps.nativeSessions,
     uploads: deps.uploads,
     idempotencyRepo: deps.idempotencyRepo,
+    sessionTitler: deps.sessionTitler,
     createId: randomUUID,
     now: Date.now,
   });

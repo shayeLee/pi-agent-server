@@ -799,6 +799,10 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
     return { kind: "ok" };
   }
 
+  announceTitle(title: string): void {
+    if (!this.disposed) this.emitEvent({ type: "title_changed", title });
+  }
+
   getSubagents(runId?: string) {
     if (this.disposed) return null;
     return this.adapter.getSubagents?.(this.sessionId, runId) ?? null;

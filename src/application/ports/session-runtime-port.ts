@@ -69,6 +69,8 @@ export type SessionTurnResult =
 export interface SessionRuntimePort {
   getSubagents?(runId?: string): import("../../shared/subagents.js").SubagentSnapshot | null;
   steerSubagent?(runId: string, text: string): Promise<import("../../shared/subagents.js").SubagentSteerAck | "unavailable">;
+  /** Tell open pages the session title changed (session-level `title_changed`). */
+  announceTitle?(title: string): void;
   /** 会话标识（只读）。 */
   readonly sessionId: string;
   /** 当前任务状态（idle/queued/streaming/terminal）。 */

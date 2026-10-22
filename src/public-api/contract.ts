@@ -75,6 +75,7 @@ export const SSE_EVENT_TYPES = [
   "control_queue",
   "steps_changed",
   "subagents_changed",
+  "title_changed",
   "text_delta",
   "thinking_delta",
   "model_output_progress",

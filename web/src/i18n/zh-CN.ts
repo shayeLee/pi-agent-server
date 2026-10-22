@@ -529,7 +529,7 @@ export const zhCN = {
     delivery: { submitted: "等待送达", unknown: "送达未确认", failed: "发送失败" },
     summary: (total: number, running: number) => `当前会话 · ${total} 个任务 · ${running} 个运行中`,
     loadingList: "正在读取子代理记录…",
-    emptyList: "暂无子代理记录。旧版扩展未保存的过程无法恢复。",
+    emptyList: "这个会话还没有用过子代理。",
     back: "← 返回主会话",
     loadingConversation: "正在读取会话…",
     unavailable: "该子代理记录不可用，请返回列表重新选择。",

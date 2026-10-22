@@ -67,6 +67,8 @@ export type SseEvent =
   | ({ type: "steps_changed"; projectionId: string; revision: number } & SseRequestId)
   /** Subagent records or live output moved (coalesced): read GET /subagents. Carries no run data; session-level. */
   | ({ type: "subagents_changed"; revision: number } & SseRequestId)
+  /** The session title changed (rename or automatic title); session-level, never request-owned. */
+  | ({ type: "title_changed"; title: string } & SseRequestId)
   | ({ type: "steering_consumed" } & import("./steering.js").SteeringConsumed)
   | ({ type: "model_output_progress" } & ModelOutputProgress & SseRequestId)
   | ({ type: "text_delta"; text: string } & SseRequestId)

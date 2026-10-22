@@ -114,6 +114,7 @@ const app = await startServer({
   modelApiKey: process.env.PI_MODEL_API_KEY,
   defaultModel: parseDefaultModel(process.env.PI_DEFAULT_MODEL),
   companionGreeting: process.env.PI_COMPANION_GREETING !== "off",
+  sessionAutoTitle: process.env.PI_SESSION_AUTO_TITLE !== "off",
   defaultThinkingLevel: process.env.PI_DEFAULT_THINKING_LEVEL as
     | "off"
     | "minimal"

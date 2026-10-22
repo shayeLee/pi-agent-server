@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { SessionService, MAX_ID_RETRIES, type CreateSessionResult } from "../../src/application/session-service.js";
+import { SessionService, MAX_ID_RETRIES, type CreateSessionResult, type SessionServiceDeps } from "../../src/application/session-service.js";
 import { DEFAULT_PROJECT_ID } from "../../src/application/ports/project-store-port.js";
 import { DuplicateIdError, ProjectForeignKeyError } from "../../src/application/ports/store-errors.js";
 import { ConversationStorageRegistry } from "../../src/application/ports/index.js";
@@ -277,6 +277,7 @@ function makeService(
   systemPromptResolver?: (cwd: string) => Promise<string>,
   conversationStorage?: ConversationStorageRegistry,
   idempotencyRepo?: IdempotencyStorePort,
+  extra: Partial<SessionServiceDeps> = {},
 ) {
   const projects = projectsOverride ?? new MemoryProjects(sessions);
   // 默认项目落库（与真实 SQLite 实现的 ensureDefaultProject 对齐）：resolveProject 现按查库判定。
@@ -306,8 +307,9 @@ function makeService(
     now,
     systemPromptResolver: systemPromptResolver ? { resolve: systemPromptResolver } : undefined,
     conversationStorage,
+    ...extra,
   });
-  return { service, sessions, projects, adapters, removed };
+  return { service, sessions, projects, adapters, removed, registry };
 }
 
 function createdSession(result: CreateSessionResult): SessionRecord {
@@ -707,6 +709,47 @@ describe("SessionService", () => {
       .toMatchObject({ title: "用户标题" });
     expect(await service.renameSession("owner-b", created.id, "越权", { onlyIfEmpty: true })).toBeNull();
     expect((await sessions.get(created.id))?.title).toBe("用户标题");
+  });
+
+  it("给未命名会话自动起一次标题：只调用一次模型、推送 title_changed、不覆盖改名", async () => {
+    const prompts: string[] = [];
+    let reply: string | null = "修复登录跳转";
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const sessionTitler = { title: async (prompt: string) => { prompts.push(prompt); await gate; return reply; } };
+    const { service, sessions, registry } = makeService(undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+      undefined, undefined, undefined, { sessionTitler });
+    const auto = createdSession(await service.createSession("owner-a", {}));
+    await service.submitMessage("owner-a", auto.id, { requestId: "r1", prompt: "登录后跳回首页而不是原页面，帮我修一下" });
+    const seen: string[] = [];
+    registry.get(auto.id)!.events.subscribe(({ event }) => { if (event.type === "title_changed") seen.push(event.title); });
+    await service.submitMessage("owner-a", auto.id, { requestId: "r2", prompt: "再看看" });
+    release();
+    await vi.waitFor(async () => expect((await sessions.get(auto.id))?.title).toBe("修复登录跳转"));
+    expect(prompts).toEqual(["登录后跳回首页而不是原页面，帮我修一下"]);
+    expect(seen).toEqual(["修复登录跳转"]);
+
+    // A rename that lands while the model is thinking wins.
+    const renamed = createdSession(await service.createSession("owner-a", {}));
+    const late = new Promise<void>(resolve => { release = resolve; });
+    sessionTitler.title = async (prompt: string) => { prompts.push(prompt); await late; return reply; };
+    await service.submitMessage("owner-a", renamed.id, { requestId: "r3", prompt: "第二个会话" });
+    await service.renameSession("owner-a", renamed.id, "我的标题");
+    release();
+    await vi.waitFor(() => expect(prompts).toHaveLength(2));
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect((await sessions.get(renamed.id))?.title).toBe("我的标题");
+
+    // Titled sessions never call the model; a failed attempt is not retried.
+    const titled = createdSession(await service.createSession("owner-a", { title: "已有标题" }));
+    await service.submitMessage("owner-a", titled.id, { requestId: "r4", prompt: "x" });
+    reply = null;
+    const failed = createdSession(await service.createSession("owner-a", {}));
+    sessionTitler.title = async (prompt: string) => { prompts.push(prompt); throw new Error("down"); };
+    await service.submitMessage("owner-a", failed.id, { requestId: "r5", prompt: "会失败" });
+    await service.submitMessage("owner-a", failed.id, { requestId: "r6", prompt: "再来" });
+    await vi.waitFor(() => expect(prompts).toEqual(["登录后跳回首页而不是原页面，帮我修一下", "第二个会话", "会失败"]));
+    expect((await sessions.get(failed.id))?.title).toBe("");
   });
 
   it("先切换 runtime 配置再持久化配置", async () => {
