@@ -26,13 +26,13 @@ test.beforeAll(async () => {
 test.afterAll(async () => { stream?.end(); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); });
 const longName = 'worker-with-a-very-long-agent-name-'.repeat(5);
 const cases = [
-  ['two', { tasks: [{ agent: 'lite', task: '只读任务：列出当前目录所有文件与子目录，保留完整原文。'.repeat(5), cwd: '/fixture/one' }, { agent: 'worker', task: '检查布局与长文本。\n请保留任务顺序，不修改任何文件。'.repeat(4), cwd: '/fixture/two', flags: { safe: false, count: 0 } }], agentScope: 'both' }, 2],
-  ['three', { tasks: [{ agent: 'lite', task: '第一项' }, { agent: 'lite', task: '第二项' }, { agent: longName, task: '第三项\n保留完整名字', cwd: '/fixture/three' }] }, 3],
-  ['single', { agent: 'lite', task: '单代理保持现样', cwd: '/fixture' }, 0],
+  ['two', { tasks: [{ agent: 'worker', task: '只读任务：列出当前目录所有文件与子目录，保留完整原文。'.repeat(5), cwd: '/fixture/one' }, { agent: 'claude-worker', task: '检查布局与长文本。\n请保留任务顺序，不修改任何文件。'.repeat(4), cwd: '/fixture/two', flags: { safe: false, count: 0 } }], agentScope: 'both' }, 2],
+  ['three', { tasks: [{ agent: 'worker', task: '第一项' }, { agent: 'worker', task: '第二项' }, { agent: longName, task: '第三项\n保留完整名字', cwd: '/fixture/three' }] }, 3],
+  ['single', { agent: 'worker', task: '单代理保持现样', cwd: '/fixture' }, 0],
   ['one', { tasks: [{ agent: 'worker', task: '数组只有一项' }] }, 0],
   ['empty', { tasks: [] }, 0],
-  ['invalid', { tasks: [{ agent: 'lite', task: 'valid item' }, null, { agent: 3, task: false }] }, 0],
-  ['invalid-object', { tasks: { agent: 'lite', task: '不是数组' } }, 0],
+  ['invalid', { tasks: [{ agent: 'worker', task: 'valid item' }, null, { agent: 3, task: false }] }, 0],
+  ['invalid-object', { tasks: { agent: 'worker', task: '不是数组' } }, 0],
 ] as const;
 // Business flow representatives: light desktop and dark mobile, not the full cross-product.
 for (const { theme, width } of [{ theme: 'light', width: 1280 }, { theme: 'dark', width: 390 }] as const) test(`${theme} ${width} actual App parallel tasks`, async ({ browser }) => {
@@ -46,7 +46,7 @@ for (const { theme, width } of [{ theme: 'light', width: 1280 }, { theme: 'dark'
   await page.getByTestId('send-button').click();
   await expect.poll(() => !!stream).toBe(true);
   for (const [id, args, count] of cases) {
-    const output = '2 background subagent(s) started:\n  runId: 1 — lite\n  runId: 2 — worker\n\nCall subagent_wait to collect their results.';
+    const output = '2 background subagent(s) started:\n  runId: 1 — worker\n  runId: 2 — claude-worker\n\nCall subagent_wait to collect their results.';
     const result = { content: [{ type: 'text', text: output }], details: { untouched: true } };
     emit({ type: 'tool_start', toolCallId: id, toolName: 'subagent', args });
     const card = page.locator(`[data-tool-call-id="${id}"]`);

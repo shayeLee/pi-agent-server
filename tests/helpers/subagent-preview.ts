@@ -36,7 +36,7 @@ export async function createSubagentPreview() {
   message("2", { role: "assistant", content: [{ type: "text", text: "收到，我会保持只读检查，先核对会话记录与运行状态。" }, { type: "toolCall", id: "bash-1", name: "bash", arguments: { command: "rg -n 'onRevoked|registry.delete' src/" } }] });
   message("2", { role: "toolResult", toolCallId: "bash-1", toolName: "bash", content: [{ type: "text", text: "src/application/session-service.ts\nawait registry.delete(sessionId);\n完整结果末行（验收）" }], isError: false });
   message("2", { role: "assistant", content: [{ type: "text", text: "正在检查运行状态失效与会话记录之间的关联。" }] });
-  for (const [id, agent, task] of [["1", "worker", "核对接口与权限检查"], ["3", "rescue", "复核历史会话恢复"]]) {
+  for (const [id, agent, task] of [["1", "worker", "核对接口与权限检查"], ["3", "claude-worker", "复核历史会话恢复"]]) {
     journal.start({ id: id!, agent: agent!, task: task!, startedAt: Date.now() - 100000 });
     message(id!, { role: "user", content: task });
     message(id!, { role: "assistant", content: [{ type: "text", text: "检查完成。记录已保留。" }] });

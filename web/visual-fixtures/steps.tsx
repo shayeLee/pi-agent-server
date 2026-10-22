@@ -7,7 +7,7 @@ import '../src/styles.css';
 const rows: SessionStep[] = [
  {id:'u',kind:'user',content:'怎么突然有个会话 404？',timestamp:'2026-06-01T10:24:01Z'},
  {id:'t',kind:'thinking',content:'我会检查会话记录与权限边界，先读取已保存的历史，不调用真实模型。',timestamp:'2026-06-01T10:24:02Z'},
- {id:'c',kind:'tool_call',toolName:'subagent',content:{task:'检查会话记录与权限边界',mode:'lite'},timestamp:'2026-06-01T10:24:03Z'},
+ {id:'c',kind:'tool_call',toolName:'subagent',content:{task:'检查会话记录与权限边界',mode:'worker'},timestamp:'2026-06-01T10:24:03Z'},
  {id:'r',kind:'tool_result',toolName:'subagent',content:'已检查模拟会话。\n'+'这是完整结果，展开后保留所有内容。\n'.repeat(8)+'END_OF_RESULT',timestamp:'2026-06-01T10:24:10Z'},
  {id:'c2',kind:'tool_call',toolName:'bash',content:{command:'git status --short'},timestamp:'2026-06-01T10:24:31Z'},
  {id:'r2',kind:'tool_result',toolName:'bash',content:{exitCode:0,output:''},timestamp:'2026-06-01T10:24:32Z'},

@@ -14,7 +14,7 @@ const calls: ToolCall[] = [
   { ...base, toolCallId: "long", toolName: "custom_" + "extremely_long_tool_name_".repeat(4), durationMs: 3600000, isError: true, result: "Fixture error: permission denied.\nFull error details remain readable." },
   { ...base, toolCallId: "old", toolName: "legacy_tool", args: {}, result: "Old history without duration" },
   { ...base, toolCallId: "null", toolName: "unknown_duration", durationMs: null },
-  { ...base, toolCallId: "parallel", toolName: "subagent", args: { tasks: [{ agent: "reviewer", task: "Review this fixture only" }, { agent: "designer", task: "Inspect the compact header" }] }, durationMs: 1000 },
+  { ...base, toolCallId: "parallel", toolName: "subagent", args: { tasks: [{ agent: "claude-worker", task: "Review this fixture only" }, { agent: "worker", task: "Inspect the compact header" }] }, durationMs: 1000 },
 ];
 function Fixture() {
   const [done, setDone] = useState(false);

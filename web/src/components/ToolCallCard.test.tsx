@@ -258,14 +258,14 @@ describe("ToolCallCard（工具调用流式卡片）", () => {
   });
 
   it("仅 subagent 对象形式的单任务也用代理名标题，其他工具结构不变", () => {
-    const task = { agent: "reviewer", task: "  原文\n第二行", cwd: "/work" };
+    const task = { agent: "claude-worker", task: "  原文\n第二行", cwd: "/work" };
     const { rerender } = render(<ToolCallCard call={card({ toolName: "subagent", args: task })} />);
     expand();
-    expect(screen.getByText("reviewer", { selector: ".tool-subagent-agent" })).toBeVisible();
+    expect(screen.getByText("claude-worker", { selector: ".tool-subagent-agent" })).toBeVisible();
     expect(screen.getByText(task.task, { selector: ".tool-readable-value", normalizer: value => value }).textContent).toBe(task.task);
     expect(screen.getByText("/work")).toBeVisible();
     rerender(<ToolCallCard call={card({ toolName: "other", args: task })} />);
-    expect(screen.queryByText("reviewer", { selector: ".tool-subagent-agent" })).not.toBeInTheDocument();
+    expect(screen.queryByText("claude-worker", { selector: ".tool-subagent-agent" })).not.toBeInTheDocument();
     expect(screen.getByText("agent")).toBeVisible();
   });
 
@@ -434,7 +434,7 @@ describe("ToolCallCard（工具调用流式卡片）", () => {
   });
 
   it("subagent_wait summary keeps its targets and follows the latest wait text", () => {
-    const base = card({ toolName: "subagent_wait", args: { runIds: ["7"] }, partialResult: "0/1 settled after 18s\nlite: finished bash" });
+    const base = card({ toolName: "subagent_wait", args: { runIds: ["7"] }, partialResult: "0/1 settled after 18s\nworker: finished bash" });
     const { container, rerender } = render(<ToolCallCard call={base} />);
     const header = screen.getByRole("button", { name: /工具调用/ });
     expect(header).toHaveAttribute("aria-expanded", "false");

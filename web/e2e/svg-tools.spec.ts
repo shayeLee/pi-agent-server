@@ -39,17 +39,17 @@ for (const theme of ["light", "dark"]) for (const width of [1280, 390]) {
       await expect(card.locator('.tool-call-header')).toHaveAttribute('aria-expanded', 'false');
       await card.locator('.tool-call-header').click();
     }
-    await expect(cards.last().getByRole("heading", { name: "[lite] run 2 — completed" })).toBeVisible();
+    await expect(cards.last().getByRole("heading", { name: "[worker] run 2 — completed" })).toBeVisible();
     await expect(cards.last().locator(".markdown li")).toHaveCount(3);
     await expect(cards.nth(0).getByRole("button", { name: "Markdown 展示" })).toHaveCount(0);
     await expect(cards.nth(0).locator(".tool-result-text pre")).toHaveText(/review-sample.py  modified=/);
     const taskItems = cards.nth(1).getByRole("list", { name: "代理任务" }).locator("li");
-    await expect(taskItems.nth(0).locator(".tool-subagent-agent")).toHaveText("lite");
-    await expect(taskItems.nth(1).locator(".tool-subagent-agent")).toHaveText("reviewer");
+    await expect(taskItems.nth(0).locator(".tool-subagent-agent")).toHaveText("worker");
+    await expect(taskItems.nth(1).locator(".tool-subagent-agent")).toHaveText("claude-worker");
     expect(await taskItems.first().evaluate(element => getComputedStyle(element.parentElement!).listStyleType)).toBe("none");
     await expect(taskItems.nth(0).locator(".tool-subagent-agent")).not.toContainText("task");
     await expect(cards.nth(2).getByRole("button", { name: "Markdown 展示" })).toBeVisible();
-    await expect(cards.last().locator(".markdown code").first()).toHaveText("/Users/mz/pi-default-project/lite-smoke-test.txt");
+    await expect(cards.last().locator(".markdown code").first()).toHaveText("/Users/mz/pi-default-project/worker-smoke-test.txt");
     for (let index = 0; index < 3; index++) {
       await cards.nth(index).scrollIntoViewIfNeeded();
       await page.screenshot({ path: `/tmp/agent-heading-bash-plain/${theme}-${width}-${["bash", "parallel", "wait"][index]}.png` });
@@ -61,6 +61,6 @@ for (const theme of ["light", "dark"]) for (const width of [1280, 390]) {
     expect(await wait.locator(".tool-readable-value").textContent()).toBe(original);
 
     await cards.first().locator(".tool-parameters").getByRole("button", { name: "复制代码" }).click();
-    expect(await page.evaluate(() => navigator.clipboard.readText())).toBe('stat -f "%N  modified=%Sm size=%z" review-sample.py lite-smoke-test.txt worker-smoke-test.txt');
+    expect(await page.evaluate(() => navigator.clipboard.readText())).toBe('stat -f "%N  modified=%Sm size=%z" review-sample.py worker-smoke-test.txt');
   });
 }

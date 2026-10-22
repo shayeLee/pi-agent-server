@@ -36,7 +36,7 @@ Cold and resumed-runtime browser cases both passed all thinking payload/display 
 
 The run was **not fully green**: the final adapter-count assertion expected export-only counts (0/1), but actual counts were 2. Production `GET /events` intentionally lazily instantiates a runtime for each selected session for writable users (`src/server/app.ts:716`); export itself does not. The test assertion has been corrected to 2 based on that direct evidence, but was not rerun after the focused retry. Final file-unchanged assertion lies after that assertion and therefore has not yet been verified by this new test. First attempt also hit a sidebar action-overlay click interception; retry clicks the left edge normally (not forced).
 
-No production code or compiled artifact was changed. There is no claim that the user's issue is fixed. A caller should run the corrected default test before accepting it as green; if further unexpected failures occur, delegate the harness investigation to Rescue rather than keep retrying blindly.
+No production code or compiled artifact was changed. There is no claim that the user's issue is fixed. A caller should run the corrected default test before accepting it as green; if further unexpected failures occur, delegate the harness investigation to `claude-worker` rather than keep retrying blindly.
 
 ## Actual path traced
 

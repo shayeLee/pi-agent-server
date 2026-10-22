@@ -35,8 +35,8 @@ let eventId = 0;
 const session = { id: "00000000-0000-4000-8000-000000000096", projectId: "6f1a2b3c-4d5e-4f6a-8b9c-0d1e2f3a4b5c", title: "工具信息排版", createdAt: 1, updatedAt: 1, modelProvider: null, modelId: null, thinkingLevel: null, systemPrompt: null };
 const emit = (value: unknown) => stream!.write(`id: ${++eventId}\ndata: ${JSON.stringify(value)}\n\n`);
 const result = (text: string) => ({ content: [{ type: "text", text }], details: { runIds: ["1", "2"], completeMetadata: true } });
-const progress = '0/2 settled after 178s\ndesigner: 参考图已确认，正在校准真实 Web 的工具信息排版。\nworker: 保留完整原文、复制及流式更新，正在检查测试。';
-const final = '2/2 background subagent(s) finished.\n\n## [lite] run 1 — completed\n- 排版已检查，保留 `runIds` 与完整参数。\n\n## [lite] run 2 — completed\n- 实时进度、结果原文及 metadata 均可达。';
+const progress = '0/2 settled after 178s\nclaude-worker: 参考图已确认，正在校准真实 Web 的工具信息排版。\nworker: 保留完整原文、复制及流式更新，正在检查测试。';
+const final = '2/2 background subagent(s) finished.\n\n## [claude-worker] run 1 — completed\n- 排版已检查，保留 `runIds` 与完整参数。\n\n## [worker] run 2 — completed\n- 实时进度、结果原文及 metadata 均可达。';
 test.beforeAll(async () => {
   await mkdir('/tmp/tool-information-layout', { recursive: true });
   await mkdir('/tmp/tool-spacing-menu', { recursive: true });
@@ -72,7 +72,7 @@ for (const theme of ['dark', 'light']) for (const width of [1280, 390]) {
     await page.getByTestId('composer-input').fill('检查参考 subagent 两端图标');
     await page.getByTestId('send-button').click();
     await expect.poll(() => !!stream).toBe(true);
-    emit({ type: 'tool_start', toolCallId: 'optical-agent', toolName: 'subagent', args: { agent: 'lite', task: '只读任务：列出当前工作目录 /Users/mz/pi-default-project 下的所有文件，保留完整结果。' } });
+    emit({ type: 'tool_start', toolCallId: 'optical-agent', toolName: 'subagent', args: { agent: 'worker', task: '只读任务：列出当前工作目录 /Users/mz/pi-default-project 下的所有文件，保留完整结果。' } });
     emit({ type: 'tool_end', toolCallId: 'optical-agent', toolName: 'subagent', result: result('检查完成'), isError: false });
     const card = page.locator('[data-tool-call-id="optical-agent"]');
     const header = card.locator('.tool-call-header');
@@ -135,19 +135,19 @@ for (const theme of ['dark', 'light']) for (const width of [1280, 390]) {
     // Steps start collapsed while running; open this one to read its live output.
     await expect(bash.locator('.tool-call-header')).toHaveAttribute('aria-expanded', 'false');
     await bash.locator('.tool-call-header').click();
-    emit({ type: 'tool_update', toolCallId: 'mixed-bash', toolName: 'bash', partialResult: result('designer.md\nworker.md') });
+    emit({ type: 'tool_update', toolCallId: 'mixed-bash', toolName: 'bash', partialResult: result('worker.md') });
     await expect(bash.getByTestId('tool-result-text')).toContainText('worker.md');
     await expect(bash.getByTestId('tool-name')).toHaveText('bash');
     await page.screenshot({ path: `/tmp/tool-block-actual/${theme}-${width}-streaming.png` });
-    emit({ type: 'tool_end', toolCallId: 'mixed-bash', toolName: 'bash', result: result('designer.md\nworker.md'), isError: false });
+    emit({ type: 'tool_end', toolCallId: 'mixed-bash', toolName: 'bash', result: result('worker.md'), isError: false });
     await expect(bash).toHaveAttribute('data-done', 'true');
     await bash.locator('.tool-call-header').click();
     await expect(bash.locator('.tool-call-header')).toHaveAttribute('aria-expanded', 'false');
-    emit({ type: 'text_delta', text: '可用代理：designer、worker。接下来检查排版与完整结果。' });
-    emit({ type: 'tool_start', toolCallId: 'mixed-agent', toolName: 'subagent', args: { agent: 'designer', task: '检查轻量工具块与正文的信息层级' } });
+    emit({ type: 'text_delta', text: '.pi/agents 里有 worker。接下来检查排版与完整结果。' });
+    emit({ type: 'tool_start', toolCallId: 'mixed-agent', toolName: 'subagent', args: { agent: 'worker', task: '检查轻量工具块与正文的信息层级' } });
     emit({ type: 'tool_end', toolCallId: 'mixed-agent', toolName: 'subagent', result: result('Started run 1'), isError: false });
     emit({ type: 'tool_start', toolCallId: 'mixed-wait', toolName: 'subagent_wait', args: { runIds: ['1'], timeoutMs: 600000 } });
-    emit({ type: 'tool_update', toolCallId: 'mixed-wait', toolName: 'subagent_wait', partialResult: result('0/1 settled\ndesigner: 正在检查明暗主题与长参数。') });
+    emit({ type: 'tool_update', toolCallId: 'mixed-wait', toolName: 'subagent_wait', partialResult: result('0/1 settled\nworker: 正在检查明暗主题与长参数。') });
     const wait = page.locator('[data-tool-call-id="mixed-wait"]');
     await expect(wait.getByTestId('tool-name')).toHaveText('subagent_wait');
     // A running subagent_wait starts closed; its summary line carries the progress.
@@ -208,13 +208,13 @@ for (const theme of ['dark', 'light']) for (const width of [1280, 390]) {
     emit({ type: 'tool_end', toolCallId: 'wait', toolName: 'subagent_wait', result: result(final), isError: false });
     // Opened by hand, it stays open through completion.
     await expect(card.locator('.tool-call-header')).toHaveAttribute('aria-expanded', 'true');
-    await expect(card.getByRole('heading', { name: '[lite] run 2 — completed' })).toBeVisible();
+    await expect(card.getByRole('heading', { name: '[worker] run 2 — completed' })).toBeVisible();
     await page.screenshot({ path: `/tmp/tool-information-layout/${theme}-${width}-result.png` });
     await card.getByRole('button', { name: 'Markdown 展示' }).click();
     await expect(card.getByTestId('tool-result-text')).toHaveText(final);
     await card.locator('.tool-call-header').click();
     const cases = [
-      ['single', 'subagent', { agent: 'designer', task: '保留比例字体，检查工具正文。\n不照搬终端外观。', cwd: '/fixture' }, result('## 检查完成\n- 保留完整内容')],
+      ['single', 'subagent', { agent: 'worker', task: '保留比例字体，检查工具正文。\n不照搬终端外观。', cwd: '/fixture' }, result('## 检查完成\n- 保留完整内容')],
       ['parallel', 'subagent', { tasks: [{ agent: 'scout', task: '检查源文件' }, { agent: 'worker', task: '检查布局与长文本\n保留全部字段' }] }, result('## 并行结果\n- 两个代理已返回')],
       ['shell', 'bash', { command: "printf 'first\\nsecond\\n'", timeout: 0 }, result('first\nsecond\n')],
       ['read', 'read', { path: '/fixture/a.ts' }, result('export const value = 1;\n')],

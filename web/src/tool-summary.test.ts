@@ -17,10 +17,10 @@ describe("toolSummary actual snapshots only", () => {
   });
   it("only recognizes nonempty valid arrays and preserves complete duplicate/long names", () => {
     const name = "worker-".repeat(40);
-    const tasks = [{ agent: "lite", task: "x".repeat(500) }, { agent: "lite", task: "second" }, { agent: name, task: "third" }];
-    expect(toolSummary(call("subagent", { tasks }))).toMatch(new RegExp(`^lite、lite、${name}`));
+    const tasks = [{ agent: "worker", task: "x".repeat(500) }, { agent: "worker", task: "second" }, { agent: name, task: "third" }];
+    expect(toolSummary(call("subagent", { tasks }))).toMatch(new RegExp(`^worker、worker、${name}`));
     expect(subagentTasks("subagent", { tasks })).toBe(tasks);
-    for (const tasks of [[], null, "invalid", [null, {}], [{ agent: "lite", task: 3 }]]) {
+    for (const tasks of [[], null, "invalid", [null, {}], [{ agent: "worker", task: 3 }]]) {
       expect(subagentTasks("subagent", { tasks })).toBeUndefined();
       expect(() => toolSummary(call("subagent", { tasks }))).not.toThrow();
     }

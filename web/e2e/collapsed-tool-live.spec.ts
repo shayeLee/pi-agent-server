@@ -141,7 +141,7 @@ test("actual SSE: collapsed bash/wait snapshots, child semantics, previews, pref
   await expect(card("wait").locator(".tool-summary-preview")).toContainText("still running");
   await expect(card("wait").getByRole("img", { name: "已完成" })).toBeVisible();
   const snapshots = [
-    ["single", "subagent", { agent: "reviewer", task: "review source", cwd: "/tmp" }, "Background subagent started (runId: r3, agent: reviewer).", "reviewer: review source"],
+    ["single", "subagent", { agent: "claude-worker", task: "review source", cwd: "/tmp" }, "Background subagent started (runId: r3, agent: claude-worker).", "claude-worker: review source"],
     ["all", "subagent_wait", {}, "No background subagent result is outstanding.", "全部待收集 runs"],
     ["status", "subagent_status", { runId: "r2" }, "r2 worker running", "run: r2"],
     ["logs", "subagent_logs", { runId: "r2", tail: 0 }, "run r2 transcript", "tail: 0"],

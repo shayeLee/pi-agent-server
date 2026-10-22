@@ -7,11 +7,11 @@ import { toolHeader } from "./metadata.js";
 const call = (toolName: string, args: unknown): ToolCall => ({ toolCallId: "adapter", toolName, args, done: false, isError: false, result: undefined, partialResult: undefined });
 describe("tool presentation contract", () => {
   it("returns separate complete labels, badge and preview without mutating input", () => {
-    const tasks = [{ agent: "lite", task: "first" }, { agent: "worker", task: "second", cwd: "/tmp" }];
+    const tasks = [{ agent: "worker", task: "first" }, { agent: "claude-worker", task: "second", cwd: "/tmp" }];
     const input = call("subagent", { tasks });
     const before = structuredClone(input);
     const header = toolHeader(input);
-    expect(header).toEqual({ icon: "agents", badge: "并行 2", priorityLabels: ["lite", "worker"], preview: "first · second", summary: "lite、worker · first · second" });
+    expect(header).toEqual({ icon: "agents", badge: "并行 2", priorityLabels: ["worker", "claude-worker"], preview: "first · second", summary: "worker、claude-worker · first · second" });
     const { Arguments } = toolPresentation(input);
     const { container } = render(<Arguments value={input.args} args={input.args} />);
     expect(container.querySelectorAll(".tool-parallel-tasks > li")).toHaveLength(2);
@@ -32,7 +32,7 @@ describe("tool presentation contract", () => {
     expect(screen.getByText("path", { selector: "dt" })).toBeVisible();
     expect(input).toEqual(before);
   });
-  it.each([[], null, [{ agent: " ", task: "x" }], [{ agent: "lite", task: 0 }], [{ agent: "lite", task: "x" }, null]])("invalid tasks %j use safe fields without parallel header", tasks => {
+  it.each([[], null, [{ agent: " ", task: "x" }], [{ agent: "worker", task: 0 }], [{ agent: "worker", task: "x" }, null]])("invalid tasks %j use safe fields without parallel header", tasks => {
     const input = call("subagent", { tasks });
     const { header, Arguments } = toolPresentation(input);
     expect(header.badge).toBeUndefined();
@@ -41,7 +41,7 @@ describe("tool presentation contract", () => {
     expect(screen.getByText("tasks")).toBeInTheDocument();
   });
   it("unknown and prototype-like names remain generic; forwards values and labels", () => {
-    const input = call("constructor", { tasks: [{ agent: "lite", task: "plain" }], zero: 0, flag: false, ids: [0, false, null] });
+    const input = call("constructor", { tasks: [{ agent: "worker", task: "plain" }], zero: 0, flag: false, ids: [0, false, null] });
     const { header, Arguments, Result } = toolPresentation(input);
     expect(header.icon).toBe("tool");
     expect(header.badge).toBeUndefined();
