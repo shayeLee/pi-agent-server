@@ -4070,7 +4070,8 @@ div.shortcut-help { width: min(440px, calc(100vw - 32px)); max-height: 80vh; ove
 [data-theme="dark"] .usage { --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70; --series-4: #c98500; --series-5: #d55181; }
 .usage-intro, .usage-note { margin: 0; color: var(--dim); line-height: 1.6; }
 .usage-note .btn-ghost { margin-left: 8px; }
-.usage-controls { display: flex; flex-wrap: wrap; gap: 8px 16px; }
+.usage-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 16px; }
+.usage-range { color: var(--body2); font-size: var(--fs-meta); font-variant-numeric: tabular-nums; }
 .usage-segmented { display: inline-flex; border: 1px solid var(--line); border-radius: var(--radius-control); overflow: hidden; }
 .usage-segmented button { padding: 4px 12px; border: 0; background: transparent; color: var(--dim); font: inherit; cursor: pointer; }
 .usage-segmented button + button { border-left: 1px solid var(--line); }

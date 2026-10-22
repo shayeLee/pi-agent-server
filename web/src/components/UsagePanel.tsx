@@ -15,6 +15,8 @@ const modelKey = (row: Pick<ModelUsage, "provider" | "model">) => `${row.provide
 const modelName = (row: Pick<ModelUsage, "provider" | "model">) =>
   row.model === "unknown" ? text.unknownModel : row.provider === "unknown" ? row.model : `${row.provider}/${row.model}`;
 const amount = (totals: UsageTotals, metric: Metric) => metric === "tokens" ? totals.totalTokens : totals.costUsdEstimate;
+/** `30 天`, `12 周`, `12 个月`: the length of the report's range. */
+const spanOf = (report: UsageReport) => text.span[report.period](report.buckets.length);
 const amountText = (value: number, metric: Metric) => metric === "tokens" ? formatTokens(value) : formatUsd(value);
 
 /** A round axis top and step: 1, 2 or 5 times a power of ten, three steps. */
@@ -55,6 +57,9 @@ export function UsagePanel({ api }: { api: UsageApi }) {
     <div className="usage-controls">
       <Segmented label={text.periodGroup} value={period} onChange={setPeriod} options={(["day", "week", "month"] as const).map(id => ({ id, label: text.periods[id] }))} testid="usage-period" />
       <Segmented label={text.metricGroup} value={metric} onChange={setMetric} options={(["tokens", "cost"] as const).map(id => ({ id, label: text.metrics[id] }))} testid="usage-metric" />
+      {state.kind === "ready" && state.report.period === period && <span className="usage-range" data-testid="usage-range">
+        {text.range(spanOf(state.report), formatUsagePeriod(state.report.from, "day", true), formatUsagePeriod(state.report.to, "day", true))}
+      </span>}
     </div>
     {state.kind === "loading" && <p className="usage-note" role="status">{text.loading}</p>}
     {state.kind === "error" && <p className="usage-note" role="alert">{text.loadFailed(state.message)} <button type="button" className="btn-ghost" onClick={() => setAttempt(n => n + 1)}>{text.retry}</button></p>}
@@ -79,22 +84,23 @@ function UsageReportView({ report, metric, selected, onSelect }: { report: Usage
     return report.models.length > named.length ? [...named, { key: OTHER, label: text.other, slot: null }] : named;
   }, [report]);
   const bucket = report.buckets.find(b => b.start === selected) ?? null;
+  const span = spanOf(report);
   const rows = bucket ? bucket.models : report.models;
   const totals = bucket ? bucket.totals : report.totals;
   return <>
     <dl className="usage-summary" data-testid="usage-summary">
-      <div><dt>{text.total}</dt><dd title={zhCN.units.exactTokens(formatExact(report.totals.totalTokens))}>{formatTokens(report.totals.totalTokens)}</dd></div>
-      <div><dt>{text.cost}</dt><dd>{formatUsd(report.totals.costUsdEstimate)}</dd></div>
-      <div><dt>{text.calls}</dt><dd>{formatCompact(report.totals.calls)}</dd></div>
-      <div><dt>{text.range(formatUsagePeriod(report.from, "day", true), formatUsagePeriod(report.to, "day", true))}</dt><dd>{text.sessions(report.sessions)}</dd></div>
+      <div><dt>{text.total(span)}</dt><dd title={zhCN.units.exactTokens(formatExact(report.totals.totalTokens))}>{formatTokens(report.totals.totalTokens)}</dd></div>
+      <div><dt>{text.cost(span)}</dt><dd>{formatUsd(report.totals.costUsdEstimate)}</dd></div>
+      <div><dt>{text.calls(span)}</dt><dd>{formatCompact(report.totals.calls)}</dd></div>
+      <div><dt>{text.sessionsLabel}</dt><dd>{text.sessions(report.sessions)}</dd></div>
     </dl>
     {report.unreadSessions > 0 && <p className="usage-note" role="note">{text.unread(report.unreadSessions)}</p>}
     {report.totals.calls === 0 ? <p className="usage-note">{text.empty}</p> : <>
       <Legend series={series} />
       <Chart report={report} series={series} metric={metric} selected={selected} onSelect={onSelect} label={text.chartLabel[report.period]} />
       <div className="usage-table-head">
-        <h3>{bucket ? formatUsagePeriod(bucket.start, report.period, true) : text.tableAll}</h3>
-        {bucket && <button type="button" className="btn-ghost" data-testid="usage-show-all" onClick={() => onSelect(null)}>{text.showAll}</button>}
+        <h3>{bucket ? formatUsagePeriod(bucket.start, report.period, true) : text.tableAll(span)}</h3>
+        {bucket && <button type="button" className="btn-ghost" data-testid="usage-show-all" onClick={() => onSelect(null)}>{text.showAll(span)}</button>}
       </div>
       <ModelTable rows={rows} totals={totals} series={series} />
       <p className="usage-note">{text.costNote}</p>
@@ -185,7 +191,7 @@ function ModelTable({ rows, totals, series }: { rows: ModelUsage[]; totals: Usag
           {cells(row)}
         </tr>)}
       </tbody>
-      <tfoot><tr><th scope="row">{text.total}</th>{cells(totals)}</tr></tfoot>
+      <tfoot><tr><th scope="row">{text.columns.total}</th>{cells(totals)}</tr></tfoot>
     </table>
   </div>;
 }

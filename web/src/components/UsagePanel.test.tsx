@@ -36,6 +36,9 @@ describe("UsagePanel", () => {
     await panel.findByTestId("usage-table");
     expect(getUsage).toHaveBeenCalledWith({ period: "day", timeZone: expect.any(String) });
     expect(panel.getByText(text.unread(1))).toBeTruthy();
+    // The range and the totals name the same span, so switching period cannot look like a changed total.
+    expect(panel.getByTestId("usage-range").textContent).toBe(text.range(text.span.day(2), "2026/10/20", "2026/10/21"));
+    expect(panel.getByText(text.total(text.span.day(2)))).toBeTruthy();
     const rows = within(panel.getByTestId("usage-table")).getAllByRole("row").map(row => row.textContent);
     expect(rows.slice(1, 3).map(row => row!.slice(0, 3))).toEqual(["p/a", "p/b"]);
   });
