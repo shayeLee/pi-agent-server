@@ -543,6 +543,118 @@
         }
       }
     },
+    "/v1/usage": {
+      "get": {
+        "operationId": "getUsage",
+        "security": [
+          {
+            "IpAdmission": []
+          },
+          {
+            "IpAdmission": [],
+            "BearerAuth": []
+          }
+        ],
+        "x-pi-rbac": {
+          "permission": "sessions:list",
+          "roles": [
+            "admin",
+            "user",
+            "viewer"
+          ]
+        },
+        "responses": {
+          "200": {
+            "description": "Billed model calls of every session the caller can see, summed per model and per calendar period. Counts all branches of each session file and child-agent calls. Read-only; the first request after a restart reads every file.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UsageReport"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Unknown time zone, from after to, or more than 400 periods.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer token required for this admitted IP profile.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "IP admission or RBAC denied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "period",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "enum": [
+                "day",
+                "week",
+                "month"
+              ],
+              "default": "day"
+            },
+            "description": "Weeks start on Monday; months on the 1st."
+          },
+          {
+            "name": "timeZone",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 64,
+              "default": "UTC"
+            },
+            "description": "IANA zone that decides which calendar day a call belongs to."
+          },
+          {
+            "name": "from",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date"
+            },
+            "description": "First calendar day, inclusive. Default: 30 days, 12 weeks or 12 months back, by period."
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "format": "date"
+            },
+            "description": "Last calendar day, inclusive. Default: today in timeZone."
+          }
+        ]
+      }
+    },
     "/v1/projects": {
       "get": {
         "operationId": "listProjects",
@@ -8904,6 +9016,166 @@
           },
           "scope": {
             "const": "branch"
+          }
+        },
+        "additionalProperties": false
+      },
+      "UsageReportTotals": {
+        "type": "object",
+        "required": [
+          "input",
+          "output",
+          "cacheRead",
+          "cacheWrite",
+          "totalTokens",
+          "costUsdEstimate",
+          "calls",
+          "subagentTokens"
+        ],
+        "properties": {
+          "input": {
+            "type": "number",
+            "minimum": 0
+          },
+          "output": {
+            "type": "number",
+            "minimum": 0
+          },
+          "cacheRead": {
+            "type": "number",
+            "minimum": 0
+          },
+          "cacheWrite": {
+            "type": "number",
+            "minimum": 0
+          },
+          "totalTokens": {
+            "type": "number",
+            "minimum": 0
+          },
+          "costUsdEstimate": {
+            "type": "number",
+            "minimum": 0,
+            "description": "SDK model-price estimate in USD, not an invoice; zero does not establish free service."
+          },
+          "calls": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "subagentTokens": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Part of totalTokens spent by child agents."
+          }
+        },
+        "additionalProperties": false
+      },
+      "ModelUsage": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/UsageReportTotals"
+          },
+          {
+            "type": "object",
+            "required": [
+              "provider",
+              "model"
+            ],
+            "properties": {
+              "provider": {
+                "type": "string"
+              },
+              "model": {
+                "type": "string",
+                "description": "\"unknown\" when the file never named one."
+              }
+            }
+          }
+        ]
+      },
+      "UsageBucket": {
+        "type": "object",
+        "required": [
+          "start",
+          "totals",
+          "models"
+        ],
+        "properties": {
+          "start": {
+            "type": "string",
+            "format": "date"
+          },
+          "totals": {
+            "$ref": "#/components/schemas/UsageReportTotals"
+          },
+          "models": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ModelUsage"
+            },
+            "description": "Most tokens first."
+          }
+        },
+        "additionalProperties": false
+      },
+      "UsageReport": {
+        "type": "object",
+        "required": [
+          "period",
+          "timeZone",
+          "from",
+          "to",
+          "buckets",
+          "models",
+          "totals",
+          "sessions",
+          "unreadSessions"
+        ],
+        "properties": {
+          "period": {
+            "enum": [
+              "day",
+              "week",
+              "month"
+            ]
+          },
+          "timeZone": {
+            "type": "string"
+          },
+          "from": {
+            "type": "string",
+            "format": "date"
+          },
+          "to": {
+            "type": "string",
+            "format": "date"
+          },
+          "buckets": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/UsageBucket"
+            },
+            "description": "Every period in the range, oldest first, empty ones included."
+          },
+          "models": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ModelUsage"
+            },
+            "description": "Whole-range totals per model, most tokens first."
+          },
+          "totals": {
+            "$ref": "#/components/schemas/UsageReportTotals"
+          },
+          "sessions": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Session files considered."
+          },
+          "unreadSessions": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Session files that could not be read; their usage is missing."
           }
         },
         "additionalProperties": false

@@ -33,7 +33,8 @@ import type {
   SystemPromptPort,
 } from "../application/ports/index.js";
 import { RuntimeRegistry, SessionDeletedError, type SessionEntry } from "../runtime/runtime-registry.js";
-import { SessionService, THINKING_LEVELS } from "../application/session-service.js";
+import { SessionService, THINKING_LEVELS, USAGE_MAX_BUCKETS } from "../application/session-service.js";
+import { validTimeZone, type UsagePeriod } from "../agent/usage-ledger.js";
 import {
   createAdmission,
   requireIpAccessRuntimeConfig,
@@ -306,6 +307,18 @@ const PROJECT_TRUST_BODY_SCHEMA = {
 } as const;
 
 /** GET /models 与 /settings 的可选项目：按这个项目（受信任时）的 .pi/settings.json 给出实际生效的值。 */
+const USAGE_DAY = { type: "string", pattern: "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$" } as const;
+const USAGE_QUERY_SCHEMA = {
+  type: "object",
+  properties: {
+    period: { type: "string", enum: ["day", "week", "month"] },
+    timeZone: { type: "string", minLength: 1, maxLength: 64 },
+    from: USAGE_DAY,
+    to: USAGE_DAY,
+  },
+  additionalProperties: false,
+} as const;
+
 const PROJECT_QUERY_SCHEMA = {
   type: "object",
   properties: { projectId: { type: "string", minLength: 1, maxLength: 128 } },
@@ -763,6 +776,16 @@ export function buildApp(deps: ServerDeps): FastifyInstance {
         const safe = allowed.filter(code => warnings.includes(code));
         if (safe.length) reply.header("X-Pi-Native-Scan-Warnings", safe.join(","));
       }));
+    // Billed tokens of the caller's sessions per model and calendar period. Reads files only.
+    api.get<{ Querystring: { period?: UsagePeriod; timeZone?: string; from?: string; to?: string } }>("/usage",
+      { exposeHeadRoute: false, schema: { querystring: USAGE_QUERY_SCHEMA }, ...requirePermission("sessions:list") }, async (request, reply) => {
+        const { period = "day", timeZone = "UTC", from, to } = request.query;
+        if (!validTimeZone(timeZone)) return reply.code(400).send({ statusCode: 400, error: "Bad Request", message: "timeZone 不是可用的 IANA 时区" });
+        const report = await sessions.usageReport(ownerKeyOf(request), { period, timeZone, from, to });
+        return report
+          ? reply.header("cache-control", "private, no-store").send(report)
+          : reply.code(400).send({ statusCode: 400, error: "Bad Request", message: `日期范围无效或超过 ${USAGE_MAX_BUCKETS} 个周期` });
+      });
     api.delete<{ Params: { id: string } }>("/sessions/:id", { ...requirePermission("sessions:delete") }, async (request, reply) =>
       (await sessions.deleteSession(ownerKeyOf(request), request.params.id)) ? reply.code(204).send() : NOT_FOUND(reply));
     api.patch<{ Params: { id: string }; Body: { title: string } }>(

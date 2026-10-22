@@ -88,6 +88,7 @@
     "verify:release": "npm run typecheck && npm run test && npm run test:postgres && npm run test:pg-backup && npm run test:migration-prebackup && npm run test:file-ops-pg && npm run test:reconcile-jsonl-pg && npm run test:restore-real && npm run test:owner-transfer && npm run test:owner-transfer-pg && npm run build && npm run build:migrate && npm run build:backup && npm run build:file-ops && npm run build:reconcile-jsonl && npm run build:owner-transfer",
     "dev": "tsx src/main.ts",
     "dev:real": "tsx --env-file-if-exists=.env.local src/main.ts",
+    "dev:real:watch": "tsx watch --clear-screen=false --env-file-if-exists=.env.local src/main.ts",
     "dev:real:init": "sh scripts/dev-real-init.sh",
     "mock": "tsx scripts/mock-server.ts",
     "web": "pnpm --filter web dev",

@@ -61,3 +61,21 @@ export function formatDateTime(date: Date | number): string {
 export function formatTime(date: Date | number): string {
   return new Date(date).toLocaleTimeString(locale, { hour12: false });
 }
+
+/** The browser's IANA time zone, for server-side calendar grouping. */
+export function localTimeZone(): string {
+  try { return Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC"; } catch { return "UTC"; }
+}
+/** Today in the browser's zone as YYYY-MM-DD. */
+export function localDay(date = new Date()): string {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+}
+/** A calendar day (YYYY-MM-DD) read as itself, whatever the zone. */
+const calendarDay = (day: string) => new Date(`${day}T12:00:00Z`);
+/** Axis label of a usage period starting on `start`: `10/22`, `10/20 周` or `2026年10月`. */
+export function formatUsagePeriod(start: string, period: "day" | "week" | "month", long = false): string {
+  const date = calendarDay(start);
+  if (period === "month") return date.toLocaleDateString(locale, { timeZone: "UTC", year: long ? "numeric" : undefined, month: long ? "long" : "short" });
+  const day = date.toLocaleDateString(locale, { timeZone: "UTC", year: long ? "numeric" : undefined, month: "numeric", day: "numeric" });
+  return period === "week" ? zhCN.usage.weekOf(day) : day;
+}

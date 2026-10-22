@@ -24,6 +24,7 @@ Pi SDK 与 pi-ai 固定为 **1.1.0**；本次 SDK 升级无需数据库迁移（
 | `POST` | `/v1/sessions/:id/control-queue/:controlId/promote` | 将排队的追加项提升为引导 |
 | `POST` | `/v1/sessions/:id/abort` | 中止该会话当前正在执行的任务。请求体可以不填；如果填写，必须是 `{ "requestId": "..." }`，只有任务的请求 ID 与它一致时才会中止。ID 不匹配则返回 `409`，任务继续运行。 |
 | `GET` | `/v1/sessions/:id/export` | 只读消息快照；绝不创建 runtime |
+| `GET` | `/v1/usage?period=day\|week\|month&timeZone=<IANA>&from=&to=` | 调用者能看到的所有会话里每次模型调用的 token 与估算费用，按模型、按日历天 / 周（周一起）/ 月汇总；全部分支和子代理都计入。默认 30 天 / 12 周 / 12 个月，最多 400 个周期，时区非法或范围越界返回 `400`。只读会话文件、不创建 runtime；重启后首次请求要读一遍所有文件，之后只重读有变化的文件。权限同 `sessions:list`。见[统计契约](usage-measurement.md#跨会话用量) |
 | `GET` | `/v1/sessions/:id/subagents?runId=<optional>` | 子代理运行列表；带 `runId`（`runs[].id`）时附该子代理的只读会话。不创建 runtime。见[子代理会话](subagent-conversations.md) |
 | `POST` | `/v1/sessions/:id/subagents/:runId/steer` | 由用户引导运行中的子代理，请求体 `{ "text": "..." }`，需要 `sessions:control`。空 `202` 只表示子代理控制通道已接收；子代理在下一回合开始前收到，送达以子代理记录为准。不可引导时返回 `409`：`SUBAGENT_NOT_RUNNING`（未在运行）、`SUBAGENT_STEER_UNAVAILABLE`（会话未加载、扩展未提供宿主控制或前台运行）、`SUBAGENT_STEER_FAILED`（发送失败，可重试）。不创建 runtime |
 | `GET` | `/v1/sessions/:id/steps` | Inspector 完整步骤快照，数组顺序权威；只读且不创建 runtime |

@@ -326,6 +326,14 @@ export class ApiClient {
     return this.request("GET", `/v1/sessions/${encodeURIComponent(id)}/steps`);
   }
 
+  /** Billed tokens of the caller's sessions per model and day, week or month of `timeZone`. */
+  getUsage(query: { period: import("../shared/usage-report.js").UsagePeriod; timeZone: string; from?: string; to?: string }): Promise<import("../shared/usage-report.js").UsageReport> {
+    const params = new URLSearchParams({ period: query.period, timeZone: query.timeZone });
+    if (query.from) params.set("from", query.from);
+    if (query.to) params.set("to", query.to);
+    return this.request("GET", `/v1/usage?${params}`);
+  }
+
   exportSession(id: string): Promise<Export> {
     return this.request("GET", `/v1/sessions/${id}/export`);
   }

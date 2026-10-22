@@ -8,6 +8,7 @@ import { projectColdSessionSteps } from "./session-steps-projector.js";
 import { projectExportSnapshot } from "./session-export.js";
 import { projectExecutionSnapshot } from "./execution-metrics.js";
 import { projectColdUsage } from "./cold-usage-snapshot.js";
+import { usageLedgerFromJsonl, UsageLedgerCache, type UsageLedgerEvent } from "./usage-ledger.js";
 import { firstUserPrompt } from "../client/session-title.js";
 import { canonicalCwdIdentity } from "../core/native-session-policy.js";
 
@@ -101,6 +102,22 @@ export class NativePiConversationStorage implements ConversationStorage {
       }
       fd.check();
       return projectSubagents(context.sessionId, cached.branch, undefined, runId);
+    } finally { fd.close(); }
+  }
+
+  private readonly usageLedgers = new UsageLedgerCache();
+  async readUsageLedger(conversation: ConversationDescriptor, context: ConversationReadContext): Promise<readonly UsageLedgerEvent[]> {
+    const binding = await this.binding(conversation, context);
+    const fd = new NativeSessionFd(this.source, binding, false);
+    try {
+      const stat = fd.verifiedMetadata();
+      const fingerprint = `${stat.sourceDev}:${stat.sourceIno}:${stat.size}:${stat.mtimeMs}:${stat.ctimeMs}`;
+      const cached = this.usageLedgers.get(binding.sourcePath, fingerprint);
+      if (cached) return cached;
+      const ledger = usageLedgerFromJsonl(fd.snapshot());
+      fd.check();
+      this.usageLedgers.set(binding.sourcePath, fingerprint, ledger);
+      return ledger;
     } finally { fd.close(); }
   }
 

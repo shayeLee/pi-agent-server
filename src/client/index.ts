@@ -24,4 +24,5 @@ export type * from "./transport.js";
 export type * from "./types.js";
 export type { SessionStepKind, SessionStep, SessionStepsSnapshot } from "../shared/session-steps.js";
 export type { SessionSystemPrompt } from "../shared/system-prompt.js";
+export type { ModelUsage, UsageBucket, UsagePeriod, UsageReport, UsageTotals } from "../shared/usage-report.js";
 export type { Export, ExportMessage, ExportTimelineItem } from "../public-api/contract.js";

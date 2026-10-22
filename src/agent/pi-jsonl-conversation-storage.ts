@@ -4,7 +4,7 @@ import { projectSubagents } from "./subagent-transcript.js";
 
 import { createHash } from "node:crypto";
 import { constants, lstatSync, readFileSync, statSync, type Stats } from "node:fs";
-import { open, type FileHandle } from "node:fs/promises";
+import { open, readFile, type FileHandle } from "node:fs/promises";
 import { firstUserPrompt } from "../client/session-title.js";
 import path from "node:path";
 import {
@@ -33,6 +33,7 @@ import { NativePiConversationStorage } from "./native-pi-conversation-storage.js
 import type { NativeSessionSource } from "./native-session-source.js";
 import type { NativeSessionIndexPort } from "../application/native-session-service.js";
 import { classifyPiJsonlReference, requirePiDataDir } from "./pi-jsonl-reference.js";
+import { usageLedgerFromJsonl, UsageLedgerCache, type UsageLedgerEvent } from "./usage-ledger.js";
 
 interface FileFingerprint {
   readonly exists: boolean;
@@ -404,6 +405,22 @@ export class PiJsonlConversationStorage implements ConversationStorage {
     if (this.subagentCache.size >= 8) this.subagentCache.delete(this.subagentCache.keys().next().value!);
     this.subagentCache.set(file, { fingerprint, entries: branch });
     return result;
+  }
+
+  private readonly usageLedgers = new UsageLedgerCache();
+  async readUsageLedger(conversation: ConversationDescriptor, context: ConversationReadContext): Promise<readonly UsageLedgerEvent[]> {
+    if (this.isUnified(conversation.conversationRef)) return this.unifiedStorage!.readUsageLedger(await this.unifiedConversation(conversation, context), context);
+    this.assertReadReference(conversation, context);
+    const file = conversation.conversationRef;
+    if (!file) return [];
+    const nodes = snapshotPromptPath(this.dataDir, file);
+    const fingerprint = promptFileIdentity(nodes.at(-1)!.stat);
+    const cached = this.usageLedgers.get(file, fingerprint);
+    if (cached) return cached;
+    const ledger = usageLedgerFromJsonl(await readFile(file, "utf8"));
+    if (!unchangedPromptPath(nodes)) throw new Error("session history changed during read");
+    this.usageLedgers.set(file, fingerprint, ledger);
+    return ledger;
   }
 
   async readSteps(conversation: ConversationDescriptor, context: ConversationReadContext) {

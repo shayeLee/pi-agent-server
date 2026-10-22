@@ -17,6 +17,7 @@ import { PLUGIN_RUN_TURN_LIMITS } from "../plugin/contract.js";
 import { readPiSessionCwdIdentity } from "../agent/pi-jsonl-conversation-storage.js";
 import type { ImageInput } from "../agent/agent-adapter.js";
 import type { ConversationReadContext } from "./ports/conversation-port.js";
+import { bucketStarts, defaultUsageRange, localDayOf, summarizeUsage, type UsageLedgerEvent, type UsagePeriod, type UsageReport } from "../agent/usage-ledger.js";
 import { canonicalCwdIdentity } from "../core/native-session-policy.js";
 import { InvalidProjectCwdError } from "../core/project-cwd-error.js";
 import { payloadFingerprint } from "../core/payload-fingerprint.js";
@@ -121,6 +122,9 @@ export type SubmitResult =
  * `runTurn` 额外可用 `null` 表示会话不存在/不属于当前 owner。
  */
 export type RunTurnResult = SessionTurnResult;
+
+/** At most this many day, week or month columns in one usage report. */
+export const USAGE_MAX_BUCKETS = 400;
 
 export class SessionService {
   /** 删除进行中的项目墓碑：拒绝并发创建会话到正在删除的项目（避免留下孤儿会话）。 */
@@ -729,6 +733,36 @@ export class SessionService {
       // 错误脱敏：只暴露固定文案，不透出文件路径/内容/解析细节（实现层同样兜底）。
       throw new Error("会话历史读取失败", { cause: error });
     }
+  }
+
+  /**
+   * Billed tokens of every session the caller can see, per model and per day, week or month of
+   * `timeZone`. Read-only: files are read through their storage, never through a runtime.
+   * Returns null when the range spans more than USAGE_MAX_BUCKETS buckets.
+   */
+  async usageReport(ownerKey: string, query: { period: UsagePeriod; timeZone: string; from?: string; to?: string }): Promise<UsageReport | null> {
+    const today = localDayOf(query.timeZone)(Date.now());
+    const fallback = defaultUsageRange(query.period, today);
+    const from = query.from ?? fallback.from;
+    const to = query.to ?? (query.from ? today : fallback.to);
+    if (from > to || bucketStarts(from, to, query.period, USAGE_MAX_BUCKETS).length > USAGE_MAX_BUCKETS) return null;
+    const ledgers: Array<readonly UsageLedgerEvent[]> = [];
+    let sessions = 0;
+    let unreadSessions = 0;
+    for (const record of await this.deps.sessions.listByOwner(ownerKey)) {
+      if (record.conversationRef === null || !(await this.canAccess(ownerKey, record))) continue;
+      const storage = this.deps.conversationStorage?.get(record);
+      if (!storage?.readUsageLedger) continue;
+      sessions += 1;
+      try {
+        ledgers.push(await storage.readUsageLedger(record, { sessionId: record.id, projectId: record.projectId }));
+      } catch {
+        unreadSessions += 1;
+      }
+      // Big files are read synchronously by some storages; let other requests run between them.
+      await new Promise(resolve => setImmediate(resolve));
+    }
+    return summarizeUsage(ledgers, { period: query.period, timeZone: query.timeZone, from, to, sessions, unreadSessions });
   }
 
   /** Name of a project the caller may create sessions in, for the blank-session companion. */

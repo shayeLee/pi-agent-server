@@ -102,6 +102,8 @@ export interface ConversationStorage {
   readExport(conversation: ConversationDescriptor, context: ConversationReadContext): Promise<unknown>;
   readSubagents?(conversation: ConversationDescriptor, context: ConversationReadContext, runId?: string): Promise<import("../../shared/subagents.js").SubagentSnapshot>;
   readSteps?(conversation: ConversationDescriptor, context: ConversationReadContext): Promise<import("../../shared/session-steps.js").SessionStepsSnapshot>;
+  /** Every billed model call in the conversation's file, all branches and child agents included. */
+  readUsageLedger?(conversation: ConversationDescriptor, context: ConversationReadContext): Promise<readonly import("../../agent/usage-ledger.js").UsageLedgerEvent[]>;
   /** Read only the first persisted user prompt, without exporting full history or creating a runtime. */
   readFirstPrompt?(conversation: ConversationDescriptor, context: ConversationReadContext): Promise<string | null>;
   /** Display-only native metadata; never persists a rename into the index. */

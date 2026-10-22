@@ -12,6 +12,7 @@ import { useProjectMcp } from "./components/ProjectMcpPanel.js";
 import { useProviderAuth } from "./components/ProviderAuthPanel.js";
 import { useAgentSettings } from "./components/AgentSettingsPanel.js";
 import { useProjectTrust } from "./components/ProjectTrustPanel.js";
+import { useUsagePanel } from "./components/UsagePanel.js";
 import type { TraceNavigation } from "./components/step-navigation.js";
 import { Chat } from "./components/Chat.js";
 import { Inspector, type InspectorTab } from "./components/Inspector.js";
@@ -230,6 +231,7 @@ export default function App() {
   const projectTrust = useProjectTrust({ api: controller.api, projectId: controller.activeProjectId, projectName: activeProjectName,
     onChanged: () => { projectMcp.refresh(); void controller.refreshModels(); } });
   const agentSettings = useAgentSettings({ api: controller.api, models: controller.models, projectId: controller.activeProjectId, onSaved: () => void controller.refreshModels() });
+  const usage = useUsagePanel({ api: controller.api });
   const themeLabels: Record<ThemeMode, string> = { light: zhCN.sidebar.lightMode, dark: zhCN.sidebar.darkMode, system: zhCN.sidebar.followSystem };
   const commands: Command[] = [
     ...(canCreateSession ? [{ id: "new", group: zhCN.palette.groupActions, label: zhCN.sidebar.newSession, hint: "N", run: newSession }] : []),
@@ -239,6 +241,7 @@ export default function App() {
     ...(["light", "dark", "system"] as ThemeMode[]).map(mode => ({ id: `theme-${mode}`, group: zhCN.palette.groupTheme,
       label: `${zhCN.sidebar.themeMenu}：${themeLabels[mode]}${mode === themeMode ? " ✓" : ""}`, run: () => applyThemeMode(mode) })),
     // Same items, same order as the Settings menu.
+    { id: "usage", group: zhCN.palette.groupSettings, label: zhCN.usage.open, run: usage.openPanel },
     ...(agentSettings.available ? [{ id: "agent-settings", group: zhCN.palette.groupSettings, label: zhCN.agentSettings.open, run: agentSettings.openPanel }] : []),
     ...(projectMcp.available ? [{ id: "mcp", group: zhCN.palette.groupSettings, label: zhCN.projectMcp.open, run: projectMcp.openPanel }] : []),
     ...(projectTrust.available ? [{ id: "project-trust", group: zhCN.palette.groupSettings, label: zhCN.projectTrust.open, run: projectTrust.openPanel }] : []),
@@ -348,7 +351,8 @@ export default function App() {
               <DropdownMenuRadioItem value="dark">{zhCN.sidebar.darkMode}</DropdownMenuRadioItem>
               <DropdownMenuRadioItem value="system">{zhCN.sidebar.followSystem}</DropdownMenuRadioItem>
             </DropdownMenuRadioGroup>
-            {(projectMcp.available || projectTrust.available || providerAuth.available || agentSettings.available) && <DropdownMenuSeparator />}
+            <DropdownMenuSeparator />
+            <DropdownMenuItem data-testid="usage-open" onSelect={usage.openPanel}>{zhCN.usage.open}</DropdownMenuItem>
             {agentSettings.available && <DropdownMenuItem data-testid="agent-settings-open" onSelect={agentSettings.openPanel}>{zhCN.agentSettings.open}</DropdownMenuItem>}
             {projectMcp.available && <DropdownMenuItem data-testid="project-mcp-open" onSelect={projectMcp.openPanel}>{zhCN.projectMcp.open}</DropdownMenuItem>}
             {projectTrust.available && <DropdownMenuItem data-testid="project-trust-open" onSelect={projectTrust.openPanel}>{zhCN.projectTrust.open}</DropdownMenuItem>}
@@ -359,6 +363,7 @@ export default function App() {
         {projectTrust.dialog}
         {providerAuth.dialog}
         {agentSettings.dialog}
+        {usage.dialog}
         {controller.projects === null || controller.activeProjectId === null ? (
           controller.projectsError || controller.loadError ? (
             <div className="project-error" role="alert" data-testid="projects-error">

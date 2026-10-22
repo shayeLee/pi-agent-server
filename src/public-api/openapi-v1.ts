@@ -57,6 +57,7 @@ export const PUBLIC_API_OPERATIONS = [
   ["/v1/companion/persona", "put", "sessions:create"],
   ["/v1/files", "post", "files:upload"],
   ["/v1/sessions", "get", "sessions:list"],
+  ["/v1/usage", "get", "sessions:list"],
   ["/v1/sessions", "post", "sessions:create"],
   ["/v1/sessions/{id}", "delete", "sessions:delete"],
   ["/v1/sessions/{id}", "patch", "sessions:update"],
@@ -269,6 +270,17 @@ export const openapiV1 = {
     "/v1/models": {
       get: operation("listModels", "models:list", { "200": { description: "Available models. With projectId, modelThinkingLevels is what that project's new sessions use.", ...json(ref("ModelList")) }, "404": error(404, "projectId names a project the caller cannot see.") }, { parameters: [projectQuery] }),
       head: automaticHeadOperation("listModelsHead", "models:list", { "200": headJson("Available models; the GET response body is suppressed.") }),
+    },
+    "/v1/usage": {
+      get: operation("getUsage", "sessions:list", {
+        "200": { description: "Billed model calls of every session the caller can see, summed per model and per calendar period. Counts all branches of each session file and child-agent calls. Read-only; the first request after a restart reads every file.", ...json(ref("UsageReport")) },
+        "400": error(400, "Unknown time zone, from after to, or more than 400 periods."),
+      }, { parameters: [
+        { name: "period", in: "query", required: false, schema: { enum: ["day", "week", "month"], default: "day" }, description: "Weeks start on Monday; months on the 1st." },
+        { name: "timeZone", in: "query", required: false, schema: { type: "string", minLength: 1, maxLength: 64, default: "UTC" }, description: "IANA zone that decides which calendar day a call belongs to." },
+        { name: "from", in: "query", required: false, schema: { type: "string", format: "date" }, description: "First calendar day, inclusive. Default: 30 days, 12 weeks or 12 months back, by period." },
+        { name: "to", in: "query", required: false, schema: { type: "string", format: "date" }, description: "Last calendar day, inclusive. Default: today in timeZone." },
+      ] }),
     },
     "/v1/projects": {
       get: operation("listProjects", "projects:list", { "200": { description: "Projects.", ...json({ type: "array", items: ref("Project") }) } }),
@@ -861,6 +873,22 @@ export const openapiV1 = {
       }, additionalProperties: false },
       SessionUsageTotals: { type: "object", required: [...Object.keys(usageTokenProperties), "scope"], properties: { ...usageTokenProperties, scope: { const: "allEntries" } }, additionalProperties: false },
       BranchUsageTotals: { type: "object", description: "Session totals counted over the current branch only.", required: [...Object.keys(usageTokenProperties), "scope"], properties: { ...usageTokenProperties, scope: { const: "branch" } }, additionalProperties: false },
+      UsageReportTotals: { type: "object", required: ["input", "output", "cacheRead", "cacheWrite", "totalTokens", "costUsdEstimate", "calls", "subagentTokens"], properties: {
+        input: { type: "number", minimum: 0 }, output: { type: "number", minimum: 0 }, cacheRead: { type: "number", minimum: 0 }, cacheWrite: { type: "number", minimum: 0 },
+        totalTokens: { type: "number", minimum: 0 },
+        costUsdEstimate: { type: "number", minimum: 0, description: "SDK model-price estimate in USD, not an invoice; zero does not establish free service." },
+        calls: { type: "integer", minimum: 0 }, subagentTokens: { type: "number", minimum: 0, description: "Part of totalTokens spent by child agents." },
+      }, additionalProperties: false },
+      ModelUsage: { allOf: [ref("UsageReportTotals"), { type: "object", required: ["provider", "model"], properties: { provider: { type: "string" }, model: { type: "string", description: "\"unknown\" when the file never named one." } } }] },
+      UsageBucket: { type: "object", required: ["start", "totals", "models"], properties: { start: { type: "string", format: "date" }, totals: ref("UsageReportTotals"), models: { type: "array", items: ref("ModelUsage"), description: "Most tokens first." } }, additionalProperties: false },
+      UsageReport: { type: "object", required: ["period", "timeZone", "from", "to", "buckets", "models", "totals", "sessions", "unreadSessions"], properties: {
+        period: { enum: ["day", "week", "month"] }, timeZone: { type: "string" }, from: { type: "string", format: "date" }, to: { type: "string", format: "date" },
+        buckets: { type: "array", items: ref("UsageBucket"), description: "Every period in the range, oldest first, empty ones included." },
+        models: { type: "array", items: ref("ModelUsage"), description: "Whole-range totals per model, most tokens first." },
+        totals: ref("UsageReportTotals"),
+        sessions: { type: "integer", minimum: 0, description: "Session files considered." },
+        unreadSessions: { type: "integer", minimum: 0, description: "Session files that could not be read; their usage is missing." },
+      }, additionalProperties: false },
       PromptUsage: { type: "object", description: "Every model call of the current host prompt, summed; a field is null once any call lacks it. Null when this process did not run the prompt.", required: [...Object.keys(usageTokenProperties), "calls"], properties: { ...usageTokenProperties, calls: { type: "integer", minimum: 0 } }, additionalProperties: false },
       SubagentUsage: { type: "object", description: "Child agent model calls (completed assistant messages), summed. Not included in sessionTotals or branchTotals.", required: [...Object.keys(usageTokenProperties), "runs", "calls"], properties: { ...usageTokenProperties, runs: { type: "integer", minimum: 1 }, calls: { type: "integer", minimum: 0 } }, additionalProperties: false },
       ContextUsage: { type: "object", required: ["tokens", "window", "percent", "estimate"], properties: { tokens: measurementNumber, window: { type: ["number", "null"], exclusiveMinimum: 0 }, percent: measurementNumber, estimate: { const: true } }, additionalProperties: false },

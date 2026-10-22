@@ -90,6 +90,17 @@ Composer 下方一行，从左到右三组（DESIGN.md §3.1）；点击打开�
 - **放不下一行时**（窄屏或数字很长）：按 `SUMMARY_DROP_ORDER` 依次隐藏工具数、缓存命中、调用数、费用、任务数、实时速度、本次调用序号，直到一行放得下；会话 / 本次用量和上下文始终保留。按实际宽度测量（ResizeObserver），不按视口断点；分隔符由 CSS 生成，跟随仍显示的项。
 - **详情**：按口径分组的两列定义列表，口径说明收进各组标题旁的 ⓘ。分组为本次任务（状态、模型调用、工具调用、用量、耗时、首字延迟）、末次模型调用（用量、明细、缓存命中、输出速度；运行中标「上次任务」）、会话累计（任务、模型调用、用户消息、用量、明细、缓存命中、费用；`recorded` 覆盖时标「仅含开始记录之后」）、子代理（会话累计与子代理在当前分支和全部分支不同时分「当前分支 / 全部分支」两列，缺一侧显示 `—`；任务数和调用数只有全部分支口径，用户消息只有当前分支口径；相同时只显示一列）、工具（次数、失败、耗时合计、按工具名分布）、上下文。旧服务只给 `promptTokens/completionTokens/totalTokens` 时，末次模型调用退回显示这三个值。
 
+## 跨会话用量
+
+`GET /v1/usage`（`src/agent/usage-ledger.ts`）把调用者能看到的会话文件里每一次计费的模型调用按模型和日历周期加总，Web 在「设置 → 用量统计」里显示。
+
+- **计入什么**：整个文件（全部分支，放弃的分支同样计费）的 assistant 消息用量、`usage` 条目（如缓存预热）、压缩与分支摘要的用量、toolResult 上的用量，以及父会话 transcript 里子代理已完成的 assistant 消息（同一条流式消息只算最后一个完整版本，规则同 `subagentUsage`）。和统计栏的「全部分支 + 子代理」一致。
+- **模型**：assistant 消息和子代理消息自带 provider / model；`usage` 条目也自带；压缩、分支摘要和 toolResult 没有模型字段，记到写入时会话正在用的模型（按文件顺序跟踪 `model_change` 与上一条 assistant 消息），这部分是近似值。一个模型都没出现过时记为 `unknown`。
+- **时间**：按每次调用自己的时间（消息 `timestamp`，没有时用条目时间），不按会话创建时间；按请求的 `timeZone` 分到日历天，周从周一开始，月从 1 日开始。范围内没有调用的周期也返回（全 0）。
+- **范围**：只统计索引里调用者能访问的会话（同会话列表的 owner 与原生会话授权）；会话文件被删除后它的用量也不再统计。读不了的文件计入 `unreadSessions`，不当作 0 静默跳过。
+- **费用**：`costUsdEstimate` 是 Pi 按模型价格算的估算，不是账单；没有价格的模型为 0。
+- **性能**：每个文件按身份（inode、大小、修改时间）缓存解析结果，只重读变化了的文件；只解析含 `"usage"` 或 `"model_change"` 的行。
+
 ## 验证
 
 无真实模型、网络或用户数据库；SDK-shaped fake session、内存 SQLite HTTP 测试。`tests/agent/usage-snapshot.test.ts` 验证 cache/cost、零/非法数字、10ms 边界及无封顶、thinking/toolcall 起点、工具等待排除、多 assistant/重试 ordinal、abort unknown、倒退时钟、context 压缩/模型/导航变化、独立恢复 session、前缀压缩污染防护、runtime requestId 与 shared reducer 新/旧字段。HTTP export 测试验证快照透传、owner 隔离和只读刷新不新建 runtime。OpenAPI 源与生成 JSON 同步，保留旧 required 列表，新增字段 optional。

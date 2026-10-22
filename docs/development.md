@@ -6,6 +6,8 @@
 pnpm dev:real
 ```
 
+改后端代码时可用 `pnpm dev:real:watch`：同样的环境，源码变化后 tsx 自动重启服务（正在运行的任务和 SSE 连接会随之中断，页面自动重连）。仓库的 `.claude/launch.json` 里 8080 用的就是它。
+
 `dev:real` 通过 tsx 的 `--env-file-if-exists=.env.local` 加载可选的 `.env.local`。先复制已追踪且不含敏感值的模板：
 
 ```bash
