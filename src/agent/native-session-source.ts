@@ -2,7 +2,7 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import { constants, closeSync, fstatSync, lstatSync, openSync, readSync, realpathSync, type Stats } from "node:fs";
 import { opendir } from "node:fs/promises";
-import { canonicalCwdIdentity, type CanonicalCwdIdentity, type NativeSessionPolicy } from "../core/native-session-policy.js";
+import { canonicalCwdIdentity, sameSavedCwdIdentity, type CanonicalCwdIdentity, type NativeSessionPolicy } from "../core/native-session-policy.js";
 
 export const NATIVE_SCAN_MAX_ENTRIES = 4096;
 export const NATIVE_HEADER_MAX_BYTES = 16 * 1024;
@@ -66,7 +66,7 @@ export function readNativeSource(root: string, file: string, identity?: Canonica
     if (header?.type !== "session" || header.version !== 3 || typeof header.id !== "string" || !header.id.length || header.id.length > 200 || typeof header.cwd !== "string") throw new Error();
     const cwd = canonicalCwdIdentity(header.cwd);
     identity ??= cwd;
-    if (cwd.cwd !== identity.cwd || cwd.dev !== identity.dev || cwd.ino !== identity.ino) throw new Error();
+    if (!sameSavedCwdIdentity(identity, cwd)) throw new Error();
     if (path.dirname(file) !== path.join(root, nativeProjectDirectory(identity.cwd))) throw new Error();
     if (!sameNativeFile(before, fstatSync(fd)) || nodes.some(node => !sameNativeNode(node.stat, lstatSync(node.file)))) throw new Error();
     const createdAt = typeof header.timestamp === "string" ? Date.parse(header.timestamp) : NaN;
@@ -118,15 +118,15 @@ export class NativeSessionSource {
   allowsBinding(binding: NativeSourceBinding): boolean {
     if (!binding.private) return this.policy.allows(binding);
     try {
-      const identity = canonicalCwdIdentity(binding.cwd);
-      return identity.cwd === binding.cwd && identity.dev === binding.dev && identity.ino === binding.ino;
+      return sameSavedCwdIdentity(binding, canonicalCwdIdentity(binding.cwd));
     } catch { return false; }
   }
 
   validate(binding: NativeSourceBinding): NativeSourceCandidate {
     if (!this.allowsBinding(binding)) throw new Error("native source unavailable");
     const current = readNativeSource(this.root, binding.sourcePath, binding);
-    if (current.binding.sourceId !== binding.sourceId || current.binding.sourceDev !== binding.sourceDev || current.binding.sourceIno !== binding.sourceIno) throw new Error("native source unavailable");
+    // sourceDev is saved with the binding and changes across reboots; the inode is what pins the file.
+    if (current.binding.sourceId !== binding.sourceId || current.binding.sourceIno !== binding.sourceIno) throw new Error("native source unavailable");
     return current;
   }
 

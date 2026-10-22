@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { NativeSessionPolicy, canonicalCwdIdentity, resolveNativeSessionSourceDir, splitSessionExcludeCwds } from "../../src/core/native-session-policy.js";
+import { NativeSessionPolicy, canonicalCwdIdentity, liveCwdIdentity, resolveNativeSessionSourceDir, sameSavedCwdIdentity, splitSessionExcludeCwds } from "../../src/core/native-session-policy.js";
 import { NativeSessionSource, nativeProjectDirectory, NATIVE_HEADER_MAX_BYTES, NATIVE_SCAN_MAX_ENTRIES } from "../../src/agent/native-session-source.js";
 import { openPiRuntimeSessionFile } from "../../src/agent/pi-jsonl-conversation-storage.js";
 
@@ -39,6 +39,19 @@ describe("native source and exclusion policy", () => {
     expect(policy.allows(canonicalCwdIdentity(child))).toBe(true);
     expect(() => new NativeSessionPolicy([path.join(f.root, "missing")])).toThrow("configuration unavailable");
     rmSync(alias); expect(policy.allows(canonicalCwdIdentity(child))).toBe(false);
+  });
+
+  it("saved directory identities ignore dev but not path or inode", () => {
+    const f = fixture();
+    const saved = { ...f.identity, dev: f.identity.dev + 2 };
+    expect(sameSavedCwdIdentity(saved, f.identity)).toBe(true);
+    expect(sameSavedCwdIdentity({ ...saved, ino: saved.ino + 1 }, f.identity)).toBe(false);
+    expect(sameSavedCwdIdentity({ ...saved, cwd: f.root }, f.identity)).toBe(false);
+    expect(new NativeSessionPolicy([]).allows(saved)).toBe(true);
+    expect(liveCwdIdentity(saved)).toEqual(f.identity);
+    rmSync(f.cwd, { recursive: true }); mkdirSync(f.cwd);
+    expect(liveCwdIdentity(saved)).toBeNull();
+    expect(new NativeSessionPolicy([]).allows(saved)).toBe(false);
   });
 
   it("pages are bounded by examined entries and expose only fixed warnings", async () => {

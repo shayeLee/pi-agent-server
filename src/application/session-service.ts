@@ -18,7 +18,7 @@ import { readPiSessionCwdIdentity } from "../agent/pi-jsonl-conversation-storage
 import type { ImageInput } from "../agent/agent-adapter.js";
 import type { ConversationReadContext } from "./ports/conversation-port.js";
 import { bucketStarts, defaultUsageRange, localDayOf, summarizeUsage, type UsageLedgerEvent, type UsagePeriod, type UsageReport } from "../agent/usage-ledger.js";
-import { canonicalCwdIdentity } from "../core/native-session-policy.js";
+import { canonicalCwdIdentity, liveCwdIdentity } from "../core/native-session-policy.js";
 import { InvalidProjectCwdError } from "../core/project-cwd-error.js";
 import { payloadFingerprint } from "../core/payload-fingerprint.js";
 import type { UploadService, FileMessageOutcome } from "./upload-service.js";
@@ -777,15 +777,22 @@ export class SessionService {
     try { return canonicalCwdIdentity(project.cwd); } catch { return null; }
   }
 
-  /** Resolve only the creation-time JSONL root identity; mutable project/AGENT_CWD is never a preview fallback. */
+  /**
+   * Resolve only the creation-time JSONL root identity; mutable project/AGENT_CWD is never a preview fallback.
+   * The saved identity is matched once by path and inode, then the live one (current dev) is handed to the
+   * preview/search walk, whose own before/after checks stay within this request.
+   */
   async sessionProjectCwd(ownerKey: string, id: string): Promise<{ cwd: string; dev: number; ino: number } | null> {
     const record = await this.findOwned(ownerKey, id);
     if (!record) return null;
+    let saved: { cwd: string; dev: number; ino: number } | null;
     if (record.origin === "native" || await this.deps.nativeSessions?.hasSourceClaim?.(record)) {
-      return await this.deps.nativeSessions?.cwdIdentity(record) ?? null;
+      saved = await this.deps.nativeSessions?.cwdIdentity(record) ?? null;
+    } else {
+      if (record.conversationRef === null || record.agentKind !== PI_AGENT_KIND || record.conversationFormat !== PI_CONVERSATION_FORMAT) return null;
+      saved = readPiSessionCwdIdentity(record.conversationRef);
     }
-    if (record.conversationRef === null || record.agentKind !== PI_AGENT_KIND || record.conversationFormat !== PI_CONVERSATION_FORMAT) return null;
-    return readPiSessionCwdIdentity(record.conversationRef);
+    return saved ? liveCwdIdentity(saved) : null;
   }
 
   async controlSession(

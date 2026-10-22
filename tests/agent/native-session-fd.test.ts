@@ -118,6 +118,33 @@ describe("native descriptor authority", () => {
     expect(() => descriptor.check()).toThrow(); expect(io.writes).toBe(1); expect(poison).toBe(1); descriptor.close();
   });
 
+  it("a binding saved before a reboot renumbered the volume still reads, exports and appends", async () => {
+    const f = await fixture();
+    const saved = { ...f.binding, dev: f.binding.dev + 2, sourceDev: f.binding.sourceDev + 2 };
+    expect(f.source.allowsBinding(saved)).toBe(true);
+    expect(f.source.validate(saved).binding.sourceIno).toBe(f.binding.sourceIno);
+    const storage = new NativePiConversationStorage(f.source, { binding: async () => saved, claim: async () => null });
+    await expect(storage.readExport({ agentKind: "pi", conversationFormat: "pi-native-jsonl-v3", conversationRef: f.file }, { sessionId: "server", projectId: "project" }))
+      .resolves.toMatchObject({ messages: [] });
+    const { manager, descriptor } = openNativeSessionManager(f.source, saved);
+    manager.appendCustomEntry("after-reboot", {});
+    expect(nativeEntries(descriptor).at(-1)).toMatchObject({ customType: "after-reboot" });
+    descriptor.close();
+  });
+
+  it("a saved binding is still refused once its file or project directory is replaced", async () => {
+    const f = await fixture();
+    const saved = { ...f.binding, dev: f.binding.dev + 2, sourceDev: f.binding.sourceDev + 2 };
+    renameSync(f.file, f.file + ".old"); writeFileSync(f.file, f.header);
+    expect(() => f.source.validate(saved)).toThrow("native source unavailable");
+    expect(() => new NativeSessionFd(f.source, saved, false)).toThrow();
+    rmSync(f.file); renameSync(f.file + ".old", f.file);
+    expect(() => f.source.validate(saved)).not.toThrow();
+    renameSync(f.cwd, f.cwd + ".old"); mkdirSync(f.cwd);
+    expect(f.source.allowsBinding(saved)).toBe(false);
+    expect(() => f.source.validate(saved)).toThrow("native source unavailable");
+  });
+
   it("denies hard links, same-inode external edits and vanished exclusions", async () => {
     const f = await fixture(true); const { manager, descriptor } = openNativeSessionManager(f.source, f.binding);
     linkSync(f.file, path.join(f.root, "hardlink")); expect(() => descriptor.check()).toThrow(); descriptor.close();

@@ -5,7 +5,7 @@ import path from "node:path";
 import { abortTrace, traceSessionLifecycle } from "../core/abort-trace.js";
 import { resolveSdkToolConfig, validateResolvedToolSelection } from "./tool-selection.js";
 import { constants, openSync, closeSync, writeSync, fstatSync, mkdirSync, lstatSync, realpathSync } from "node:fs";
-import { canonicalCwdIdentity } from "../core/native-session-policy.js";
+import { canonicalCwdIdentity, sameSavedCwdIdentity } from "../core/native-session-policy.js";
 import { nativeProjectDirectory, nativePathSnapshot, type NativeSessionSource, type NativeSourceBinding } from "./native-session-source.js";
 import { openNativeSessionManager, type NativeSessionFd } from "./native-session-fd.js";
 import type { NativeSessionIndexPort } from "../application/native-session-service.js";
@@ -150,7 +150,7 @@ export class PiAgentSessionFactory implements AgentSessionFactory {
       const binding = sourceBinding;
       if (!binding || binding.sourcePath !== conversation.conversationRef || (!this.native && !binding.private) || (this.native && binding.private)) throw new Error("native source unavailable");
       const project = canonicalCwdIdentity(context.projectCwd);
-      if (project.cwd !== binding.cwd || project.dev !== binding.dev || project.ino !== binding.ino) throw new Error("native project identity changed");
+      if (!sameSavedCwdIdentity(binding, project)) throw new Error("native project identity changed");
       const { manager, descriptor } = openNativeSessionManager(sourceRegistration!.source, binding);
       try {
         const opened = await this.createSdkSession({ ...context, projectCwd: binding.cwd }, manager, false, descriptor);

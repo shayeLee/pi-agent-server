@@ -10,7 +10,7 @@ import { projectExecutionSnapshot } from "./execution-metrics.js";
 import { projectColdUsage } from "./cold-usage-snapshot.js";
 import { usageLedgerFromJsonl, UsageLedgerCache, type UsageLedgerEvent } from "./usage-ledger.js";
 import { firstUserPrompt } from "../client/session-title.js";
-import { canonicalCwdIdentity } from "../core/native-session-policy.js";
+import { canonicalCwdIdentity, sameSavedCwdIdentity } from "../core/native-session-policy.js";
 
 export const NATIVE_METADATA_MAX_BYTES = 256 * 1024;
 export const NATIVE_METADATA_TAIL_BYTES = 128 * 1024;
@@ -153,7 +153,7 @@ export class NativePiConversationStorage implements ConversationStorage {
       const header = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(prefix.subarray(0, newline)));
       const cwd = canonicalCwdIdentity(header.cwd);
       if (header.type !== "session" || header.version !== 3 || header.id !== binding.sourceId ||
-          cwd.cwd !== binding.cwd || cwd.dev !== binding.dev || cwd.ino !== binding.ino) throw new Error("native header changed");
+          !sameSavedCwdIdentity(binding, cwd)) throw new Error("native header changed");
       const tailStart = Math.max(0, stat.size - NATIVE_METADATA_TAIL_BYTES);
       const tail = tailStart < prefix.length && stat.size <= prefix.length
         ? prefix : fd.readRange(tailStart, NATIVE_METADATA_TAIL_BYTES);

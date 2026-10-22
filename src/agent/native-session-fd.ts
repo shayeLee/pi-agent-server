@@ -1,7 +1,7 @@
 import path from "node:path";
 import { constants, closeSync, fstatSync, lstatSync, openSync, readSync, writeSync, type Stats } from "node:fs";
 import { parseSessionEntries, SessionManager, type SessionEntry } from "@earendil-works/pi-coding-agent";
-import { canonicalCwdIdentity } from "../core/native-session-policy.js";
+import { canonicalCwdIdentity, sameSavedCwdIdentity } from "../core/native-session-policy.js";
 import { assertCurrentPiJsonl } from "./pi-jsonl-conversation-storage.js";
 import { nativePathSnapshot, sameNativeFile, sameNativeNode, type NativeSessionSource, type NativeSourceBinding } from "./native-session-source.js";
 
@@ -32,7 +32,7 @@ export class NativeSessionFd {
     try {
       if (this.poisoned || this.fd === undefined || !this.source.allowsBinding(this.binding)) throw new Error();
       const stat = fstatSync(this.fd);
-      if (!stat.isFile() || stat.nlink !== 1 || stat.dev !== this.binding.sourceDev || stat.ino !== this.binding.sourceIno || !sameNativeFile(stat, this.expected)) throw new Error();
+      if (!stat.isFile() || stat.nlink !== 1 || stat.ino !== this.binding.sourceIno || !sameNativeFile(stat, this.expected)) throw new Error();
       const nodes = nativePathSnapshot(this.source.root, this.binding.sourcePath);
       if (this.ancestors.some((node, index) => !sameNativeNode(node.stat, nodes[index]!.stat)) ||
           !sameNativeFile(stat, nodes.at(-1)!.stat) || !sameNativeFile(stat, fstatSync(this.fd))) throw new Error();
@@ -118,7 +118,7 @@ function validatedEntries(content: string, binding: NativeSourceBinding): Sessio
   const entries = parseSessionEntries(content) as SessionEntry[];
   const header = entries[0] as unknown as { id: string; cwd: string };
   const cwd = canonicalCwdIdentity(header.cwd);
-  if (header.id !== binding.sourceId || cwd.cwd !== binding.cwd || cwd.dev !== binding.dev || cwd.ino !== binding.ino) throw new Error("native header changed");
+  if (header.id !== binding.sourceId || !sameSavedCwdIdentity(binding, cwd)) throw new Error("native header changed");
   return entries;
 }
 

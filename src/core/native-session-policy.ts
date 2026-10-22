@@ -10,6 +10,24 @@ export function canonicalCwdIdentity(cwd: string): CanonicalCwdIdentity {
   return { cwd: canonical, dev: stat.dev, ino: stat.ino };
 }
 
+/**
+ * Compare a saved directory identity (a source binding row, a JSONL cwd-identity entry) with a
+ * live one. st_dev is handed out when a volume mounts, and macOS renumbers APFS volumes across
+ * reboots, so a saved identity matches on canonical path and inode only. Checks that start and
+ * end inside one process still compare dev.
+ */
+export function sameSavedCwdIdentity(saved: CanonicalCwdIdentity, live: CanonicalCwdIdentity): boolean {
+  return saved.cwd === live.cwd && saved.ino === live.ino;
+}
+
+/** The live identity of a saved directory identity, or null when the directory was replaced. */
+export function liveCwdIdentity(saved: CanonicalCwdIdentity): CanonicalCwdIdentity | null {
+  try {
+    const live = canonicalCwdIdentity(saved.cwd);
+    return sameSavedCwdIdentity(saved, live) ? live : null;
+  } catch { return null; }
+}
+
 export function splitSessionExcludeCwds(value: string | undefined): string[] {
   return (value ?? "").split(",").map(value => value.trim()).filter(Boolean);
 }
@@ -38,7 +56,7 @@ export class NativeSessionPolicy {
         if (current.cwd !== entry.identity.cwd || current.dev !== entry.identity.dev || current.ino !== entry.identity.ino) return false;
       }
       const current = canonicalCwdIdentity(identity.cwd);
-      return current.cwd === identity.cwd && current.dev === identity.dev && current.ino === identity.ino && !this.excludedPaths.has(current.cwd);
+      return sameSavedCwdIdentity(identity, current) && !this.excludedPaths.has(current.cwd);
     } catch {
       return false;
     }
