@@ -1,7 +1,7 @@
 import { render, screen } from '@testing-library/react';
 import { describe, expect, it } from 'vitest';
 import type { SubagentRun } from 'pi-agent-server/client';
-import { SubagentLivePanel } from './SubagentLivePanel.js';
+import { SubagentLivePanel, runConfig } from './SubagentLivePanel.js';
 
 const run = { id: 'r1', runId: '1', agent: 'worker', task: 'fix it', startedAt: Date.now(), status: 'running', revision: 1 } as SubagentRun;
 
@@ -19,5 +19,17 @@ describe('SubagentLivePanel', () => {
   it('omits the line when the child has no assistant text yet', () => {
     render(<SubagentLivePanel items={[{ run, actions: [] }]} />);
     expect(screen.queryByTestId('subagent-live-reply')).not.toBeInTheDocument();
+  });
+  it('shows the model without its provider and the thinking level, keeping the full id in the title', () => {
+    render(<SubagentLivePanel items={[{ run: { ...run, model: 'openai/gpt-6.1-sol', thinkingLevel: 'medium' }, actions: [] }]} onOpen={() => {}} />);
+    const config = screen.getByTestId('subagent-live-config');
+    expect(config).toHaveTextContent('gpt-6.1-sol · medium');
+    expect(config).toHaveAttribute('title', 'openai/gpt-6.1-sol medium');
+  });
+  it('shows whichever of model and thinking level is known, and nothing when neither is', () => {
+    expect(runConfig({ model: 'opus' })).toBe('opus');
+    expect(runConfig({ thinkingLevel: 'high' })).toBe('high');
+    render(<SubagentLivePanel items={[{ run, actions: [] }]} />);
+    expect(screen.queryByTestId('subagent-live-config')).not.toBeInTheDocument();
   });
 });

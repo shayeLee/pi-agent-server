@@ -1,5 +1,6 @@
 import { zhCN } from "../i18n/zh-CN.js";
 import { useEffect, useState } from "react";
+import type { SubagentRun } from "pi-agent-server/client";
 import type { LiveSubagent } from "../hooks/useLiveSubagents.js";
 import { formatElapsed } from "../hooks/useRunStatus.js";
 
@@ -34,7 +35,16 @@ export function SubagentLivePanel({ items, onOpen }: { items: LiveSubagent[]; on
         <span className="subagent-live-reply-text">{reply.text}</span>
         {reply.streaming && <span className="ledger-caret" aria-hidden="true" />}
       </p>}
-      {onOpen && <button type="button" className="subagent-live-open" onClick={() => onOpen(run.id)}>{zhCN.subagentLive.open}</button>}
+      {(onOpen || runConfig(run)) && <div className="subagent-live-foot">
+        {onOpen && <button type="button" className="subagent-live-open" onClick={() => onOpen(run.id)}>{zhCN.subagentLive.open}</button>}
+        {runConfig(run) && <span className="subagent-live-config" data-testid="subagent-live-config" title={[run.model, run.thinkingLevel].filter(Boolean).join(" ")}>{runConfig(run)}</span>}
+      </div>}
     </div>)}
   </section>;
+}
+
+/** Model without its provider prefix, then the thinking level: "gpt-6.1-sol · medium". The title keeps the full id. */
+export function runConfig(run: Pick<SubagentRun, "model" | "thinkingLevel">): string {
+  const model = run.model?.slice(run.model.lastIndexOf("/") + 1);
+  return [model, run.thinkingLevel].filter(Boolean).join(" · ");
 }
