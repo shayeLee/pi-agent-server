@@ -20,6 +20,10 @@ test("another session's run shows as running, then the companion at the composer
   await page.getByTestId("send-button").click();
   await expect(page.locator(".message-assistant")).toHaveCount(1);
   await expect(page.getByTestId("companion-dock")).toBeVisible();
+  // The sidebar's foot (settings, run activity) shares one line with the stats bar.
+  const center = async (testId: string) => { const box = (await page.getByTestId(testId).boundingBox())!; return box.y + box.height / 2; };
+  const stats = await center("stats-bar");
+  for (const id of ["settings-toggle", "sidebar-activity-toggle"]) expect(Math.abs(await center(id) - stats), id).toBeLessThanOrEqual(1);
   await expect(page.getByTestId(`session-${back.id}`)).toBeVisible();
 
   const sent = await request.post(`${API}/v1/sessions/${back.id}/messages`, { data: { requestId: `activity-${tag}`, prompt: "[slow] 后台跑一会儿" } });
