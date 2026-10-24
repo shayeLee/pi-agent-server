@@ -3,6 +3,7 @@ import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { pathToFileURL } from "node:url";
 
 const packageJson = JSON.parse(readFileSync("package.json", "utf8"));
 const directory = mkdtempSync(path.join(tmpdir(), "pi-migrate-package-smoke-"));
@@ -58,9 +59,13 @@ try {
   // Establish the disposable empty DB through the installed CLI bin (offline single canonical
   // baseline writer), never by importing the migration runner: a pre-backup cannot authenticate
   // a never-initialized DB without a ledger.
+  // The canonical head is whatever the shipped migration list ends at.
+  const { migrationDefinitions } = await import(pathToFileURL(path.join(installDir, "node_modules", packageJson.name, "dist-migrate/src/storage/migration-manifest.js")).href);
+  const headVersion = migrationDefinitions.at(-1).version;
+  const headLedger = JSON.stringify(migrationDefinitions.map(({ version, name }) => ({ version, name })));
   const bootstrap = run(migrateBin, ["--bootstrap-baseline", "--bootstrap-confirm", "CONFIRMED"], { cwd: process.cwd(), env });
   const bootstrapReport = lastJsonLine(bootstrap.stdout, bootstrap.stderr);
-  if (bootstrapReport.status !== "success" || bootstrapReport.mode !== "bootstrap-baseline" || bootstrapReport.migration?.mode !== "apply" || bootstrapReport.migration?.status !== "applied" || bootstrapReport.migration?.pending !== 0 || bootstrapReport.migration?.appliedVersion !== 0 || bootstrapReport.verify?.mode !== "verify" || bootstrapReport.verify?.status !== "verified" || bootstrapReport.verify?.appliedVersion !== 0 || bootstrapReport.verify?.pending !== 0) {
+  if (bootstrapReport.status !== "success" || bootstrapReport.mode !== "bootstrap-baseline" || bootstrapReport.migration?.mode !== "apply" || bootstrapReport.migration?.status !== "applied" || bootstrapReport.migration?.pending !== 0 || bootstrapReport.migration?.appliedVersion !== headVersion || bootstrapReport.verify?.mode !== "verify" || bootstrapReport.verify?.status !== "verified" || bootstrapReport.verify?.appliedVersion !== headVersion || bootstrapReport.verify?.pending !== 0) {
     throw new Error("installed bootstrap-baseline did not reach the canonical head");
   }
 
@@ -74,7 +79,7 @@ try {
   const db = new DatabaseSync(dbPath, { readOnly: true });
   const ledger = db.prepare("SELECT version, name FROM schema_migrations ORDER BY version").all();
   db.close();
-  if (JSON.stringify(ledger) !== JSON.stringify([{ version: 0, name: "initial-schema" }])) throw new Error("installed migration ledger is incomplete");
+  if (JSON.stringify(ledger) !== headLedger) throw new Error("installed migration ledger is incomplete");
   console.log("installed npm migration canonical-baseline/prebackup/no-op-apply/verify smoke: ok");
 } finally {
   rmSync(process.env.PI_BACKUP_STAGING_ROOT, { recursive: true, force: true });

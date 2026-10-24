@@ -46,7 +46,8 @@
     "dist-owner-transfer",
     "dist-drill",
     "docker/scheduler",
-    "integrations/agent-team"
+    "integrations/agent-team",
+    "!integrations/agent-team/claude-sdk/node_modules"
   ],
   "engines": {
     "node": ">=22.19.0"
