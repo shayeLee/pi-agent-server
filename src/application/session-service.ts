@@ -397,15 +397,31 @@ export class SessionService {
     for (const record of records) {
       if (!(await this.canAccess(ownerKey, record))) continue;
       const dto = toSessionDto(record);
-      if (!record.title.trim()) {
-        const storage = this.deps.conversationStorage?.get(record);
-        const context = { sessionId: record.id, projectId: record.projectId };
-        dto.title = await storage?.readTitle?.(record, context) ?? "";
-        if (!dto.title) dto.firstPrompt = await storage?.readFirstPrompt?.(record, context) ?? null;
-      }
+      if (!record.title.trim()) Object.assign(dto, await this.fallbackTitle(record));
       result.push(dto);
     }
     return result;
+  }
+
+  /**
+   * Where a session lives and what to call it, for the activity feed (docs/companion-butler.md §4):
+   * `null` when the caller cannot see it, by the same rule as every other read.
+   */
+  async activitySubject(ownerKey: string, id: string): Promise<{ projectId: string; title: string } | null> {
+    const record = await this.findOwned(ownerKey, id);
+    if (!record) return null;
+    if (record.title.trim()) return { projectId: record.projectId, title: record.title };
+    const fallback = await this.fallbackTitle(record);
+    return { projectId: record.projectId, title: fallback.title || fallback.firstPrompt || "" };
+  }
+
+  /** An untitled session's name from its transcript: the stored title, else the first prompt. */
+  private async fallbackTitle(record: SessionRecord): Promise<{ title: string; firstPrompt?: string | null }> {
+    const storage = this.deps.conversationStorage?.get(record);
+    const context = { sessionId: record.id, projectId: record.projectId };
+    const title = await storage?.readTitle?.(record, context) ?? "";
+    if (title) return { title };
+    return { title, firstPrompt: await storage?.readFirstPrompt?.(record, context) ?? null };
   }
 
   /**

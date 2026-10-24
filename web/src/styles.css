@@ -336,13 +336,20 @@ textarea::placeholder {
   flex: none;
 }
 
+/* The sidebar's foot: settings on the left, the resident companion on the right (docs/companion-butler.md §6.1). */
+.sidebar-footer {
+  flex: none;
+  order: 5;
+  position: relative;
+  display: flex; align-items: flex-end; justify-content: space-between; gap: var(--space-8);
+  align-self: stretch;
+  margin: auto var(--space-16) var(--space-16);
+}
+
 .settings-toggle {
   flex: none;
   display: flex; align-items: center;
-  margin: auto var(--space-16) var(--space-16);
-  order: 5;
   padding: 0;
-  align-self: flex-start;
   border: 0;
   border-radius: var(--radius-control);
   background: transparent;
@@ -355,14 +362,15 @@ textarea::placeholder {
   border-color: var(--accent);
 }
 
-.app-shell.sidebar-collapsed .settings-toggle {
+.app-shell.sidebar-collapsed .sidebar-footer {
+  flex-direction: column-reverse; align-items: center;
   margin: auto auto var(--space-16);
 }
 
 /* Match the stats-summary center: 16px footer inset + 14px half-row. */
 @media (min-width: 1180px) and (min-height: 481px) {
-  .settings-toggle,
-  .app-shell.sidebar-collapsed .settings-toggle { margin-bottom: 8px; }
+  .sidebar-footer,
+  .app-shell.sidebar-collapsed .sidebar-footer { margin-bottom: 8px; }
 }
 
 .new-session,
@@ -3030,9 +3038,9 @@ details[open] > summary > .details-chevron { transform: rotate(90deg); }
     display: block;
   }
 
-  .app-shell.mobile-sidebar-open .settings-toggle {
+  .app-shell.mobile-sidebar-open .sidebar-footer {
+    flex-direction: row; align-items: flex-end; align-self: stretch;
     margin: auto var(--space-16) var(--space-16);
-    align-self: flex-start;
   }
 
   .workbench-mobile-menu {
@@ -3805,7 +3813,7 @@ details[open] > summary > .details-chevron { transform: rotate(90deg); }
 .session-details { display: flex; flex-direction: column; gap: 2px; padding: 6px 8px; font-family: var(--font-mono); font-size: var(--fs-tag); font-weight: 400; color: var(--dim); }
 .session-menu-danger { color: var(--err); }
 
-.settings-toggle { font-family: var(--font-mono); font-size: var(--fs-meta); color: var(--dim); gap: 8px; min-height: 32px; margin-bottom: 8px; }
+.settings-toggle { font-family: var(--font-mono); font-size: var(--fs-meta); color: var(--dim); gap: 8px; min-height: 32px; }
 .settings-toggle:hover { color: var(--ink); }
 .settings-menu-label { font-weight: 400; font-size: var(--fs-meta); color: var(--dim); }
 .sidebar-hints { flex: none; margin: 8px 16px 0; font-family: var(--font-mono); font-size: var(--fs-tag); color: var(--faint); }
@@ -4154,4 +4162,28 @@ div.shortcut-help { width: min(440px, calc(100vw - 32px)); max-height: 80vh; ove
 @media (max-width: 640px) {
   .usage-plot { height: 180px; margin-left: 40px; }
   .usage-axis { margin-left: 40px; }
+}
+
+/* Resident companion at the sidebar's foot (docs/companion-butler.md §6.1). */
+.sidebar-companion { position: relative; flex: none; display: flex; align-items: flex-end; }
+.sidebar-companion-figure { position: relative; display: grid; place-items: center; width: 36px; height: 36px; padding: 0; border: 0; border-radius: var(--radius-control); background: none; color: var(--ink); cursor: pointer; }
+.sidebar-companion-figure.is-away { height: 32px; opacity: 0.6; }
+.sidebar-companion-figure:focus-visible { outline: 2px solid var(--acc); outline-offset: 2px; }
+.sidebar-companion-figure .companion-figure { stroke-width: 2.3; }
+.sidebar-companion-count { position: absolute; top: -2px; right: -4px; min-width: 16px; height: 16px; padding: 0 4px; border-radius: var(--radius-pill); background: var(--acc); color: var(--bg); font-family: var(--font-mono); font-size: var(--fs-tag); line-height: 16px; text-align: center; }
+.sidebar-companion-bubble { position: absolute; right: 0; bottom: calc(100% + 6px); z-index: 2; max-width: min(240px, calc(var(--layout-sidebar-width) - 32px)); padding: 4px 8px; border: 1px solid var(--faint); border-radius: var(--radius-control); background: var(--card); color: var(--ink); font-size: var(--fs-meta); line-height: 1.5; text-align: left; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; animation: sidebar-companion-bubble 6s ease-out both; }
+.sidebar-companion-bubble[data-kind="failed"] { border-color: var(--err); }
+.sidebar-companion-bubble:hover { border-color: var(--acc); }
+.sidebar-companion-bubble:focus-visible { outline: 2px solid var(--acc); outline-offset: 2px; }
+.app-shell.sidebar-collapsed:not(.mobile-sidebar-open) .sidebar-companion-bubble { left: 0; right: auto; max-width: 200px; }
+/* Starts fully shown: where animations do not run (a background page) the word must still be readable. */
+@keyframes sidebar-companion-bubble { 0%, 90% { opacity: 1; } 100% { opacity: 0; } }
+.sidebar-companion-menu { width: 280px; }
+.sidebar-companion-menu [data-ui="dropdown-label"] { font-weight: 400; font-size: var(--fs-meta); color: var(--dim); }
+.activity-row-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.activity-row-state { flex: none; font-family: var(--font-mono); font-size: var(--fs-tag); color: var(--dim); }
+.activity-row-state[data-kind="failed"] { color: var(--err); }
+.activity-notify-hint { margin: 0; padding: 2px 8px 6px 28px; font-size: var(--fs-tag); color: var(--dim); }
+@media (prefers-reduced-motion: reduce) {
+  .sidebar-companion-bubble { animation: none; }
 }

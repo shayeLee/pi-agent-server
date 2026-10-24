@@ -16,7 +16,7 @@ test.beforeAll(async () => {
     if (path === "/v1/models") return json({ models: [], thinkingLevels: ["off"], defaultModel: null, defaultThinkingLevel: "off" });
     if (path === "/v1/sessions") return req.method === "POST" ? json(session, 201) : json([]);
     if (path.endsWith("/export")) return json({ lastEventId: 0, messages: [], timeline: [] });
-    if (path.endsWith("/events")) {
+    if (path.startsWith("/v1/sessions/") && path.endsWith("/events")) {
       res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" }); res.flushHeaders(); stream = res;
       req.on("close", () => { if (stream === res) stream = undefined; }); return;
     }

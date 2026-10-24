@@ -78,7 +78,7 @@ for (const live of [false, true]) {
       }
       const requests: Array<{ id: string; cursor: string | undefined }> = [];
       page.on("request", (request) => {
-        if (request.url().includes("/events")) requests.push({ id: new URL(request.url()).pathname,
+        if (/\/v1\/sessions\/[^/]+\/events/.test(request.url())) requests.push({ id: new URL(request.url()).pathname,
           cursor: request.headers()["last-event-id"] });
       });
       await page.goto("/");

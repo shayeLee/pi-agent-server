@@ -1207,6 +1207,7 @@ export class SessionRuntime implements ManagedSessionRuntimePort {
       if (!this.ownsTask(task.key)) return;
       this.turnStartTime = this.now();
       this.turnFirstTokenTime = null;
+      this.observe({ type: "turn_started", sessionId: this.sessionId, requestId: task.requestId });
       if (task.input.kind === "extensionCustom") {
         if (!this.adapter.promptCustom) throw new Error("Custom messages unavailable");
         await this.adapter.promptCustom(task.input.message);

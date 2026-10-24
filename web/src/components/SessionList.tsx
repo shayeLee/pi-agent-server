@@ -86,6 +86,8 @@ export function highlightSessionTitle(title: string, query: string): ReactNode {
   return parts;
 }
 
+const NO_RUNNING: ReadonlySet<string> = new Set();
+
 export type SessionListProps = {
   sessions: SessionRecord[];
   loading?: boolean;
@@ -95,8 +97,8 @@ export type SessionListProps = {
   onDelete: (id: string) => void;
   onRename: (id: string, title: string) => void;
   onExport: (id: string) => void;
-  /** Session whose primary request this page sees running (DESIGN.md §5.2). */
-  runningId?: string | null;
+  /** Sessions running now, in any project (docs/companion-butler.md §4.3). */
+  runningIds?: ReadonlySet<string>;
   /** Bumped by the "/" shortcut to open and focus the search field. */
   searchRequest?: number;
 };
@@ -111,7 +113,7 @@ export function SessionList({
   onDelete,
   onRename,
   onExport,
-  runningId = null,
+  runningIds = NO_RUNNING,
   searchRequest = 0,
 }: SessionListProps) {
   const [query, setQuery] = useState("");
@@ -210,7 +212,7 @@ export function SessionList({
           <Fragment key={s.id}>
           {(index === 0 || sessionDateGroup(filtered[index - 1]!.updatedAt, now) !== sessionDateGroup(s.updatedAt, now)) &&
             <li className="session-date-group">{sessionDateGroup(s.updatedAt, now)}</li>}
-          <li className={`session-item ${s.id === activeId ? "active" : ""}${s.id === runningId ? " running" : ""}`}>
+          <li className={`session-item ${s.id === activeId ? "active" : ""}${runningIds.has(s.id) ? " running" : ""}`}>
             <button
               type="button"
               className="session-select"
@@ -221,10 +223,10 @@ export function SessionList({
               onClick={() => onSelect(s.id)}
               onContextMenu={(event) => { event.preventDefault(); setMenuFor(s.id); }}
             >
-              <span className="session-glyph" aria-hidden="true">{s.id === runningId ? "▶" : "·"}</span>
+              <span className="session-glyph" aria-hidden="true">{runningIds.has(s.id) ? "▶" : "·"}</span>
               <span className="session-title" title={resolveSessionDisplayTitle(s)}>{highlightSessionTitle(resolveSessionDisplayTitle(s), query)}</span>
             <span className="session-meta" id={`session-meta-${s.id}`}>
-              {s.id === runningId ? <span className="session-running">{zhCN.run.running}</span> : <time
+              {runningIds.has(s.id) ? <span className="session-running">{zhCN.run.running}</span> : <time
                 className="session-time"
                 data-testid={`session-time-${s.id}`}
                 dateTime={Number.isFinite(s.updatedAt) && s.updatedAt > 0 && !Number.isNaN(new Date(s.updatedAt).getTime())

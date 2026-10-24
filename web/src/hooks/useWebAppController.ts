@@ -885,6 +885,14 @@ export function useWebAppController() {
     setActiveSessionId(sessionId);
   }
 
+  /** Opens a session in any project the person can see, e.g. from the activity feed. */
+  function openSession(projectId: string, sessionId: string): void {
+    if (projectId === activeProjectId && sessions?.some(row => row.id === sessionId)) { selectSession(sessionId); return; }
+    if (!projectsRef.current?.some(project => project.id === projectId)) return;
+    rememberSelection(projectId, sessionId);
+    void resolveRoute({ projectId, sessionId }, navigationGenerationRef.current, selectionRevisionRef.current);
+  }
+
   function selectProject(projectId: string): void {
     if (!projectsRef.current?.some(project => project.id === projectId)) return;
     rememberSelection(projectId, null);
@@ -902,6 +910,7 @@ export function useWebAppController() {
     projects,
     activeProjectId,
     selectProject,
+    openSession,
     models,
     thinkingLevels,
     defaultModel,

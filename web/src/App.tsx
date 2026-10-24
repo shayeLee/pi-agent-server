@@ -22,6 +22,11 @@ import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuIte
 import { CommandPalette, ShortcutHelp, type Command } from "./components/CommandPalette.js";
 import { useGlobalShortcuts } from "./hooks/useGlobalShortcuts.js";
 import { useAccountMenu } from "./auth/AccountMenu.js";
+import { useAuth } from "./auth/auth-context.js";
+import { useActivity } from "./hooks/useActivity.js";
+import { useRunNotifications } from "./hooks/useRunNotifications.js";
+import { useCompanionPersona } from "./components/companion/Companion.js";
+import { SidebarCompanion } from "./components/companion/SidebarCompanion.js";
 import { accountScopedKey } from "./auth/storage-scope.js";
 
 const SIDEBAR_DEFAULT = 272;
@@ -235,6 +240,14 @@ export default function App() {
   const agentSettings = useAgentSettings({ api: controller.api, models: controller.models, projectId: controller.activeProjectId, onSaved: () => void controller.refreshModels() });
   const usage = useUsagePanel({ api: controller.api });
   const accountMenu = useAccountMenu();
+  const auth = useAuth();
+  // Runs across every session this person can see (docs/companion-butler.md §4, §6).
+  const activity = useActivity({ authGeneration: auth.generation, onAuthExpired: auth.onAuthExpired });
+  const personaState = useCompanionPersona(canCreateSession ? controller.companionPersona : undefined);
+  const openActivitySession = (projectId: string, sessionId: string) => { closeMobileSidebar(); controller.openSession(projectId, sessionId); };
+  const notifications = useRunNotifications(activity.latest, { name: personaState[0].name, onOpen: openActivitySession });
+  const runningIds = new Set(activity.running.keys());
+  if (streaming && controller.activeSessionId) runningIds.add(controller.activeSessionId);
   const themeLabels: Record<ThemeMode, string> = { light: zhCN.sidebar.lightMode, dark: zhCN.sidebar.darkMode, system: zhCN.sidebar.followSystem };
   const commands: Command[] = [
     ...(canCreateSession ? [{ id: "new", group: zhCN.palette.groupActions, label: zhCN.sidebar.newSession, hint: "N", run: newSession }] : []),
@@ -341,6 +354,7 @@ export default function App() {
             <Icon name="sidebar" />
           </button>
         </div>
+        <div className="sidebar-footer">
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <button type="button" className="settings-toggle" data-testid="settings-toggle" aria-label={zhCN.sidebar.settings} title={zhCN.sidebar.settings}>
@@ -363,6 +377,9 @@ export default function App() {
             {accountMenu.items}
           </DropdownMenuContent>
         </DropdownMenu>
+        <SidebarCompanion persona={personaState[0]} running={activity.running} recent={activity.recent} latest={activity.latest}
+          activeSessionId={controller.activeSessionId} onOpen={openActivitySession} notify={notifications} />
+        </div>
         {accountMenu.dialog}
         {projectMcp.dialog}
         {projectTrust.dialog}
@@ -420,7 +437,7 @@ export default function App() {
                   onDelete={controller.deleteSession}
                   onRename={controller.renameSession}
                   onExport={controller.exportSession}
-                  runningId={streaming ? controller.activeSessionId : null}
+                  runningIds={runningIds}
                   searchRequest={searchRequest}
                 />
               <p className="sidebar-hints" aria-hidden="true">{zhCN.palette.sidebarHints}</p>
@@ -501,7 +518,7 @@ export default function App() {
         onFollowUp={controller.followUp}
         loadCommands={controller.loadCommands}
         companionGreeting={controller.companionGreeting}
-        companionPersona={controller.companionPersona}
+        personaState={personaState}
         searchFiles={controller.searchFiles}
         onRunCommand={controller.runCommand}
         onToggleTrace={toggleInspector}

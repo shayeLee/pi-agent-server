@@ -67,7 +67,7 @@ for (const editDuringAdmission of [false, true]) test(`new session slow admissio
   await page.addInitScript(() => {
     const original = window.fetch.bind(window);
     window.fetch = async (...args) => {
-      if (!String(args[0]).includes('/events')) return original(...args);
+      if (!/\/v1\/sessions\/[^/]+\/events/.test(String(args[0]))) return original(...args);
       let sequence = 0;
       return new Response(new ReadableStream({ start(controller) {
         (window as any).__admissionEmit = (event: unknown) => controller.enqueue(new TextEncoder().encode(`id: ${++sequence}\ndata: ${JSON.stringify(event)}\n\n`));
@@ -172,7 +172,7 @@ test('full App uses authoritative queue, CRUD identity, drain removal and accept
   await page.addInitScript(() => {
     const original = window.fetch.bind(window);
     window.fetch = async (...args) => {
-      if (!String(args[0]).includes('/events')) return original(...args);
+      if (!/\/v1\/sessions\/[^/]+\/events/.test(String(args[0]))) return original(...args);
       let sequence = 0;
       const stream = new ReadableStream({ start(controller) {
         (window as any).__queueEmit = (event: unknown) => controller.enqueue(new TextEncoder().encode(`id: ${++sequence}\ndata: ${JSON.stringify(event)}\n\n`));

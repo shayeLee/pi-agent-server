@@ -1713,7 +1713,7 @@ describe("SessionRuntime（needs.md §4.2 会话任务编排）", () => {
   });
 
   describe("观测订阅口", () => {
-    it("正常完成时推送 turn(completed) 与 usage 观测事件", async () => {
+    it("正常完成时推送 turn_started、turn(completed) 与 usage 观测事件", async () => {
       const adapter = new MockAgentAdapter([{ type: "agent_end", messages: [], willRetry: false }]);
       adapter.lastUsage = { promptTokens: 10, completionTokens: 3, totalTokens: 13 };
       const observability = new CollectingObservability();
@@ -1723,6 +1723,7 @@ describe("SessionRuntime（needs.md §4.2 会话任务编排）", () => {
       await flush();
 
       expect(observability.events).toEqual([
+        { type: "turn_started", sessionId: "session-1", requestId: "r1" },
         { type: "turn", sessionId: "session-1", requestId: "r1", outcome: "completed", durationMs: 0, ttftMs: 0 },
         { type: "usage", sessionId: "session-1", requestId: "r1", promptTokens: 10, completionTokens: 3, totalTokens: 13 },
       ]);

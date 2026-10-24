@@ -21,7 +21,7 @@ test.beforeAll(async () => {
     if (path === "/v1/sessions") return json(sessions);
     if (path.endsWith("/control-queue")) return json({ requestId: null, revision: 0, items: [] });
     if (path.endsWith("/export")) return setTimeout(() => json({ lastEventId: 0, messages: [], timeline: [{ type: "message", id: "history", role: "assistant", text: Array.from({ length: 90 }, (_, i) => `历史第 ${i} 行阅读内容。`).join("\n\n"), streaming: false }] }), 200);
-    if (path.endsWith("/events")) {
+    if (path.startsWith("/v1/sessions/") && path.endsWith("/events")) {
       res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" }); res.flushHeaders(); streams.add(res);
       req.on("close", () => streams.delete(res)); return;
     }

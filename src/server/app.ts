@@ -57,6 +57,9 @@ import {
   routeRbacOnRequest,
 } from "./route-rbac.js";
 import { formatSseEvent } from "./sse-format.js";
+import { RunActivityHub, fanOutObservability, type RawActivity } from "../application/run-activity-hub.js";
+import { ActivityService } from "../application/activity-service.js";
+import type { ActivityStreamMessage } from "../shared/activity.js";
 import { nextBackpressureState, SSE_BACKPRESSURE_THRESHOLD } from "./sse-backpressure.js";
 import { defaultSseSocket, type SseReplyRaw, type SseRequestRaw, type SseSocket } from "./sse-socket.js";
 import { FilePreviewError, previewProjectFile } from "./session-file-preview.js";
@@ -131,6 +134,8 @@ export type ServerDeps = {
   idempotencyRepo?: IdempotencyStorePort;
   /** 观测订阅口（可选；关键路径推送脱敏观测事件）。 */
   observability?: ObservabilityPort;
+  /** Run activity across sessions; tests that inject `registry` pass the hub it feeds. */
+  activityHub?: RunActivityHub;
   /**
    * 测试/自定义注入（生产不传，缺省 stdout）：Fastify 内置 pino 的目的流。
    * 测试用内存 Writable 捕获真实序列化出来的日志行，断言请求日志脱敏
@@ -539,12 +544,20 @@ export function buildApp(deps: ServerDeps): FastifyInstance {
   app.addContentTypeParser("application/octet-stream", { parseAs: "buffer", bodyLimit: ATTACHMENT_MAX_BYTES },
     (_request, body, done) => done(null, body));
   const concurrency = deps.concurrency ?? new ConcurrencyController(DEFAULT_CONCURRENCY);
+  // Runs across sessions (docs/companion-butler.md §4); an injected registry must feed deps.activityHub itself.
+  const activityHub = deps.activityHub ?? new RunActivityHub();
   const registry = deps.registry ?? new RuntimeRegistry({
     concurrency,
     createAdapter: deps.createAdapter,
     idempotencyRepo: deps.idempotencyRepo,
-    observability: deps.observability,
+    observability: fanOutObservability(deps.observability, activityHub),
   });
+  const activityClosers = new Set<() => void>();
+  /** Activity streams close with the server, like session streams. */
+  function registerActivityClose(close: () => void): () => void {
+    activityClosers.add(close);
+    return () => { activityClosers.delete(close); };
+  }
   // 关闭中标志：preClose 置真，SSE 路由在 hijack 前检查，拒绝晚建立的连接（避免关闭自锁）。
   let closing = false;
   // WP5A 最小运维门禁基础（与 /health 一样免鉴权，供探针使用）：
@@ -584,6 +597,7 @@ export function buildApp(deps: ServerDeps): FastifyInstance {
     now: Date.now,
   });
   deps.onSessionServiceReady?.(sessions);
+  const activity = new ActivityService(activityHub, (ownerKey, sessionId) => sessions.activitySubject(ownerKey, sessionId));
 
   const sseConnections = new Map<string, number>();
   const maxSseGlobal = deps.maxSseGlobal ?? 100;
@@ -1397,34 +1411,178 @@ export function buildApp(deps: ServerDeps): FastifyInstance {
     );
 
     // SSE is a transport concern: headers, connection limits, heartbeats and byte backpressure stay in HTTP.
-    // SSE GET-only：显式禁用 Fastify 自动 HEAD，避免 HEAD 执行下方配额/runtime/DB 路径。
-    // 其它 /v1 GET 的默认 HEAD 兼容行为保持不变。
-    api.get<{ Params: { id: string } }>("/sessions/:id/events", { exposeHeadRoute: false, ...requirePermission("sessions:events") }, async (request, reply) => {
-      // WP5D-3 P2 顺序红线：关闭检查与配额检查+占位必须在任何 runtime 创建/查询**之前**同步完成
-      // ——429/503 及后续所有拒绝路径零 adapter/DB/conversation_ref 副作用。
+    //
+    // Takes one of the caller's SSE slots, or answers 503/429 and returns null. Checking and taking
+    // happen in the same synchronous block (before any await), so concurrent requests cannot slip
+    // past the limit. The returned release is idempotent: every pre-stream failure calls it, and an
+    // opened stream calls it once on cleanup.
+    function reserveSseSlot(request: FastifyRequest, reply: FastifyReply): (() => void) | null {
       // 关闭中：拒绝建立新 SSE 连接，避免 preClose 之后晚建立的连接阻塞 close。
       if (closing) {
-        return reply.code(503).send({ statusCode: 503, error: "Service Unavailable", message: "服务正在关闭" });
+        void reply.code(503).send({ statusCode: 503, error: "Service Unavailable", message: "服务正在关闭" });
+        return null;
       }
       const subjectHash = request.subjectHash;
       const userCount = sseConnections.get(subjectHash) ?? 0;
       const globalCount = [...sseConnections.values()].reduce((a, b) => a + b, 0);
       if (userCount >= maxSsePerUser || globalCount >= maxSseGlobal) {
-        return reply.code(429).send({ statusCode: 429, error: "Too Many Requests", message: "SSE 连接过多，请稍后重试" });
+        void reply.code(429).send({ statusCode: 429, error: "Too Many Requests", message: "SSE 连接过多，请稍后重试" });
+        return null;
       }
-      // 配额检查与占位在同一同步块内完成（首个 await 之前）：Node 单线程事件循环下检查与占位
-      // 之间不可能插入其他请求的处理——并发请求无法在检查后、占位前挤入，上限不可绕过；
-      // 占位成功后，任何拒绝/异常路径（204/404/查询异常/socket 工厂失败等 pre-stream 失败）
-      // 必须恰释放一次（releaseSlot 幂等），成功连接则由连接清理（cleanup）恰释放一次。
       sseConnections.set(subjectHash, userCount + 1);
-      let slotReleased = false;
-      function releaseSlot(): void {
-        if (slotReleased) return;
-        slotReleased = true;
+      let released = false;
+      return () => {
+        if (released) return;
+        released = true;
         const c = sseConnections.get(subjectHash) ?? 1;
         if (c <= 1) sseConnections.delete(subjectHash);
         else sseConnections.set(subjectHash, c - 1);
+      };
+    }
+
+    type SseStream = {
+      /** Writes one frame; a refused output guard or a broken socket marks the stream for closing. */
+      write: (data: string) => void;
+      /** Closes now if a write asked for it. */
+      closeIfNeeded: () => void;
+      close: () => void;
+      isClosed: () => boolean;
+      /** Runs once when the stream ends, however it ends. */
+      onCleanup: (fn: () => void) => void;
+    };
+
+    /**
+     * Takes over the response as an event stream: headers (with CORS, as @fastify/cors would send
+     * them), heartbeats, byte backpressure and, for account logins, the periodic recheck that sends
+     * `auth_expired` and closes. Returns null when the connection is already gone; the slot is then
+     * released. `outputAllowed` is checked before every write; when it refuses, the stream closes
+     * and `onOutputDenied` runs.
+     */
+    function openSseStream(request: FastifyRequest, reply: FastifyReply, releaseSlot: () => void,
+      guard?: { outputAllowed: () => boolean; onOutputDenied: () => void }): SseStream | null {
+      reply.hijack();
+      // socket 工厂失败：释放占位并手动关闭底层连接，避免客户端挂起无响应
+      let socket: SseSocket;
+      try {
+        socket = (deps.sseSocketFactory ?? defaultSseSocket)(reply.raw, request.raw);
+      } catch {
+        releaseSlot();
+        reply.raw.destroy();
+        return null;
       }
+      const backpressureThreshold = deps.sseBackpressureThreshold ?? SSE_BACKPRESSURE_THRESHOLD;
+      let backpressure = 0;
+      let shouldClose = false;
+      let cleaned = false;
+      const cleanups: (() => void)[] = [];
+      let heartbeat: ReturnType<typeof setInterval> | undefined;
+      let authRecheck: ReturnType<typeof setInterval> | undefined;
+      function cleanup(): void {
+        if (cleaned) return;
+        cleaned = true;
+        if (heartbeat) clearInterval(heartbeat);
+        if (authRecheck) clearInterval(authRecheck);
+        for (const fn of cleanups) {
+          try { fn(); } catch { /* 清理互不影响 */ }
+        }
+        releaseSlot(); // 成功连接：清理时释放占位恰一次（幂等）
+      }
+      // 统一关闭：清理配额/订阅并关闭底层连接，异常隔离（任何失败路径都可安全调用，幂等）
+      function safeClose(): void {
+        cleanup();
+        try { socket.end(); } catch { /* 忽略：底层连接已不可用 */ }
+      }
+      // 尽早注册 close：覆盖 writeHead/补发期间客户端断开的窗口
+      try {
+        socket.onClose(cleanup);
+      } catch {
+        safeClose();
+        return null;
+      }
+      // 防御：客户端在占位后、onClose 注册前已断开（close 事件已不可达）→ 立即清理，避免配额泄漏
+      if (request.raw.destroyed || request.raw.aborted || reply.raw.destroyed) {
+        safeClose();
+        return null;
+      }
+      // CORS 与 @fastify/cors 对齐：静态 origin 仅用于 "*"；动态 allowlist 命中才回显并声明 Vary；
+      // 未命中/无 origin 不发 ACAO。
+      const requestOrigin = request.headers.origin;
+      const sseStaticOrigin = corsOriginOption === "*" ? "*" : undefined;
+      const sseDynamicOrigins = Array.isArray(corsOriginOption) ? corsOriginOption : [];
+      const allowOrigin = sseStaticOrigin !== undefined
+        ? sseStaticOrigin
+        : sseDynamicOrigins.length > 0 && typeof requestOrigin === "string" && sseDynamicOrigins.includes(requestOrigin)
+          ? requestOrigin
+          : undefined;
+      try {
+        socket.writeHead(200, {
+          "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive",
+          // hijack 后绕过 Fastify 响应流程，需手动带上 CORS 头（浏览器跨域直连时必需）。
+          ...(allowOrigin ? { "Access-Control-Allow-Origin": allowOrigin } : {}),
+          ...(sseDynamicOrigins.length > 0 ? { Vary: "Origin" } : {}),
+          ...(deps.serverEpoch ? { "X-Server-Epoch": deps.serverEpoch } : {}),
+        });
+        socket.flushHeaders();
+      } catch {
+        safeClose();
+        return null;
+      }
+      function write(data: string): void {
+        if (cleaned) return;
+        if (guard && !guard.outputAllowed()) {
+          shouldClose = true;
+          safeClose();
+          guard.onOutputDenied();
+          return;
+        }
+        let ok: boolean;
+        try {
+          ok = socket.write(data);
+        } catch {
+          // 写失败（底层连接已坏）：标记应关闭，不抛异常（heartbeat/subscribe 回调内不得冒泡）
+          shouldClose = true;
+          return;
+        }
+        const state = nextBackpressureState(backpressure, ok, backpressureThreshold);
+        backpressure = state.backpressure;
+        if (state.shouldClose) shouldClose = true;
+      }
+      function closeIfNeeded(): void {
+        if (shouldClose && !cleaned) safeClose();
+      }
+      heartbeat = setInterval(() => { write(": ping\n\n"); closeIfNeeded(); }, 15000);
+      // 账号认证的连接定时复核（docs/login-design.md §4）：与新请求同样的检查，不重叠，单次有上限；
+      // 失效时尽力发 auth_expired 再关闭这条连接，**不中止** Agent 任务（不走 outputAllowed 的 abort 分支）。
+      const authContext = request.authContext;
+      if (authContext) {
+        let checking = false;
+        authRecheck = setInterval(() => {
+          if (checking || cleaned) return;
+          checking = true;
+          void recheckWithin(authContext.recheck, deps.authRecheckTimeoutMs ?? 5_000).then((ok) => {
+            checking = false;
+            if (ok || cleaned) return;
+            try { socket.write(`data: ${JSON.stringify({ type: "auth_expired" })}\n\n`); } catch { /* 尽力而为 */ }
+            safeClose();
+          });
+        }, deps.authRecheckIntervalMs ?? 30_000);
+      }
+      return {
+        write,
+        closeIfNeeded,
+        close: safeClose,
+        isClosed: () => cleaned,
+        onCleanup: fn => { if (cleaned) fn(); else cleanups.push(fn); },
+      };
+    }
+
+    // SSE GET-only：显式禁用 Fastify 自动 HEAD，避免 HEAD 执行下方配额/runtime/DB 路径。
+    // 其它 /v1 GET 的默认 HEAD 兼容行为保持不变。
+    api.get<{ Params: { id: string } }>("/sessions/:id/events", { exposeHeadRoute: false, ...requirePermission("sessions:events") }, async (request, reply) => {
+      // WP5D-3 P2 顺序红线：关闭检查与配额检查+占位必须在任何 runtime 创建/查询**之前**同步完成
+      // ——429/503 及后续所有拒绝路径零 adapter/DB/conversation_ref 副作用。
+      const releaseSlot = reserveSseSlot(request, reply);
+      if (!releaseSlot) return reply;
       // 入口解析（关闭/配额之后）：viewer 只 registry.getExisting——绝不创建 runtime，
       // 记录存在但无 runtime 时返回稳定受控态 204（无可订阅的 live 事件流；文档见
       // needs.md §8 / README API 表）；user/admin 保持 getOrCreate（懒实例化）。
@@ -1468,124 +1626,68 @@ export function buildApp(deps: ServerDeps): FastifyInstance {
       const lastEventId = parseLastEventId(request.headers["last-event-id"]);
       const clientEpoch = request.headers["x-client-epoch"];
       const effectiveLastEventId = Boolean(deps.serverEpoch) && clientEpoch !== undefined && clientEpoch !== deps.serverEpoch ? 0 : lastEventId;
-      reply.hijack();
-      // socket 工厂失败：释放占位并手动关闭底层连接，避免客户端挂起无响应
-      let socket: SseSocket;
-      try {
-        socket = (deps.sseSocketFactory ?? defaultSseSocket)(reply.raw, request.raw);
-      } catch {
-        releaseSlot();
-        reply.raw.destroy();
-        return;
-      }
-      const backpressureThreshold = deps.sseBackpressureThreshold ?? SSE_BACKPRESSURE_THRESHOLD;
-      let backpressure = 0;
-      let shouldClose = false;
-      let cleaned = false;
-      let unsubscribe: () => void = () => {};
-      let unregisterClose: () => void = () => {};
-      let heartbeat: ReturnType<typeof setInterval> | undefined;
-      let authRecheck: ReturnType<typeof setInterval> | undefined;
-      function cleanup(): void {
-        if (cleaned) return;
-        cleaned = true;
-        if (heartbeat) clearInterval(heartbeat);
-        if (authRecheck) clearInterval(authRecheck);
-        unsubscribe();
-        unregisterClose();
-        releaseSlot(); // 成功连接：清理时释放占位恰一次（幂等）
-      }
-      // 统一关闭：清理配额/订阅并关闭底层连接，异常隔离（任何失败路径都可安全调用，幂等）
-      function safeClose(): void {
-        cleanup();
-        try { socket.end(); } catch { /* 忽略：底层连接已不可用 */ }
-      }
-      // 尽早注册 close：覆盖 writeHead/补发期间客户端断开的窗口
-      try {
-        socket.onClose(cleanup);
-      } catch {
-        safeClose();
-        return;
-      }
-      // 防御：客户端在占位后、onClose 注册前已断开（close 事件已不可达）→ 立即清理，避免配额泄漏
-      if (request.raw.destroyed || request.raw.aborted || reply.raw.destroyed) {
-        safeClose();
-        return;
-      }
-      // CORS 与 @fastify/cors 对齐：静态 origin 仅用于 "*"；动态 allowlist 命中才回显并声明 Vary；
-      // 未命中/无 origin 不发 ACAO。
-      const requestOrigin = request.headers.origin;
-      const sseStaticOrigin = corsOriginOption === "*" ? "*" : undefined;
-      const sseDynamicOrigins = Array.isArray(corsOriginOption) ? corsOriginOption : [];
-      const allowOrigin = sseStaticOrigin !== undefined
-        ? sseStaticOrigin
-        : sseDynamicOrigins.length > 0 && typeof requestOrigin === "string" && sseDynamicOrigins.includes(requestOrigin)
-          ? requestOrigin
-          : undefined;
-      try {
-        socket.writeHead(200, {
-          "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive",
-          // hijack 后绕过 Fastify 响应流程，需手动带上 CORS 头（浏览器跨域直连时必需）。
-          ...(allowOrigin ? { "Access-Control-Allow-Origin": allowOrigin } : {}),
-          ...(sseDynamicOrigins.length > 0 ? { Vary: "Origin" } : {}),
-          ...(deps.serverEpoch ? { "X-Server-Epoch": deps.serverEpoch } : {}),
-        });
-        socket.flushHeaders();
-      } catch {
-        safeClose();
-        return;
-      }
-      function writeRaw(data: string): boolean {
-        if (cleaned) return false;
-        if (!outputAllowed()) {
-          shouldClose = true;
-          safeClose();
-          void found.runtime.abort().catch(() => {});
-          return false;
-        }
-        let ok: boolean;
-        try {
-          ok = socket.write(data);
-        } catch {
-          // 写失败（底层连接已坏）：标记应关闭，不抛异常（heartbeat/subscribe 回调内不得冒泡）
-          shouldClose = true;
-          return false;
-        }
-        const state = nextBackpressureState(backpressure, ok, backpressureThreshold);
-        backpressure = state.backpressure;
-        if (state.shouldClose) shouldClose = true;
-        return ok;
-      }
-      function maybeClose(): void {
-        if (shouldClose && !cleaned) safeClose();
-      }
-      heartbeat = setInterval(() => { writeRaw(": ping\n\n"); maybeClose(); }, 15000);
-      // 账号认证的连接定时复核（docs/login-design.md §4）：与新请求同样的检查，不重叠，单次有上限；
-      // 失效时尽力发 auth_expired 再关闭这条连接，**不中止** Agent 任务（不走 outputAllowed 的 abort 分支）。
-      const authContext = request.authContext;
-      if (authContext) {
-        let checking = false;
-        authRecheck = setInterval(() => {
-          if (checking || cleaned) return;
-          checking = true;
-          void recheckWithin(authContext.recheck, deps.authRecheckTimeoutMs ?? 5_000).then((ok) => {
-            checking = false;
-            if (ok || cleaned) return;
-            try { socket.write(`data: ${JSON.stringify({ type: "auth_expired" })}\n\n`); } catch { /* 尽力而为 */ }
-            safeClose();
-          });
-        }, deps.authRecheckIntervalMs ?? 30_000);
-      }
+      const stream = openSseStream(request, reply, releaseSlot,
+        { outputAllowed, onOutputDenied: () => { void found.runtime.abort().catch(() => {}); } });
+      if (!stream) return;
       let subscribed = false;
-      unsubscribe = events.subscribe(({ id, event }) => {
-        if (shouldClose || cleaned) return;
-        writeRaw(formatSseEvent(id, event));
-        if (subscribed) maybeClose();
+      const unsubscribe = events.subscribe(({ id, event }) => {
+        if (stream.isClosed()) return;
+        stream.write(formatSseEvent(id, event));
+        if (subscribed) stream.closeIfNeeded();
       }, effectiveLastEventId);
       subscribed = true;
-      maybeClose();
-      if (cleaned) { unsubscribe(); return; }
-      unregisterClose = events.registerClose(() => { safeClose(); });
+      stream.onCleanup(unsubscribe);
+      stream.closeIfNeeded();
+      if (stream.isClosed()) return;
+      stream.onCleanup(events.registerClose(() => { stream.close(); }));
+    });
+
+    // Runs across every session the caller can see (docs/companion-butler.md §4.2).
+    api.get("/activity", { exposeHeadRoute: false, ...requirePermission("sessions:list") }, async (request) => {
+      const { lastId: _lastId, ...snapshot } = await activity.snapshot(ownerKeyOf(request));
+      return snapshot;
+    });
+
+    // Each connection starts with a snapshot, then sends each change after it; a reconnect gets a
+    // fresh snapshot, so Last-Event-ID is not used. Changes that arrive while the snapshot is being
+    // read wait, and only those newer than it are sent.
+    api.get("/activity/events", { exposeHeadRoute: false, ...requirePermission("sessions:list") }, async (request, reply) => {
+      const releaseSlot = reserveSseSlot(request, reply);
+      if (!releaseSlot) return reply;
+      const ownerKey = ownerKeyOf(request);
+      const waiting: RawActivity[] = [];
+      let live: ((raw: RawActivity) => void) | null = null;
+      const unsubscribe = activity.subscribe(raw => { if (live) live(raw); else waiting.push(raw); });
+      let snapshot: Awaited<ReturnType<typeof activity.snapshot>>;
+      try {
+        snapshot = await activity.snapshot(ownerKey);
+      } catch (error) {
+        unsubscribe();
+        releaseSlot();
+        throw new Error("运行动态读取失败", { cause: error });
+      }
+      const stream = openSseStream(request, reply, releaseSlot);
+      if (!stream) { unsubscribe(); return; }
+      stream.onCleanup(unsubscribe);
+      const { lastId, ...body } = snapshot;
+      stream.write(`id: ${lastId}\ndata: ${JSON.stringify({ type: "activity_snapshot", ...body } satisfies ActivityStreamMessage)}\n\n`);
+      stream.closeIfNeeded();
+      // Access is checked per change, in order: a slow lookup must not let a later change overtake it.
+      let chain = Promise.resolve();
+      const send = (raw: RawActivity) => {
+        if (raw.id <= lastId) return;
+        chain = chain.then(async () => {
+          if (stream.isClosed()) return;
+          const event = await activity.view(ownerKey, raw).catch(() => null);
+          if (!event || stream.isClosed()) return;
+          stream.write(`id: ${raw.id}\ndata: ${JSON.stringify({ type: "activity", event } satisfies ActivityStreamMessage)}\n\n`);
+          stream.closeIfNeeded();
+        });
+      };
+      for (const raw of waiting.splice(0)) send(raw);
+      live = send;
+      stream.onCleanup(() => { live = null; });
+      stream.onCleanup(registerActivityClose(() => stream.close()));
     });
   }, { prefix: "/v1" });
 
@@ -1595,6 +1697,7 @@ export function buildApp(deps: ServerDeps): FastifyInstance {
   app.addHook("preClose", async () => {
     closing = true;
     registry.closeAllEvents();
+    for (const close of [...activityClosers]) close();
   });
   const releaseAbortTrace = installAbortTrace();
   app.addHook("onClose", async () => {

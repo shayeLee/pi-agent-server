@@ -1,5 +1,5 @@
 // Endpoints for optional features (login state, MCP, model sign-in, Agent settings, project trust,
-// composer commands/files, companion). The Web UI hides their entry points when the server answers
+// composer commands/files, companion, cross-session activity). The Web UI hides their entry points when the server answers
 // 404 (for /v1/auth/state: ip mode, no login page), so route fixtures that do not exercise them return 404.
 const optional = [
   /^\/v1\/auth\/state$/,
@@ -7,6 +7,7 @@ const optional = [
   /^\/v1\/provider-auth(\/|$)/,
   /^\/v1\/settings$/,
   /^\/v1\/companion\//,
+  /^\/v1\/activity(\/|$)/,
   /^\/v1\/projects\/[^/]+\/(mcp|trust|commands|files|companion)(\/|$)/,
   /^\/v1\/sessions\/[^/]+\/(commands|files|command-prompt)$/,
 ];

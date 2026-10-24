@@ -10,7 +10,8 @@ export type SseDecoder = {
   decode(input?: Uint8Array, options?: { stream?: boolean }): string;
 };
 
-export type ConsumeSseOptions = {
+/** `E` is the stream's message type; session streams carry SseEvent. */
+export type ConsumeSseOptions<E = SseEvent> = {
   url: string;
   headers?: HeadersProvider;
   /** Optional platform-specific Fetch API implementation. */
@@ -18,7 +19,7 @@ export type ConsumeSseOptions = {
   /** Factory for a platform-specific streaming UTF-8 decoder. Defaults to TextDecoder. */
   createDecoder?: () => SseDecoder;
   /** Event callback; lastEventId is the most recently observed id. */
-  onEvent: (event: SseEvent, lastEventId: number) => void;
+  onEvent: (event: E, lastEventId: number) => void;
   onError?: (error: Error) => void;
   /** Called when response headers arrive. */
   onOpen?: () => void;
@@ -38,8 +39,16 @@ export type ConsumeSseOptions = {
  */
 export type ConsumeSseResult = "no-live-stream" | "auth-expired" | void;
 
+/** The stream could not open: the server answered with this HTTP status. */
+export class SseHttpError extends Error {
+  constructor(readonly status: number) {
+    super(`SSE 连接失败：HTTP ${status}`);
+    this.name = "SseHttpError";
+  }
+}
+
 /** Consume one SSE connection until it ends or is interrupted. */
-export async function consumeSse(options: ConsumeSseOptions): Promise<ConsumeSseResult> {
+export async function consumeSse<E = SseEvent>(options: ConsumeSseOptions<E>): Promise<ConsumeSseResult> {
   const parser = new SseParser();
   const isAborted = () => options.signal?.aborted === true;
   let lastEventId = options.lastEventId ?? 0;
@@ -62,7 +71,7 @@ export async function consumeSse(options: ConsumeSseOptions): Promise<ConsumeSse
   if (res.status === 204) return "no-live-stream";
   if (res.status === 401) return "auth-expired";
   if (!res.ok || !res.body) {
-    throw new Error(`SSE 连接失败：HTTP ${res.status}`);
+    throw new SseHttpError(res.status);
   }
 
   const decoder = (options.createDecoder ?? (() => new TextDecoder()))();
@@ -79,7 +88,7 @@ export async function consumeSse(options: ConsumeSseOptions): Promise<ConsumeSse
         if (Number.isFinite(id)) lastEventId = id;
       }
       try {
-        const event = JSON.parse(frame.data) as SseEvent;
+        const event = JSON.parse(frame.data) as E;
         if ((event as { type?: unknown }).type === "auth_expired") {
           authExpired = true;
           break;
@@ -121,7 +130,7 @@ export async function consumeSse(options: ConsumeSseOptions): Promise<ConsumeSse
   }
 }
 
-export type SseConnectionOptions = {
+export type SseConnectionOptions<E = SseEvent> = {
   url: string;
   headers?: HeadersProvider;
   /** Optional platform-specific Fetch API implementation. */
@@ -129,7 +138,7 @@ export type SseConnectionOptions = {
   /** Factory for a platform-specific streaming UTF-8 decoder. Defaults to TextDecoder. */
   createDecoder?: () => SseDecoder;
   /** Event callback includes the consumed cursor for host-managed session resumption. */
-  onEvent: (event: SseEvent, lastEventId: number) => void;
+  onEvent: (event: E, lastEventId: number) => void;
   onError?: (error: Error) => void;
   /** Called when the connection opens (including after reconnect). */
   onOpen?: () => void;
@@ -151,7 +160,7 @@ export type SseConnectionOptions = {
 };
 
 /** Establish an auto-reconnecting SSE connection; returns an idempotent close function. */
-export function createSseConnection(options: SseConnectionOptions): { close: () => void } {
+export function createSseConnection<E = SseEvent>(options: SseConnectionOptions<E>): { close: () => void } {
   const controller = new AbortController();
   let closed = false;
   let lastEventId = options.lastEventId ?? 0;
@@ -165,7 +174,7 @@ export function createSseConnection(options: SseConnectionOptions): { close: () 
   async function loop(): Promise<void> {
     while (!closed) {
       try {
-        const result = await consumeSse({
+        const result = await consumeSse<E>({
           url: options.url,
           headers: options.headers,
           fetch: options.fetch,

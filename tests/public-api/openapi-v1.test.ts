@@ -292,6 +292,7 @@ describe("public host API v1 contract", () => {
       expect(app.hasRoute({ method: "HEAD", url: "/readyz" })).toBe(false);
       expect(app.hasRoute({ method: "HEAD", url: "/metrics" })).toBe(false);
       expect(app.hasRoute({ method: "HEAD", url: "/v1/sessions/:id/events" })).toBe(false);
+      expect(app.hasRoute({ method: "HEAD", url: "/v1/activity/events" })).toBe(false);
       expect(app.hasRoute({ method: "GET", url: "/v1/capabilities" })).toBe(false);
     } finally {
       await app.close();
@@ -302,6 +303,8 @@ describe("public host API v1 contract", () => {
       try {
         for (const operations of [PUBLIC_API_OPERATIONS, PUBLIC_API_AUTOMATIC_HEAD_OPERATIONS] as const) {
           for (const [path, method, permission] of operations) {
+            // A permitted activity stream stays open; the denied roles still check its permission.
+            if (path === "/v1/activity/events" && ROUTE_PERMISSIONS[permission].includes(role)) continue;
             const response = await roleApp.inject({
               method: method.toUpperCase() as never,
               url: path.replaceAll("{id}", "missing").replaceAll("{name}", "missing"),

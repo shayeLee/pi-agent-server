@@ -1057,6 +1057,214 @@
         ]
       }
     },
+    "/v1/activity": {
+      "get": {
+        "operationId": "getActivity",
+        "security": [
+          {
+            "IpAdmission": []
+          },
+          {
+            "IpAdmission": [],
+            "BearerAuth": []
+          },
+          {
+            "IpAdmission": [],
+            "SessionCookie": []
+          }
+        ],
+        "x-pi-rbac": {
+          "permission": "sessions:list",
+          "roles": [
+            "admin",
+            "user",
+            "viewer"
+          ]
+        },
+        "responses": {
+          "200": {
+            "description": "Runs of every session the caller can see: running now, and how runs ended in the last 24 hours (at most 200, newest first). Kept in memory; a restart starts empty.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ActivitySnapshot"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer token required for this admitted IP profile, or (accounts mode) sign-in required: code auth_required.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "IP admission or RBAC denied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/activity/events": {
+      "get": {
+        "operationId": "activityEvents",
+        "security": [
+          {
+            "IpAdmission": []
+          },
+          {
+            "IpAdmission": [],
+            "BearerAuth": []
+          },
+          {
+            "IpAdmission": [],
+            "SessionCookie": []
+          }
+        ],
+        "x-pi-rbac": {
+          "permission": "sessions:list",
+          "roles": [
+            "admin",
+            "user",
+            "viewer"
+          ]
+        },
+        "responses": {
+          "200": {
+            "description": "SSE stream. The first message is `{type:\"activity_snapshot\", running, recent}`; each later one is `{type:\"activity\", event}` for a session the caller can see. A reconnect gets a fresh snapshot; Last-Event-ID is ignored. In accounts mode an ended login gets `{type:\"auth_expired\"}` and the stream closes.",
+            "headers": {
+              "Content-Type": {
+                "required": true,
+                "schema": {
+                  "type": "string",
+                  "const": "text/event-stream"
+                }
+              },
+              "Cache-Control": {
+                "schema": {
+                  "type": "string",
+                  "const": "no-cache"
+                }
+              },
+              "Connection": {
+                "schema": {
+                  "type": "string",
+                  "const": "keep-alive"
+                }
+              },
+              "X-Server-Epoch": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "Present when the server epoch is configured."
+              }
+            },
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "allOf": [
+                        {
+                          "type": "object",
+                          "required": [
+                            "type"
+                          ],
+                          "properties": {
+                            "type": {
+                              "const": "activity_snapshot"
+                            }
+                          }
+                        },
+                        {
+                          "$ref": "#/components/schemas/ActivitySnapshot"
+                        }
+                      ]
+                    },
+                    {
+                      "type": "object",
+                      "required": [
+                        "type",
+                        "event"
+                      ],
+                      "properties": {
+                        "type": {
+                          "const": "activity"
+                        },
+                        "event": {
+                          "$ref": "#/components/schemas/ActivityEvent"
+                        }
+                      },
+                      "additionalProperties": false
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer token required for this admitted IP profile, or (accounts mode) sign-in required: code auth_required.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "IP admission or RBAC denied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "SSE connection limit reached.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Activity could not be read.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Server is closing.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/projects": {
       "get": {
         "operationId": "listProjects",
@@ -9871,6 +10079,102 @@
           }
         },
         "additionalProperties": false
+      },
+      "ActivityRun": {
+        "type": "object",
+        "required": [
+          "sessionId",
+          "projectId",
+          "title",
+          "startedAt"
+        ],
+        "properties": {
+          "sessionId": {
+            "type": "string"
+          },
+          "projectId": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string",
+            "description": "Empty when the session has no title and no first prompt yet."
+          },
+          "startedAt": {
+            "type": "integer"
+          }
+        },
+        "additionalProperties": false
+      },
+      "ActivityEvent": {
+        "type": "object",
+        "required": [
+          "id",
+          "at",
+          "sessionId",
+          "projectId",
+          "title",
+          "kind"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "at": {
+            "type": "integer"
+          },
+          "sessionId": {
+            "type": "string"
+          },
+          "projectId": {
+            "type": "string"
+          },
+          "title": {
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "started",
+              "completed",
+              "failed",
+              "aborted"
+            ]
+          },
+          "durationMs": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Present unless kind is started."
+          },
+          "message": {
+            "type": "string",
+            "maxLength": 200,
+            "description": "First line of the error, when kind is failed."
+          }
+        },
+        "additionalProperties": false
+      },
+      "ActivitySnapshot": {
+        "type": "object",
+        "required": [
+          "running",
+          "recent"
+        ],
+        "properties": {
+          "running": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ActivityRun"
+            }
+          },
+          "recent": {
+            "type": "array",
+            "maxItems": 200,
+            "items": {
+              "$ref": "#/components/schemas/ActivityEvent"
+            },
+            "description": "Ended runs only, newest first."
+          }
+        }
       },
       "UsageReport": {
         "type": "object",

@@ -65,7 +65,7 @@ for (const { theme, width } of [{ theme: "light", width: 1280 }, { theme: "dark"
     // Actual model delta takes precedence even while tool lifecycle is still open.
     await expect(page.getByTestId("stat-summary-live-speed")).toContainText("~100 tok/s");
     await page.screenshot({ path: `/tmp/stats-single-line/${theme}-${width}-resumed.png` });
-    const reconnected = page.waitForResponse(response => response.url().includes('/events'));
+    const reconnected = page.waitForResponse(response => /\/v1\/sessions\/[^/]+\/events/.test(response.url()));
     registry.get("live-model")!.events.closeAll();
     await expect(page.getByTestId("stat-summary-live-speed")).toHaveCount(0);
     await expect(page.getByTestId("stat-summary-live-speed")).toHaveCount(0);

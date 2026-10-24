@@ -1,6 +1,6 @@
 # 小派管家设计
 
-> 状态：设计稿，尚未实现；§9 待定项已全部定下（2026-10-23）。2026-10-23 经 Astra 审核（结论「修改后开工」），并定下 §0 的决策；与 §0 冲突的旧写法以 §0 为准。登录三期已于 2026-10-23 合入 `main`，§10 按实际实现补了衔接点并更正了 §2、§5 里过时的写法。
+> 状态：第一期已实现（2026-10-24，见 §8 与 §11），第二、三期未开工；§9 待定项已全部定下（2026-10-23）。2026-10-23 经 Astra 审核（结论「修改后开工」），并定下 §0 的决策；与 §0 冲突的旧写法以 §0 为准。登录三期已于 2026-10-23 合入 `main`，§10 按实际实现补了衔接点并更正了 §2、§5 里过时的写法。
 
 ## 0. 已定决策（2026-10-23）
 
@@ -75,13 +75,14 @@ Claude Desktop：pi bridge 新增 pi_ask_butler
 - 每条动态：`{ id, at, sessionId, projectId, title, kind: "started" | "completed" | "failed" | "aborted", durationMs?, message? }`。`message` 只取首行并截到 200 字。
 - 内存里保留每个 ownerKey 最近 24 小时、最多 200 条结果，以及当前正在跑的会话集合；重启后清空（历史由管家工具冷扫 JSONL 补）。
 - 只记录 managed 会话；共享的 native 会话按 `canAccess` 同样能看到。管家会话自己的运行不进动态。
+- 实现（第一期）：hub 不按 ownerKey 分桶，全进程保留最近 24 小时、最多 1000 条结果，读取时逐条按 `SessionService.activitySubject`（`findOwned` / `canAccess`）过滤，删掉或取消共享的会话随即消失；单个调用者一次最多拿 200 条。标题在读取时现查，所以不单独记录标题变化。
 
 ### 4.2 接口
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | `GET` | `/v1/activity` | `{ running: [...], recent: [...] }`，只含调用者能访问的会话；权限同 `sessions:list` |
-| `GET` | `/v1/activity/events` | SSE，事件 `activity`；支持 `Last-Event-ID` 补发缓冲内的条目；权限同 `sessions:list` |
+| `GET` | `/v1/activity/events` | SSE：连上先发一条 `activity_snapshot`（同快照），之后每条变化发 `activity`；不支持 `Last-Event-ID`，重连拿新的快照；占用一个每用户 SSE 名额（`MAX_SSE_PER_USER`）；权限同 `sessions:list` |
 
 过滤一律经 `SessionService.canAccess`，不直接查仓库。
 
@@ -142,7 +143,7 @@ Claude Desktop：pi bridge 新增 pi_ask_butler
 - 默认关闭；在小派的设置里打开，打开时才请求浏览器通知权限。
 - 只在页面不在前台时发：其他会话（或当前会话）运行完成或失败。中止不发。
 - 同一会话 10 秒内只发一条；点击通知回到页面并打开那个会话。
-- 开关随人设保存到服务端（persona 增加 `notify` 字段）。
+- 开关按浏览器保存（`accountScopedKey("pi:companion-notify")`，换账号不串）。原定存进人设的 `notify` 字段，第一期改为按浏览器：浏览器授权本来就按浏览器给，在一台机器上打开不该让另一台也弹。
 
 ## 7. Claude Desktop
 
@@ -157,7 +158,7 @@ pi-daily-check 保持不变；以后可以改为调用 `pi_activity`。
 
 | 期 | 内容 | 可独立交付 |
 |---|---|---|
-| 一 | RunActivityHub + `/v1/activity`（含 SSE）+ 侧栏标出所有在跑的会话 + 侧栏常驻小派与跨会话话泡 + 系统通知 | 是：不涉及模型，花费为零 |
+| 一（已完成，2026-10-24） | RunActivityHub + `/v1/activity`（含 SSE）+ 侧栏标出所有在跑的会话 + 侧栏常驻小派与跨会话话泡 + 系统通知 | 是：不涉及模型，花费为零 |
 | 二 | 迁移 v8 + 管家会话 + 工具注入 + 只读工具 + 管家面板 | 是 |
 | 三 | bridge 的 `pi_ask_butler` / `pi_activity`，正式部署副本同步 | 是 |
 
@@ -178,8 +179,15 @@ pi-daily-check 保持不变；以后可以改为调用 `pi_activity`。
 | 迁移版本 | v7 是 `accounts`，管家用 v8；备份、恢复要认 v0…v8 前缀，与以往每次加迁移一样 |
 | `claim` | `butlers` 表加进 `CLAIM_TABLES`（`src/accounts-cli/claim.ts`）。源和目标都已有管家时算唯一约束冲突、整体拒绝，与 `companion_personas` 一样；管家会话本身是 `sessions` 行，已在转移范围内 |
 | activity SSE | `/v1/activity/events` 照搬会话 SSE 的认证复核（`src/server/app.ts` 的 `recheckWithin` 与 `auth_expired` 关闭逻辑）：账号被禁用、改密码、token 吊销后在下一次复核时断开，Web 收到 `auth_expired` 回登录页；不影响在跑的任务 |
-| Web 状态 | 管家面板的草稿、展开状态等本地缓存用 `accountScopedKey`（`web/src/auth/storage-scope.ts`），换账号不串；通知开关存在服务端的人设上，本来就按 owner |
+| Web 状态 | 管家面板的草稿、展开状态等本地缓存用 `accountScopedKey`（`web/src/auth/storage-scope.ts`），换账号不串；通知开关按浏览器保存，同样用 `accountScopedKey`（§6.2） |
 | bridge | `pi_ask_butler` 问的是 token 所属账号的管家；token 吊销后返回 401，提示重新签发 |
 | ops-viewer | 列会话时排除 `kind = 'butler'`，或单独标出；第一版排除 |
 | 恢复 | 恢复已经会清空登录、吊销 token；管家数据随数据库恢复，不需要额外处理 |
 
+## 11. 第一期实现记录（2026-10-24）
+
+- 服务端：`src/application/run-activity-hub.ts`（hub 与 `fanOutObservability`）、`src/application/activity-service.ts`（按调用者过滤）、`src/shared/activity.ts`（类型）；`SessionRuntime` 在回合开始时发 `turn_started`。失败的回合等一个微任务，把同一次结算里的错误信息带上。
+- 路由：`GET /v1/activity`、`GET /v1/activity/events`，与会话 SSE 共用名额预留、写入和认证复核（`auth_expired`）的同一套辅助函数，服务关闭前一并断开。
+- Web：`useActivity` 订阅动态，服务端返回 404（没有这项功能）时停止重连；侧栏按 `running` 集合标出所有在跑的会话；侧栏底部的小派显示在跑数量，其他会话结束时冒话泡（6 秒，点击打开该会话）；点击小派先打开下拉菜单，含「正在跑」「最近结果」各 5 条与通知开关。§6.1 的右侧管家抽屉随第二期的管家对话一起做。
+- 与原稿的出入：通知开关按浏览器保存（§6.2）；SSE 用连上即发快照代替 `Last-Event-ID` 补发（§4.2）；hub 全局保留、读取时过滤（§4.1）。
+- 测试：`tests/application/run-activity-hub.test.ts`、`tests/server/activity-http.test.ts`、Web 端 `useActivity` / `useRunNotifications` / `SidebarCompanion` 单测，E2E `web/e2e/activity.spec.ts`。自带 mock 服务的 E2E 夹具改为只把 `/v1/sessions/:id/events` 当会话流，`/v1/activity` 归入可选功能返回 404。

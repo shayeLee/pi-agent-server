@@ -19,7 +19,7 @@ test.beforeAll(async () => {
     if (path === "/v1/models") return json({ models: [], thinkingLevels: ["off"], defaultModel: null, defaultThinkingLevel: "off" });
     if (path === "/v1/sessions") return json(req.method === "POST" ? session : [], req.method === "POST" ? 201 : 200);
     if (path.endsWith("/export")) return json({ lastEventId: 0, messages: [], timeline: [] });
-    if (path.endsWith("/events")) { res.writeHead(200, { "Content-Type": "text/event-stream" }); res.flushHeaders(); stream = res; req.on("close", () => { if (stream === res) stream = undefined; }); return; }
+    if (path.startsWith("/v1/sessions/") && path.endsWith("/events")) { res.writeHead(200, { "Content-Type": "text/event-stream" }); res.flushHeaders(); stream = res; req.on("close", () => { if (stream === res) stream = undefined; }); return; }
     if (path.endsWith("/messages")) { req.resume(); return json({ status: "accepted" }, 202); }
     json({ error: path }, 404);
   });

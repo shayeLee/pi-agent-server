@@ -29,7 +29,7 @@ const server = createServer((req, res) => {
   if (path === "/v1/models") return json({ models: [], thinkingLevels: ["off"], defaultModel: null, defaultThinkingLevel: "off" });
   if (path === "/v1/sessions") return json(sessions);
   if (path.endsWith("/export")) return json({ lastEventId: 0, messages: [], timeline: history(Number(path.split("/")[3]?.split("-")[1]) || count) });
-  if (path.endsWith("/events")) {
+  if (path.startsWith("/v1/sessions/") && path.endsWith("/events")) {
     res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" }); res.flushHeaders(); streams.add(res);
     req.on("close", () => streams.delete(res)); return;
   }

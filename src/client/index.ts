@@ -2,6 +2,7 @@ export type { ControlIdentity, ControlQueueItem, ControlQueueSnapshot } from "..
 export type { SubagentRun, SubagentSnapshot, SubagentConversation, SubagentInput } from "../shared/subagents.js";
 export type { SteeringInput } from "../shared/steering.js";
 export type { ProjectFileEntry, ProjectFileSearch, SessionCommandInfo, SessionCommandList, SessionCommandInput, SessionCommandResult, CommandOutputLine, CommandPrompt, CommandPromptAnswer } from "../shared/commands.js";
+export type { ActivityEvent, ActivityOutcome, ActivityResult, ActivityRun, ActivitySnapshot, ActivityStreamMessage } from "../shared/activity.js";
 export type { CompanionGreeting, CompanionGreetingInput, CompanionPersonaRecord } from "../shared/companion.js";
 export type { McpConnection, McpExposure, ProjectMcpServer, ProjectMcpServerInput, ProjectMcpSettings } from "../shared/project-mcp.js";
 export type { SharedMcpList, SharedMcpServer, SharedMcpServerConfig, SharedMcpServerInput } from "../shared/shared-mcp.js";

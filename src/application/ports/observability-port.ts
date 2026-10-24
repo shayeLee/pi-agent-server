@@ -3,6 +3,8 @@
 
 /** 观测事件（结构化、脱敏）。 */
 export type ObservabilityEvent =
+  /** A turn took the model: the matching `turn` follows when it settles. */
+  | { type: "turn_started"; sessionId: string; requestId: string }
   | {
       type: "turn";
       sessionId: string;

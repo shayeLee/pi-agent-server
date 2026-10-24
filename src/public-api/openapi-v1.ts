@@ -63,6 +63,8 @@ export const PUBLIC_API_OPERATIONS = [
   ["/v1/files", "post", "files:upload"],
   ["/v1/sessions", "get", "sessions:list"],
   ["/v1/usage", "get", "sessions:list"],
+  ["/v1/activity", "get", "sessions:list"],
+  ["/v1/activity/events", "get", "sessions:list"],
   ["/v1/sessions", "post", "sessions:create"],
   ["/v1/sessions/{id}", "delete", "sessions:delete"],
   ["/v1/sessions/{id}", "patch", "sessions:update"],
@@ -319,6 +321,26 @@ export const openapiV1 = {
         { name: "from", in: "query", required: false, schema: { type: "string", format: "date" }, description: "First calendar day, inclusive. Default: 30 days, 12 weeks or 12 months back, by period." },
         { name: "to", in: "query", required: false, schema: { type: "string", format: "date" }, description: "Last calendar day, inclusive. Default: today in timeZone." },
       ] }),
+    },
+    "/v1/activity": {
+      get: operation("getActivity", "sessions:list", {
+        "200": { description: "Runs of every session the caller can see: running now, and how runs ended in the last 24 hours (at most 200, newest first). Kept in memory; a restart starts empty.", ...json(ref("ActivitySnapshot")) },
+      }),
+    },
+    "/v1/activity/events": {
+      get: operation("activityEvents", "sessions:list", {
+        "200": {
+          description: "SSE stream. The first message is `{type:\"activity_snapshot\", running, recent}`; each later one is `{type:\"activity\", event}` for a session the caller can see. A reconnect gets a fresh snapshot; Last-Event-ID is ignored. In accounts mode an ended login gets `{type:\"auth_expired\"}` and the stream closes.",
+          headers: sseHeaders,
+          content: { "text/event-stream": { schema: { oneOf: [
+            { allOf: [{ type: "object", required: ["type"], properties: { type: { const: "activity_snapshot" } } }, ref("ActivitySnapshot")] },
+            { type: "object", required: ["type", "event"], properties: { type: { const: "activity" }, event: ref("ActivityEvent") }, additionalProperties: false },
+          ] } } },
+        },
+        "429": error(429, "SSE connection limit reached."),
+        "500": error(500, "Activity could not be read."),
+        "503": error(503, "Server is closing."),
+      }),
     },
     "/v1/projects": {
       get: operation("listProjects", "projects:list", { "200": { description: "Projects.", ...json({ type: "array", items: ref("Project") }) } }),
@@ -928,6 +950,19 @@ export const openapiV1 = {
       }, additionalProperties: false },
       ModelUsage: { allOf: [ref("UsageReportTotals"), { type: "object", required: ["provider", "model"], properties: { provider: { type: "string" }, model: { type: "string", description: "\"unknown\" when the file never named one." } } }] },
       UsageBucket: { type: "object", required: ["start", "totals", "models"], properties: { start: { type: "string", format: "date" }, totals: ref("UsageReportTotals"), models: { type: "array", items: ref("ModelUsage"), description: "Most tokens first." } }, additionalProperties: false },
+      ActivityRun: { type: "object", required: ["sessionId", "projectId", "title", "startedAt"], properties: {
+        sessionId: { type: "string" }, projectId: { type: "string" }, title: { type: "string", description: "Empty when the session has no title and no first prompt yet." }, startedAt: { type: "integer" },
+      }, additionalProperties: false },
+      ActivityEvent: { type: "object", required: ["id", "at", "sessionId", "projectId", "title", "kind"], properties: {
+        id: { type: "integer", minimum: 1 }, at: { type: "integer" }, sessionId: { type: "string" }, projectId: { type: "string" }, title: { type: "string" },
+        kind: { enum: ["started", "completed", "failed", "aborted"] },
+        durationMs: { type: "integer", minimum: 0, description: "Present unless kind is started." },
+        message: { type: "string", maxLength: 200, description: "First line of the error, when kind is failed." },
+      }, additionalProperties: false },
+      ActivitySnapshot: { type: "object", required: ["running", "recent"], properties: {
+        running: { type: "array", items: ref("ActivityRun") },
+        recent: { type: "array", maxItems: 200, items: ref("ActivityEvent"), description: "Ended runs only, newest first." },
+      } },
       UsageReport: { type: "object", required: ["period", "timeZone", "from", "to", "buckets", "models", "totals", "sessions", "unreadSessions"], properties: {
         period: { enum: ["day", "week", "month"] }, timeZone: { type: "string" }, from: { type: "string", format: "date" }, to: { type: "string", format: "date" },
         buckets: { type: "array", items: ref("UsageBucket"), description: "Every period in the range, oldest first, empty ones included." },

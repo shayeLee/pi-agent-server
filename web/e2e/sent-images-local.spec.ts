@@ -38,7 +38,7 @@ for (const count of [1, 2]) test(`accepted ${count} image(s): composer clears, t
     if (path === "/v1/models") return json({ models: [], thinkingLevels: ["off"], defaultModel: null, defaultThinkingLevel: "off" });
     if (path === "/v1/sessions" && request.method() === "GET") return json([...(created ? [session] : []), { ...session, id: otherId, title: "另一个会话" }]);
     if (path === "/v1/sessions" && request.method() === "POST") { created = true; return json(session, 201); }
-    if (path.endsWith("/events")) return route.fulfill({ status: 204, body: "" });
+    if (path.startsWith("/v1/sessions/") && path.endsWith("/events")) return route.fulfill({ status: 204, body: "" });
     // Running sessions read the resident queue and poll live subagents; this fixture has neither.
     if (path.endsWith("/control-queue")) return json({ requestId: null, revision: 0, items: [] });
     if (path.endsWith("/subagents")) return json({ sessionId: path.split("/")[3], runs: [] });

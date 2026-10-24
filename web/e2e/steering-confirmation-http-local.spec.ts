@@ -36,7 +36,7 @@ test("consumed SDK steering is visible exactly once before assistant, including 
   target.on("requestfailed", r => failures.push({ window: windowName, url: r.url(), failure: r.failure() }));
   target.on("request", r => {
     if (r.method() === "POST" && r.headers()["content-type"]?.includes("application/json")) requests.push({ window: windowName, url: r.url(), body: r.postDataJSON() });
-    if (r.url().includes("/events")) cursors.push(r.headers()["last-event-id"]);
+    if (/\/v1\/sessions\/[^/]+\/events/.test(r.url())) cursors.push(r.headers()["last-event-id"]);
   });
   target.on("response", r => { if (r.request().method() === "POST") network.push({ window: windowName, url: r.url(), status: r.status() }); });
   await target.route("**/*", route => {
@@ -51,7 +51,7 @@ test("consumed SDK steering is visible exactly once before assistant, including 
       const res = await fetch(...args);
       const url = String(args[0]);
       if (url.endsWith("/steer") || url.endsWith("/follow-ups")) await record({ url, status: res.status, kind: "admission" });
-      if (url.includes("/events") && res.body) {
+      if (/\/v1\/sessions\/[^/]+\/events/.test(url) && res.body) {
         await record({ url, status: res.status, contentType: res.headers.get("content-type"), kind: "sse-ready" });
         const reader = res.clone().body!.getReader();
         void (async () => { let pending = ""; const decoder = new TextDecoder();

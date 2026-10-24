@@ -25,6 +25,13 @@ function setup(overrides: Partial<Parameters<typeof SessionList>[0]> = {}) {
 }
 
 describe("SessionList（会话列表）", () => {
+  it("marks every running session, not only the open one", () => {
+    setup({ activeId: "s1", runningIds: new Set(["s2", "elsewhere"]) });
+    expect(screen.getByTestId("session-s2").closest("li")).toHaveClass("running");
+    expect(screen.getByTestId("session-s1").closest("li")).not.toHaveClass("running");
+    expect(screen.getAllByText("运行中")).toHaveLength(1);
+  });
+
   it("search expands below context, focuses, protects IME and clears on either exit", () => {
     setup();
     for (const exit of ["Escape", "toggle"]) {

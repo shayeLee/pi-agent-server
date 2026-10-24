@@ -24,7 +24,7 @@ export async function workspaceFixture(page: Page, command = 'printf "fixture ou
       const stepsMatch = /^\/v1\/sessions\/(fixture-\d+)\/steps$/.exec(path);
       if (stepsMatch) return json({ sessionId: stepsMatch[1], projectionId: 'workspace-fixture', revision: 0, steps: [] });
       if (/^\/v1\/sessions\/fixture-\d+\/system-prompt$/.test(path)) return json({ source: 'unavailable', prompt: null });
-      if (path.endsWith('/events')) return route.fulfill({ status: 204, body: '' });
+      if (path.startsWith('/v1/sessions/') && path.endsWith('/events')) return route.fulfill({ status: 204, body: '' });
       if (path.endsWith('/export')) return json({ messages: [], lastEventId: 0, timeline: [
         { type: 'message', id: 'user', role: 'user', text: '这是隔离视觉样例，不是实际执行记录。\n请检查提交失败时的草稿保留与工具展示。' },
         { type: 'message', id: 'assistant', role: 'assistant', text: '先检查提交入口，再核对错误处理。以下内容均来自测试 fixture；不会访问真实 API。' },

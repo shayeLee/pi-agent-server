@@ -16,6 +16,7 @@ import { SubagentLivePanel } from "./SubagentLivePanel.js";
 import type { LiveSubagent } from "../hooks/useLiveSubagents.js";
 import type { SessionConnection } from "../hooks/useSessionStream.js";
 import { EmptyState } from "./EmptyState.js";
+import type { CompanionPersona } from "./companion/companion-lines.js";
 import { CompanionDock, CompanionWelcome, useCompanionPersona, usePrefetchGreeting, type CompanionPersonaSync, type CompanionWelcomeProps } from "./companion/Companion.js";
 import { useCompanion } from "./companion/companion-mood.js";
 import type { SubmissionState, SubmitOutcome, UnsentMessage } from "../attachment-state.js";
@@ -81,6 +82,8 @@ export type ChatProps = {
   companionGreeting?: CompanionWelcomeProps["generateLines"];
   /** Keeps the companion's persona on the server; without it the persona stays in this browser. */
   companionPersona?: CompanionPersonaSync;
+  /** The persona shared with the sidebar companion; when given, `companionPersona` is not used. */
+  personaState?: [CompanionPersona, (persona: CompanionPersona) => void];
   searchFiles?: ComposerProps["searchFiles"];
   onRunCommand?: ComposerProps["onRunCommand"];
   onToggleTrace?: () => void;
@@ -145,7 +148,7 @@ export function Chat({
   onRetrySubmit,
   onConfirmCreation,
   onAbort,
-  onFollowUp, loadCommands, companionGreeting, companionPersona, searchFiles, onRunCommand,
+  onFollowUp, loadCommands, companionGreeting, companionPersona, personaState, searchFiles, onRunCommand,
   onToggleTrace,
   liveSubagents,
   onOpenSubagent,
@@ -159,7 +162,8 @@ export function Chat({
   const runStatus = useRunStatus(session?.id ?? null, derivedPhase, runFailed);
   const [abortArmed, setAbortArmed] = useState(false);
   const companion = useCompanion(runStatus.kind);
-  const [persona, setPersona] = useCompanionPersona(canCreateSession ? companionPersona : undefined);
+  const ownPersona = useCompanionPersona(!personaState && canCreateSession ? companionPersona : undefined);
+  const [persona, setPersona] = personaState ?? ownPersona;
   // Inside a session, the next blank session's opening line is asked for while nothing runs.
   const runQuiet = runStatus.kind !== "running" && runStatus.kind !== "submitting" && runStatus.kind !== "queued";
   usePrefetchGreeting(session && canCreateSession ? companionGreeting : undefined, activeProjectId, persona, recentSession, runQuiet);

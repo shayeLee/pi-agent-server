@@ -29,6 +29,15 @@ import { AuthService } from "../src/auth/auth-service.js";
 import { KyselyAccountRepository } from "../src/storage/kysely-account-repository.js";
 
 const PORT = Number(process.env.PORT ?? 8081);
+
+/** A prompt starting with "[slow]" keeps its run going for SLOW_RUN_MS, so E2E can see it running. */
+const SLOW_RUN_MS = 1500;
+class SlowCapableAdapter extends MockAgentAdapter {
+  override async prompt(text: string, options?: Parameters<MockAgentAdapter["prompt"]>[1]): Promise<void> {
+    if (text.startsWith("[slow]")) await new Promise(resolve => setTimeout(resolve, SLOW_RUN_MS));
+    await super.prompt(text, options);
+  }
+}
 const MOCK_CWD = "/tmp/mock-project";
 const MOCK_SEED = {
   // 默认项目 seed 与生产（start.ts）一致，引用同一 DEFAULT_PROJECT_ID 常量，不硬编码字符串。
@@ -119,7 +128,7 @@ try {
         { type: "message_update", message: {}, assistantMessageEvent: { type: "text_delta", contentIndex: 0, delta: "已定位问题：失败分支没有保留待发送的草稿。\n\n```ts\nif (!created) return { accepted: false, draft };\n```\n\n建议补充错误路径测试，确保用户可以重试。" } },
         { type: "agent_end", messages: [], willRetry: false },
       ];
-      return new MockAgentAdapter(process.env.MOCK_SCENARIO === "rich" ? richEvents : standardEvents);
+      return new SlowCapableAdapter(process.env.MOCK_SCENARIO === "rich" ? richEvents : standardEvents);
     },
   });
   app.addHook("onClose", closeStorage);

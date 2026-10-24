@@ -32,7 +32,7 @@ test.beforeAll(async () => {
       ]).flat(),
       { type: "message", id: "a", role: "assistant", text: "隔离的真实 App HTTP/SSE fixture，没有调用模型或用户数据库。" },
     ] });
-    if (path.endsWith("/events")) {
+    if (path.startsWith("/v1/sessions/") && path.endsWith("/events")) {
       res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" }); res.flushHeaders(); streams.add(res);
       req.on("close", () => streams.delete(res)); return;
     }

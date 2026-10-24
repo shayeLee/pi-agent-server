@@ -259,6 +259,9 @@ const mocks = vi.hoisted(() => {
   };
 });
 
+// The cross-session activity stream has its own tests; here only the session stream is under test.
+vi.mock("./hooks/useActivity.js", () => ({ useActivity: () => ({ running: new Map(), recent: [], latest: null }) }));
+
 vi.mock("pi-agent-server/client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("pi-agent-server/client")>();
   return {
