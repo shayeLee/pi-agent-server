@@ -4,7 +4,9 @@ import { DatabaseSync } from "node:sqlite";
 import { readPiJsonlExport } from "../agent/pi-jsonl-conversation-storage.js";
 import { classifyPiJsonlReference, requirePiDataDir } from "../agent/pi-jsonl-reference.js";
 
-export type SessionSummary = { id: string; ip: string; title: string; createdAt: number; updatedAt: number };
+/** One data owner: `ip:<address>` (ip mode) or `user:<account id>` (accounts mode). The id is opaque to the UI. */
+export type OwnerEntry = { owner: string; kind: "ip" | "account"; label: string; count: number };
+export type SessionSummary = { id: string; owner: string; title: string; createdAt: number; updatedAt: number };
 export type ChatMessage = { role: "user" | "assistant"; text: string };
 type SessionRow = {
   id: string; owner_key: string; project_id: string; title: string;
@@ -27,22 +29,36 @@ export function presentationText(text: string): string {
 export function createViewerData(dbPath: string, dataDir: string) {
   const root = requirePiDataDir(dataDir);
   const db = new DatabaseSync(dbPath, { readOnly: true, timeout: 3000 });
+  // Account names, when the database has accounts (migration 7). A deleted account keeps its id.
+  const hasAccounts = Boolean(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='accounts'").get());
+  const accountNames = (): Map<string, string> => hasAccounts
+    ? new Map((db.prepare("SELECT id, name FROM accounts").all() as Array<{ id: string; name: string }>).map(row => [row.id, row.name]))
+    : new Map();
+  const describeOwner = (owner: string, names: ReadonlyMap<string, string>): Omit<OwnerEntry, "count"> => {
+    if (owner.startsWith("user:")) {
+      const id = owner.slice("user:".length);
+      return { owner, kind: "account", label: names.get(id) ?? `已删除的账号 ${id.slice(0, 8)}` };
+    }
+    return { owner, kind: "ip", label: owner.startsWith("ip:") ? owner.slice("ip:".length) : owner };
+  };
   return {
     close: () => db.close(),
-    listIps(): Array<{ ip: string; count: number }> {
-      const rows = db.prepare("SELECT owner_key, count(*) AS count FROM sessions WHERE owner_key LIKE 'ip:%' GROUP BY owner_key ORDER BY count DESC, owner_key").all() as Array<{ owner_key: string; count: number }>;
-      return rows.map(({ owner_key, count }) => ({ ip: owner_key.slice(3), count }));
+    /** Every owner with sessions; the system owner '' (native and shared sessions) is not a person and is left out. */
+    listOwners(): OwnerEntry[] {
+      const rows = db.prepare("SELECT owner_key, count(*) AS count FROM sessions WHERE owner_key <> '' GROUP BY owner_key ORDER BY count DESC, owner_key").all() as Array<{ owner_key: string; count: number }>;
+      const names = accountNames();
+      return rows.map(({ owner_key, count }) => ({ ...describeOwner(owner_key, names), count: Number(count) }));
     },
-    listSessions(ip: string, offset: number, limit = 50): { total: number; sessions: SessionSummary[] } {
-      const owner = `ip:${ip}`;
+    listSessions(owner: string, offset: number, limit = 50): { total: number; sessions: SessionSummary[] } {
+      if (owner === "") return { total: 0, sessions: [] };
       const total = (db.prepare("SELECT count(*) AS n FROM sessions WHERE owner_key = ?").get(owner) as { n: number }).n;
       const rows = db.prepare("SELECT id, owner_key, title, created_at, updated_at FROM sessions WHERE owner_key = ? ORDER BY updated_at DESC, id DESC LIMIT ? OFFSET ?").all(owner, limit, offset) as Array<Pick<SessionRow, "id" | "owner_key" | "title" | "created_at" | "updated_at">>;
-      return { total, sessions: rows.map((row) => ({ id: row.id, ip, title: row.title, createdAt: Number(row.created_at), updatedAt: Number(row.updated_at) })) };
+      return { total, sessions: rows.map((row) => ({ id: row.id, owner, title: row.title, createdAt: Number(row.created_at), updatedAt: Number(row.updated_at) })) };
     },
     async getSession(id: string): Promise<{ session: SessionSummary; systemPrompt: string | null; messages: ChatMessage[] } | null> {
-      const row = db.prepare("SELECT id, owner_key, project_id, title, created_at, updated_at, conversation_ref, system_prompt, agent_kind, conversation_format FROM sessions WHERE id = ? AND owner_key LIKE 'ip:%'").get(id) as SessionRow | undefined;
+      const row = db.prepare("SELECT id, owner_key, project_id, title, created_at, updated_at, conversation_ref, system_prompt, agent_kind, conversation_format FROM sessions WHERE id = ? AND owner_key <> ''").get(id) as SessionRow | undefined;
       if (!row) return null;
-      const session = { id: row.id, ip: row.owner_key.slice(3), title: row.title, createdAt: Number(row.created_at), updatedAt: Number(row.updated_at) };
+      const session = { id: row.id, owner: row.owner_key, title: row.title, createdAt: Number(row.created_at), updatedAt: Number(row.updated_at) };
       const systemPrompt = row.system_prompt;
       if (row.conversation_ref === null) return { session, systemPrompt, messages: [] };
       const classification = classifyPiJsonlReference(root, {

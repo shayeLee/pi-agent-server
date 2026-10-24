@@ -57,6 +57,7 @@ import {
 import type { PostgresBackupManifest, BackupFileRecord } from "./backup-core.js";
 
 import { validateNativeManifest, validateNativeSet, unauthorisedRestoreBinding, planNativeRestore, nativeRestoreRoot, publishNativeRestore, recordNativeRestore, finalizeNativeRestore, type NativeRestorePhase, type NativeRestoreOptions, type NativeRestoreClaim } from "./native-payload.js";
+import { NO_RESTORED_LOGINS, resetRestoredLoginsPostgres, type RestoredLogins } from "./restore-logins.js";
 
 const RESTORE_DIR_PREFIX = "restore-";
 const SAFE_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -124,6 +125,10 @@ export interface PostgresRestoreReport {
     /** Present-but-invalid session histories discarded (invalid-as-empty degradation). */
     readonly invalidSessionHistories: number;
     readonly foreignKeyViolations: number;
+    /** Web logins removed from the restored database; 0 in a dry run, which restores nothing. */
+    readonly authSessionsCleared: number;
+    /** Personal API tokens revoked in the restored database; 0 in a dry run. */
+    readonly apiTokensRevoked: number;
   };
   readonly migration: { readonly version: number | null; readonly pending: number };
   readonly target: {
@@ -951,7 +956,7 @@ function buildPostgresRestoreReport(
   checked: { readonly migration: { readonly version: number | null; readonly pending: number }; readonly schemaTableCount: number; readonly projects: number; readonly sessions: number; readonly idempotencyRows: number; readonly fileOperations: number; readonly foreignKeyViolations: number },
   database: string,
   schema: string,
-  missing: number,
+  remapped: { readonly missing: number; readonly logins: RestoredLogins },
   format: PostgresBackupManifest["format"],
   nativeSessionSources?: PostgresBackupManifest["nativeSessionSources"],
 ): PostgresRestoreReport {
@@ -970,9 +975,10 @@ function buildPostgresRestoreReport(
       fileOperations: checked.fileOperations,
       sessionEntries,
       sessionHeaders: jsonlFiles.length - invalidSessionHistories,
-      missingSessionReferences: missing,
+      missingSessionReferences: remapped.missing,
       invalidSessionHistories,
       foreignKeyViolations: checked.foreignKeyViolations,
+      ...remapped.logins,
     },
     migration: checked.migration,
     target: {
@@ -988,7 +994,7 @@ function buildPostgresRestoreReport(
   };
 }
 
-async function remapDatabase(client: PgRestoreClient, schema: string, finalPath: string, manifest: PostgresBackupManifest, included: Set<string>, assembledRoot: string, invalidHistories: ReadonlySet<string>, agentRoot?: string, nativeClaims: readonly NativeRestoreClaim[] = [], publishBeforeCommit?: () => void): Promise<number> {
+async function remapDatabase(client: PgRestoreClient, schema: string, finalPath: string, manifest: PostgresBackupManifest, included: Set<string>, assembledRoot: string, invalidHistories: ReadonlySet<string>, agentRoot?: string, nativeClaims: readonly NativeRestoreClaim[] = [], publishBeforeCommit?: () => void): Promise<{ missing: number; logins: RestoredLogins }> {
   const missingKeys = new Set(manifest.missingSessionReferences.map((reference) => `${reference.sessionId}\u0000${reference.path}`));
   const consumed = new Set<string>();
   const qschema = quoteIdentifier(schema);
@@ -1054,9 +1060,11 @@ async function remapDatabase(client: PgRestoreClient, schema: string, finalPath:
       await client.query(`UPDATE ${qschema}."uploaded_files" SET storage_key = $1, agent_path = $2 WHERE id = $3`,
         [entry.storageKey, path.join(agentRoot!, entry.storageKey), row.id]);
     }
+    const accountsPresent = manifest.migrationLedger.appliedVersion !== null && manifest.migrationLedger.appliedVersion >= 7;
+    const logins = accountsPresent ? await resetRestoredLoginsPostgres(client, qschema) : NO_RESTORED_LOGINS;
     publishBeforeCommit?.();
     await client.query("COMMIT");
-    return missing;
+    return { missing, logins };
   } catch (error) {
     await client.query("ROLLBACK").catch(() => undefined);
     if (error instanceof Error && error.message.startsWith("restore:")) throw error;
@@ -1123,7 +1131,7 @@ export async function restorePostgresBackup(options: PostgresRestoreOptions): Pr
     if (options.dryRun === true) return {
       dryRun: true,
       finalPath: null,
-      report: { status: "success", dialect: "PostgreSQL", format: manifest.format, counts: { payloads: manifest.files.length, jsonlFiles: manifest.files.filter((file) => file.kind === "jsonl").length, projects: 0, sessions: 0, idempotencyRows: 0, fileOperations: 0, sessionEntries: 0, sessionHeaders: 0, missingSessionReferences: manifest.missingSessionReferences.length, invalidSessionHistories: 0, foreignKeyViolations: 0 }, migration: { version: manifest.migrationLedger.appliedVersion, pending: 0 }, target: { databaseIdentity: pgIdentity(target.database, "database"), schemaIdentity: pgIdentity(target.schema, "schema"), schemaSummary: { identity: pgIdentity(target.schema, "schema"), tableCount: 0, migrationVersion: manifest.migrationLedger.appliedVersion, foreignKeyViolations: 0 } } },
+      report: { status: "success", dialect: "PostgreSQL", format: manifest.format, counts: { payloads: manifest.files.length, jsonlFiles: manifest.files.filter((file) => file.kind === "jsonl").length, projects: 0, sessions: 0, idempotencyRows: 0, fileOperations: 0, sessionEntries: 0, sessionHeaders: 0, missingSessionReferences: manifest.missingSessionReferences.length, invalidSessionHistories: 0, foreignKeyViolations: 0, ...NO_RESTORED_LOGINS }, migration: { version: manifest.migrationLedger.appliedVersion, pending: 0 }, target: { databaseIdentity: pgIdentity(target.database, "database"), schemaIdentity: pgIdentity(target.schema, "schema"), schemaSummary: { identity: pgIdentity(target.schema, "schema"), tableCount: 0, migrationVersion: manifest.migrationLedger.appliedVersion, foreignKeyViolations: 0 } } },
     };
 
     const pgProcess = options.pgProcess ?? pgProcessAdapter;
@@ -1248,7 +1256,7 @@ export async function restorePostgresBackup(options: PostgresRestoreOptions): Pr
         // target connection so BEGIN/UPDATE/COMMIT (and rollback on any error)
         // form one atomic DB-reference remap transaction.
         const remapClient = await targetPool.connect();
-        let missing: number;
+        let missing: { missing: number; logins: RestoredLogins };
         try {
           missing = await remapDatabase(remapClient, restoredSchema, finalPath, manifest, included, assembledRoot, invalidHistories,
             agentBase ? path.join(agentBase, path.basename(finalPath), "uploads") : undefined, nativeClaims,

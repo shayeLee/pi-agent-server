@@ -16,6 +16,7 @@ function PasswordDialog({ open, onClose, accountName, changePassword }: {
   changePassword: (current: string, next: string) => Promise<void>;
 }) {
   const formId = useId();
+  const { publicOrigin } = useAuth();
   const [done, setDone] = useState(false);
   const [current, setCurrent] = useState("");
   const [next, setNext] = useState("");
@@ -36,7 +37,7 @@ function PasswordDialog({ open, onClose, accountName, changePassword }: {
       setCurrent(""); setNext(""); setConfirm("");
       setDone(true);
     } catch (failure) {
-      setError(authErrorMessage(failure) ?? zhCN.auth.changeFailed);
+      setError(authErrorMessage(failure, publicOrigin) ?? zhCN.auth.changeFailed);
     } finally {
       setBusy(false);
     }

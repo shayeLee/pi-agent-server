@@ -24,19 +24,19 @@ export function createViewerServer(data: Data, assetsDir = path.resolve(process.
         const body = readFileSync(path.join(assetsDir, file));
         reply.writeHead(200, { "Content-Type": `${contentType}; charset=utf-8`, "Cache-Control": "no-store", "Content-Security-Policy": "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; frame-ancestors 'none'; base-uri 'none'", "X-Content-Type-Options": "nosniff" });
         reply.end(body);
-      } else if (url.pathname === "/api/ips") {
-        send(reply, 200, { ips: data.listIps() });
+      } else if (url.pathname === "/api/owners") {
+        send(reply, 200, { owners: data.listOwners() });
       } else if (url.pathname === "/api/sessions") {
-        const ip = url.searchParams.get("ip");
+        const owner = url.searchParams.get("owner");
         const rawOffset = url.searchParams.get("offset") ?? "0";
-        if (!ip || ip.length > 100 || !/^(0|[1-9]\d{0,6})$/.test(rawOffset)) { send(reply, 400, { error: "无效参数" }); return; }
-        send(reply, 200, data.listSessions(ip, Number(rawOffset)));
+        if (!owner || owner.length > 200 || !/^(0|[1-9]\d{0,6})$/.test(rawOffset)) { send(reply, 400, { error: "无效参数" }); return; }
+        send(reply, 200, data.listSessions(owner, Number(rawOffset)));
       } else if (/^\/api\/sessions\/[0-9a-fA-F-]{36}$/.test(url.pathname)) {
         const result = await data.getSession(url.pathname.slice("/api/sessions/".length));
         send(reply, result ? 200 : 404, result ?? { error: "会话不存在" });
       } else { send(reply, 404, { error: "未找到" }); }
     } catch {
-      // The UI is deliberately cross-IP: never leak raw disk paths, prompts or DB exceptions.
+      // The UI is deliberately cross-owner: never leak raw disk paths, prompts or DB exceptions.
       send(reply, 503, { error: "会话内容暂时不可读取" });
     }
   });

@@ -38,7 +38,7 @@ Claude Desktop ──stdio MCP──> pi-bridge（本机 Node 进程）──HTT
 | 变量 | 必填 | 说明 |
 | --- | --- | --- |
 | `PI_BRIDGE_BASE_URL` | 是 | 后端地址，如 `http://127.0.0.1:8080` |
-| `PI_BRIDGE_TOKEN_FILE` | 否 | Bearer token 文件路径；后端开了 `tokenRequired` 时才需要。不接受直接写 token 的变量，免得 token 出现在 Claude 的配置文件里 |
+| `PI_BRIDGE_TOKEN_FILE` | 否 | Bearer token 文件路径；后端开了 `tokenRequired`，或后端是 `accounts` 模式（放个人 token，见第 4 节）时需要。不接受直接写 token 的变量，免得 token 出现在 Claude 的配置文件里 |
 | `PI_BRIDGE_LABEL` | 否 | 显示在工具说明里的后端名，如 `dev` / `正式`；不设时用地址里的主机和端口 |
 | `PI_BRIDGE_WEB_URL` | 否 | Web UI 地址，如 `http://127.0.0.1:5173`；设了才在结果里给会话链接 `webUrl` |
 | `PI_BRIDGE_WAIT_SECONDS` | 否 | `pi_send` / `pi_wait` 单次最多等多久，默认 120 |
@@ -48,7 +48,13 @@ Claude Desktop ──stdio MCP──> pi-bridge（本机 Node 进程）──HTT
 
 ## 4. 身份与权限
 
-两套后端的 IP 策略都是 `127.0.0.1 → admin`，没有 token。桥接从本机连过去，所以：
+下面说的是默认的 `ip` 模式。后端改成 `accounts` 模式（[登录设计](login-design.md)）后，桥接不再靠 `127.0.0.1` 拿身份，而是用个人 token：
+
+- 用 `pnpm accounts -- issue-token --name <账号> --label bridge` 签发（输出里的明文只显示一次），写进一个 `0600` 的文件，`PI_BRIDGE_TOKEN_FILE` 指向它。
+- 桥接建的会话属于这个账号，和这个账号在浏览器里看到的是同一批；权限是账号的角色，不再固定是 admin。
+- 吊销 token、禁用账号或恢复备份后（恢复会吊销恢复出来的全部 token），桥接请求会得到 401，要重新签发并换上新文件。
+
+`ip` 模式下两套后端的 IP 策略都是 `127.0.0.1 → admin`，没有 token。桥接从本机连过去，所以：
 
 - **会话归属**：桥接建的会话属于 `127.0.0.1`，和本机打开的 Web UI 是同一个 owner，所以在 5173 / 5180 上都能直接看到、接着聊。
 - **权限偏大**：桥接拿到的是 admin。限制只能靠桥接自己：只提供第 5 节列出的工具，不转发任意请求，也不提供删除。

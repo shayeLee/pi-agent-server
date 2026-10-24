@@ -58,6 +58,17 @@ test("logs in, keeps the login across a refresh, and logs out", async ({ page })
   expect((await page.context().cookies()).filter(cookie => cookie.name === "pi_session_5231")).toEqual([]);
 });
 
+test("on an address the server does not trust, login says where to open it instead of blaming the password", async ({ page }) => {
+  // Same machine, different origin: the server trusts only http://127.0.0.1:5231.
+  await page.goto("http://localhost:5231/");
+  await expect(page.getByTestId("login-origin-hint")).toContainText("http://127.0.0.1:5231");
+  await page.getByTestId("login-name").fill(ACCOUNTS.mz.name);
+  await page.getByTestId("login-password").fill(ACCOUNTS.mz.password);
+  await page.getByTestId("login-submit").click();
+  await expect(page.getByTestId("login-error")).toHaveText("当前地址不能登录或修改，请从 http://127.0.0.1:5231 打开后再试");
+  await expect(page.getByTestId("login-page")).toBeVisible();
+});
+
 test("another account does not get the previous account's draft or sessions", async ({ page }) => {
   await page.goto("/");
   await logIn(page, ACCOUNTS.mz.name, ACCOUNTS.mz.password);

@@ -1,6 +1,6 @@
 # 精简用户登录设计
 
-> 状态：设计稿，尚未实现。2026-10-23 经 Astra 两轮审核：首轮 13 条意见已修订，§14 已按其意见定下；复审提出的 4 条（匿名静态资源通道、恢复时吊销 token、SSE 复核边界、`PI_PUBLIC_URL` 规则）与 scrypt 429 建议也已补入。关联：[小派管家设计](companion-butler.md) §0、[IP 访问控制](ip-rbac-design.md)、[已归档的 IAM 规划](archive/identity-access-plan.md)。
+> 状态：三期已实现（2026-10-23，分支 `feat/login-phase1`）；本机 5180 部署的切换由用户按 §8 执行。2026-10-23 经 Astra 两轮审核：首轮 13 条意见已修订，§14 已按其意见定下；复审提出的 4 条（匿名静态资源通道、恢复时吊销 token、SSE 复核边界、`PI_PUBLIC_URL` 规则）与 scrypt 429 建议也已补入。关联：[小派管家设计](companion-butler.md) §0、[IP 访问控制](ip-rbac-design.md)、[已归档的 IAM 规划](archive/identity-access-plan.md)。
 
 ## 1. 目标
 
@@ -191,6 +191,8 @@ pnpm accounts -- kick --session <id>
 pnpm accounts -- issue-token --name mz --label claude-desktop   # 打印一次明文
 pnpm accounts -- tokens --name mz
 pnpm accounts -- revoke-token --id <id>
+pnpm accounts -- claim --from ip:127.0.0.1 --name mz --dry-run                    # 预演，见 §8
+pnpm accounts -- claim --from ip:127.0.0.1 --name mz --maintenance-window CONFIRMED # 停服后执行
 ```
 
 - 生效时机统一：服务**下一个请求**就按新状态处理（§4 不缓存）；已连着的 SSE 最长 30 秒内断开；在跑的任务不中止。降权（`set-role`）同样适用。
@@ -208,9 +210,9 @@ pnpm accounts -- revoke-token --id <id>
    - 直接读取五张表的原始行，不用会把解密失败当作「不存在」的 repository（`src/storage/kysely-mcp-oauth-repository.ts:81-110`）。
    - 检查 `PI_MCP_TOKEN_KEY_FILE` 是否就是加密这些凭证的那把密钥，逐行试解密，列出解不开的行。
    - 检查目标 owner 下所有可能冲突的**唯一约束**，不只是主键：`companion_personas` 主键、`user_mcp_credentials` 主键 `(owner_key, server_name)`、`uploaded_files` 的 `(owner_key, project_id, upload_key)`（`src/storage/schema-manifest.ts:513-516`）。
-   - 检查归属一致性：要迁移的会话、上传所属的项目，要么同样归源 owner，要么是默认项目。
+   - 检查归属一致性：要迁移的会话、上传所属的项目，要么同样归源 owner，要么归系统（owner 为空串，例如默认项目）；在第三个 owner 的项目里就拒绝。
    - 打印每张表要改多少行。
-6. **执行**：去掉 `--dry-run`。在一个事务里重做第 5 步的全部检查，然后：
+6. **执行**：去掉 `--dry-run`，加 `--maintenance-window CONFIRMED`（确认已停服；两个参数必须二选一）。在一个事务里重做第 5 步的全部检查，然后：
    - 把五张表中 `owner_key = 'ip:127.0.0.1'` 的行改为 `user:<id>`。只改**精确等于**源 owner 的行；默认项目和 native 会话（owner 为空串）不动。
    - `user_mcp_credentials` 的密文以 owner 作附加数据（AAD，`src/mcp/token-cipher.ts:3`），用同一把密钥解密后按新 owner 重新加密。
    - **任何一行解密失败，整个事务回滚**。只有显式加上 `--drop-unreadable-credentials`，才允许删除解不开的行，并列出需要重新授权的 MCP server。
@@ -238,7 +240,7 @@ pnpm accounts -- revoke-token --id <id>
 - 这一步放在恢复流程内部、**发布恢复结果之前**完成：SQLite 在最后一次 rename 发布之前（`src/backup/restore-core.ts:949-979`），PostgreSQL 在恢复重映射事务的 COMMIT 之前（`src/backup/postgres-restore-core.ts:991-1058`）。这一步失败，整个恢复失败，不报告成功。
 - 不放在服务启动路径里，否则每次重启都会把所有人踢下线。
 - v7 之前的备份没有这两张表，跳过这一步。
-- 恢复的 dry-run 只报告「将清空 N 条登录状态、吊销 M 个 token」，不修改恢复目标。
+- 恢复的 dry-run 只报告「将清空 N 条登录状态、吊销 M 个 token」（报告的 `counts.authSessionsCleared`、`counts.apiTokensRevoked`），不修改恢复目标。PostgreSQL 的 dry-run 不执行 `pg_restore`，这两项报 0；SQLite 的 dry-run 在临时副本上算出实际条数。
 
 `owner-transfer` 工具只处理 `projects` 与 `sessions`、且只认 IP，不复用它的转移范围；它的安全校验做法（备份、身份绑定、校验）可以参考（`src/owner-transfer/owner-transfer-core.ts:233-285`）。
 

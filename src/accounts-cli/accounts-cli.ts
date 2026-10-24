@@ -2,7 +2,15 @@
 // Safe to run while the service is running; the service applies changes on the next request.
 // Passwords are read from an interactive prompt or stdin, never from arguments.
 
+import type { Kysely } from "kysely";
 import { AuthError, type AuthService } from "../auth/auth-service.js";
+import type { McpTokenCipher } from "../mcp/token-cipher.js";
+import { identityKey } from "../core/user-identity.js";
+import type { DatabaseSchema } from "../storage/db-schema.js";
+import { ClaimRefusedError, describeClaim, isClaimableOwner, runClaim } from "./claim.js";
+
+/** What `claim` needs beyond the account service: the raw database and the MCP credential key. */
+export type ClaimStore = { kysely: Kysely<DatabaseSchema>; dialect: "sqlite" | "postgres"; cipher: McpTokenCipher | null };
 
 export const ACCOUNTS_USAGE = `用法：pnpm accounts -- <命令> [参数]
 
@@ -16,9 +24,18 @@ export const ACCOUNTS_USAGE = `用法：pnpm accounts -- <命令> [参数]
   kick --session <id>                                       踢掉一台设备
   issue-token --name <名> --label <用途>                     签发个人 token（明文只显示这一次）
   tokens --name <名>                                        列出个人 token
-  revoke-token --id <id>                                    吊销个人 token`;
+  revoke-token --id <id>                                    吊销个人 token
+  claim --from <owner> --name <名> --dry-run                预演：把某个 owner（如 ip:127.0.0.1）的数据转给账号
+  claim --from <owner> --name <名> --maintenance-window CONFIRMED [--drop-unreadable-credentials]
+                                                            执行转移（先停服、先备份）`;
 
-type CommandSpec = { readonly required: readonly string[]; readonly password?: boolean };
+type CommandSpec = {
+  readonly required: readonly string[];
+  readonly optional?: readonly string[];
+  /** Flags without a value; parsed as "true". */
+  readonly flags?: readonly string[];
+  readonly password?: boolean;
+};
 
 const COMMANDS: Readonly<Record<string, CommandSpec>> = {
   create: { required: ["name", "role"], password: true },
@@ -32,6 +49,7 @@ const COMMANDS: Readonly<Record<string, CommandSpec>> = {
   "issue-token": { required: ["name", "label"] },
   tokens: { required: ["name"] },
   "revoke-token": { required: ["id"] },
+  claim: { required: ["from", "name"], optional: ["maintenance-window"], flags: ["dry-run", "drop-unreadable-credentials"] },
 };
 
 export type AccountsCommand = { readonly command: string; readonly options: Readonly<Record<string, string>>; readonly needsPassword: boolean };
@@ -45,14 +63,17 @@ export function parseAccountsArgs(argv: readonly string[]): AccountsCommand {
   const spec = COMMANDS[command];
   if (!spec) throw new AccountsUsageError(`未知命令：${command}\n\n${ACCOUNTS_USAGE}`);
   const options: Record<string, string> = {};
-  for (let i = 0; i < rest.length; i += 2) {
+  for (let i = 0; i < rest.length; i += 1) {
     const flag = rest[i]!;
-    const value = rest[i + 1];
     const key = flag.startsWith("--") ? flag.slice(2) : "";
-    if (!spec.required.includes(key)) throw new AccountsUsageError(`${command} 不接受参数 ${flag}\n\n${ACCOUNTS_USAGE}`);
-    if (value === undefined || value.startsWith("--")) throw new AccountsUsageError(`${flag} 需要一个值`);
+    const isFlag = spec.flags?.includes(key) === true;
+    if (!isFlag && !spec.required.includes(key) && !spec.optional?.includes(key)) throw new AccountsUsageError(`${command} 不接受参数 ${flag}\n\n${ACCOUNTS_USAGE}`);
     if (Object.hasOwn(options, key)) throw new AccountsUsageError(`${flag} 重复`);
+    if (isFlag) { options[key] = "true"; continue; }
+    const value = rest[i + 1];
+    if (value === undefined || value.startsWith("--")) throw new AccountsUsageError(`${flag} 需要一个值`);
     options[key] = value;
+    i += 1;
   }
   for (const key of spec.required) {
     if (!Object.hasOwn(options, key)) throw new AccountsUsageError(`${command} 需要 --${key}\n\n${ACCOUNTS_USAGE}`);
@@ -69,6 +90,7 @@ export async function runAccountsCommand(
   parsed: AccountsCommand,
   auth: AuthService,
   readPassword: () => Promise<string>,
+  claimStore?: ClaimStore,
 ): Promise<string[]> {
   const o = parsed.options;
   try {
@@ -117,6 +139,26 @@ export async function runAccountsCommand(
       case "revoke-token":
         await auth.revokeToken(o.id!);
         return ["已吊销该 token"];
+      case "claim": {
+        if (!claimStore) throw new AccountsUsageError("claim 需要直接访问数据库");
+        if (!isClaimableOwner(o.from!)) throw new AccountsUsageError("--from 必须是 ip:<地址> 或 user:<id> 形式的 owner");
+        const dryRun = o["dry-run"] === "true";
+        if (dryRun === (o["maintenance-window"] !== undefined)) {
+          throw new AccountsUsageError("claim 需要 --dry-run（预演），或 --maintenance-window CONFIRMED（停服后执行），二选一");
+        }
+        if (!dryRun && o["maintenance-window"] !== "CONFIRMED") throw new AccountsUsageError("--maintenance-window 必须为 CONFIRMED");
+        const account = await auth.requireAccount(o.name!);
+        const to = identityKey({ kind: "account", accountId: account.id });
+        if (o.from === to) throw new AccountsUsageError("来源与目标是同一个 owner");
+        const dropUnreadable = o["drop-unreadable-credentials"] === "true";
+        try {
+          const result = await runClaim({ ...claimStore, from: o.from!, to, dryRun, dropUnreadableCredentials: dropUnreadable });
+          return describeClaim(result, account.name, dropUnreadable);
+        } catch (error) {
+          if (error instanceof ClaimRefusedError) throw new AccountsUsageError(`已拒绝，没有任何改动：\n${error.message}`);
+          throw error;
+        }
+      }
       default:
         throw new AccountsUsageError(ACCOUNTS_USAGE);
     }

@@ -704,6 +704,7 @@ interface FakeCatalogObject {
 class FakeTargetDatabase implements PgRestoreClient {
   namespaces: string[] = ["public"];
   readonly migrationVersion: number | null = fakePrefixHead.version;
+  readonly loginResets: string[] = [];
   objects: FakeCatalogObject[] = [];
   /** Database-level objects: any row beyond the initdb baseline (empty set plus
    * the `plpgsql` extension) is a non-empty-target signal (event triggers,
@@ -782,6 +783,10 @@ class FakeTargetDatabase implements PgRestoreClient {
     }
     if (text.includes('"native_session_sources" SET source_path')) {
       this.nativeSourceRows = this.nativeSourceRows.map(row => row.source_path === values?.[2] ? { ...row, source_path: values?.[0], binding: values?.[1] } : row);
+      return { rows: [] as T[] };
+    }
+    if (/^DELETE FROM "[A-Za-z_][A-Za-z0-9_]*"\."auth_sessions"/.test(text) || /^UPDATE "[A-Za-z_][A-Za-z0-9_]*"\."api_tokens" SET revoked_at/.test(text)) {
+      this.loginResets.push(text);
       return { rows: [] as T[] };
     }
     if (text === "BEGIN" || text === "COMMIT" || text === "ROLLBACK" || text.startsWith("UPDATE ")) {
@@ -1348,6 +1353,9 @@ describe("PostgreSQL restore target safety (fake process)", () => {
     expect(result.report.counts).toMatchObject({ projects: 1, sessions: 1, idempotencyRows: 1, jsonlFiles: 1, sessionHeaders: 1, invalidSessionHistories: 0, foreignKeyViolations: 0 });
     expect(result.report.target.schemaSummary).toMatchObject({ identity: result.report.target.schemaIdentity, tableCount: fakePrefixTables.length, migrationVersion: fakePrefixHead.version, foreignKeyViolations: 0 });
     expect(target.updates[0]).toContain(path.basename(result.finalPath!));
+    // A ledger before migration 7 has no logins to clear.
+    expect(result.report.counts).toMatchObject({ authSessionsCleared: 0, apiTokensRevoked: 0 });
+    expect(target.loginResets).toEqual([]);
     const restore = processAdapter.requests.find((request) => request.args[0] !== "--version" && request.args[0] !== "--list");
     expect(restore?.args).not.toContain("--schema=app_schema");
     expect(restore?.args.join(" ")).not.toContain("target-password");
@@ -1472,6 +1480,14 @@ describeRealPgBackup("real PostgreSQL pg_dump/pg_restore gate (WP3B2)", () => {
       writeFileSync(session, '{"type":"session","version":3,"id":"real-header","timestamp":"2024-01-01T00:00:00.000Z","cwd":"/tmp/real"}\n{"type":"message","id":"real-entry","parentId":null,"timestamp":"2024-01-01T00:00:00.000Z","message":{"role":"user","content":"real","timestamp":1}}\n', { mode: 0o600 });
       writeFileSync(path.join(dataDir, "agent", "models.json"), '{"models":[]}\n', { mode: 0o600 });
       await sourcePool.query("INSERT INTO sessions (id, owner_key, project_id, title, created_at, updated_at, conversation_ref, capability_versions) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)", ["00000000-0000-4000-8000-000000000002", "owner", "00000000-0000-4000-8000-000000000001", "real", 1, 1, session, "{}"]); await sourcePool.query("INSERT INTO idempotency (session_id, request_id, result, created_at) VALUES ($1,$2,$3,$4)", ["00000000-0000-4000-8000-000000000002", "real-request", "{}", 1]);
+      // One account with two web logins and one live plus one revoked token: a restore clears them.
+      const accountId = "00000000-0000-4000-8000-0000000000a1";
+      await sourcePool.query("INSERT INTO accounts (id, name, role, disabled, created_at, updated_at) VALUES ($1,$2,$3,$4,$5,$6)", [accountId, "mz", "admin", 0, 1, 1]);
+      for (const [index, id] of ["00000000-0000-4000-8000-0000000000b1", "00000000-0000-4000-8000-0000000000b2"].entries()) {
+        await sourcePool.query("INSERT INTO auth_sessions (id, token_hash, account_id, created_at, last_seen_at, expires_at) VALUES ($1,$2,$3,$4,$5,$6)", [id, `hash-${index}`, accountId, 1, 1, 9e12]);
+      }
+      await sourcePool.query("INSERT INTO api_tokens (id, account_id, name, token_hash, prefix, created_at, revoked_at) VALUES ($1,$2,$3,$4,$5,$6,$7), ($8,$2,$9,$10,$5,$6,$11)",
+        ["00000000-0000-4000-8000-0000000000c1", accountId, "bridge", "token-1", "pi_", 1, null, "00000000-0000-4000-8000-0000000000c2", "old", "token-2", 5]);
       await closeSource();
       const identity = path.join(root, "identity");
       const recipient = path.join(root, "recipient");
@@ -1715,7 +1731,13 @@ describeRealPgBackup("real PostgreSQL pg_dump/pg_restore gate (WP3B2)", () => {
         targetDatabaseUrl: targetUrl,
         safetyContract: POSTGRES_RESTORE_SAFETY_CONTRACT,
       });
-      expect(restored.report.counts).toMatchObject({ projects: 1, sessions: 1, idempotencyRows: 1, fileOperations: 0, jsonlFiles: 1, foreignKeyViolations: 0 });
+      expect(restored.report.counts).toMatchObject({ projects: 1, sessions: 1, idempotencyRows: 1, fileOperations: 0, jsonlFiles: 1, foreignKeyViolations: 0, authSessionsCleared: 2, apiTokensRevoked: 1 });
+      // Nobody is logged in to the restored database; the already revoked token keeps its time.
+      expect((await targetPool.query(`SELECT count(*)::int AS n FROM "${fixtureData.schema}"."auth_sessions"`)).rows[0]?.n).toBe(0);
+      const tokens = (await targetPool.query(`SELECT name, revoked_at FROM "${fixtureData.schema}"."api_tokens" ORDER BY name`)).rows;
+      expect(Number(tokens[0]?.revoked_at)).toBeGreaterThan(5);
+      expect(tokens[1]).toMatchObject({ name: "old" });
+      expect(Number(tokens[1]?.revoked_at)).toBe(5);
       // The report points at the unique authenticated non-public schema, never at public.
       expect(restored.report.target.schemaIdentity).toBe(createHash("sha256").update(`${PG_IDENTITY_PREFIX_SCHEMA}\0${fixtureData.schema}`, "utf8").digest("hex"));
       expect(restored.report.target.schemaSummary).toMatchObject({ tableCount: headTables.length, migrationVersion: migrationHead.version, foreignKeyViolations: 0 });

@@ -122,6 +122,12 @@ describe("AuthGate", () => {
     reply = json(429, { code: "login_busy" }, { "retry-after": "1" });
     await signIn("mz", "wrong password!");
     await waitFor(() => expect(screen.getByTestId("login-error")).toHaveTextContent(zhCN.auth.busy));
+
+    // Opened on an address the server does not trust: the password was never checked.
+    reply = json(403, { code: "csrf_rejected" });
+    await signIn("mz", "correct horse battery");
+    await waitFor(() => expect(screen.getByTestId("login-error")).toHaveTextContent(zhCN.auth.wrongOrigin("http://pi.example:5180")));
+    expect(screen.getByTestId("login-error")).not.toHaveTextContent(zhCN.auth.invalidCredentials);
   });
 
   it("when the login expires, the same account signing back in keeps the app; another account gets a fresh one", async () => {

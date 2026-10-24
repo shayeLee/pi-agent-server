@@ -11,7 +11,7 @@ const project = "6f1a2b3c-4d5e-4f6a-8b9c-0d1e2f3a4b5c";
 const dirs: string[] = [];
 afterEach(() => { for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true }); });
 
-function fixture() {
+function fixture(withAccounts = false) {
   const root = mkdtempSync(path.join(tmpdir(), "ops-viewer-")); dirs.push(root);
   const dbPath = path.join(root, "sessions.db");
   const folder = path.join(root, "sessions", id); mkdirSync(folder, { recursive: true });
@@ -29,23 +29,51 @@ function fixture() {
   const insert = db.prepare("INSERT INTO sessions VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pi', 'pi-jsonl-v3')");
   insert.run(id, "ip:192.168.6.23", project, "问题", 10, 20, file, "# 系统提示词\n**仅运维可见**");
   insert.run("00000000-0000-0000-0000-000000000001", "ip:192.168.8.223", project, "另一个问题", 10, 30, null, null);
+  insert.run("00000000-0000-0000-0000-000000000002", "", project, "原生会话", 10, 40, null, null);
+  if (withAccounts) {
+    db.exec("CREATE TABLE accounts (id TEXT, name TEXT)");
+    db.prepare("INSERT INTO accounts VALUES (?, ?)").run("a1", "mz");
+    insert.run("00000000-0000-0000-0000-000000000003", "user:a1", project, "账号的问题", 10, 50, null, null);
+    insert.run("00000000-0000-0000-0000-000000000004", "user:a1", project, "账号的另一个问题", 10, 60, null, null);
+    insert.run("00000000-0000-0000-0000-000000000005", "user:0b9c6f1e-gone", project, "已删账号的问题", 10, 70, null, null);
+  }
   db.close();
   return { root, dbPath, assetsDir };
 }
 
-describe("read-only cross-IP ops viewer", () => {
-  it("lists IPs, projects only chat text, strips control envelopes and ignores empty error messages", async () => {
+describe("read-only cross-owner ops viewer", () => {
+  it("lists owners, projects only chat text, strips control envelopes and ignores empty error messages", async () => {
     const { root, dbPath } = fixture();
     const data = createViewerData(dbPath, root);
     try {
-      expect(data.listIps()).toEqual([{ ip: "192.168.6.23", count: 1 }, { ip: "192.168.8.223", count: 1 }]);
-      expect(data.listSessions("192.168.6.23", 0).sessions[0]?.id).toBe(id);
-      expect(data.listSessions("not-an-ip", 0).total).toBe(0);
+      expect(data.listOwners()).toEqual([
+        { owner: "ip:192.168.6.23", kind: "ip", label: "192.168.6.23", count: 1 },
+        { owner: "ip:192.168.8.223", kind: "ip", label: "192.168.8.223", count: 1 },
+      ]);
+      expect(data.listSessions("ip:192.168.6.23", 0).sessions[0]).toMatchObject({ id, owner: "ip:192.168.6.23" });
+      expect(data.listSessions("192.168.6.23", 0).total).toBe(0);
+      // The system owner (native sessions) is not a person: not listed, not readable.
+      expect(data.listSessions("", 0).total).toBe(0);
+      expect(await data.getSession("00000000-0000-0000-0000-000000000002")).toBeNull();
       expect((await data.getSession(id))?.systemPrompt).toBe("# 系统提示词\n**仅运维可见**");
       expect((await data.getSession(id))?.messages).toEqual([
         { role: "user", text: "开场问题" }, { role: "assistant", text: "回答 <script>alert(1)</script>" },
       ]);
       expect(await data.getSession("missing")).toBeNull();
+    } finally { data.close(); }
+  });
+
+  it("in accounts mode names each account, and keeps a deleted account apart by its id", () => {
+    const { root, dbPath } = fixture(true);
+    const data = createViewerData(dbPath, root);
+    try {
+      expect(data.listOwners()).toEqual([
+        { owner: "user:a1", kind: "account", label: "mz", count: 2 },
+        { owner: "ip:192.168.6.23", kind: "ip", label: "192.168.6.23", count: 1 },
+        { owner: "ip:192.168.8.223", kind: "ip", label: "192.168.8.223", count: 1 },
+        { owner: "user:0b9c6f1e-gone", kind: "account", label: "已删除的账号 0b9c6f1e", count: 1 },
+      ]);
+      expect(data.listSessions("user:a1", 0).sessions.map(session => session.title)).toEqual(["账号的另一个问题", "账号的问题"]);
     } finally { data.close(); }
   });
 
@@ -64,15 +92,17 @@ describe("read-only cross-IP ops viewer", () => {
       expect(html.status).toBe(200);
       expect(html.headers.get("content-security-policy")).toContain("script-src 'self'");
       expect(await html.text()).toContain("会话记录");
-      const ips = await fetch(base + "/api/ips");
-      expect(ips.headers.get("cache-control")).toBe("no-store");
-      expect((await ips.json() as { ips: unknown[] }).ips).toHaveLength(2);
-      expect((await fetch(base + "/api/sessions?ip=192.168.6.23")).status).toBe(200);
+      const owners = await fetch(base + "/api/owners");
+      expect(owners.headers.get("cache-control")).toBe("no-store");
+      expect((await owners.json() as { owners: unknown[] }).owners).toHaveLength(2);
+      const listed = await fetch(base + "/api/sessions?owner=" + encodeURIComponent("ip:192.168.6.23"));
+      expect((await listed.json() as { total: number }).total).toBe(1);
+      expect((await fetch(base + "/api/ips")).status).toBe(404);
       const details = await fetch(base + "/api/sessions/" + id);
       expect(details.status).toBe(200);
       expect((await details.json() as { systemPrompt: string }).systemPrompt).toContain("系统提示词");
       expect((await fetch(base + "/api/sessions/" + id, { method: "POST" })).status).toBe(405);
-      expect((await fetch(base + "/api/sessions?ip=x&offset=-1")).status).toBe(400);
+      expect((await fetch(base + "/api/sessions?owner=x&offset=-1")).status).toBe(400);
     } finally { await new Promise<void>((resolve) => server.close(() => resolve())); data.close(); }
   });
 });

@@ -306,6 +306,7 @@ pnpm restore -- restore \
 - **跨主机源元数据（仅 SQLite）**：manifest 的 `sourceRoots` 是备份主机记录的元数据，只用于与 target 的重叠校验，恢复时从不写入。因此这三个已认证源引用允许包含 symlink 分量（例如 Linux `/home/<user>/...` 在 macOS 上经由 `/home` 系统 symlink 别名解析），并在词法（lexical）与物理（physical，realpath）两种形态下与 target 双向比对，任一重叠即 fail-fast。源引用仍拒绝非绝对路径、NUL 字节和 `.`/`..` 分量；最近存在的祖先只允许 ENOENT 继续上溯，dangling symlink、symlink loop、权限失败或 ENOTDIR 一律 fail-closed。input/target/identity 仍执行严格的无 symlink 祖先策略。该放宽仅限 SQLite；PostgreSQL restore 保持原有严格策略。
 - restore 不自动迁移；包须携带已认证 v0、v0→v1、v0→v1→v2、v0→v1→v2→v3、v0→v1→v2→v3→v4、v0→v1→v2→v3→v4→v5、v0→v1→v2→v3→v4→v5→v6 或 v0→v1→v2→v3→v4→v5→v6→v7 前缀，未知、错序或不匹配的 ledger 在解密/staging 前 fail-fast。含上传文件元数据却缺原件的 v1 包不可恢复；v2 包逐项校验加密原件，源库文件缺失或不稳定时拒绝发布。完全空目标可用于隔离 restore；`--bootstrap-baseline` 不创建 pre-backup，也不生成可恢复的 backup package。
 - 用户的 MCP OAuth 凭证（v5）在库里只有 AES-GCM 密文，备份包不含 `PI_MCP_TOKEN_KEY_FILE`。恢复后用同一份密钥文件，这些凭证才能继续用；密钥丢失时凭证读不出来，用户在面板重新授权即可，不影响恢复本身。
+- 恢复出来的数据库**没有人处于登录状态**（v7 及以后的备份）：发布恢复结果之前，删除全部 `auth_sessions`（所有人重新登录），并给所有还没吊销的 `api_tokens` 写上 `revoked_at`（之后用 `pnpm accounts -- issue-token` 重新签发，bridge 换新 token）。因为恢复出来的库不知道备份之后有哪些登录已登出、token 已吊销。SQLite 在 staging 库的重映射事务里做，PostgreSQL 在重映射事务 COMMIT 之前做，失败则整个恢复失败。报告的 `counts.authSessionsCleared` 和 `counts.apiTokensRevoked` 是清掉的条数。SQLite 的 dry-run 在临时副本上算出同样的条数，不改目标；PostgreSQL 的 dry-run 不执行 `pg_restore`，这两项报 0。v7 之前的备份没有这两张表，两项都是 0。
 - age identity 由运维在执行时提供。一次成功解密和恢复演练是“私钥可用”的必要证据。
 - 目标 missing/invalid-as-empty 语义见 §2，恢复行为以该表为准。
 

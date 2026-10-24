@@ -37,6 +37,7 @@ import { snapshotUploadedRows, validateAttachmentSet, verifyAttachmentBlob } fro
 import type { BackupFileRecord, BackupManifest, BackupSourceRoots } from "./backup-core.js";
 
 import { validateNativeManifest, validateNativeSet, unauthorisedRestoreBinding, planNativeRestore, nativeRestoreRoot, publishNativeRestore, recordNativeRestore, finalizeNativeRestore, type NativeRestorePhase, type NativeRestoreOptions, type NativeRestoreClaim, type NativeBackupEntry } from "./native-payload.js";
+import { resetRestoredLoginsSqlite, type RestoredLogins } from "./restore-logins.js";
 
 const AGE_TIMEOUT_MS = 60_000;
 const READ_CHUNK_SIZE = 64 * 1024;
@@ -101,6 +102,10 @@ export interface RestoreDrillReport {
     /** Present-but-invalid session histories discarded (invalid-as-empty degradation). */
     readonly invalidSessionHistories: number;
     readonly foreignKeyViolations: number;
+    /** Web logins removed from the restored database (it starts with nobody logged in). */
+    readonly authSessionsCleared: number;
+    /** Personal API tokens revoked in the restored database. */
+    readonly apiTokensRevoked: number;
   };
   readonly nativeSessionSources?: readonly NativeBackupEntry[];
   readonly migration: {
@@ -635,7 +640,7 @@ function selectRestoreMigrationContext(ledger: MigrationLedgerSnapshot): Restore
  * structural verdict from the restore's own payload inspection (see
  * parseJsonl), computed without opening the SDK.
  */
-function remapDatabase(dbPath: string, finalPath: string, manifest: BackupManifest, included: Set<string>, invalidHistories: ReadonlySet<string>, agentRoot?: string, nativeClaims: readonly NativeRestoreClaim[] = []): { missing: number } {
+function remapDatabase(dbPath: string, finalPath: string, manifest: BackupManifest, included: Set<string>, invalidHistories: ReadonlySet<string>, agentRoot?: string, nativeClaims: readonly NativeRestoreClaim[] = []): { missing: number; logins: RestoredLogins } {
   const db = new DatabaseSync(dbPath, { timeout: 5000, enableForeignKeyConstraints: true });
   try {
     const table = db.prepare("SELECT 1 AS present FROM sqlite_master WHERE type='table' AND name='sessions'").get();
@@ -705,9 +710,10 @@ function remapDatabase(dbPath: string, finalPath: string, manifest: BackupManife
         db.prepare("UPDATE uploaded_files SET storage_key = ?, agent_path = ? WHERE id = ?")
           .run(entry.storageKey, path.join(agentRoot!, entry.storageKey), row.id);
       }
+      const logins = resetRestoredLoginsSqlite(db);
       db.exec("COMMIT");
+      return { missing, logins };
     } catch (error) { try { db.exec("ROLLBACK"); } catch { /* preserve validation error */ } throw error; }
-    return { missing };
   } finally { db.close(); }
 }
 
@@ -962,6 +968,7 @@ export async function restoreSqliteBackup(options: RestoreOptions): Promise<Rest
         sessionHeaders: jsonlFiles.length - invalidHistories.size,
         missingSessionReferences: remap.missing, invalidSessionHistories: invalidHistories.size,
         foreignKeyViolations: dbCheck.foreignKeyViolations,
+        ...remap.logins,
       },
       migration: { version: dbCheck.version, pending: dbCheck.pending },
     };

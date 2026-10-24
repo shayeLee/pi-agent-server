@@ -4,8 +4,9 @@ import { Icon } from "../src/components/Icon.js";
 import { Markdown } from "../src/components/Markdown";
 import "./style.css";
 
-type IpEntry = { ip: string; count: number };
-type Session = { id: string; ip: string; title: string; createdAt: number; updatedAt: number };
+/** `owner` is an opaque id; `label` is what people read (an IP, or an account name). */
+type OwnerEntry = { owner: string; kind: "ip" | "account"; label: string; count: number };
+type Session = { id: string; owner: string; title: string; createdAt: number; updatedAt: number };
 type Message = { role: "user" | "assistant"; text: string };
 type Detail = { session: Session; systemPrompt: string | null; messages: Message[] };
 
@@ -17,8 +18,8 @@ async function getJson<T>(url: string): Promise<T> {
 const formatDate = (time: number) => new Date(time).toLocaleString("zh-CN");
 
 function App() {
-  const [ips, setIps] = useState<IpEntry[]>([]);
-  const [ip, setIp] = useState("");
+  const [owners, setOwners] = useState<OwnerEntry[]>([]);
+  const [owner, setOwner] = useState<OwnerEntry | null>(null);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [total, setTotal] = useState(0);
   const [selected, setSelected] = useState("");
@@ -30,13 +31,13 @@ function App() {
   const request = useRef(0);
 
   useEffect(() => {
-    void getJson<{ ips: IpEntry[] }>("/api/ips").then((result) => setIps(result.ips)).catch(() => setError("IP 列表读取失败"));
+    void getJson<{ owners: OwnerEntry[] }>("/api/owners").then((result) => setOwners(result.owners)).catch(() => setError("用户列表读取失败"));
   }, []);
 
-  async function loadSessions(targetIp: string, offset: number, version: number) {
+  async function loadSessions(target: string, offset: number, version: number) {
     setLoadingSessions(true);
     try {
-      const result = await getJson<{ total: number; sessions: Session[] }>(`/api/sessions?ip=${encodeURIComponent(targetIp)}&offset=${offset}`);
+      const result = await getJson<{ total: number; sessions: Session[] }>(`/api/sessions?owner=${encodeURIComponent(target)}&offset=${offset}`);
       if (version !== request.current) return;
       setTotal(result.total);
       setSessions((previous) => offset === 0 ? result.sessions : [...previous, ...result.sessions]);
@@ -47,11 +48,11 @@ function App() {
     }
   }
 
-  function chooseIp(value: string) {
+  function chooseOwner(value: OwnerEntry) {
     const version = ++request.current;
     selectedId.current = "";
-    setIp(value); setSessions([]); setTotal(0); setSelected(""); setDetail(null); setShowPrompt(false); setError("");
-    void loadSessions(value, 0, version);
+    setOwner(value); setSessions([]); setTotal(0); setSelected(""); setDetail(null); setShowPrompt(false); setError("");
+    void loadSessions(value.owner, 0, version);
   }
 
   async function chooseSession(session: Session) {
@@ -71,25 +72,25 @@ function App() {
   selectedId.current = selected;
 
   return <>
-    <header className="top"><h1>会话记录</h1><span>按 IP 浏览 · 只读 · 用户、助手及系统提示词</span></header>
+    <header className="top"><h1>会话记录</h1><span>按用户浏览 · 只读 · 用户、助手及系统提示词</span></header>
     <main className="layout">
-      <section className="sidebar" aria-label="IP 地址"><h2>IP 地址</h2>
-        {ips.length === 0 && <p className="hint">暂无会话</p>}
-        {ips.map((row) => <button className={`item ${ip === row.ip ? "active" : ""}`} key={row.ip} onClick={() => chooseIp(row.ip)}>
-          <strong>{row.ip}</strong><small>{row.count} 个会话</small>
+      <section className="sidebar" aria-label="用户"><h2>用户</h2>
+        {owners.length === 0 && <p className="hint">暂无会话</p>}
+        {owners.map((row) => <button className={`item ${owner?.owner === row.owner ? "active" : ""}`} key={row.owner} title={row.owner} onClick={() => chooseOwner(row)}>
+          <strong>{row.label}</strong><small>{row.kind === "account" ? "账号" : "IP"} · {row.count} 个会话</small>
         </button>)}
       </section>
-      <section className="sidebar" aria-label="会话列表"><h2>{ip || "会话"}</h2>
+      <section className="sidebar" aria-label="会话列表"><h2>{owner?.label || "会话"}</h2>
         {sessions.map((session) => <button className={`item ${selected === session.id ? "active" : ""}`} key={session.id} onClick={() => void chooseSession(session)}>
           <strong>{session.title || "未命名会话"}</strong><small>{formatDate(session.updatedAt)}</small>
         </button>)}
-        {sessions.length < total && <button className="more" disabled={loadingSessions} onClick={() => void loadSessions(ip, sessions.length, request.current)}>加载更多</button>}
-        {ip && !sessions.length && !loadingSessions && <p className="hint">此 IP 暂无会话</p>}
+        {sessions.length < total && <button className="more" disabled={loadingSessions} onClick={() => owner && void loadSessions(owner.owner, sessions.length, request.current)}>加载更多</button>}
+        {owner && !sessions.length && !loadingSessions && <p className="hint">此用户暂无会话</p>}
       </section>
       <section className="content" aria-label="聊天内容"><h2>{detail?.session.title || "聊天内容"}</h2>
         {error && <p className="notice error" role="alert">{error}</p>}
         {loadingDetail && <p className="notice">加载中…</p>}
-        {!detail && !loadingDetail && !error && <p className="notice">选择 IP 和会话以查看内容。</p>}
+        {!detail && !loadingDetail && !error && <p className="notice">选择用户和会话以查看内容。</p>}
         {detail && <div className="conversation">
           <div className="prompt-panel"><button className="prompt-toggle" aria-expanded={showPrompt} onClick={() => setShowPrompt(!showPrompt)}>
             系统提示词 <Icon name={showPrompt ? "down" : "chevron"} />{detail.systemPrompt === null ? "（无记录）" : ""}

@@ -2,7 +2,7 @@
 // `pnpm accounts -- <command>`: account administration (docs/login-design.md §7).
 // Uses the same storage settings as the service (DB_PATH / DATA_DIR / PI_AGENT_DIR / AGENT_CWD,
 // PI_STORAGE_DIALECT / PI_DATABASE_URL). The database must already be migrated to the current head;
-// this command never creates or migrates tables.
+// this command never creates or migrates tables. `claim` also reads PI_MCP_TOKEN_KEY_FILE.
 
 import { existsSync, realpathSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
@@ -16,6 +16,7 @@ import { resolveStorageConfig, resolveStoragePaths, type StorageEnvironment } fr
 import type { Kysely } from "kysely";
 import type { DatabaseSchema } from "../src/storage/db-schema.js";
 import { redactedMessage } from "./migrate.js";
+import { loadMcpTokenKeyFile } from "../src/mcp/token-cipher.js";
 
 /** Reads one line from the terminal without echo. */
 async function promptHidden(question: string): Promise<string> {
@@ -83,7 +84,10 @@ export async function main(argv: readonly string[]): Promise<void> {
   const { kysely, dialect } = await openStore(process.env);
   try {
     const auth = new AuthService(new KyselyAccountRepository(kysely, dialect));
-    for (const line of await runAccountsCommand(parsed, auth, readPassword)) process.stdout.write(`${line}\n`);
+    // claim re-encrypts MCP credentials for the new owner with the service's key, when one is set.
+    const keyFile = process.env.PI_MCP_TOKEN_KEY_FILE?.trim();
+    const cipher = parsed.command === "claim" && keyFile ? loadMcpTokenKeyFile(keyFile) : null;
+    for (const line of await runAccountsCommand(parsed, auth, readPassword, { kysely, dialect, cipher })) process.stdout.write(`${line}\n`);
   } finally {
     await kysely.destroy();
   }

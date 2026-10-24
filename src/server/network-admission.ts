@@ -1,5 +1,9 @@
 // WP5D-2 HTTP 网络准入接线：全局 onRequest admission（覆盖探针与 /v1 全部路由）。
 //
+// 这里是同步的 IP 准入，两种 PI_AUTH_MODE 都先过它。下面「身份 = IP、token 绑 IP」只在 ip 模式成立；
+// accounts 模式下 app.ts 只取这里的准入结果，身份与角色改由账号认证（cookie / 个人 token）给出，
+// 见 docs/login-design.md §4。
+//
 // 冻结语义（docs/ip-rbac-design.md §2，接线后生效）：
 // - 身份默认 = 直接 TCP 对端 IP：读 request.raw.socket.remoteAddress（不使用 request.ip，
 //   后者受 trustProxy 影响）。唯一例外是同机代理边界：TCP 对端为回环（127.0.0.0/8 或 ::1，

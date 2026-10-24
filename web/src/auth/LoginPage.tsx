@@ -5,8 +5,12 @@ import { readThemeMode, resolveTheme } from "../theme-preference.js";
 
 export type LoginNotice = "expired" | "signed-out";
 
-/** Message for a failed login or password change; `null` means show the generic fallback. */
-export function authErrorMessage(error: unknown): string | null {
+/**
+ * Message for a failed login or password change; `null` means show the generic fallback.
+ * `csrf_rejected` means the page is open on an address the server does not trust (e.g. localhost
+ * when PI_PUBLIC_URL is 127.0.0.1): the password was never checked, so it must not read as wrong.
+ */
+export function authErrorMessage(error: unknown, publicOrigin?: string): string | null {
   if (!(error instanceof ApiError)) return zhCN.auth.unreachable;
   if (error.status === 429) {
     if (error.code === "login_backoff" && error.retryAfter) return zhCN.auth.backoff(error.retryAfter);
@@ -15,6 +19,7 @@ export function authErrorMessage(error: unknown): string | null {
   if (error.code === "invalid_credentials") return zhCN.auth.invalidCredentials;
   if (error.code === "invalid_current_password") return zhCN.auth.invalidCurrent;
   if (error.code === "cookie_required") return zhCN.auth.cookieRequired;
+  if (error.code === "csrf_rejected") return publicOrigin ? zhCN.auth.wrongOrigin(publicOrigin) : zhCN.auth.wrongOriginUnknown;
   return null;
 }
 
@@ -44,7 +49,7 @@ export function LoginPage({ api, publicOrigin, notice, onSignedIn }: {
       setPassword("");
       onSignedIn(account);
     } catch (failure) {
-      setError(authErrorMessage(failure) ?? zhCN.auth.invalidCredentials);
+      setError(authErrorMessage(failure, publicOrigin) ?? zhCN.auth.invalidCredentials);
     } finally {
       setBusy(false);
     }

@@ -451,11 +451,40 @@ describe("SQLite restore drill", () => {
     }
   });
 
+  it("a restored database starts with nobody logged in: logins are removed and tokens revoked, the source untouched", async () => {
+    const f = await fixture(false);
+    const source = new DatabaseSync(f.dbPath);
+    source.prepare("INSERT INTO accounts (id,name,role,disabled,created_at,updated_at) VALUES (?,?,?,?,?,?)").run("a1", "mz", "admin", 0, 1, 1);
+    for (const id of ["l1", "l2"]) source.prepare("INSERT INTO auth_sessions (id,token_hash,account_id,created_at,last_seen_at,expires_at,label) VALUES (?,?,?,?,?,?,?)").run(id, `h-${id}`, "a1", 1, 1, 9e12, null);
+    source.prepare("INSERT INTO api_tokens (id,account_id,name,token_hash,prefix,created_at,last_used_at,revoked_at) VALUES (?,?,?,?,?,?,?,?)").run("t1", "a1", "bridge", "h-t1", "pi_", 1, null, null);
+    source.prepare("INSERT INTO api_tokens (id,account_id,name,token_hash,prefix,created_at,last_used_at,revoked_at) VALUES (?,?,?,?,?,?,?,?)").run("t2", "a1", "old", "h-t2", "pi_", 1, null, 5);
+    source.close();
+    const backup = await createSqliteBackup({ paths: { dataDir: f.dataDir, dbPath: f.dbPath, backupRoot: f.backupRoot, ageRecipientFile: f.recipient }, age: fakeAge() });
+    const targetRoot = path.join(f.root, "restore-logins");
+    const preview = await restoreSqliteBackup({ paths: { inputBackup: backup.finalPath!, targetRoot, ageIdentityFile: f.identity }, age: fakeAge(), dryRun: true });
+    expect(preview.finalPath).toBeNull();
+    expect(preview.report.counts).toMatchObject({ authSessionsCleared: 2, apiTokensRevoked: 1 });
+
+    const result = await restoreSqliteBackup({ paths: { inputBackup: backup.finalPath!, targetRoot, ageIdentityFile: f.identity }, age: fakeAge() });
+    expect(result.report.counts).toMatchObject({ authSessionsCleared: 2, apiTokensRevoked: 1 });
+    const restored = new DatabaseSync(path.join(result.finalPath!, "pi-agent-server.db"), { readOnly: true });
+    try {
+      expect(restored.prepare("SELECT count(*) AS n FROM auth_sessions").get()).toEqual({ n: 0 });
+      const tokens = restored.prepare("SELECT id, revoked_at FROM api_tokens ORDER BY id").all() as Array<{ id: string; revoked_at: number | null }>;
+      expect(tokens[0]!.revoked_at).toBeGreaterThan(5);
+      expect(tokens[1]).toEqual({ id: "t2", revoked_at: 5 });
+      expect(restored.prepare("SELECT name FROM accounts").all()).toEqual([{ name: "mz" }]);
+    } finally { restored.close(); }
+    const after = new DatabaseSync(f.dbPath, { readOnly: true });
+    try { expect(after.prepare("SELECT count(*) AS n FROM auth_sessions").get()).toEqual({ n: 2 }); } finally { after.close(); }
+  });
+
   it("restores an authenticated immutable v0 prefix without auto-migrating it", async () => {
     const f = await fixture(false, { migrationVersion: 0 });
     const backup = await createSqliteBackup({ paths: { dataDir: f.dataDir, dbPath: f.dbPath, backupRoot: f.backupRoot, ageRecipientFile: f.recipient }, age: fakeAge() });
     const result = await restoreSqliteBackup({ paths: { inputBackup: backup.finalPath!, targetRoot: path.join(f.root, "restore-v0"), ageIdentityFile: f.identity }, age: fakeAge() });
     expect(result.report.migration).toEqual({ version: 0, pending: 0 });
+    expect(result.report.counts).toMatchObject({ authSessionsCleared: 0, apiTokensRevoked: 0 });
     const restoredDb = new DatabaseSync(path.join(result.finalPath!, "pi-agent-server.db"), { readOnly: true });
     try {
       expect(restoredDb.prepare("SELECT version, name FROM schema_migrations ORDER BY version").all()).toEqual([{ version: 0, name: "initial-schema" }]);

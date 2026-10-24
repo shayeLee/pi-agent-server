@@ -8,6 +8,7 @@
 
 - 元数据存于 SQLite 或 PostgreSQL；完整对话历史存于 Pi 管理的 JSONL。
 - managed 会话 DELETE 把持久清理意图写入 `file_operations`，但仓库只提供只读 planner；物理执行不在当前范围。原生会话 DELETE 只为服务端索引登记墓碑，绝不调度源文件删除。
+- `accounts`（账号管理与 `claim`，见[登录设计](login-design.md) §7–8）直接读写数据库；`claim` 只在停服时执行（`--maintenance-window CONFIRMED`），先用 `--dry-run` 预演。
 - backup、restore、migration、reconcile 和 owner-transfer 均为离线命令，不启动服务，也不安装 timer/worker。`pi-agent-server-drill` 同样如此：做门禁（preflight）、执行隔离一键演习（run）与清理隔离运行产物（cleanup）。它绝不自动启动服务、安装 timer，也不触碰正式资源。
 - PostgreSQL server、`pg_dump`、`pg_restore` major 必须匹配，并且有效业务 schema 必须非 `public`、非系统 schema。
 - 只有相应环境门控的真实 PostgreSQL/age 检查实际运行时才能形成验收证据；skip 不算验收。
