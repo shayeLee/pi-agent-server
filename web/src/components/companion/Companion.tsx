@@ -4,6 +4,7 @@ import type { RunStatus } from "../../hooks/useRunStatus.js";
 import { zhCN } from "../../i18n/zh-CN.js";
 import { CompanionFigure } from "./CompanionFigure.js";
 import type { CompanionMood } from "./companion-mood.js";
+import { elsewhereLine, elsewhereMood, type Elsewhere } from "../../hooks/useElsewhereBubble.js";
 import { dayPart, moodLine, normalizeName, openingLines, readPersona, readStoredPersona, writePersona, type CompanionPersona, type CompanionStyle } from "./companion-lines.js";
 
 const QUICK_START_LIMIT = 3;
@@ -85,13 +86,16 @@ export type CompanionWelcomeProps = {
   generateLines?: (input: CompanionGreetingInput) => Promise<CompanionGreeting>;
   /** Puts `/name ` in the editor; the person still presses Enter. */
   onQuickStart?: (text: string) => void;
+  /** Another session that just ended; said under the greeting, and opened on click. */
+  elsewhere?: Elsewhere | null;
   now?: () => Date;
   seed?: number;
 };
 
 /** The blank session's host (DESIGN.md §6.6): the figure, what it says, and where to start. */
-export function CompanionWelcome({ mood, nodKey, persona, onPersona, projectId, projectName, recent, loadCommands, generateLines, onQuickStart,
-  now = () => new Date(), seed: suppliedSeed }: CompanionWelcomeProps) {
+export function CompanionWelcome({ mood: ownMood, nodKey, persona, onPersona, projectId, projectName, recent, loadCommands, generateLines, onQuickStart,
+  elsewhere, now = () => new Date(), seed: suppliedSeed }: CompanionWelcomeProps) {
+  const mood = elsewhereMood(ownMood, elsewhere);
   const [seed] = useState(() => suppliedSeed ?? Math.floor(Math.random() * 2 ** 32));
   const [commands, setCommands] = useState<{ projectId: string | null; list: SessionCommandInfo[] } | null>(null);
   const [editing, setEditing] = useState(false);
@@ -134,6 +138,7 @@ export function CompanionWelcome({ mood, nodKey, persona, onPersona, projectId, 
         </div>
       </div>
     </div>
+    {elsewhere && <ElsewhereBubble elsewhere={elsewhere} persona={persona} className="companion-elsewhere is-welcome" />}
     {editing && <PersonaEditor id={editorId} persona={persona} onChange={onPersona} onDone={() => setEditing(false)} />}
     {onQuickStart && list && list.length > 0 && <div className="companion-quick" role="group" aria-label={zhCN.companion.quickStart}>
       {list.slice(0, QUICK_START_LIMIT).map(command => <button key={command.name} type="button" className="companion-chip"
@@ -267,15 +272,19 @@ function useRunBubble(run: RunStatus["kind"]): "completed" | "failed" | null {
  * The companion docked beside the transcript: mood only, its words on hover and, for a moment,
  * on how a run ended; it can be sent away.
  */
-export function CompanionDock({ mood, run, nodKey, persona, onPersona }: {
+export function CompanionDock({ mood: ownMood, run, nodKey, persona, onPersona, elsewhere }: {
   mood: CompanionMood;
   run: RunStatus["kind"];
   nodKey: number;
   persona: CompanionPersona;
   onPersona: (persona: CompanionPersona) => void;
+  /** Another session that just ended; this session's own word goes first. */
+  elsewhere?: Elsewhere | null;
 }) {
   const [pulse] = usePulse(nodKey);
   const bubble = useRunBubble(run);
+  const other = bubble ? null : elsewhere;
+  const mood = elsewhereMood(ownMood, other);
   if (!persona.docked) {
     return <button type="button" className="companion-dock is-away" data-testid="companion-dock" aria-label={zhCN.companion.show(persona.name)}
       title={zhCN.companion.show(persona.name)} onClick={() => onPersona({ ...persona, docked: true })}>
@@ -283,12 +292,24 @@ export function CompanionDock({ mood, run, nodKey, persona, onPersona }: {
     </button>;
   }
   const line = moodLine(persona, mood);
-  return <button type="button" className="companion-dock" data-testid="companion-dock" data-mood={mood}
+  return <>
+  {other && <ElsewhereBubble elsewhere={other} persona={persona} className="companion-elsewhere" />}
+  <button type="button" className="companion-dock" data-testid="companion-dock" data-mood={mood}
     aria-label={`${line} ${zhCN.companion.hide(persona.name)}`} title={line} onClick={() => onPersona({ ...persona, docked: false })}>
     {/* The run state badge already says this for assistive tech. */}
     {bubble && <span className="companion-bubble" data-testid="companion-bubble" data-kind={bubble} aria-hidden="true">
       {zhCN.companion.voices[persona.style].bubbles[bubble]}
     </span>}
     <CompanionFigure mood={mood} size={44} pulse={pulse} />
+  </button>
+  </>;
+}
+
+/** The companion's word on another session that just ended: a button that opens it. */
+function ElsewhereBubble({ elsewhere, persona, className }: { elsewhere: Elsewhere; persona: CompanionPersona; className: string }) {
+  const line = elsewhereLine(persona, elsewhere.result);
+  return <button type="button" key={elsewhere.result.id} className={className} data-testid="companion-elsewhere" data-kind={elsewhere.result.kind}
+    aria-label={zhCN.companion.openBubble(line)} title={zhCN.companion.openBubble(line)} onClick={elsewhere.open}>
+    {line}
   </button>;
 }

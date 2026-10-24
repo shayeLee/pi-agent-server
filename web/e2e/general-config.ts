@@ -25,7 +25,7 @@ export function generalConfig(ports: { web: number; mock: number }) {
         // mock pi-agent-server（不依赖真实模型凭证），提供完整 HTTP/SSE 链路；
         // 小配额供 e2e 验证 SSE 连接配额与断线清理（每用户 2 / 全局 10）；
         // 专用端口 + 禁止复用：绝不能把 E2E 请求写进正在运行的真实服务。
-        command: `PORT=${ports.mock} MAX_SSE_PER_USER=2 MAX_SSE_GLOBAL=10 CORS_ORIGINS=${web} volta run npx tsx ../scripts/mock-server.ts`,
+        command: `PORT=${ports.mock} MAX_SSE_PER_USER=3 MAX_SSE_GLOBAL=10 CORS_ORIGINS=${web} volta run npx tsx ../scripts/mock-server.ts`,
         url: `${mock}/health`,
         reuseExistingServer: false,
         timeout: 30_000,

@@ -19,6 +19,7 @@ import { EmptyState } from "./EmptyState.js";
 import type { CompanionPersona } from "./companion/companion-lines.js";
 import { CompanionDock, CompanionWelcome, useCompanionPersona, usePrefetchGreeting, type CompanionPersonaSync, type CompanionWelcomeProps } from "./companion/Companion.js";
 import { useCompanion } from "./companion/companion-mood.js";
+import type { Elsewhere } from "../hooks/useElsewhereBubble.js";
 import type { SubmissionState, SubmitOutcome, UnsentMessage } from "../attachment-state.js";
 
 export type ChatProps = {
@@ -84,6 +85,8 @@ export type ChatProps = {
   companionPersona?: CompanionPersonaSync;
   /** The persona shared with the sidebar companion; when given, `companionPersona` is not used. */
   personaState?: [CompanionPersona, (persona: CompanionPersona) => void];
+  /** Another session that just ended; the companion says so and opens it on click. */
+  elsewhere?: Elsewhere | null;
   searchFiles?: ComposerProps["searchFiles"];
   onRunCommand?: ComposerProps["onRunCommand"];
   onToggleTrace?: () => void;
@@ -148,7 +151,7 @@ export function Chat({
   onRetrySubmit,
   onConfirmCreation,
   onAbort,
-  onFollowUp, loadCommands, companionGreeting, companionPersona, personaState, searchFiles, onRunCommand,
+  onFollowUp, loadCommands, companionGreeting, companionPersona, personaState, elsewhere, searchFiles, onRunCommand,
   onToggleTrace,
   liveSubagents,
   onOpenSubagent,
@@ -298,7 +301,7 @@ export function Chat({
         {!session ? (
           <div className="workbench-welcome" data-testid="no-session-hint">
             {loadError && <div className="chat-phase-banner error" role="alert">{loadError}</div>}
-            <CompanionWelcome mood={companion.mood} nodKey={companion.nodKey} persona={persona} onPersona={setPersona}
+            <CompanionWelcome mood={companion.mood} nodKey={companion.nodKey} persona={persona} onPersona={setPersona} elsewhere={elsewhere}
               projectId={activeProjectId} projectName={projects?.find(project => project.id === activeProjectId)?.name ?? null}
               recent={recentSession} loadCommands={canCreateSession ? loadCommands : undefined} generateLines={canCreateSession ? companionGreeting : undefined} onQuickStart={canCreateSession && canWrite ? quickStart : undefined} />
           </div>
@@ -386,7 +389,7 @@ export function Chat({
             searchFiles={searchFiles}
             onRunCommand={onRunCommand}
             onActivity={companion.signal}
-            perch={session && hasMessages ? <CompanionDock mood={companion.mood} run={runStatus.kind} nodKey={companion.nodKey} persona={persona} onPersona={setPersona} /> : undefined}
+            perch={session && hasMessages ? <CompanionDock mood={companion.mood} run={runStatus.kind} nodKey={companion.nodKey} persona={persona} onPersona={setPersona} elsewhere={elsewhere} /> : undefined}
             onConfigChange={onConfigChange}
           />
           {session && hasMessages && <StatsBar stats={stats} streamLost={streamLost} timeline={timeline} pending={streaming || queued} modelOutput={modelOutput} runProgress={runProgress} activeTools={activeTools} />}

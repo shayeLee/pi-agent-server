@@ -254,8 +254,9 @@ export const zhCN = {
     quickStart: "快捷开始",
     hide: (name: string) => `收起${name}`,
     show: (name: string) => `叫回${name}`,
-    /** The sidebar companion (docs/companion-butler.md §6). */
-    activity: (name: string, running: number) => running > 0 ? `${name}：${running} 个会话在跑，点开看看` : `${name}：没有会话在跑，点开看看最近的结果`,
+    /** Runs across sessions, at the sidebar's foot (docs/companion-butler.md §6). */
+    activity: (running: number) => running > 0 ? `${running} 个会话在跑，点开看看` : "没有会话在跑，点开看看最近的结果",
+    activityIdle: "运行动态",
     runningCount: (count: number) => `${count} 个在跑`,
     runningTitle: "正在跑",
     recentTitle: "最近结果",

@@ -26,7 +26,8 @@ import { useAuth } from "./auth/auth-context.js";
 import { useActivity } from "./hooks/useActivity.js";
 import { useRunNotifications } from "./hooks/useRunNotifications.js";
 import { useCompanionPersona } from "./components/companion/Companion.js";
-import { SidebarCompanion } from "./components/companion/SidebarCompanion.js";
+import { SidebarActivity } from "./components/SidebarActivity.js";
+import { useElsewhereBubble } from "./hooks/useElsewhereBubble.js";
 import { accountScopedKey } from "./auth/storage-scope.js";
 
 const SIDEBAR_DEFAULT = 272;
@@ -246,6 +247,8 @@ export default function App() {
   const personaState = useCompanionPersona(canCreateSession ? controller.companionPersona : undefined);
   const openActivitySession = (projectId: string, sessionId: string) => { closeMobileSidebar(); controller.openSession(projectId, sessionId); };
   const notifications = useRunNotifications(activity.latest, { name: personaState[0].name, onOpen: openActivitySession });
+  // The companion at the composer (or on the blank page) says when another session ends.
+  const elsewhere = useElsewhereBubble(activity.latest, controller.activeSessionId, openActivitySession);
   const runningIds = new Set(activity.running.keys());
   if (streaming && controller.activeSessionId) runningIds.add(controller.activeSessionId);
   const themeLabels: Record<ThemeMode, string> = { light: zhCN.sidebar.lightMode, dark: zhCN.sidebar.darkMode, system: zhCN.sidebar.followSystem };
@@ -377,8 +380,7 @@ export default function App() {
             {accountMenu.items}
           </DropdownMenuContent>
         </DropdownMenu>
-        <SidebarCompanion persona={personaState[0]} running={activity.running} recent={activity.recent} latest={activity.latest}
-          activeSessionId={controller.activeSessionId} onOpen={openActivitySession} notify={notifications} />
+        <SidebarActivity running={activity.running} recent={activity.recent} onOpen={openActivitySession} notify={notifications} />
         </div>
         {accountMenu.dialog}
         {projectMcp.dialog}
@@ -519,6 +521,7 @@ export default function App() {
         loadCommands={controller.loadCommands}
         companionGreeting={controller.companionGreeting}
         personaState={personaState}
+        elsewhere={elsewhere}
         searchFiles={controller.searchFiles}
         onRunCommand={controller.runCommand}
         onToggleTrace={toggleInspector}

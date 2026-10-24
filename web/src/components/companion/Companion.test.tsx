@@ -124,6 +124,26 @@ describe('companion', () => {
     expect(readPersona()).toEqual(DEFAULT_PERSONA);
   });
 
+  it('says when another session ended, opens it on click, and lets this session\'s own word go first', () => {
+    const open = vi.fn();
+    const elsewhere = { result: { id: 1, at: 1, sessionId: 's2', projectId: 'p2', title: '整理日志', kind: 'failed' as const, durationMs: 1 }, open };
+    const { rerender } = render(<CompanionDock mood="idle" run="idle" nodKey={0} persona={DEFAULT_PERSONA} onPersona={() => {}} elsewhere={elsewhere} />);
+    expect(screen.getByTestId('companion-elsewhere')).toHaveTextContent('「整理日志」出错了，去看看？');
+    expect(screen.getByTestId('companion-dock')).toHaveAttribute('data-mood', 'sad');
+    fireEvent.click(screen.getByTestId('companion-elsewhere'));
+    expect(open).toHaveBeenCalledOnce();
+
+    // Busy with this session: it keeps its own face.
+    rerender(<CompanionDock mood="working" run="running" nodKey={0} persona={DEFAULT_PERSONA} onPersona={() => {}} elsewhere={elsewhere} />);
+    expect(screen.getByTestId('companion-dock')).toHaveAttribute('data-mood', 'working');
+    rerender(<CompanionDock mood="happy" run="completed" nodKey={0} persona={DEFAULT_PERSONA} onPersona={() => {}} elsewhere={elsewhere} />);
+    expect(screen.getByTestId('companion-bubble')).toBeInTheDocument();
+    expect(screen.queryByTestId('companion-elsewhere')).not.toBeInTheDocument();
+
+    rerender(<CompanionDock mood="idle" run="idle" nodKey={0} persona={{ ...DEFAULT_PERSONA, docked: false }} onPersona={() => {}} elsewhere={elsewhere} />);
+    expect(screen.queryByTestId('companion-elsewhere')).not.toBeInTheDocument();
+  });
+
   describe('a word when a run ends', () => {
     const Dock = ({ run, persona = DEFAULT_PERSONA }: { run: RunStatus['kind']; persona?: CompanionPersona }) =>
       <CompanionDock mood="idle" run={run} nodKey={0} persona={persona} onPersona={() => {}} />;
