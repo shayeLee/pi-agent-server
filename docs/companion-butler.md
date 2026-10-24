@@ -1,6 +1,6 @@
 # 小派管家设计
 
-> 状态：设计稿，尚未实现。2026-10-23 经 Astra 审核（结论「修改后开工」），并定下 §0 的决策；与 §0 冲突的旧写法以 §0 为准。
+> 状态：设计稿，尚未实现。2026-10-23 经 Astra 审核（结论「修改后开工」），并定下 §0 的决策；与 §0 冲突的旧写法以 §0 为准。登录三期已于 2026-10-23 合入 `main`，§10 按实际实现补了衔接点并更正了 §2、§5 里过时的写法。
 
 ## 0. 已定决策（2026-10-23）
 
@@ -15,7 +15,7 @@
    - 服务端拒绝管家会话的 `POST /v1/sessions/:id/commands`。
    - 改法：白名单从 factory 共用的 `agentToolConfig` 改为按会话类型选择；`createSessionResourceLoader` 对管家走精简版。
    - 验收：环境里故意放一个注册 `bash` 的扩展并接上 MCP，新建、恢复、切换模型后 `getActiveToolNames()` 都只有 `butler_*`。
-3. **关卡 2：输出前查权限**。admin 看得到全部，所以只剩「说话的人是不是 admin」这一道检查。native 会话共享被撤销后的处理仍按现有规则：新增读取路径在输出前复检 native 会话是否仍可用；管家尽量只记摘要和链接，不大段搬原文。
+3. **关卡 2：输出前查权限**。管家只看得到它主人看得到的：主人自己的会话和项目，加上共享的 native 会话（§0.1 已定不做 admin 跨账号）。每次工具调用都经 `SessionService` 按主人的 ownerKey 过滤，不另设「是不是 admin」的旁路。native 会话共享被撤销后的处理仍按现有规则：新增读取路径在输出前复检 native 会话是否仍可用；管家尽量只记摘要和链接，不大段搬原文。
 4. **关卡 3：防提示注入外发**（权限越大越要做）：
    - 管家回答用 `imagePolicy="link"`，不自动加载远程图片。
    - 工具只喂结构化摘要（标题、状态、受控错误信息），不给思考过程、工具原始输出和图片。
@@ -42,13 +42,13 @@
 | 需要 | 现状 | 缺口 |
 |---|---|---|
 | 所有会话的运行状态 | 只有单会话 SSE `/v1/sessions/:id/events`；侧栏只标当前会话；`RuntimeRegistry` 不对外列举 | 需要服务端的跨会话运行动态 |
-| 运行结果历史 | 幂等表存 24 小时、无索引；JSONL 里有 `stopReason` / `errorMessage` | 「今天哪些失败了」需要冷扫 JSONL（同 `usageReport` 的做法） |
+| 运行结果历史 | 幂等表存 24 小时（有 `created_at` 索引，但没有面向运行结果统计的查询）；JSONL 里有 `stopReason` / `errorMessage` | 「今天哪些失败了」需要冷扫 JSONL（同 `usageReport` 的做法） |
 | 结束事件的统一出口 | `ObservabilityPort` 已在 `SessionRuntime.settle` 发出 `turn{sessionId, requestId, outcome, durationMs}`，但 `start.ts` 没接 | 接上即可，补 ownerKey 由 sessionId 查 |
 | 给单个会话加工具 | `customTools` 是整个 factory 共用；每会话的扩展在 `createSessionResourceLoader` 里组装，但请求里没有 sessionId / 会话类型 | 把会话类型传到 resource loader，按类型追加管家扩展 |
-| 隐藏管家会话 | `sessions` 表没有 kind / hidden 列 | 迁移 v7 加 `kind` 列 |
+| 隐藏管家会话 | `sessions` 表没有 kind / hidden 列 | 迁移 v8 加 `kind` 列和 `butlers` 表（v7 已被账号表占用，见 §10） |
 | 模型调用 | 开场白的 `completeWith` 是一次性、无工具、400 token | 管家用完整 Pi 会话，不复用它 |
 
-身份仍按 IP（`ip:<地址>`），「每个用户一个管家」即每个 ownerKey 一个。
+身份取决于 `PI_AUTH_MODE`：`ip` 模式是 `ip:<地址>`，`accounts` 模式是 `user:<账号 id>`。「每个用户一个管家」即每个 ownerKey 一个，两种模式写法相同（见 §10）。
 
 ## 3. 总体结构
 
@@ -93,7 +93,7 @@ Claude Desktop：pi bridge 新增 pi_ask_butler
 
 ### 5.1 会话
 
-- 迁移 v7：`sessions` 加 `kind TEXT NOT NULL DEFAULT 'chat'`，取值 `chat` / `butler`。
+- 迁移 v8：`sessions` 加 `kind TEXT NOT NULL DEFAULT 'chat'`，取值 `chat` / `butler`；新表 `butlers(owner_key 主键, session_id, created_at)` 保证每个 owner 最多一个管家（schema manifest 不支持带条件的唯一索引，所以不靠 `sessions` 上的索引来保证）。
 - `listSessions`、`listProjects`、侧栏、`@` 补全一律排除 `butler`。用量统计**计入**管家的花费，但在 `/v1/usage` 里单独标出（见 §9 待定）。
 - 项目：管家不属于任何用户项目，cwd 用服务 agentDir 下的 `butler/` 目录（只为满足 Pi 会话需要一个目录；它没有文件工具，读不到）。
 - 模型：默认模型；用户可在管家面板里切换，记在管家会话上。
@@ -158,7 +158,7 @@ pi-daily-check 保持不变；以后可以改为调用 `pi_activity`。
 | 期 | 内容 | 可独立交付 |
 |---|---|---|
 | 一 | RunActivityHub + `/v1/activity`（含 SSE）+ 侧栏标出所有在跑的会话 + 侧栏常驻小派与跨会话话泡 + 系统通知 | 是：不涉及模型，花费为零 |
-| 二 | 迁移 v7 + 管家会话 + 工具注入 + 只读工具 + 管家面板 | 是 |
+| 二 | 迁移 v8 + 管家会话 + 工具注入 + 只读工具 + 管家面板 | 是 |
 | 三 | bridge 的 `pi_ask_butler` / `pi_activity`，正式部署副本同步 | 是 |
 
 每期都补单元测试、HTTP 测试与 E2E 分组（按 `pnpm run e2e`），并更新 DESIGN.md §6.6、docs/web-ui.md、docs/api.md；如涉及 README，同步中英文两份。
@@ -169,3 +169,17 @@ pi-daily-check 保持不变；以后可以改为调用 `pi_activity`。
 2. 管家面板与轨迹面板：共用右侧位置互斥，还是管家面板做成浮层？（建议互斥，布局最简单。）
 3. 常驻小派放侧栏底部，还是页面右下角？（建议侧栏底部，不遮挡对话。）
 4. 是否在第一期就让侧栏标出所有在跑的会话？（建议是，几乎免费。）
+
+## 10. 与登录的衔接（2026-10-23，按已合入的实现）
+
+| 位置 | 要怎么做 |
+|---|---|
+| 身份与开关 | 管家归 `request.user` 算出的 ownerKey，两种模式同一套代码。「第一版只给 admin」用 `request.access.role === "admin"` 判断：`accounts` 模式下是账号的角色，`ip` 模式下是 IP 策略里的角色。不在代码里写死 `user:` 前缀 |
+| 迁移版本 | v7 是 `accounts`，管家用 v8；备份、恢复要认 v0…v8 前缀，与以往每次加迁移一样 |
+| `claim` | `butlers` 表加进 `CLAIM_TABLES`（`src/accounts-cli/claim.ts`）。源和目标都已有管家时算唯一约束冲突、整体拒绝，与 `companion_personas` 一样；管家会话本身是 `sessions` 行，已在转移范围内 |
+| activity SSE | `/v1/activity/events` 照搬会话 SSE 的认证复核（`src/server/app.ts` 的 `recheckWithin` 与 `auth_expired` 关闭逻辑）：账号被禁用、改密码、token 吊销后在下一次复核时断开，Web 收到 `auth_expired` 回登录页；不影响在跑的任务 |
+| Web 状态 | 管家面板的草稿、展开状态等本地缓存用 `accountScopedKey`（`web/src/auth/storage-scope.ts`），换账号不串；通知开关存在服务端的人设上，本来就按 owner |
+| bridge | `pi_ask_butler` 问的是 token 所属账号的管家；token 吊销后返回 401，提示重新签发 |
+| ops-viewer | 列会话时排除 `kind = 'butler'`，或单独标出；第一版排除 |
+| 恢复 | 恢复已经会清空登录、吊销 token；管家数据随数据库恢复，不需要额外处理 |
+
