@@ -23,7 +23,7 @@ const aad = (owner: string, server: string) => JSON.stringify(["user_mcp_credent
 
 const sessionRow = (id: string, owner: string, project: string) => ({
   id, owner_key: owner, project_id: project, title: id, created_at: 1, updated_at: 1,
-  visibility: "private", origin: "managed", agent_kind: "pi", conversation_format: "pi-jsonl-v3", conversation_ref: null,
+  visibility: "private", origin: "managed", kind: "chat", agent_kind: "pi", conversation_format: "pi-jsonl-v3", conversation_ref: null,
   model_provider: null, model_id: null, thinking_level: null,
 });
 
@@ -53,6 +53,7 @@ async function seed(storage: ClaimContractStorage): Promise<Fixture> {
     checksum: "c", storage_key: "s", agent_path: "/p", status: "ready", created_at: 1, session_id: null,
   }).execute();
   await db.insertInto("companion_personas").values({ owner_key: FROM, name: "小派", style: "lively", docked: 1, updated_at: 1 }).execute();
+  await db.insertInto("butlers").values({ owner_key: FROM, session_id: ids.s2, created_at: 1 }).execute();
   await db.insertInto("user_mcp_credentials").values(["linear", "docs"].map(server => ({
     owner_key: FROM, server_name: server, server_url: `https://${server}.example/mcp`, client_id: "c", account_label: null,
     tokens: cipher.encrypt(JSON.stringify({ access_token: `${server}-token`, token_type: "bearer" }), aad(FROM, server)),
@@ -82,7 +83,7 @@ export function defineClaimContract(name: string, setup: () => Promise<ClaimCont
       const base = { kysely: db, dialect: storage.dialect, cipher, from: FROM, to, dropUnreadableCredentials: false };
       const preview = await runClaim({ ...base, dryRun: true });
       expect(preview.applied).toBe(false);
-      expect(preview.plan.counts).toEqual({ projects: 1, sessions: 2, uploaded_files: 1, companion_personas: 1, user_mcp_credentials: 2 });
+      expect(preview.plan.counts).toEqual({ projects: 1, sessions: 2, uploaded_files: 1, companion_personas: 1, butlers: 1, user_mcp_credentials: 2 });
       expect(preview.plan).toMatchObject({ conflicts: [], misplaced: [], unreadableCredentials: [] });
       expect(await owners(db)).toEqual(before);
 
@@ -93,6 +94,7 @@ export function defineClaimContract(name: string, setup: () => Promise<ClaimCont
       expect(after.sessions).toEqual(["", OTHER, to, to].sort());
       expect(after.uploaded_files).toEqual([to]);
       expect(after.companion_personas).toEqual([to]);
+      expect(after.butlers).toEqual([to]);
       expect(after.user_mcp_credentials).toEqual([to, to]);
 
       // Credentials now open only as the new owner's rows.
@@ -101,7 +103,7 @@ export function defineClaimContract(name: string, setup: () => Promise<ClaimCont
         expect(() => cipher.decrypt(row.tokens, aad(FROM, row.server_name))).toThrow();
       }
       // Nothing is left to claim.
-      expect((await runClaim({ ...base, dryRun: true })).plan.counts).toEqual({ projects: 0, sessions: 0, uploaded_files: 0, companion_personas: 0, user_mcp_credentials: 0 });
+      expect((await runClaim({ ...base, dryRun: true })).plan.counts).toEqual({ projects: 0, sessions: 0, uploaded_files: 0, companion_personas: 0, butlers: 0, user_mcp_credentials: 0 });
     }));
 
     it("refuses on a collision at the target, or a source row in someone else's project, and changes nothing", () => withFixture(async ({ db, cipher, to, ids, storage }) => {
@@ -116,15 +118,19 @@ export function defineClaimContract(name: string, setup: () => Promise<ClaimCont
         checksum: "c", storage_key: "s2", agent_path: "/p2", status: "ready", created_at: 1, session_id: null,
       }).execute();
       await db.insertInto("sessions").values(sessionRow(randomUUID(), FROM, ids.theirs)).execute();
+      const targetButler = randomUUID();
+      await db.insertInto("sessions").values(sessionRow(targetButler, to, DEFAULT_PROJECT_ID)).execute();
+      await db.insertInto("butlers").values({ owner_key: to, session_id: targetButler, created_at: 2 }).execute();
       const before = await owners(db);
 
       const plan = (await runClaim({ ...base, dryRun: true })).plan;
-      expect(plan.conflicts).toHaveLength(3);
+      expect(plan.conflicts).toHaveLength(4);
       expect(plan.misplaced).toHaveLength(1);
       const error = await runClaim(base).then(() => new Error("not refused"), (caught: unknown) => caught as Error);
       expect(error.message).toContain("companion_personas");
       expect(error.message).toContain("linear");
       expect(error.message).toContain("上传键");
+      expect(error.message).toContain("管家");
       expect(error.message).toContain(ids.theirs);
       expect(await owners(db)).toEqual(before);
     }));

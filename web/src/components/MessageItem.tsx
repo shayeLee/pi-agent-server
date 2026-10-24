@@ -8,9 +8,11 @@ import { ThinkingRow } from "./ThinkingRow.js";
 
 export type MessageItemProps = {
   item: Extract<TimelineItem, { kind: "message" | "thinking" }>;
+  /** `link` shows Markdown images as links instead of loading them. */
+  imagePolicy?: "allow" | "link";
 };
 
-export const MessageItem = memo(function MessageItem({ item }: MessageItemProps) {
+export const MessageItem = memo(function MessageItem({ item, imagePolicy = "allow" }: MessageItemProps) {
   const [preview, setPreview] = useState<string | null>(null);
   const dialogRef = useRef<HTMLDialogElement>(null);
   useEffect(() => { if (preview) dialogRef.current?.showModal(); }, [preview]);
@@ -45,7 +47,7 @@ export const MessageItem = memo(function MessageItem({ item }: MessageItemProps)
     <div className="message-row row-assistant" data-testid={`message-${item.id}`}>
       <div className="message-assistant">
         <div className="assistant-content">
-          {item.text && <Markdown text={item.text} />}
+          {item.text && <Markdown text={item.text} imagePolicy={imagePolicy} />}
           {/* Same caret as the waiting line, so the reply continues where PI was about to write. */}
           {item.streaming && <span className="streaming-cursor ledger-caret" aria-hidden="true" />}
           {item.stopReason === "aborted" && <div className="assistant-terminal-status" data-testid={`aborted-${item.id}`}>

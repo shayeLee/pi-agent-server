@@ -33,7 +33,8 @@ import type {
   SystemPromptPort,
 } from "../application/ports/index.js";
 import { RuntimeRegistry, SessionDeletedError, type SessionEntry } from "../runtime/runtime-registry.js";
-import { SessionService, THINKING_LEVELS, USAGE_MAX_BUCKETS } from "../application/session-service.js";
+import { butlerSystemPrompt } from "../butler/butler-prompt.js";
+import { ButlerRestrictedError, SessionService, THINKING_LEVELS, USAGE_MAX_BUCKETS } from "../application/session-service.js";
 import { validTimeZone, type UsagePeriod } from "../agent/usage-ledger.js";
 import {
   createAdmission,
@@ -102,6 +103,8 @@ export type ServerDeps = {
   sessionTitler?: { title(prompt: string): Promise<string | null> };
   /** Keeps the companion's persona per caller; without it the page keeps the persona per browser. */
   companionPersonas?: import("../application/ports/companion-persona-store-port.js").CompanionPersonaStorePort;
+  /** Each owner's butler session (docs/companion-butler.md §12); omitted = no butler on this host. */
+  butlers?: import("../application/ports/butler-store-port.js").ButlerStorePort;
   /** MCP 目录与项目设置；缺省时项目 MCP 接口返回未配置（测试用）。 */
   projectMcp?: {
     readonly catalog: import("../mcp/catalog.js").McpCatalog;
@@ -255,6 +258,13 @@ const COMPANION_GREETING_BODY_SCHEMA = {
   },
   required: ["persona", "dayPart"], additionalProperties: false,
 } as const;
+/** `POST /v1/butler`: an empty body or `{ reset: true }`. */
+const BUTLER_BODY_SCHEMA = {
+  type: ["object", "null"],
+  properties: { reset: { type: "boolean" } },
+  additionalProperties: false,
+} as const;
+
 const COMPANION_PERSONA_BODY_SCHEMA = {
   type: "object",
   properties: {
@@ -593,6 +603,7 @@ export function buildApp(deps: ServerDeps): FastifyInstance {
     uploads: deps.uploads,
     idempotencyRepo: deps.idempotencyRepo,
     sessionTitler: deps.sessionTitler,
+    ...(deps.butlers ? { butlers: deps.butlers } : {}),
     createId: randomUUID,
     now: Date.now,
   });
@@ -606,6 +617,9 @@ export function buildApp(deps: ServerDeps): FastifyInstance {
   app.setErrorHandler((error, _request, reply) => {
     if (error instanceof SessionDeletedError) {
       return reply.code(404).send({ statusCode: 404, error: "Not Found", message: "会话不存在" });
+    }
+    if (error instanceof ButlerRestrictedError) {
+      return reply.code(403).send({ statusCode: 403, error: "Forbidden", code: "butler_restricted", message: error.message });
     }
     reply.send(error);
   });
@@ -1306,6 +1320,27 @@ export function buildApp(deps: ServerDeps): FastifyInstance {
         const persona = { ...request.body, name: request.body.name.trim() };
         await deps.companionPersonas.put(ownerKeyOf(request), persona, Date.now());
         return { persona };
+      });
+    // The caller's butler (docs/companion-butler.md §12.3). Admins only in this phase: other roles,
+    // and hosts without a butler store, get 403/404 and the page shows only the activity lists.
+    const butlerGate = (request: FastifyRequest, reply: FastifyReply) => {
+      if (!sessions.hasButlers) return NOT_FOUND(reply);
+      if (request.access.role !== "admin") return reply.code(403).send({ statusCode: 403, error: "Forbidden", code: "butler_admin_only", message: "管家目前只对管理员开放" });
+      return null;
+    };
+    api.get("/butler", { exposeHeadRoute: false, ...requirePermission("sessions:create") }, async (request, reply) => {
+      const refused = butlerGate(request, reply);
+      if (refused) return refused;
+      return reply.header("cache-control", "private, no-store").send({ session: await sessions.getButler(ownerKeyOf(request)) });
+    });
+    api.post<{ Body: { reset?: boolean } }>("/butler",
+      { schema: { body: BUTLER_BODY_SCHEMA }, ...requirePermission("sessions:create") }, async (request, reply) => {
+        const refused = butlerGate(request, reply);
+        if (refused) return refused;
+        const owner = ownerKeyOf(request);
+        const persona = deps.companionPersonas ? await deps.companionPersonas.get(owner) : null;
+        const session = await sessions.ensureButler(owner, { reset: request.body?.reset === true, systemPrompt: butlerSystemPrompt(persona) });
+        return reply.header("cache-control", "private, no-store").send({ session });
       });
     api.post<{ Params: { id: string }; Body: import("../shared/commands.js").SessionCommandInput }>(
       "/sessions/:id/commands",

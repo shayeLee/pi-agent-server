@@ -44,6 +44,8 @@ export type PiResourceLoaderRequest = {
   readonly systemPrompt: string | null;
   /** 会话可以使用谁的按用户 MCP 凭证；null 表示谁的都不用（共享或原生会话）。 */
   readonly mcpCredentialOwner: string | null;
+  /** An owner's butler: the loader skips project resources, MCP and user extensions (docs/companion-butler.md §12.4). */
+  readonly butler?: { readonly ownerKey: string };
 };
 
 /** 会话专属 loader 与其同一 ExtensionRuntime 的必需 EventBus（也承载 host identity）。 */
@@ -78,6 +80,9 @@ export type PiAgentSessionFactoryOptions = {
    */
   readonly agentSettings?: Pick<AgentSettingsFile, "createSettingsManager">;
   readonly customTools?: readonly ToolDefinition[];
+  /** The butler's own tools for one owner; a butler session gets these instead of `customTools`. */
+  readonly butlerTools?: (ownerKey: string) => readonly ToolDefinition[];
+  /** Checked at construction; each session then runs under its context's policy (a butler's is a whitelist). */
   readonly agentToolConfig: {
     /** Resolved exact allowlist; raw modifiers belong at the composition boundary. */
     readonly tools?: readonly string[];
@@ -103,7 +108,7 @@ export class PiAgentSessionFactory implements AgentSessionFactory {
   private readonly defaultThinkingLevel: string | undefined;
   private readonly agentSettings: PiAgentSessionFactoryOptions["agentSettings"];
   private readonly customTools: readonly ToolDefinition[] | undefined;
-  private readonly agentToolConfig: PiAgentSessionFactoryOptions["agentToolConfig"];
+  private readonly butlerTools: PiAgentSessionFactoryOptions["butlerTools"];
 
   constructor(options: PiAgentSessionFactoryOptions) {
     this.modelRuntime = options.modelRuntime;
@@ -115,11 +120,8 @@ export class PiAgentSessionFactory implements AgentSessionFactory {
     this.defaultThinkingLevel = options.defaultThinkingLevel;
     this.agentSettings = options.agentSettings;
     this.customTools = options.customTools;
+    this.butlerTools = options.butlerTools;
     validateResolvedToolSelection(options.agentToolConfig.tools);
-    this.agentToolConfig = {
-      ...options.agentToolConfig,
-      ...(options.agentToolConfig.tools !== undefined ? { tools: [...options.agentToolConfig.tools] } : {}),
-    };
   }
 
   async prepareNew(context: AgentSessionContext): Promise<PreparedAgentSession> {
@@ -282,7 +284,10 @@ export class PiAgentSessionFactory implements AgentSessionFactory {
     const thinkingLevel = (isNewSession || !transcriptHasThinking)
       ? context.thinkingLevel ?? (isNewSession ? modelThinkingLevel ?? this.defaultThinkingLevel : undefined)
       : undefined;
-    const toolConfig = resolveSdkToolConfig(this.agentToolConfig, settingsManager.getDefaultTools());
+    // The policy comes with the session: a butler gets an exact whitelist of its own tools and none of
+    // the plugin tools, so nothing else can become active on it (docs/companion-butler.md §12.4).
+    const toolConfig = resolveSdkToolConfig(context.agentToolConfig, settingsManager.getDefaultTools());
+    const customTools = context.butler ? this.butlerTools?.(context.butler.ownerKey) ?? [] : this.customTools;
     let session: Awaited<ReturnType<typeof createAgentSession>>["session"];
     let sessionLoader: PiSessionResourceLoader;
     try {
@@ -301,7 +306,7 @@ export class PiAgentSessionFactory implements AgentSessionFactory {
         ...(model ? { model } : {}),
         ...(thinkingLevel ? { thinkingLevel: thinkingLevel as NonNullable<PiCreateOptions["thinkingLevel"]> } : {}),
         ...toolConfig,
-        ...(this.customTools !== undefined ? { customTools: [...this.customTools] } : {}),
+        ...(customTools !== undefined ? { customTools: [...customTools] } : {}),
       };
       ({ session } = await createAgentSession(options));
     } catch (error) {
@@ -357,6 +362,7 @@ export class PiAgentSessionFactory implements AgentSessionFactory {
       projectCwd: context.projectCwd,
       systemPrompt: context.systemPrompt ?? null,
       mcpCredentialOwner: context.mcpCredentialOwner ?? null,
+      ...(context.butler ? { butler: context.butler } : {}),
     });
   }
 
@@ -382,5 +388,9 @@ export class PiAgentSessionFactory implements AgentSessionFactory {
 
   private assertContext(context: AgentSessionContext): void {
     if (context.agentToolConfig === undefined) throw new Error("agent session factory context is incomplete");
+    validateResolvedToolSelection(context.agentToolConfig.tools);
+    if (context.butler && (context.agentToolConfig.tools === undefined || context.agentToolConfig.tools.some(name => !name.startsWith("butler_")))) {
+      throw new Error("a butler session runs only under the butler's own tool whitelist");
+    }
   }
 }

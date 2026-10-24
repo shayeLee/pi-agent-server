@@ -60,6 +60,8 @@ export const PUBLIC_API_OPERATIONS = [
   ["/v1/provider-auth/credentials/{provider}", "delete", "providers:admin"],
   ["/v1/companion/persona", "get", "sessions:create"],
   ["/v1/companion/persona", "put", "sessions:create"],
+  ["/v1/butler", "get", "sessions:create"],
+  ["/v1/butler", "post", "sessions:create"],
   ["/v1/files", "post", "files:upload"],
   ["/v1/sessions", "get", "sessions:list"],
   ["/v1/usage", "get", "sessions:list"],
@@ -511,6 +513,18 @@ export const openapiV1 = {
         "503": error(503, "This server keeps no personas (code companion_unavailable); the page keeps it per browser."),
       }, { requestBody: request(ref("CompanionPersona")), ...requestValidation }),
     },
+    "/v1/butler": {
+      get: operation("getButler", "sessions:create", {
+        "200": { description: "The caller's butler session, or null before the first one. The butler is a hidden session: it is not in /v1/sessions, /v1/projects or /v1/activity, and refuses commands, file lookups, attachments, subagent steering, rename and delete (403 butler_restricted).", ...json(ref("ButlerReply")) },
+        "403": error(403, "Only admins have a butler in this version (code butler_admin_only)."),
+        "404": error(404, "This server has no butlers."),
+      }),
+      post: operation("ensureButler", "sessions:create", {
+        "200": { description: "The caller's butler, created on first use. With reset, a new butler session replaces it; the old one stays hidden and still counts in /v1/usage.", ...json(ref("ButlerReply")) },
+        "403": error(403, "Only admins have a butler in this version (code butler_admin_only)."),
+        "404": error(404, "This server has no butlers."),
+      }, { requestBody: { required: false, content: { "application/json": { schema: { type: "object", properties: { reset: { type: "boolean" } }, additionalProperties: false } } } }, ...requestValidation }),
+    },
     "/v1/files": {
       post: operation("uploadFile", "files:upload", {
         "201": { description: "Validated original stored; a repeated upload key returns the same file.", ...json(ref("UploadedFile")) },
@@ -754,6 +768,7 @@ export const openapiV1 = {
       Session: { type: "object", required: ["id", "ownerKey", "projectId", "title", "createdAt", "updatedAt", "modelProvider", "modelId", "thinkingLevel", "systemPrompt", "capabilityVersions"], properties: { id: { type: "string" }, ownerKey: { type: "string" }, visibility: { type: "string", enum: ["private", "shared"], description: "Native shared sessions are available to admitted users subject to RBAC and cwd exclusions; absent means private." }, origin: { type: "string", enum: ["managed", "native"], description: "Absent means managed." }, projectId: { type: "string" }, title: { type: "string" }, firstPrompt: { type: ["string", "null"], description: "Read-only first persisted user prompt for display; never a rename payload." }, createdAt: { type: "number" }, updatedAt: { type: "number" }, modelProvider: { type: ["string", "null"] }, modelId: { type: ["string", "null"] }, thinkingLevel: { type: ["string", "null"] }, systemPrompt: { type: ["string", "null"] }, capabilityVersions: { type: ["string", "null"] } }, additionalProperties: false },
       CreateProject: { type: "object", required: ["name", "cwd"], properties: { name: { type: "string" }, cwd: { type: "string" } }, additionalProperties: false },
       UploadedFile: { type: "object", required: ["fileId", "name", "mediaType", "size", "status", "agentPath"], properties: { fileId: { type: "string" }, name: { type: "string" }, mediaType: { type: "string" }, size: { type: "integer" }, status: { const: "ready" }, agentPath: { type: "string" } }, additionalProperties: false },
+      ButlerReply: { type: "object", required: ["session"], properties: { session: { oneOf: [{ type: "null" }, ref("Session")] } }, additionalProperties: false },
       CreateSession: { type: "object", properties: { createRequestId: { type: "string", minLength: 1, maxLength: 128 }, title: { type: "string" }, projectId: { type: "string" }, modelProvider: { type: "string", minLength: 1 }, modelId: { type: "string", minLength: 1 }, thinkingLevel: { type: "string", enum: ["off", "minimal", "low", "medium", "high", "xhigh", "max"] } }, dependentRequired: { modelProvider: ["modelId"], modelId: ["modelProvider"] }, additionalProperties: false },
       RenameSession: { type: "object", required: ["title"], properties: { title: { type: "string" } }, additionalProperties: false },
       SessionConfig: { type: "object", properties: { modelProvider: { type: "string", minLength: 1 }, modelId: { type: "string", minLength: 1 }, thinkingLevel: { type: "string", enum: ["off", "minimal", "low", "medium", "high", "xhigh", "max"] } }, additionalProperties: false },
@@ -970,6 +985,7 @@ export const openapiV1 = {
         totals: ref("UsageReportTotals"),
         sessions: { type: "integer", minimum: 0, description: "Session files considered." },
         unreadSessions: { type: "integer", minimum: 0, description: "Session files that could not be read; their usage is missing." },
+        butler: { allOf: [ref("UsageReportTotals")], description: "The caller's butler sessions' share, already counted in totals. Absent when there is none." },
       }, additionalProperties: false },
       PromptUsage: { type: "object", description: "Every model call of the current host prompt, summed; a field is null once any call lacks it. Null when this process did not run the prompt.", required: [...Object.keys(usageTokenProperties), "calls"], properties: { ...usageTokenProperties, calls: { type: "integer", minimum: 0 } }, additionalProperties: false },
       SubagentUsage: { type: "object", description: "Child agent model calls (completed assistant messages), summed. Not included in sessionTotals or branchTotals.", required: [...Object.keys(usageTokenProperties), "runs", "calls"], properties: { ...usageTokenProperties, runs: { type: "integer", minimum: 1 }, calls: { type: "integer", minimum: 0 } }, additionalProperties: false },

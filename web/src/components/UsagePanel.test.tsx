@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import type { ModelUsage, UsagePeriod, UsageReport, UsageTotals } from "pi-agent-server/client";
 import { zhCN } from "../i18n/zh-CN.js";
+import { formatTokens, formatUsd } from "../i18n/format.js";
 import { axisScale, useUsagePanel } from "./UsagePanel.js";
 
 const text = zhCN.usage;
@@ -36,11 +37,18 @@ describe("UsagePanel", () => {
     await panel.findByTestId("usage-table");
     expect(getUsage).toHaveBeenCalledWith({ period: "day", timeZone: expect.any(String) });
     expect(panel.getByText(text.unread(1))).toBeTruthy();
+    expect(panel.queryByTestId("usage-butler")).toBeNull();
     // The range and the totals name the same span, so switching period cannot look like a changed total.
     expect(panel.getByTestId("usage-range").textContent).toBe(text.range(text.span.day(2), "2026/10/20", "2026/10/21"));
     expect(panel.getByText(text.total(text.span.day(2)))).toBeTruthy();
     const rows = within(panel.getByTestId("usage-table")).getAllByRole("row").map(row => row.textContent);
     expect(rows.slice(1, 3).map(row => row!.slice(0, 3))).toEqual(["p/a", "p/b"]);
+  });
+
+  it("says how much of the total the butler used", async () => {
+    const panel = await open(vi.fn(async ({ period }: { period: UsagePeriod }) => ({ ...report(period, [model("a", 300, 1.5)]), butler: totals(120, 0.5) })));
+    await panel.findByTestId("usage-table");
+    expect(panel.getByTestId("usage-butler").textContent).toBe(text.butlerShare(formatTokens(120), formatUsd(0.5)));
   });
 
   it("switches period and narrows the table to a clicked bar", async () => {

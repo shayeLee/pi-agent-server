@@ -24,7 +24,7 @@ async function seedSession(kysely: Kysely<DatabaseSchema>, owner: string, projec
   await kysely.insertInto("projects").values({ id: projectId, name: "P", cwd: "/p", owner_key: owner, created_at: 1 })
     .onConflict((oc) => oc.column("id").doNothing()).execute();
   await kysely.insertInto("sessions").values({
-    id: sessionId, owner_key: owner, visibility: "private", origin: "managed", project_id: projectId, title: "S", created_at: 1, updated_at: 1,
+    id: sessionId, owner_key: owner, visibility: "private", origin: "managed", kind: "chat", project_id: projectId, title: "S", created_at: 1, updated_at: 1,
     agent_kind: "pi", conversation_format: "pi-jsonl-v3", conversation_ref: null, model_provider: null,
     model_id: null, thinking_level: null, system_prompt: null, capability_versions: null,
   }).onConflict((oc) => oc.column("id").doNothing()).execute();

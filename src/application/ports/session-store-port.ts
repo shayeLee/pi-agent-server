@@ -7,6 +7,8 @@ export interface SessionRecord {
   /** Absent on older adapters means private/managed, never shared. */
   visibility?: "private" | "shared";
   origin?: "managed" | "native";
+  /** An owner's hidden butler (docs/companion-butler.md §12); absent means a plain chat. */
+  kind?: "chat" | "butler";
   /** 所属项目 id；默认项目恒为 DEFAULT_PROJECT_ID（服务端固定工作目录，见 project-store-port.ts）。 */
   projectId: string;
   title: string;

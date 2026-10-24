@@ -4171,8 +4171,35 @@ div.shortcut-help { width: min(440px, calc(100vw - 32px)); max-height: 80vh; ove
 .app-shell.sidebar-collapsed:not(.mobile-sidebar-open) .sidebar-activity-label { display: none; }
 .app-shell.sidebar-collapsed:not(.mobile-sidebar-open) .sidebar-activity-count { display: block; }
 @keyframes sidebar-activity-breathe { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
-.sidebar-activity-menu { width: 280px; }
-.sidebar-activity-menu [data-ui="dropdown-label"] { font-weight: 400; font-size: var(--fs-meta); color: var(--dim); }
+.sidebar-activity-toggle[aria-pressed="true"] { color: var(--ink); }
+/* The butler panel (docs/companion-butler.md §12.6): the trace's column, lists on top, the conversation below. */
+.butler-panel { overflow: hidden; }
+.butler-head { flex: none; display: flex; align-items: center; gap: var(--space-12); height: var(--inspector-header-height, calc(var(--header-height) + 1px)); padding: 0 var(--space-12); border-bottom: 1px solid var(--line); }
+.butler-title { flex: 1; margin: 0; font-size: var(--fs-meta); font-family: var(--font-mono); font-weight: 400; color: var(--ink); }
+.butler-notify { display: inline-flex; align-items: center; gap: 4px; font-size: var(--fs-tag); color: var(--dim); cursor: pointer; }
+.butler-notify:has(input:disabled) { cursor: default; opacity: 0.6; }
+.butler-panel > .activity-notify-hint { padding: 6px var(--space-12) 0; }
+.butler-lists { flex: none; max-height: 40%; overflow-y: auto; padding: 4px 0 8px; border-bottom: 1px solid var(--line); }
+.butler-list-title { margin: 8px var(--space-12) 2px; font-size: var(--fs-tag); font-family: var(--font-mono); font-weight: 400; color: var(--dim); }
+.butler-list { margin: 0; padding: 0; list-style: none; }
+.butler-list-empty { margin: 2px var(--space-12); font-size: var(--fs-meta); color: var(--dim); }
+.butler-row { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 28px; padding: 0 var(--space-12); border: 0; background: transparent; color: var(--ink); font-size: var(--fs-meta); text-align: left; cursor: pointer; }
+.butler-row:hover, .butler-row:focus-visible { background: var(--hl); outline: none; }
+.butler-conversation { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.butler-conversation-head { flex: none; display: flex; align-items: center; justify-content: space-between; padding-right: 8px; }
+.butler-reset { min-height: 24px; padding: 0 6px; font-size: var(--fs-tag); }
+.butler-body { flex: 1; min-height: 0; overflow-y: auto; padding: 4px var(--space-12) 8px; container: chat / inline-size; --font-body: var(--fs-ui); font-size: var(--fs-ui); }
+/* The butler column is narrow: the stacked ledger layout (the chat container query) and a smaller body. */
+.butler-body .ledger { gap: 18px; }
+.butler-body .ledger .user-bubble { line-height: 22px; }
+.butler-empty { margin: 8px 0; font-size: var(--fs-meta); color: var(--dim); line-height: 1.6; }
+.butler-notice { flex: none; margin: 0; padding: 4px var(--space-12); font-size: var(--fs-tag); color: var(--dim); }
+.butler-notice[role="alert"] { color: var(--err); }
+.butler-composer { flex: none; display: flex; align-items: flex-end; gap: 8px; padding: 8px var(--space-12); border-top: 1px solid var(--line); }
+.butler-composer textarea { flex: 1; min-width: 0; resize: none; max-height: 160px; padding: 6px 8px; border: 1px solid var(--line); border-radius: var(--radius-control); background: var(--bg); color: var(--ink); font: inherit; font-size: var(--fs-meta); line-height: 1.5; }
+.butler-composer textarea:focus-visible { outline: 2px solid var(--acc); outline-offset: -1px; }
+.butler-send { flex: none; min-height: 32px; padding: 0 12px; border: 1px solid var(--line); border-radius: var(--radius-control); background: var(--bg-surface); color: var(--ink); font-size: var(--fs-meta); cursor: pointer; }
+.butler-send:disabled { color: var(--dim); cursor: default; }
 .activity-row-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .activity-row-state { flex: none; font-family: var(--font-mono); font-size: var(--fs-tag); color: var(--dim); }
 .activity-row-state[data-kind="failed"] { color: var(--err); }

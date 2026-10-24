@@ -14,6 +14,7 @@ export type {
 export { TURN_ERROR_CODES } from "./session-runtime-port.js";
 export type { IdempotencyStorePort } from "./idempotency-store-port.js";
 export type { CompanionPersonaStorePort } from "./companion-persona-store-port.js";
+export type { ButlerStorePort } from "./butler-store-port.js";
 export type { ProjectMcpStorePort } from "./project-mcp-store-port.js";
 export type { McpOAuthClientRecord, McpOAuthStorePort, UserMcpCredentialRecord } from "./mcp-oauth-store-port.js";
 export {

@@ -34,6 +34,9 @@ export function createViewerData(dbPath: string, dataDir: string) {
   const accountNames = (): Map<string, string> => hasAccounts
     ? new Map((db.prepare("SELECT id, name FROM accounts").all() as Array<{ id: string; name: string }>).map(row => [row.id, row.name]))
     : new Map();
+  // Owners' butlers (migration 8) are not conversations and stay out of the viewer.
+  const hasKind = (db.prepare("SELECT name FROM pragma_table_info('sessions')").all() as Array<{ name: string }>).some(column => column.name === "kind");
+  const chats = hasKind ? " AND kind <> 'butler'" : "";
   const describeOwner = (owner: string, names: ReadonlyMap<string, string>): Omit<OwnerEntry, "count"> => {
     if (owner.startsWith("user:")) {
       const id = owner.slice("user:".length);
@@ -45,18 +48,18 @@ export function createViewerData(dbPath: string, dataDir: string) {
     close: () => db.close(),
     /** Every owner with sessions; the system owner '' (native and shared sessions) is not a person and is left out. */
     listOwners(): OwnerEntry[] {
-      const rows = db.prepare("SELECT owner_key, count(*) AS count FROM sessions WHERE owner_key <> '' GROUP BY owner_key ORDER BY count DESC, owner_key").all() as Array<{ owner_key: string; count: number }>;
+      const rows = db.prepare(`SELECT owner_key, count(*) AS count FROM sessions WHERE owner_key <> ''${chats} GROUP BY owner_key ORDER BY count DESC, owner_key`).all() as Array<{ owner_key: string; count: number }>;
       const names = accountNames();
       return rows.map(({ owner_key, count }) => ({ ...describeOwner(owner_key, names), count: Number(count) }));
     },
     listSessions(owner: string, offset: number, limit = 50): { total: number; sessions: SessionSummary[] } {
       if (owner === "") return { total: 0, sessions: [] };
-      const total = (db.prepare("SELECT count(*) AS n FROM sessions WHERE owner_key = ?").get(owner) as { n: number }).n;
-      const rows = db.prepare("SELECT id, owner_key, title, created_at, updated_at FROM sessions WHERE owner_key = ? ORDER BY updated_at DESC, id DESC LIMIT ? OFFSET ?").all(owner, limit, offset) as Array<Pick<SessionRow, "id" | "owner_key" | "title" | "created_at" | "updated_at">>;
+      const total = (db.prepare(`SELECT count(*) AS n FROM sessions WHERE owner_key = ?${chats}`).get(owner) as { n: number }).n;
+      const rows = db.prepare(`SELECT id, owner_key, title, created_at, updated_at FROM sessions WHERE owner_key = ?${chats} ORDER BY updated_at DESC, id DESC LIMIT ? OFFSET ?`).all(owner, limit, offset) as Array<Pick<SessionRow, "id" | "owner_key" | "title" | "created_at" | "updated_at">>;
       return { total, sessions: rows.map((row) => ({ id: row.id, owner, title: row.title, createdAt: Number(row.created_at), updatedAt: Number(row.updated_at) })) };
     },
     async getSession(id: string): Promise<{ session: SessionSummary; systemPrompt: string | null; messages: ChatMessage[] } | null> {
-      const row = db.prepare("SELECT id, owner_key, project_id, title, created_at, updated_at, conversation_ref, system_prompt, agent_kind, conversation_format FROM sessions WHERE id = ? AND owner_key <> ''").get(id) as SessionRow | undefined;
+      const row = db.prepare(`SELECT id, owner_key, project_id, title, created_at, updated_at, conversation_ref, system_prompt, agent_kind, conversation_format FROM sessions WHERE id = ? AND owner_key <> ''${chats}`).get(id) as SessionRow | undefined;
       if (!row) return null;
       const session = { id: row.id, owner: row.owner_key, title: row.title, createdAt: Number(row.created_at), updatedAt: Number(row.updated_at) };
       const systemPrompt = row.system_prompt;

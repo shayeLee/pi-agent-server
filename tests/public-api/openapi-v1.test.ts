@@ -377,6 +377,7 @@ describe("public host API v1 contract", () => {
       "DELETE /v1/sessions/{id}/control-queue/{controlId}",
       "PATCH /v1/sessions/{id}",
       "PATCH /v1/sessions/{id}/config",
+      "POST /v1/butler",
       "POST /v1/projects",
       "POST /v1/projects/{id}/companion/greeting",
       "POST /v1/provider-auth/logins",

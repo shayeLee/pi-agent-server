@@ -4,7 +4,7 @@
 
 ## 1. Schema 与 migration
 
-当前 head 是 **v7**，不是单独的 v0 baseline、v1、v2、v3、v4、v5 或 v6：
+当前 head 是 **v8**，不是单独的 v0 baseline、v1、v2、v3、v4、v5、v6 或 v7：
 
 | 版本 | 不可变快照 | 增量内容 |
 | --- | --- | --- |
@@ -15,11 +15,12 @@
 | v4 `project-mcp-servers` | `projectMcpServersSchemaManifest` | project_mcp_servers |
 | v5 `user-mcp-oauth` | `userMcpOAuthSchemaManifest` | mcp_oauth_clients、user_mcp_credentials |
 | v6 `project-mcp-server-identity` | `projectMcpServerIdentitySchemaManifest` | project_mcp_servers 加 `server_identity` 列 |
-| v7 `accounts` | `schemaManifest` | accounts、login_methods、auth_sessions、api_tokens（[登录设计](login-design.md)） |
+| v7 `accounts` | `accountsSchemaManifest` | accounts、login_methods、auth_sessions、api_tokens（[登录设计](login-design.md)） |
+| v8 `butler` | `schemaManifest` | sessions 加 `kind` 列；butlers（[小派管家](companion-butler.md) §12） |
 
 `src/storage/migration-manifest.ts` 固化每个版本的 schema、两方言 canonical operations、物理类型映射与 dataTransform，checksum 对这些 descriptor 内容作稳定序列化后取 SHA-256，不只是 DDL 文本 hash。v0–v4 不随当前 head 改写；`binding.private` 是可选 JSON 标记，不新增 migration 或改变 v2 checksum。
 
-完全空库以 `--bootstrap-baseline --bootstrap-confirm CONFIRMED` 建立完整 v0→v1→v2→v3→v4→v5→v6→v7 head；已有已认证前缀以 pre-backup → `--apply` → `--verify` 升级。无 ledger、未知版本或 checksum 不匹配均拒绝采用；服务启动只 verify，不自动迁移。restore 校验包所携历史前缀，不自动升级到 head。命令见 [Operations](operations.md) 与 [Backup and restore](backup-restore.md#5-migration-建立与前置备份)。
+完全空库以 `--bootstrap-baseline --bootstrap-confirm CONFIRMED` 建立完整 v0→v1→v2→v3→v4→v5→v6→v7→v8 head；已有已认证前缀以 pre-backup → `--apply` → `--verify` 升级。无 ledger、未知版本或 checksum 不匹配均拒绝采用；服务启动只 verify，不自动迁移。restore 校验包所携历史前缀，不自动升级到 head。命令见 [Operations](operations.md) 与 [Backup and restore](backup-restore.md#5-migration-建立与前置备份)。
 
 Manifest 对 PK/FK/索引列引用作编译期检查，运行期复查唯一性、类型、声明顺序等并深冻结。逻辑类型映射：
 
@@ -50,9 +51,10 @@ Manifest 对 PK/FK/索引列引用作编译期检查，运行期复查唯一性�
 | accounts | 登录账号：账号名、角色、禁用状态、创建与更新时间（v7） | id 主键；name 唯一；读到未知角色视为禁用；`PI_AUTH_MODE=accounts` 时 owner 键为 `user:<id>` |
 | login_methods | 账号的登录方式；当前只有 `password`，存 scrypt 参数、盐与哈希及最后使用时间 | id 主键；`(kind, issuer, subject)` 唯一；account_id → accounts CASCADE |
 | auth_sessions | 浏览器登录会话：token 的 SHA-256、创建/最后活跃/过期时间、User-Agent | id 主键；token_hash 唯一；account_id → accounts CASCADE；禁用账号或改密码时删除 |
+| butlers | 每个 owner 的管家会话指针（v8）：owner_key、session_id、创建时间 | owner_key 主键；session_id → sessions ON DELETE CASCADE；「重新开始」只改指针，旧管家会话保留 |
 | api_tokens | 账号的 API token：SHA-256、前缀、标签、创建/最后使用/撤销时间 | id 主键；token_hash 唯一；account_id → accounts CASCADE；禁用账号时撤销 |
 
-sessions 的模型、thinking、system_prompt、capability_versions 与 conversation_ref 可空；visibility/origin 非空且默认 private/managed。owner/updated_at 与 owner/project 索引支持列表，排序为 updated_at DESC、id DESC。
+sessions 的模型、thinking、system_prompt、capability_versions 与 conversation_ref 可空；visibility/origin 非空且默认 private/managed；`kind`（v8）非空、默认 `chat`，管家会话为 `butler`，不出现在会话与项目列表、运行动态和 ops-viewer 里，用量照算。owner/updated_at 与 owner/project 索引支持列表，排序为 updated_at DESC、id DESC。
 
 DB 不存完整消息正文；conversation_ref 由对应 Agent storage 解释。一个 source 只能绑定一个服务会话/runtime；“共享会话”不是多个会话记录共用同一个引用。
 

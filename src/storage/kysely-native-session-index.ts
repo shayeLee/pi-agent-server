@@ -105,7 +105,7 @@ export class KyselyNativeSessionIndex {
       await tx.insertInto("native_session_sources").values({ source_path: source.binding.sourcePath, source_id: source.binding.sourceId,
         session_id: sessionId, project_id: projectId, binding: JSON.stringify(source.binding), deleted: 0 }).execute();
       await tx.insertInto("sessions").values({ id: sessionId, owner_key: "", project_id: projectId, title: "",
-        visibility: "shared", origin: "native", created_at: source.createdAt, updated_at: source.updatedAt,
+        visibility: "shared", origin: "native", kind: "chat", created_at: source.createdAt, updated_at: source.updatedAt,
         agent_kind: "pi", conversation_format: "pi-native-jsonl-v3", conversation_ref: source.binding.sourcePath,
         model_provider: null, model_id: null, thinking_level: null, system_prompt: null, capability_versions: null }).execute();
       return sessionId;

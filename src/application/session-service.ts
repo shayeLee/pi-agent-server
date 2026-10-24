@@ -37,6 +37,16 @@ import {
 
 export const THINKING_LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
 
+/**
+ * An operation a butler session does not take (docs/companion-butler.md §12.3): commands, file
+ * lookups, attachments, subagent steering, rename and delete. HTTP answers 403 `butler_restricted`.
+ */
+export class ButlerRestrictedError extends Error {
+  constructor() { super("管家会话不支持这个操作"); }
+}
+
+const isButler = (record: SessionRecord) => record.kind === "butler";
+
 class FileAdmissionError extends Error {
   constructor(readonly kind: Exclude<FileMessageOutcome["kind"], "prepared">, message: string) {
     super(message);
@@ -89,6 +99,8 @@ export type SessionServiceDeps = {
   idempotencyRepo?: IdempotencyStorePort;
   /** Writes a short title from the first prompt for untitled sessions; omitted = keep showing the prompt. */
   sessionTitler?: { title(prompt: string): Promise<string | null> };
+  /** Which session is each owner's butler; omitted = the host has no butler. */
+  butlers?: import("./ports/butler-store-port.js").ButlerStorePort;
   /** 由 composition root 提供，便于隔离 ID 生成策略。 */
   createId: () => string;
   /** 由 composition root 提供，便于测试并隔离时钟。 */
@@ -131,6 +143,8 @@ export class SessionService {
   private readonly deletingProjects = new Set<string>();
   /** Service-level preflight prevents a mismatched retry from binding extra files before runtime rejects it. */
   private readonly requestFingerprints = new Map<string, string>();
+  /** One butler creation at a time per owner, so two tabs do not make two. */
+  private readonly butlerCreations = new Map<string, Promise<SessionDto>>();
   /** Sessions already given an automatic-title attempt in this process: at most one model call each. */
   private readonly titleAttempts = new Set<string>();
 
@@ -167,7 +181,8 @@ export class SessionService {
     const projects = [this.defaultProject(), ...(await this.deps.projects.listByOwner(ownerKey)).map(toProjectDto)];
     const visibleProjects = new Set<string>();
     for (const record of await this.deps.sessions.listByOwner(ownerKey)) {
-      if (!(await this.canAccess(ownerKey, record))) continue;
+      // A butler lives under the default project but must not make it show up.
+      if (isButler(record) || !(await this.canAccess(ownerKey, record))) continue;
       visibleProjects.add(record.projectId);
       if (projects.some(project => project.id === record.projectId)) continue;
       const project = await this.deps.projects.get(record.projectId);
@@ -395,12 +410,73 @@ export class SessionService {
     // Ownership/project filtering happens in the index query before any transcript access.
     // Read only a prefix summary, never N full exports or runtime instantiations.
     for (const record of records) {
-      if (!(await this.canAccess(ownerKey, record))) continue;
+      if (isButler(record) || !(await this.canAccess(ownerKey, record))) continue;
       const dto = toSessionDto(record);
       if (!record.title.trim()) Object.assign(dto, await this.fallbackTitle(record));
       result.push(dto);
     }
     return result;
+  }
+
+  /** Whether this host has butlers at all. */
+  get hasButlers(): boolean { return this.deps.butlers !== undefined; }
+
+  /** The caller's current butler session; `null` before the first one (docs/companion-butler.md §12.3). */
+  async getButler(ownerKey: string): Promise<SessionDto | null> {
+    const record = await this.currentButler(ownerKey);
+    return record ? toSessionDto(record) : null;
+  }
+
+  /**
+   * The caller's butler, made on first use. `reset` starts a new conversation: the old session
+   * stays (hidden, still counted in usage) and the pointer moves to the new one.
+   */
+  async ensureButler(ownerKey: string, options: { reset?: boolean; systemPrompt: string }): Promise<SessionDto> {
+    const butlers = this.deps.butlers;
+    if (!butlers) throw new Error("butlers are not configured on this host");
+    const pending = this.butlerCreations.get(ownerKey);
+    if (pending) return pending;
+    const work = (async () => {
+      const current = await this.currentButler(ownerKey);
+      if (current && !options.reset) return toSessionDto(current);
+      const now = this.deps.now();
+      const record: SessionRecord = {
+        id: this.deps.createId(), ownerKey, projectId: DEFAULT_PROJECT_ID, kind: "butler", title: "", createdAt: now, updatedAt: now,
+        agentKind: PI_AGENT_KIND, conversationFormat: PI_CONVERSATION_FORMAT, conversationRef: null,
+        modelProvider: null, modelId: null, thinkingLevel: null, systemPrompt: options.systemPrompt,
+        capabilityVersions: null,
+      };
+      await this.deps.sessions.create(record);
+      await butlers.set(ownerKey, record.id, now);
+      return toSessionDto(record);
+    })();
+    this.butlerCreations.set(ownerKey, work);
+    try { return await work; } finally { this.butlerCreations.delete(ownerKey); }
+  }
+
+  /** The pointed-at session, only while it is still this owner's butler (an owner transfer moves sessions, not pointers). */
+  private async currentButler(ownerKey: string): Promise<SessionRecord | null> {
+    const id = await this.deps.butlers?.get(ownerKey);
+    const record = id ? await this.deps.sessions.get(id) : null;
+    return record && isButler(record) && record.ownerKey === ownerKey ? record : null;
+  }
+
+  /**
+   * The caller's projects and sessions for the butler's tools (docs/companion-butler.md §12.5): the
+   * same visibility as the lists, without native discovery, so a question never writes the index.
+   */
+  async listForButler(ownerKey: string): Promise<{ projects: ProjectDto[]; sessions: SessionDto[] }> {
+    const sessions: SessionDto[] = [];
+    for (const record of await this.deps.sessions.listByOwner(ownerKey)) {
+      if (isButler(record) || !(await this.canAccess(ownerKey, record))) continue;
+      const dto = toSessionDto(record);
+      if (!record.title.trim()) Object.assign(dto, await this.fallbackTitle(record));
+      sessions.push(dto);
+    }
+    const used = new Set(sessions.map(session => session.projectId));
+    const projects = [this.defaultProject(), ...(await this.deps.projects.listByOwner(ownerKey)).map(toProjectDto)]
+      .filter(project => used.has(project.id) || !project.isDefault);
+    return { projects, sessions };
   }
 
   /**
@@ -409,7 +485,8 @@ export class SessionService {
    */
   async activitySubject(ownerKey: string, id: string): Promise<{ projectId: string; title: string } | null> {
     const record = await this.findOwned(ownerKey, id);
-    if (!record) return null;
+    // The butler's own runs are not activity: it would report on itself.
+    if (!record || isButler(record)) return null;
     if (record.title.trim()) return { projectId: record.projectId, title: record.title };
     const fallback = await this.fallbackTitle(record);
     return { projectId: record.projectId, title: fallback.title || fallback.firstPrompt || "" };
@@ -475,7 +552,7 @@ export class SessionService {
    * this never creates one; a cold session answers "unavailable".
    */
   async steerSubagent(ownerKey: string, id: string, runId: string, text: string): Promise<"not-found" | import("../shared/subagents.js").SubagentSteerAck | "unavailable"> {
-    if (!(await this.findOwned(ownerKey, id))) return "not-found";
+    if (!(await this.findChat(ownerKey, id))) return "not-found";
     return await this.deps.registry.get(id)?.runtime.steerSubagent?.(runId, text) ?? "unavailable";
   }
 
@@ -500,7 +577,8 @@ export class SessionService {
   }
 
   async deleteSession(ownerKey: string, id: string): Promise<boolean> {
-    const record = await this.findOwned(ownerKey, id);
+    // A butler is replaced by a reset, never deleted, so its spend stays in usage.
+    const record = await this.findChat(ownerKey, id);
     if (!record) return false;
     await this.deleteRecord(record);
     return true;
@@ -515,13 +593,13 @@ export class SessionService {
     if (options?.onlyIfEmpty) {
       // 条件写入必须由存储层在同一 SQL 条件更新中完成，不能先读 title 再写，
       // 否则插件自动标题可能覆盖并发的用户改名。
-      const record = await this.findOwned(ownerKey, id);
+      const record = await this.findChat(ownerKey, id);
       if (!record) return null;
       const current = await this.deps.sessions.updateTitleIfEmpty(record.ownerKey, id, title, this.deps.now());
       if (current?.title === title) this.announceTitle(id, title);
       return current ? toSessionDto(current) : null;
     }
-    if (!(await this.findOwned(ownerKey, id))) return null;
+    if (!(await this.findChat(ownerKey, id))) return null;
     await this.deps.sessions.update(id, { title, updatedAt: this.deps.now() });
     const updated = await this.deps.sessions.get(id);
     if (updated) this.announceTitle(id, updated.title);
@@ -585,7 +663,7 @@ export class SessionService {
    */
   private autoTitle(ownerKey: string, record: SessionRecord, prompt: string): void {
     const titler = this.deps.sessionTitler;
-    if (!titler || record.origin === "native" || record.title.trim() || this.titleAttempts.has(record.id)) return;
+    if (!titler || record.origin === "native" || isButler(record) || record.title.trim() || this.titleAttempts.has(record.id)) return;
     this.titleAttempts.add(record.id);
     void (async () => {
       const storage = this.deps.conversationStorage?.get(record);
@@ -605,6 +683,7 @@ export class SessionService {
     // No runtime/adapter is created until ownership and the whole attachment batch are verified.
     const owned = await this.findOwned(ownerKey, id);
     if (!owned) return { found: false };
+    if (isButler(owned) && (input.images?.length || input.fileIds?.length)) throw new ButlerRestrictedError();
     let prompt = input.prompt;
     const fileIds = input.fileIds?.length ? input.fileIds : undefined;
     if (fileIds) {
@@ -763,6 +842,7 @@ export class SessionService {
     const to = query.to ?? (query.from ? today : fallback.to);
     if (from > to || bucketStarts(from, to, query.period, USAGE_MAX_BUCKETS).length > USAGE_MAX_BUCKETS) return null;
     const ledgers: Array<readonly UsageLedgerEvent[]> = [];
+    const butlerLedgers: Array<readonly UsageLedgerEvent[]> = [];
     let sessions = 0;
     let unreadSessions = 0;
     for (const record of await this.deps.sessions.listByOwner(ownerKey)) {
@@ -771,14 +851,19 @@ export class SessionService {
       if (!storage?.readUsageLedger) continue;
       sessions += 1;
       try {
-        ledgers.push(await storage.readUsageLedger(record, { sessionId: record.id, projectId: record.projectId }));
+        const ledger = await storage.readUsageLedger(record, { sessionId: record.id, projectId: record.projectId });
+        ledgers.push(ledger);
+        if (isButler(record)) butlerLedgers.push(ledger);
       } catch {
         unreadSessions += 1;
       }
       // Big files are read synchronously by some storages; let other requests run between them.
       await new Promise(resolve => setImmediate(resolve));
     }
-    return summarizeUsage(ledgers, { period: query.period, timeZone: query.timeZone, from, to, sessions, unreadSessions });
+    const options = { period: query.period, timeZone: query.timeZone, from, to, sessions, unreadSessions };
+    const report = summarizeUsage(ledgers, options);
+    // The butler's share, already inside `totals` (docs/companion-butler.md §12.3).
+    return butlerLedgers.length > 0 ? { ...report, butler: summarizeUsage(butlerLedgers, options).totals } : report;
   }
 
   /** Name of a project the caller may create sessions in, for the blank-session companion. */
@@ -799,7 +884,8 @@ export class SessionService {
    * preview/search walk, whose own before/after checks stay within this request.
    */
   async sessionProjectCwd(ownerKey: string, id: string): Promise<{ cwd: string; dev: number; ino: number } | null> {
-    const record = await this.findOwned(ownerKey, id);
+    // Covers `@` file search, file preview and the command list.
+    const record = await this.findChat(ownerKey, id);
     if (!record) return null;
     let saved: { cwd: string; dev: number; ino: number } | null;
     if (record.origin === "native" || await this.deps.nativeSessions?.hasSourceClaim?.(record)) {
@@ -830,6 +916,7 @@ export class SessionService {
   }
 
   async runCommand(ownerKey: string, id: string, input: import("../shared/commands.js").SessionCommandInput): Promise<"not-found" | import("./ports/index.js").CommandDecision> {
+    if (!(await this.findChat(ownerKey, id))) return "not-found";
     const entry = await this.findEntry(ownerKey, id);
     if (!entry) return "not-found";
     return await entry.runtime.runCommand?.(input) ?? { kind: "unsupported" };
@@ -837,12 +924,14 @@ export class SessionService {
 
   /** 扩展命令正在等待回答的问题；只看已经在内存里的 runtime，不为此创建。 */
   async getCommandPrompt(ownerKey: string, id: string): Promise<"not-found" | import("../shared/commands.js").CommandPrompt | null> {
-    if (!(await this.findOwned(ownerKey, id))) return "not-found";
+    const record = await this.findOwned(ownerKey, id);
+    if (!record) return "not-found";
+    if (isButler(record)) return null;
     return this.deps.registry.get(id)?.runtime.getCommandPrompt?.() ?? null;
   }
 
   async answerCommandPrompt(ownerKey: string, id: string, answer: import("../shared/commands.js").CommandPromptAnswer): Promise<"not-found" | "ok" | "stale" | "invalid"> {
-    if (!(await this.findOwned(ownerKey, id))) return "not-found";
+    if (!(await this.findChat(ownerKey, id))) return "not-found";
     return this.deps.registry.get(id)?.runtime.answerCommandPrompt?.(answer) ?? "stale";
   }
 
@@ -972,6 +1061,13 @@ export class SessionService {
     return record && await this.canAccess(ownerKey, record) ? record : null;
   }
 
+  /** An owned session that is not a butler; a butler throws ButlerRestrictedError. */
+  private async findChat(ownerKey: string, id: string): Promise<SessionRecord | null> {
+    const record = await this.findOwned(ownerKey, id);
+    if (record && isButler(record)) throw new ButlerRestrictedError();
+    return record;
+  }
+
   private async canAccess(ownerKey: string, record: SessionRecord): Promise<boolean> {
     if (record.visibility === "shared" || record.origin === "native") {
       return await this.deps.nativeSessions?.allows(record) ?? false;
@@ -1024,7 +1120,7 @@ function assertReservedSessionId(id: string): void {
 }
 
 function toSessionDto(record: SessionRecord): SessionDto {
-  const { agentKind: _agentKind, conversationFormat: _conversationFormat, conversationRef: _conversationRef, ...dto } = record;
+  const { agentKind: _agentKind, conversationFormat: _conversationFormat, conversationRef: _conversationRef, kind: _kind, ...dto } = record;
   return dto;
 }
 

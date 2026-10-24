@@ -400,6 +400,16 @@ export class ApiClient {
     return this.request("POST", `/v1/projects/${encodeURIComponent(projectId)}/companion/greeting`, input);
   }
 
+  /** The caller's butler session, or null before the first one; 403 for non-admins, 404 without butlers (docs/companion-butler.md §12). */
+  getButler(): Promise<{ session: SessionRecord | null }> {
+    return this.request("GET", "/v1/butler");
+  }
+
+  /** The caller's butler, made on first use; `reset` starts a new conversation. */
+  ensureButler(options: { reset?: boolean } = {}): Promise<{ session: SessionRecord }> {
+    return this.request("POST", "/v1/butler", options.reset ? { reset: true } : {});
+  }
+
   companionPersona(): Promise<{ persona: import("../shared/companion.js").CompanionPersonaRecord | null }> {
     return this.request("GET", "/v1/companion/persona");
   }

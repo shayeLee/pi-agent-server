@@ -85,9 +85,10 @@ describe("Manifest-driven migration engine (SQLite, single baseline)", () => {
         { version: 5, name: "user-mcp-oauth", n: 64 },
         { version: 6, name: "project-mcp-server-identity", n: 64 },
         { version: 7, name: "accounts", n: 64 },
+        { version: 8, name: "butler", n: 64 },
       ]);
       const names = (db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name").all() as Array<{ name: string }>).map((row) => row.name);
-      expect(names).toEqual(["accounts", "api_tokens", "auth_sessions", "companion_personas", "file_operations", "idempotency", "login_methods", "mcp_oauth_clients", "native_session_sources", "project_mcp_servers", "projects", "schema_migrations", "sessions", "uploaded_files", "user_mcp_credentials"]);
+      expect(names).toEqual(["accounts", "api_tokens", "auth_sessions", "butlers", "companion_personas", "file_operations", "idempotency", "login_methods", "mcp_oauth_clients", "native_session_sources", "project_mcp_servers", "projects", "schema_migrations", "sessions", "uploaded_files", "user_mcp_credentials"]);
       expect(db.prepare("PRAGMA table_info(idempotency)").all()).toEqual(expect.arrayContaining([expect.objectContaining({ name: "fingerprint", type: "TEXT", notnull: 0 })]));
       db.prepare("INSERT INTO projects (id, name, cwd, owner_key, created_at) VALUES (?, ?, ?, ?, ?)").run(
         "data-project", "Data", "/data", "owner", 1,
@@ -187,7 +188,7 @@ describe("Manifest-driven migration engine (SQLite, single baseline)", () => {
     try {
       await runSqliteMigrations(initialized);
       await expect(runSqliteMigrations(initialized, { assertEmptySchema: true })).rejects.toThrow(/non-empty SQLite|user object/);
-      expect(migrationDefinitions.map(({ version }) => version)).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
+      expect(migrationDefinitions.map(({ version }) => version)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8]);
       expect(initialized.prepare("SELECT count(*) AS n FROM schema_migrations").get()).toEqual({ n: migrationDefinitions.length });
     } finally {
       initialized.close();

@@ -29,6 +29,7 @@ const mocks = vi.hoisted(() => {
     getControlQueue: ReturnType<typeof vi.fn>;
     getSubagents: ReturnType<typeof vi.fn>;
     getSessionSteps: ReturnType<typeof vi.fn>;
+    getButler: ReturnType<typeof vi.fn>;
     getSystemPrompt: ReturnType<typeof vi.fn>;
     deleteControl: ReturnType<typeof vi.fn>;
     promoteControl: ReturnType<typeof vi.fn>;
@@ -201,6 +202,8 @@ const mocks = vi.hoisted(() => {
     getSystemPrompt = vi.fn(() => Promise.resolve({ source: "unavailable", prompt: null }));
     abort = vi.fn(() => Promise.resolve(undefined));
     exportSession = vi.fn((): Promise<unknown> => Promise.resolve([]));
+    // Not an admin: the butler panel shows only the activity lists.
+    getButler = vi.fn(() => Promise.reject(new MockApiError(403, "管家目前只对管理员开放")));
     constructor(options: { baseUrl?: string; token?: string }) {
       this.baseUrl = options.baseUrl ?? "";
       this.token = options.token ?? "";
@@ -576,6 +579,25 @@ describe("App（顶层流程）", () => {
     expect(inst.token).toBe("");
     expect(inst.tokenProvided).toBe(false);
     expect(window.localStorage.length).toBe(0);
+  });
+
+  it("the activity entry opens the butler panel in the trace's place; the trace closes it again", async () => {
+    await enterChat();
+    fireEvent.click(screen.getByTestId("trace-tab"));
+    expect(screen.getByTestId("inspector")).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("sidebar-activity-toggle"));
+    expect(screen.getByTestId("butler-panel")).toBeInTheDocument();
+    expect(screen.queryByTestId("inspector")).not.toBeInTheDocument();
+    expect(screen.getByTestId("sidebar-activity-toggle")).toHaveAttribute("aria-pressed", "true");
+    // A non-admin has no butler: lists only.
+    await waitFor(() => expect(mocks.instances[0].getButler).toHaveBeenCalled());
+    expect(screen.queryByTestId("butler-conversation")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("trace-tab"));
+    expect(screen.getByTestId("inspector")).toBeInTheDocument();
+    expect(screen.queryByTestId("butler-panel")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId("sidebar-activity-toggle"));
+    fireEvent.click(screen.getByTestId("butler-close"));
+    expect(screen.queryByTestId("butler-panel")).not.toBeInTheDocument();
   });
 
   it("默认呈现对话布局，单一轨迹开关可打开并关闭事件面板", async () => {

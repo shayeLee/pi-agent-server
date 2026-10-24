@@ -120,6 +120,8 @@ export function Composer({
       // Any other key cancels the pending confirmation.
       if (event.key !== "Escape") { disarm(); return; }
       if (event.defaultPrevented || event.repeat) return;
+      // Esc typed in the butler panel is not about this conversation.
+      if (document.activeElement?.closest?.('[data-testid="butler-panel"]')) { disarm(); return; }
       // Inspector and the mobile drawer also own Escape (they close on it).
       const visibleOverlay = hasVisibleOverlay('dialog[open], [role="dialog"], [role="alertdialog"], [role="menu"], .app-shell:not(.details-collapsed) [data-testid="inspector"], .mobile-sidebar-open [data-testid="sidebar"], .select-menu[data-open="true"], .model-thinking-picker[data-open="true"]');
       // Overlays own Escape and do not count towards the abort sequence.

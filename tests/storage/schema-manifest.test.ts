@@ -135,7 +135,7 @@ describe("Schema Manifest 契约：Manifest → SQLite bootstrap DDL 等价（�
   it("Manifest 声明了当前 5 张表，每张表的列/主键/外键/索引与当前 schema 一致", () => {
     // 宽化为 TableManifest：字面量仅供 DatabaseSchema 推导，这里只做值的断言。
     const tables: readonly TableManifest[] = schemaManifest.tables;
-    expect(tables.map((t) => t.name)).toEqual(["projects", "sessions", "idempotency", "file_operations", "uploaded_files", "native_session_sources", "companion_personas", "project_mcp_servers", "mcp_oauth_clients", "user_mcp_credentials", "accounts", "login_methods", "auth_sessions", "api_tokens"]);
+    expect(tables.map((t) => t.name)).toEqual(["projects", "sessions", "idempotency", "file_operations", "uploaded_files", "native_session_sources", "companion_personas", "project_mcp_servers", "mcp_oauth_clients", "user_mcp_credentials", "accounts", "login_methods", "auth_sessions", "api_tokens", "butlers"]);
 
     expect(tables[0]!.columns.map((c) => [c.name, c.type, c.nullable])).toEqual([
       ["id", "uuid", false],
@@ -162,7 +162,7 @@ describe("Schema Manifest 契约：Manifest → SQLite bootstrap DDL 等价（�
       ["thinking_level", "text", true],
       ["system_prompt", "text", true],
       ["capability_versions", "json", true],
-      ["visibility", "text", false], ["origin", "text", false],
+      ["visibility", "text", false], ["origin", "text", false], ["kind", "text", false],
     ]);
     expect(tables[1]!.primaryKey).toEqual({ columns: ["id"] });
     expect(tables[1]!.foreignKeys).toEqual([
@@ -363,7 +363,7 @@ describe("Schema Manifest 契约：Manifest → SQLite bootstrap DDL 等价（�
       (db.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all() as { name: string }[]).map(
         (r) => r.name,
       ),
-    ).toEqual(["accounts", "api_tokens", "auth_sessions", "companion_personas", "file_operations", "idempotency", "login_methods", "mcp_oauth_clients", "native_session_sources", "project_mcp_servers", "projects", "schema_migrations", "sessions", "uploaded_files", "user_mcp_credentials"]);
+    ).toEqual(["accounts", "api_tokens", "auth_sessions", "butlers", "companion_personas", "file_operations", "idempotency", "login_methods", "mcp_oauth_clients", "native_session_sources", "project_mcp_servers", "projects", "schema_migrations", "sessions", "uploaded_files", "user_mcp_credentials"]);
     // Bootstrap creates the latest manifest atomically with the full canonical migration ledger.
     expect(db.prepare("SELECT version, name FROM schema_migrations ORDER BY version").all()).toEqual([
       { version: 0, name: "initial-schema" },
@@ -374,6 +374,7 @@ describe("Schema Manifest 契约：Manifest → SQLite bootstrap DDL 等价（�
       { version: 5, name: "user-mcp-oauth" },
       { version: 6, name: "project-mcp-server-identity" },
       { version: 7, name: "accounts" },
+      { version: 8, name: "butler" },
     ]);
     // 无版本化迁移痕迹（本方案没有 Migrator，不应创建迁移簿记表）
     expect(
@@ -409,7 +410,7 @@ describe("Schema Manifest 契约：Manifest → SQLite bootstrap DDL 等价（�
       .insertInto("sessions")
       .values({
         id: "s-type",
-        owner_key: "o", visibility: "private", origin: "managed",
+        owner_key: "o", visibility: "private", origin: "managed", kind: "chat",
         project_id: DEFAULT_PROJECT_ID,
         title: "t",
         created_at: 1,

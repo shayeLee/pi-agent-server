@@ -95,6 +95,7 @@ function UsageReportView({ report, metric, selected, onSelect }: { report: Usage
       <div><dt>{text.sessionsLabel}</dt><dd>{text.sessions(report.sessions)}</dd></div>
     </dl>
     {report.unreadSessions > 0 && <p className="usage-note" role="note">{text.unread(report.unreadSessions)}</p>}
+    {report.butler && report.butler.calls > 0 && <p className="usage-note" data-testid="usage-butler">{text.butlerShare(formatTokens(report.butler.totalTokens), formatUsd(report.butler.costUsdEstimate))}</p>}
     {report.totals.calls === 0 ? <p className="usage-note">{text.empty}</p> : <>
       <Legend series={series} />
       <Chart report={report} series={series} metric={metric} selected={selected} onSelect={onSelect} label={text.chartLabel[report.period]} />

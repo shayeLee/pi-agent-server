@@ -80,8 +80,23 @@ describe("PiAgentSessionFactory", () => {
     for (const tools of [[], ["unknown_legal_name"]]) {
       const factory = new PiAgentSessionFactory({ modelRuntime: {} as ModelRuntime,
         createResourceLoader: async () => sessionLoader({} as ResourceLoader), agentToolConfig: { tools } });
-      await (await factory.prepareNew(context())).open();
+      await (await factory.prepareNew(context({ agentToolConfig: { tools } }))).open();
       expect(sdk.createAgentSession.mock.calls.at(-1)![0].tools).toEqual(tools);
+    }
+  });
+
+  it("a butler runs under its context's whitelist with only the butler tools, never the plugin tools", async () => {
+    const butlerTool = tool("butler_usage");
+    const owners: string[] = [];
+    const factory = new PiAgentSessionFactory({ modelRuntime: {} as ModelRuntime,
+      createResourceLoader: async () => sessionLoader({} as ResourceLoader), customTools: [tool("plugin_tool")],
+      butlerTools: owner => { owners.push(owner); return [butlerTool]; }, agentToolConfig: {} });
+    await (await factory.prepareNew(context({ butler: { ownerKey: "user:a" }, agentToolConfig: { tools: ["butler_usage"] } }))).open();
+    expect(sdk.createAgentSession.mock.calls.at(-1)![0]).toMatchObject({ tools: ["butler_usage"], customTools: [butlerTool] });
+    expect(owners).toEqual(["user:a"]);
+    // A butler context with any other policy is refused before the SDK.
+    for (const agentToolConfig of [{}, { tools: ["butler_usage", "bash"] }]) {
+      await expect(factory.prepareNew(context({ butler: { ownerKey: "user:a" }, agentToolConfig }))).rejects.toThrow("butler");
     }
   });
 

@@ -1,7 +1,8 @@
 // Immutable, descriptor-driven migration registry. v0 is the released baseline and
 // is frozen; v1 adds uploaded files and idempotency fingerprints, v2 native sessions, v3 companion personas,
 // v4 project MCP settings, v5 per-user MCP OAuth, v6 the server identity of project MCP settings,
-// v7 accounts and their login methods, browser sessions and personal tokens.
+// v7 accounts and their login methods, browser sessions and personal tokens, v8 the butler (session kind
+// and one current butler per owner).
 // Published migrations contain data, not executable up callbacks: the exact canonical
 // operations are checksummed and are the only operations the runner executes.
 
@@ -17,6 +18,7 @@ import {
   projectMcpServersSchemaManifest,
   userMcpOAuthSchemaManifest,
   projectMcpServerIdentitySchemaManifest,
+  accountsSchemaManifest,
   schemaManifest,
   type LogicalColumnType,
   type SchemaManifest,
@@ -182,6 +184,7 @@ export const MIGRATION_V4_GOLDEN_CHECKSUM = "966bdc145ef441bdaca544f74670b67a4e9
 export const MIGRATION_V5_GOLDEN_CHECKSUM = "8e12170bf914c359ec271b3cf27ff764efcc3f41152d4cec73de492e0d18719a";
 export const MIGRATION_V6_GOLDEN_CHECKSUM = "0d53f17389e8e5f2ad4264dc38daaf4e2d41086154388cd43e166104a9a644e5";
 export const MIGRATION_V7_GOLDEN_CHECKSUM = "da0f2432426b96cab1ec93e6ed3f9ebc470a9499e72ea457805bb84350dd34d1";
+export const MIGRATION_V8_GOLDEN_CHECKSUM = "474206c68677e53520697b3a69b747188e813cf21205f8f88c67fa3b71588785";
 
 export const initialSchemaMigration: MigrationDefinition = deepFreeze({
   version: 0,
@@ -275,11 +278,23 @@ const projectMcpServerIdentityMigration: MigrationDefinition = deepFreeze({
 const accountsMigration: MigrationDefinition = deepFreeze({
   version: 7,
   name: "accounts",
-  manifest: schemaManifest,
+  manifest: accountsSchemaManifest,
   physicalTypeMaps: BASELINE_PHYSICAL_TYPE_MAPS,
   operations: Object.fromEntries((["SQLite", "PostgreSQL"] as const).map(dialect => [dialect,
-    renderMigrationOperations({ tables: schemaManifest.tables.slice(10) }, dialect, BASELINE_PHYSICAL_TYPE_MAPS[dialect]),
+    renderMigrationOperations({ tables: accountsSchemaManifest.tables.slice(10) }, dialect, BASELINE_PHYSICAL_TYPE_MAPS[dialect]),
   ])) as unknown as MigrationDefinition["operations"],
+  dataTransform: { kind: "none", format: "pi-agent-server.data-transform.v1" },
+});
+
+const butlerMigration: MigrationDefinition = deepFreeze({
+  version: 8,
+  name: "butler",
+  manifest: schemaManifest,
+  physicalTypeMaps: BASELINE_PHYSICAL_TYPE_MAPS,
+  operations: Object.fromEntries((["SQLite", "PostgreSQL"] as const).map(dialect => [dialect, [
+    { kind: "ddl", dialect, sql: 'ALTER TABLE "sessions" ADD COLUMN "kind" TEXT NOT NULL DEFAULT \'chat\'' },
+    ...renderMigrationOperations({ tables: [schemaManifest.tables.at(-1)!] }, dialect, BASELINE_PHYSICAL_TYPE_MAPS[dialect]),
+  ]])) as unknown as MigrationDefinition["operations"],
   dataTransform: { kind: "none", format: "pi-agent-server.data-transform.v1" },
 });
 
@@ -292,6 +307,7 @@ export const migrationDefinitions: readonly MigrationDefinition[] = deepFreeze([
   userMcpOAuthMigration,
   projectMcpServerIdentityMigration,
   accountsMigration,
+  butlerMigration,
 ]);
 export const migrationHeadManifest: SchemaManifest = schemaManifest;
 
@@ -349,6 +365,7 @@ export function validateMigrationDefinitions(migrations: readonly MigrationDefin
     if (migrationChecksum(migrations[5]!) !== MIGRATION_V5_GOLDEN_CHECKSUM) throw new Error("migration manifest: registry version 5 checksum changed");
     if (migrationChecksum(migrations[6]!) !== MIGRATION_V6_GOLDEN_CHECKSUM) throw new Error("migration manifest: registry version 6 checksum changed");
     if (migrationChecksum(migrations[7]!) !== MIGRATION_V7_GOLDEN_CHECKSUM) throw new Error("migration manifest: registry version 7 checksum changed");
+    if (migrationChecksum(migrations[8]!) !== MIGRATION_V8_GOLDEN_CHECKSUM) throw new Error("migration manifest: registry version 8 checksum changed");
     if (migrations.at(-1)!.manifest !== migrationHeadManifest) throw new Error("migration manifest: registry head does not match schemaManifest");
   }
 }

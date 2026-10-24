@@ -25,4 +25,6 @@ export type UsageReport = {
   readonly totals: UsageTotals;
   readonly sessions: number;
   readonly unreadSessions: number;
+  /** The owner's butler sessions' share, already counted in `totals`; absent when there is none. */
+  readonly butler?: UsageTotals;
 };

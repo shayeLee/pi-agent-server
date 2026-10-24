@@ -1,11 +1,11 @@
 // `pnpm accounts -- claim`: move one owner's data to an account (docs/login-design.md §8, step 5–6).
 //
 // - Reads raw rows, not the repositories (those read an undecryptable credential as "absent").
-// - Changes only rows whose owner_key is exactly the source owner, in the five tables that carry an
-//   owner: projects, sessions, uploaded_files, companion_personas, user_mcp_credentials. The default
+// - Changes only rows whose owner_key is exactly the source owner, in the six tables that carry an
+//   owner: projects, sessions, uploaded_files, companion_personas, butlers, user_mcp_credentials. The default
 //   project, system projects and native sessions (owner '') are never touched.
 // - Refuses, and changes nothing, when: a unique constraint would collide at the target (persona,
-//   credential (owner, server), upload (owner, project, key)); a session or upload of the source sits
+//   butler, credential (owner, server), upload (owner, project, key)); a session or upload of the source sits
 //   in a project that belongs to a third owner; a credential does not decrypt with this key (unless
 //   --drop-unreadable-credentials, which deletes those rows and lists them).
 // - Credentials are encrypted with the owner in their associated data, so they are decrypted and
@@ -21,7 +21,7 @@ import { POSTGRES_MIGRATION_LOCK_KEY } from "../storage/migration-engine.js";
 
 type Db = Kysely<DatabaseSchema> | Transaction<DatabaseSchema>;
 
-export const CLAIM_TABLES = ["projects", "sessions", "uploaded_files", "companion_personas", "user_mcp_credentials"] as const;
+export const CLAIM_TABLES = ["projects", "sessions", "uploaded_files", "companion_personas", "butlers", "user_mcp_credentials"] as const;
 export type ClaimTable = (typeof CLAIM_TABLES)[number];
 
 export type ClaimPlan = {
@@ -55,12 +55,17 @@ export async function planClaim(db: Db, cipher: McpTokenCipher | null, from: str
   const sessions = await db.selectFrom("sessions").select(["id", "project_id"]).where("owner_key", "=", from).execute();
   const uploads = await db.selectFrom("uploaded_files").select(["id", "project_id", "upload_key"]).where("owner_key", "=", from).execute();
   const personas = await db.selectFrom("companion_personas").select(["owner_key"]).where("owner_key", "=", from).execute();
+  const butlers = await db.selectFrom("butlers").select(["owner_key"]).where("owner_key", "=", from).execute();
   const credentials = await db.selectFrom("user_mcp_credentials").select(["server_name", "tokens"]).where("owner_key", "=", from).execute();
 
   const conflicts: string[] = [];
   if (personas.length > 0) {
     const taken = await db.selectFrom("companion_personas").select(["owner_key"]).where("owner_key", "=", to).executeTakeFirst();
     if (taken) conflicts.push("companion_personas：目标账号已有数字人设置");
+  }
+  if (butlers.length > 0) {
+    const taken = await db.selectFrom("butlers").select(["owner_key"]).where("owner_key", "=", to).executeTakeFirst();
+    if (taken) conflicts.push("butlers：目标账号已有管家");
   }
   if (credentials.length > 0) {
     const taken = await db.selectFrom("user_mcp_credentials").select(["server_name"]).where("owner_key", "=", to)
@@ -96,7 +101,7 @@ export async function planClaim(db: Db, cipher: McpTokenCipher | null, from: str
     from, to, unreadableCredentials, conflicts, misplaced,
     counts: {
       projects: projects.length, sessions: sessions.length, uploaded_files: uploads.length,
-      companion_personas: personas.length, user_mcp_credentials: credentials.length,
+      companion_personas: personas.length, butlers: butlers.length, user_mcp_credentials: credentials.length,
     },
   };
 }
@@ -154,7 +159,7 @@ export async function runClaim(input: {
       expect("user_mcp_credentials", changed(result), 1);
     }
 
-    for (const table of ["projects", "sessions", "uploaded_files", "companion_personas"] as const) {
+    for (const table of ["projects", "sessions", "uploaded_files", "companion_personas", "butlers"] as const) {
       const result = await trx.updateTable(table).set({ owner_key: to }).where("owner_key", "=", from).executeTakeFirst();
       expect(table, changed(result), plan.counts[table]);
     }

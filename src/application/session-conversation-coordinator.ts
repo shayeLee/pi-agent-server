@@ -23,6 +23,11 @@ export type SessionConversationCoordinatorOptions = {
   readonly defaultProjectCwd: string;
   readonly dataDir: string;
   readonly agentToolConfig: AgentSessionContext["agentToolConfig"];
+  /**
+   * Butler sessions (docs/companion-butler.md §12.3): their own working directory instead of the
+   * default project's, and the butler's tool whitelist. Without it a butler record cannot open.
+   */
+  readonly butler?: { readonly cwd: string; readonly agentToolConfig: AgentSessionContext["agentToolConfig"] };
   /** 配置快照写回的时钟；生产默认 Date.now，测试可注入。 */
   readonly now?: () => number;
 };
@@ -36,6 +41,7 @@ export class SessionConversationCoordinator {
   private readonly defaultProjectCwd: string;
   private readonly dataDir: string;
   private readonly agentToolConfig: AgentSessionContext["agentToolConfig"];
+  private readonly butler: SessionConversationCoordinatorOptions["butler"];
   private readonly now: () => number;
 
   constructor(options: SessionConversationCoordinatorOptions) {
@@ -47,6 +53,7 @@ export class SessionConversationCoordinator {
     this.defaultProjectCwd = options.defaultProjectCwd;
     this.dataDir = options.dataDir;
     this.agentToolConfig = options.agentToolConfig;
+    this.butler = options.butler;
     this.now = options.now ?? Date.now;
   }
 
@@ -180,6 +187,10 @@ export class SessionConversationCoordinator {
   }
 
   private async projectCwd(record: SessionRecord): Promise<string | null> {
+    if (record.kind === "butler") {
+      if (!this.butler) throw new Error("butler sessions are not configured on this host");
+      return this.butler.cwd;
+    }
     if (record.projectId === DEFAULT_PROJECT_ID) return this.defaultProjectCwd;
     const project = await this.projects.get(record.projectId);
     return project?.cwd ?? null;
@@ -206,8 +217,10 @@ export class SessionConversationCoordinator {
       systemPrompt: record.systemPrompt,
       isNewSession: record.conversationRef === null,
       // 共享会话允许多人继续；原生会话的 owner 不是授权依据。两者都不能用某个人的外部身份。
-      mcpCredentialOwner: record.visibility !== "shared" && record.origin !== "native" ? record.ownerKey : null,
-      agentToolConfig: this.agentToolConfig,
+      mcpCredentialOwner: record.kind === "butler" ? null
+        : record.visibility !== "shared" && record.origin !== "native" ? record.ownerKey : null,
+      ...(record.kind === "butler" ? { butler: { ownerKey: record.ownerKey } } : {}),
+      agentToolConfig: record.kind === "butler" ? this.butler!.agentToolConfig : this.agentToolConfig,
     };
   }
 

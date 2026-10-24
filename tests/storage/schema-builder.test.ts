@@ -170,7 +170,7 @@ describe("bootstrapSchemaFromManifest（spy Kysely，PG 类型映射）", () => 
     const { kysely, tables, indexes } = createSpyKysely();
     await bootstrapSchemaFromManifest(kysely, POSTGRES_LOGICAL_TYPE);
 
-    expect(tables.map((t) => t.name)).toEqual(["projects", "sessions", "idempotency", "file_operations", "uploaded_files", "native_session_sources", "companion_personas", "project_mcp_servers", "mcp_oauth_clients", "user_mcp_credentials", "accounts", "login_methods", "auth_sessions", "api_tokens"]);
+    expect(tables.map((t) => t.name)).toEqual(["projects", "sessions", "idempotency", "file_operations", "uploaded_files", "native_session_sources", "companion_personas", "project_mcp_servers", "mcp_oauth_clients", "user_mcp_credentials", "accounts", "login_methods", "auth_sessions", "api_tokens", "butlers"]);
 
     const projects = tables[0]!;
     expect(projects.columns).toEqual([
@@ -200,7 +200,7 @@ describe("bootstrapSchemaFromManifest（spy Kysely，PG 类型映射）", () => 
       ["thinking_level", "text", false],
       ["system_prompt", "text", false],
       ["capability_versions", "text", false], // json → TEXT（非 JSONB）
-      ["visibility", "text", true], ["origin", "text", true],
+      ["visibility", "text", true], ["origin", "text", true], ["kind", "text", true],
     ]);
     // project_id 默认值引用 DEFAULT_PROJECT_ID 常量（PG 侧 uuid 列 default 为字面量字符串）
     expect(sessions.columns.find((c) => c.name === "project_id")!.default).toBe(DEFAULT_PROJECT_ID);
@@ -304,7 +304,7 @@ describe("createTableFromManifest 防御性 PK notNull（schema-builder 方言�
 
   it("Manifest 声明仍是唯一来源：schemaManifest 表/索引数量与 DDL builder 消费的完全一致", () => {
     const manifest = schemaManifest.tables;
-    expect(manifest).toHaveLength(14);
+    expect(manifest).toHaveLength(15);
     const indexCount = manifest.reduce((n, t) => n + (t.indexes?.length ?? 0), 0);
     expect(indexCount).toBe(17);
   });

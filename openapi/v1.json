@@ -3733,6 +3733,159 @@
         "description": "Request bodies use Fastify's AJV baseline: declared types are coerced (`coerceTypes: 'array'`,\nso numbers, booleans, and single-element arrays are accepted where a string is declared) and\nundeclared fields are silently stripped (`removeAdditional: true` combined with\n`additionalProperties: false`) instead of returning 400. A 400 therefore reports a missing\nrequired field or a value that cannot be coerced/constrained, never a wrong scalar type or an\nunknown field."
       }
     },
+    "/v1/butler": {
+      "get": {
+        "operationId": "getButler",
+        "security": [
+          {
+            "IpAdmission": []
+          },
+          {
+            "IpAdmission": [],
+            "BearerAuth": []
+          },
+          {
+            "IpAdmission": [],
+            "SessionCookie": []
+          }
+        ],
+        "x-pi-rbac": {
+          "permission": "sessions:create",
+          "roles": [
+            "admin",
+            "user"
+          ]
+        },
+        "responses": {
+          "200": {
+            "description": "The caller's butler session, or null before the first one. The butler is a hidden session: it is not in /v1/sessions, /v1/projects or /v1/activity, and refuses commands, file lookups, attachments, subagent steering, rename and delete (403 butler_restricted).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ButlerReply"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer token required for this admitted IP profile, or (accounts mode) sign-in required: code auth_required.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Only admins have a butler in this version (code butler_admin_only).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "This server has no butlers.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "operationId": "ensureButler",
+        "security": [
+          {
+            "IpAdmission": []
+          },
+          {
+            "IpAdmission": [],
+            "BearerAuth": []
+          },
+          {
+            "IpAdmission": [],
+            "SessionCookie": []
+          }
+        ],
+        "x-pi-rbac": {
+          "permission": "sessions:create",
+          "roles": [
+            "admin",
+            "user"
+          ]
+        },
+        "responses": {
+          "200": {
+            "description": "The caller's butler, created on first use. With reset, a new butler session replaces it; the old one stays hidden and still counts in /v1/usage.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ButlerReply"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer token required for this admitted IP profile, or (accounts mode) sign-in required: code auth_required.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Only admins have a butler in this version (code butler_admin_only).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "This server has no butlers.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "reset": {
+                    "type": "boolean"
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "x-pi-request-validation": {
+          "coerceTypes": true,
+          "removeAdditional": "silent-strip"
+        },
+        "description": "Request bodies use Fastify's AJV baseline: declared types are coerced (`coerceTypes: 'array'`,\nso numbers, booleans, and single-element arrays are accepted where a string is declared) and\nundeclared fields are silently stripped (`removeAdditional: true` combined with\n`additionalProperties: false`) instead of returning 400. A 400 therefore reports a missing\nrequired field or a value that cannot be coerced/constrained, never a wrong scalar type or an\nunknown field."
+      }
+    },
     "/v1/files": {
       "post": {
         "operationId": "uploadFile",
@@ -7998,6 +8151,25 @@
         },
         "additionalProperties": false
       },
+      "ButlerReply": {
+        "type": "object",
+        "required": [
+          "session"
+        ],
+        "properties": {
+          "session": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Session"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
       "CreateSession": {
         "type": "object",
         "properties": {
@@ -10234,6 +10406,14 @@
             "type": "integer",
             "minimum": 0,
             "description": "Session files that could not be read; their usage is missing."
+          },
+          "butler": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/UsageReportTotals"
+              }
+            ],
+            "description": "The caller's butler sessions' share, already counted in totals. Absent when there is none."
           }
         },
         "additionalProperties": false

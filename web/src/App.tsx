@@ -27,6 +27,8 @@ import { useActivity } from "./hooks/useActivity.js";
 import { useRunNotifications } from "./hooks/useRunNotifications.js";
 import { useCompanionPersona } from "./components/companion/Companion.js";
 import { SidebarActivity } from "./components/SidebarActivity.js";
+import { ButlerPanel } from "./components/ButlerPanel.js";
+import { useButler } from "./hooks/useButler.js";
 import { useElsewhereBubble } from "./hooks/useElsewhereBubble.js";
 import { accountScopedKey } from "./auth/storage-scope.js";
 
@@ -41,6 +43,11 @@ const SIDEBAR_MIN = 200;
 const SIDEBAR_MAX = 360;
 const SIDEBAR_RAIL = 56;
 const DETAILS_DEFAULT = 380;
+const BUTLER_OPEN_KEY = "pi:butler-open";
+
+function readButlerOpen(): boolean {
+  try { return localStorage.getItem(accountScopedKey(BUTLER_OPEN_KEY)) === "on"; } catch { return false; }
+}
 
 /** Agent harness 顶层布局；服务端状态与交互由 Web 专属 controller 提供。 */
 export default function App() {
@@ -63,7 +70,15 @@ export default function App() {
     const route = readRoute();
     return route === "root" ? !!readRecentSelection()?.sessionId : typeof route === "object" && route.sessionId !== null;
   };
-  const [detailsCollapsed, setDetailsCollapsed] = useState(() => !(traceFits() && sessionExpected()));
+  // The butler panel shares the trace's column (docs/companion-butler.md §12.6): one closes the other.
+  const [butlerOpen, setButlerOpen] = useState(readButlerOpen);
+  useEffect(() => {
+    try {
+      if (butlerOpen) localStorage.setItem(accountScopedKey(BUTLER_OPEN_KEY), "on");
+      else localStorage.removeItem(accountScopedKey(BUTLER_OPEN_KEY));
+    } catch { /* Storage is optional. */ }
+  }, [butlerOpen]);
+  const [detailsCollapsed, setDetailsCollapsed] = useState(() => butlerOpen || !(traceFits() && sessionExpected()));
   const shellRef = useRef<HTMLElement>(null);
   const [traceNavigation, setTraceNavigation] = useState<TraceNavigation | null>(null);
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>("subagents");
@@ -130,7 +145,8 @@ export default function App() {
   // A load error (e.g. a transient failure that keeps the URL for retry) ends the wait: no blank column.
   const sessionPending = !activeSession && !controller.loadError && (controller.activeSessionId !== null || sessionExpected());
   useEffect(() => {
-    setDetailsCollapsed(!(activeSession || sessionPending) || !traceWanted.current || !traceFits());
+    // Switching sessions keeps the butler open, so the trace stays shut behind it.
+    setDetailsCollapsed(butlerOpen || !(activeSession || sessionPending) || !traceWanted.current || !traceFits());
   }, [activeSession?.id, sessionPending]);
   const [childSelection, setChildSelection] = useState<{ sessionId: string; runId: string } | null>(() => {
     try {
@@ -153,7 +169,8 @@ export default function App() {
   useLayoutEffect(() => {
     const shell = shellRef.current;
     const header = shell?.querySelector<HTMLElement>(selectedChild ? '[data-testid="child-chat-header"]' : '[data-testid="chat-header"]');
-    if (!shell || !header || detailsCollapsed) return;
+    // The trace and the butler panel share the column; both line their header up with the chat's.
+    if (!shell || !header || (detailsCollapsed && !butlerOpen)) return;
     const sync = () => {
       if (window.innerWidth > 600) shell.style.setProperty('--inspector-header-height', `${header.getBoundingClientRect().height}px`);
       else shell.style.removeProperty('--inspector-header-height');
@@ -167,7 +184,7 @@ export default function App() {
       window.removeEventListener('resize', sync);
       shell.style.removeProperty('--inspector-header-height');
     };
-  }, [activeSession?.id, detailsCollapsed, selectedChild]);
+  }, [activeSession?.id, detailsCollapsed, butlerOpen, selectedChild]);
   const streaming = controller.chatState.phase === "streaming";
   const queued = controller.chatState.phase === "queued";
   const canCreateSession =
@@ -184,7 +201,7 @@ export default function App() {
   };
 
   const toggleInspector = () => {
-    if (detailsCollapsed) { traceWanted.current = true; setMobileSidebarOpen(false); setDetailsCollapsed(false); }
+    if (detailsCollapsed) { traceWanted.current = true; setButlerOpen(false); setMobileSidebarOpen(false); setDetailsCollapsed(false); }
     else closeInspector();
   };
 
@@ -249,6 +266,13 @@ export default function App() {
   const notifications = useRunNotifications(activity.latest, { name: personaState[0].name, onOpen: openActivitySession });
   // The companion at the composer (or on the blank page) says when another session ends.
   const elsewhere = useElsewhereBubble(activity.latest, controller.activeSessionId, openActivitySession);
+  const butler = useButler({ api: controller.api, open: butlerOpen, authGeneration: auth.generation, onAuthExpired: auth.onAuthExpired });
+  const toggleButler = () => {
+    if (butlerOpen) { setButlerOpen(false); return; }
+    setDetailsCollapsed(true);
+    setMobileSidebarOpen(false);
+    setButlerOpen(true);
+  };
   const runningIds = new Set(activity.running.keys());
   if (streaming && controller.activeSessionId) runningIds.add(controller.activeSessionId);
   const themeLabels: Record<ThemeMode, string> = { light: zhCN.sidebar.lightMode, dark: zhCN.sidebar.darkMode, system: zhCN.sidebar.followSystem };
@@ -317,7 +341,7 @@ export default function App() {
     "app-shell",
     mobileSidebarOpen ? "mobile-sidebar-open" : "",
     sidebarCollapsed ? "sidebar-collapsed" : "",
-    detailsCollapsed ? "details-collapsed" : "",
+    detailsCollapsed && !butlerOpen ? "details-collapsed" : "",
     dragging ? "dragging" : "",
   ]
     .filter(Boolean)
@@ -335,7 +359,7 @@ export default function App() {
       data-theme={theme}
       style={{
         ["--layout-sidebar-width" as string]: sidebarCollapsed ? `${SIDEBAR_RAIL}px` : `${sidebarWidth}px`,
-        ["--layout-inspector-width" as string]: detailsCollapsed ? "0px" : `${DETAILS_DEFAULT}px`,
+        ["--layout-inspector-width" as string]: detailsCollapsed && !butlerOpen ? "0px" : `${DETAILS_DEFAULT}px`,
       }}
     >
       {/* 左侧边栏 */}
@@ -380,7 +404,7 @@ export default function App() {
             {accountMenu.items}
           </DropdownMenuContent>
         </DropdownMenu>
-        <SidebarActivity running={activity.running} recent={activity.recent} onOpen={openActivitySession} notify={notifications} />
+        <SidebarActivity running={activity.running} open={butlerOpen} onToggle={toggleButler} />
         </div>
         {accountMenu.dialog}
         {projectMcp.dialog}
@@ -538,6 +562,8 @@ export default function App() {
 
       {/* 右侧 Inspector */}
       {/* Reserved while the session loads: same frame as the trace, so nothing shifts when it fills in. */}
+      {butlerOpen && <ButlerPanel name={personaState[0].name} running={activity.running} recent={activity.recent}
+        onOpen={openActivitySession} notify={notifications} butler={butler} onClose={() => setButlerOpen(false)} />}
       {!activeSession && !detailsCollapsed && <aside className="inspector inspector-placeholder" data-testid="inspector-placeholder" aria-hidden="true" />}
       {activeSession && !detailsCollapsed && (
         <Inspector

@@ -9,6 +9,9 @@ import { ThinkingRow } from "./ThinkingRow.js";
 import { WorkBlock } from "./WorkBlock.js";
 import { formatClock, groupLedger, type LedgerEntry } from "./ledger.js";
 
+/** `link`: Markdown images show as links, never load (the butler panel, docs/companion-butler.md §12.6). */
+type ImagePolicy = "allow" | "link";
+
 const kindOf = (item: TimelineItem) => item.kind === "message" ? item.role === "user" ? "user" : "assistant_text"
   : item.kind === "tool" ? "tool_call" : item.kind;
 
@@ -18,14 +21,14 @@ function Anchor({ item, children }: { item: TimelineItem; children: ReactNode })
     data-anchor-tool-call-id={item.kind === "tool" ? item.call.toolCallId : undefined} className="timeline-entry" tabIndex={-1}>{children}</div>;
 }
 
-function renderItem(item: TimelineItem) {
+function renderItem(item: TimelineItem, imagePolicy: ImagePolicy) {
   return <Anchor key={item.id} item={item}>{item.kind === "notification"
     ? <NotificationItem item={item} />
     : item.kind === "command"
     ? <CommandOutputItem item={item} />
     : item.kind === "tool"
       ? <ToolCallCard call={item.call} />
-      : <MessageItem item={item} />}</Anchor>;
+      : <MessageItem item={item} imagePolicy={imagePolicy} />}</Anchor>;
 }
 
 const TAGS = {
@@ -39,8 +42,9 @@ const TAGS = {
  * visibility; every item keeps its original order and navigation anchor.
  * Reducer preserves unchanged item identities, so only live/changed rows render.
  */
-export const Timeline = memo(function Timeline({ timeline, live = false, ready = true, tail, pending, assistantTag = TAGS.assistant }: {
+export const Timeline = memo(function Timeline({ timeline, live = false, ready = true, tail, pending, assistantTag = TAGS.assistant, imagePolicy = "allow" }: {
   timeline: ChatState["timeline"];
+  imagePolicy?: ImagePolicy;
   /** Who the assistant rows are: PI by default, another agent (e.g. a Claude subagent) when it speaks. */
   assistantTag?: readonly [string, string];
   /**
@@ -82,7 +86,7 @@ export const Timeline = memo(function Timeline({ timeline, live = false, ready =
   return <div className="timeline ledger" data-testid="message-list">
     {entries.map(entry => <LedgerRow key={entry.id} entry={entry} observed={observed}
       assistantTag={assistantTag} liveTail={live && entry === lastEntry} tail={live && entry === lastEntry && entry.role === "assistant" ? tail : undefined}
-      pending={entry === lastEntry && joinsEntry ? pending : undefined} />)}
+      pending={entry === lastEntry && joinsEntry ? pending : undefined} imagePolicy={imagePolicy} />)}
     {pending && !joinsEntry && <div className="ledger-entry" data-role="assistant">
       <div className="ledger-time">{pendingClock && <time dateTime={pendingSince.current!} title={pendingClock.title}>{pendingClock.text}</time>}</div>
       <div className="ledger-tag" aria-label={piLabel}>{piTag}</div>
@@ -91,7 +95,7 @@ export const Timeline = memo(function Timeline({ timeline, live = false, ready =
   </div>;
 });
 
-function LedgerRow({ entry, observed, assistantTag, liveTail, tail, pending }: { entry: LedgerEntry; observed: ReadonlyMap<string, string>; assistantTag: readonly [string, string]; liveTail: boolean; tail?: ReactNode; pending?: ReactNode }) {
+function LedgerRow({ entry, observed, assistantTag, liveTail, tail, pending, imagePolicy }: { entry: LedgerEntry; observed: ReadonlyMap<string, string>; assistantTag: readonly [string, string]; liveTail: boolean; tail?: ReactNode; pending?: ReactNode; imagePolicy: ImagePolicy }) {
   const clock = formatClock(entry.timestamp);
   const first = entry.segments[0];
   // In a subagent conversation the host agent's turns carry their kind (initial task / steer).
@@ -113,7 +117,7 @@ function LedgerRow({ entry, observed, assistantTag, liveTail, tail, pending }: {
             renderStep={(item, index) => <Anchor key={item.id} item={item}>{item.kind === "tool"
               ? <ToolCallCard call={item.call} index={index} />
               : <ThinkingRow thinking={item} step />}</Anchor>} />
-        : renderItem(segment.item))}
+        : renderItem(segment.item, imagePolicy))}
       {tail}
       {pending}
     </div>

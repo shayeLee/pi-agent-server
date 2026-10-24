@@ -12,12 +12,13 @@ const THEIRS = "10.0.0.2";
 const call = (ts: string, model: string, input: number): UsageLedgerEvent =>
   ({ ts: Date.parse(ts), provider: "p", model, input, output: 1, cacheRead: 0, cacheWrite: 0, cost: 0.25, subagent: false });
 
-async function makeApp() {
+async function makeApp(withButler = false) {
   const { projects, sessions } = await makeInitializedMemoryDb({ cwd: "/tmp/default-project" });
   const ledgers: Record<string, UsageLedgerEvent[] | "broken"> = {
     "/data/mine.jsonl": [call("2026-10-20T08:00:00Z", "a", 100), call("2026-10-21T08:00:00Z", "b", 10)],
     "/data/mine-broken.jsonl": "broken",
     "/data/theirs.jsonl": [call("2026-10-20T08:00:00Z", "a", 5000)],
+    "/data/butler.jsonl": [call("2026-10-21T09:00:00Z", "a", 40)],
   };
   const storage = new ConversationStorageRegistry();
   storage.register({
@@ -29,7 +30,7 @@ async function makeApp() {
       return ledger;
     },
   });
-  const record = (id: string, ip: string, conversationRef: string | null) => sessions.create({
+  const record = (id: string, ip: string, conversationRef: string | null, kind?: "butler") => sessions.create({ ...(kind ? { kind } : {}),
     id, ownerKey: identityKey({ kind: "ip", ip }), projectId: DEFAULT_PROJECT_ID, title: id, createdAt: 1, updatedAt: 1,
     agentKind: "pi", conversationFormat: "pi-jsonl-v3", conversationRef,
     modelProvider: null, modelId: null, thinkingLevel: null, systemPrompt: null, capabilityVersions: null,
@@ -38,6 +39,7 @@ async function makeApp() {
   await record("mine-broken", MINE, "/data/mine-broken.jsonl");
   await record("mine-empty", MINE, null);
   await record("theirs", THEIRS, "/data/theirs.jsonl");
+  if (withButler) await record("butler", MINE, "/data/butler.jsonl", "butler");
   return buildApp({ sessions, projects, defaultProjectCwd: "/tmp/default-project", ipAccess: makeTestIpAccess(),
     conversationStorage: storage, createAdapter: async () => new MockAgentAdapter() });
 }
@@ -53,6 +55,15 @@ describe("GET /v1/usage", () => {
     expect(body.buckets.map((b: { start: string; totals: { totalTokens: number } }) => [b.start, b.totals.totalTokens])).toEqual([["2026-10-20", 101], ["2026-10-21", 11]]);
     expect(body.models.map((m: { model: string; calls: number }) => [m.model, m.calls])).toEqual([["a", 1], ["b", 1]]);
     expect(body.totals.costUsdEstimate).toBeCloseTo(0.5);
+  });
+
+  it("counts the butler's spend in the totals and also gives it on its own", async () => {
+    const plain = (await (await makeApp()).inject({ method: "GET", url: "/v1/usage?period=day&timeZone=UTC&from=2026-10-20&to=2026-10-21", remoteAddress: MINE })).json();
+    expect(plain).not.toHaveProperty("butler");
+    const body = (await (await makeApp(true)).inject({ method: "GET", url: "/v1/usage?period=day&timeZone=UTC&from=2026-10-20&to=2026-10-21", remoteAddress: MINE })).json();
+    expect(body.totals.totalTokens).toBe(plain.totals.totalTokens + 41);
+    expect(body.sessions).toBe(3);
+    expect(body.butler).toMatchObject({ totalTokens: 41, calls: 1 });
   });
 
   it("rejects an unknown zone and a range of too many periods", async () => {

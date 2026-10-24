@@ -14,7 +14,7 @@ import { frozenPromptBase } from "./frozen-system-prompt.js";
 import { createSessionCommandLister, extensionCommandsOf, sessionSystemPromptSources } from "./session-resources.js";
 import { DatabaseSync } from "node:sqlite";
 import { randomUUID } from "node:crypto";
-import { chmodSync, copyFileSync, existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -71,6 +71,10 @@ import { KyselySessionRepository } from "../storage/kysely-session-repository.js
 import { KyselyProjectRepository } from "../storage/kysely-project-repository.js";
 import { KyselyIdempotencyRepository } from "../storage/kysely-idempotency-repository.js";
 import { KyselyCompanionPersonaRepository } from "../storage/kysely-companion-persona-repository.js";
+import { KyselyButlerRepository } from "../storage/kysely-butler-repository.js";
+import { BUTLER_TOOL_NAMES, createButlerTools, type ButlerToolAccess } from "../butler/butler-tools.js";
+import { RunActivityHub } from "../application/run-activity-hub.js";
+import { ActivityService } from "../application/activity-service.js";
 import { KyselyProjectMcpRepository } from "../storage/kysely-project-mcp-repository.js";
 import { KyselyMcpOAuthRepository } from "../storage/kysely-mcp-oauth-repository.js";
 import { McpOAuthConnections, parsePublicUrl } from "../mcp/oauth-connections.js";
@@ -808,7 +812,23 @@ export async function startServer(config: StartConfig) {
       const servers = effectiveMcpServerEntries(mcpCatalog, await projectMcp.list(request.projectId), connectedOAuth);
       return { credentialOwner, mcp: { catalog: mcpCatalog, servers }, oauthProject, signature: JSON.stringify(servers) };
     };
+    // The butler (docs/companion-butler.md §12.4): provider adapters and the tool boundary only.
+    // No AGENTS.md, skills or templates, no MCP, codemode or PI_EXTENSION_PATHS extensions; its
+    // prompt is the one frozen at creation. Providers those extensions registered stay in the
+    // shared model runtime, but their request hooks do not run for it.
+    const butlerToolConfig = { tools: [...BUTLER_TOOL_NAMES] };
+    const createButlerResourceLoader = async (request: PiResourceLoaderRequest) => {
+      const frozen = request.systemPrompt;
+      const loader = await loadSessionResourceLoader(modelRuntime, {
+        extensionCwd: cwd,
+        agentDir,
+        extensionFactories: [...providerAdapterExtensionFactories, createMcpToolBoundaryExtension(butlerToolConfig.tools)],
+        ...(frozen === null ? {} : { systemPromptOverride: () => frozenPromptBase(frozen) }),
+      });
+      return { loader, failbackLifecycleSource: getProviderExtensionEventBus(loader) };
+    };
     const createResourceLoader = async (request: PiResourceLoaderRequest) => {
+      if (request.butler) return createButlerResourceLoader(request);
       const frozen = request.systemPrompt;
       // 项目 MCP 设置与用户的连接在 adapter 创建时快照（§4.5）；之后变了，会话空闲时在下一条消息前重建 adapter。
       const { credentialOwner, mcp, oauthProject, signature } = await sessionMcp(request);
@@ -825,6 +845,8 @@ export async function startServer(config: StartConfig) {
         isOutdated: async () => (await sessionMcp(request)).signature !== signature,
       };
     };
+    // Bound once buildApp has made SessionService; a butler cannot run before that.
+    let butlerAccess: ButlerToolAccess | undefined;
     const piFactory = new PiAgentSessionFactory({
       modelRuntime,
       createResourceLoader,
@@ -832,6 +854,7 @@ export async function startServer(config: StartConfig) {
       defaultThinkingLevel,
       agentSettings,
       customTools: pluginTools,
+      butlerTools: ownerKey => createButlerTools(() => butlerAccess, ownerKey),
       agentToolConfig,
       unified: { source: nativeSource, index: nativeIndex },
     });
@@ -864,6 +887,12 @@ export async function startServer(config: StartConfig) {
     await sessions.backfillSystemPrompt(defaultSystemPrompt);
     const idempotencyRepo = new KyselyIdempotencyRepository(kysely);
     const companionPersonas = new KyselyCompanionPersonaRepository(kysely);
+    const butlers = new KyselyButlerRepository(kysely);
+    // The butler's working directory. Its sessions record this directory's identity, so it is
+    // created once and never replaced.
+    const butlerCwd = path.join(agentDir, "butler");
+    mkdirSync(butlerCwd, { recursive: true, mode: 0o700 });
+    const activityHub = new RunActivityHub();
     const uploadStorageRoot = config.uploadStorageRoot ?? process.env.PI_UPLOAD_STORAGE_ROOT;
     const uploadAgentRoot = config.uploadAgentRoot ?? process.env.PI_UPLOAD_AGENT_ROOT;
     if ((uploadStorageRoot && !uploadAgentRoot) || (!uploadStorageRoot && uploadAgentRoot)) {
@@ -889,6 +918,7 @@ export async function startServer(config: StartConfig) {
       defaultProjectCwd: cwd,
       dataDir,
       agentToolConfig,
+      butler: { cwd: butlerCwd, agentToolConfig: butlerToolConfig },
     });
     // 测试注入点（生产不传，无操作）：存储初始化完成后、buildApp 前回调，用于验证
     // 启动失败/成功路径的幂等 storage close（抛错即进入下方 catch 的统一清理路径）。
@@ -923,6 +953,8 @@ export async function startServer(config: StartConfig) {
       ? { companionGreeter: new CompanionGreeter({ complete: completeWith(modelRuntime, resolvedDefaultModel) }) }
       : {}),
     companionPersonas,
+    butlers,
+    activityHub,
     projectMcp: { catalog: mcpHost.catalog, projectCatalogs: projectMcpCatalogs, store: projectMcp },
     sharedMcp: { file: new SharedMcpConfigFile(mcpConfigPath), catalog: mcpHost.catalog },
     agentSettings,
@@ -938,6 +970,7 @@ export async function startServer(config: StartConfig) {
     ops,
     onSessionServiceReady: (service) => {
       sessionService = service;
+      butlerAccess = { sessions: service, activity: new ActivityService(activityHub, (ownerKey, sessionId) => service.activitySubject(ownerKey, sessionId)) };
     },
     onRuntimeClosed: async () => {
       // runtime 已 abort/dispose，才允许插件停止 Worker 并关闭存储。

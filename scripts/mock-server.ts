@@ -27,6 +27,8 @@ import type { AgentSdkEvent } from "../src/agent/events.js";
 import { resolveAuthConfig } from "../src/auth/auth-config.js";
 import { AuthService } from "../src/auth/auth-service.js";
 import { KyselyAccountRepository } from "../src/storage/kysely-account-repository.js";
+import { KyselyButlerRepository } from "../src/storage/kysely-butler-repository.js";
+import { parseIpAccessPolicy } from "../src/core/ip-access-policy.js";
 
 const PORT = Number(process.env.PORT ?? 8081);
 
@@ -94,6 +96,10 @@ try {
     await accountAuth?.createAccount(name!, role!, password!);
   }
 
+  // MOCK_BUTLER=1: butler E2E. 127.0.0.1 is an admin (the butler is admin-only) and butlers are stored.
+  const butlerMode = process.env.MOCK_BUTLER === "1";
+  const policy = butlerMode ? parseIpAccessPolicy(JSON.stringify({ version: 1, ips: [{ ip: "127.0.0.1", role: "admin" }] })) : null;
+
   app = buildApp({
     sessions,
     projects,
@@ -102,8 +108,9 @@ try {
     // WP5D-2：准入配置（直接 socket IP；浏览器经 vite 代理后仍是 127.0.0.1）。
     ipAccess: {
       allowedClientCidrs: ["127.0.0.0/8", "10.0.0.0/8"].map((text) => parseCidrStrict(text)),
-      policy: null,
+      policy,
     },
+    ...(butlerMode ? { butlers: new KyselyButlerRepository(kysely) } : {}),
     // SSE 连接配额可从环境变量覆盖，便于 e2e 用小值验证配额/断线清理。
     maxSsePerUser: Number(process.env.MAX_SSE_PER_USER ?? 10),
     maxSseGlobal: Number(process.env.MAX_SSE_GLOBAL ?? 100),

@@ -60,6 +60,7 @@ describe("Schema 类型推导（DatabaseSchema 由 Manifest 推导）", () => {
       capability_versions: string | null;
       visibility: string;
       origin: string;
+      kind: string;
     };
     expectTypeOf<DatabaseSchema["sessions"]>().toEqualTypeOf<ExpectedSessions>();
     expectTypeOf<keyof DatabaseSchema["sessions"]>().toEqualTypeOf<keyof ExpectedSessions>();
@@ -83,7 +84,7 @@ describe("Schema 类型推导（DatabaseSchema 由 Manifest 推导）", () => {
 
   it("Manifest 值保留字面量：表名与列名可直接做 keyof 约束（推导的依据）", () => {
     type TableNames = (typeof schemaManifest)["tables"][number]["name"];
-    expectTypeOf<TableNames>().toEqualTypeOf<"projects" | "sessions" | "idempotency" | "file_operations" | "uploaded_files" | "native_session_sources" | "companion_personas" | "project_mcp_servers" | "mcp_oauth_clients" | "user_mcp_credentials" | "accounts" | "login_methods" | "auth_sessions" | "api_tokens">();
+    expectTypeOf<TableNames>().toEqualTypeOf<"projects" | "sessions" | "idempotency" | "file_operations" | "uploaded_files" | "native_session_sources" | "companion_personas" | "project_mcp_servers" | "mcp_oauth_clients" | "user_mcp_credentials" | "accounts" | "login_methods" | "auth_sessions" | "api_tokens" | "butlers">();
     expectTypeOf<keyof DatabaseSchema>().toEqualTypeOf<TableNames>();
 
     // 列名来自 Manifest（而非手写表 interface）
@@ -119,7 +120,7 @@ describe("Schema 类型推导（DatabaseSchema 由 Manifest 推导）", () => {
         thinking_level: null,
         system_prompt: null,
         capability_versions: null,
-        visibility: "private", origin: "managed",
+        visibility: "private", origin: "managed", kind: "chat",
       })
       .execute();
 

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { SessionService, MAX_ID_RETRIES, type CreateSessionResult, type SessionServiceDeps } from "../../src/application/session-service.js";
+import { ButlerRestrictedError, SessionService, MAX_ID_RETRIES, type CreateSessionResult, type SessionServiceDeps } from "../../src/application/session-service.js";
 import { DEFAULT_PROJECT_ID } from "../../src/application/ports/project-store-port.js";
 import { DuplicateIdError, ProjectForeignKeyError } from "../../src/application/ports/store-errors.js";
 import { ConversationStorageRegistry } from "../../src/application/ports/index.js";
@@ -696,6 +696,41 @@ describe("SessionService", () => {
     expect(await service.deleteSession("owner-b", created.id)).toBe(false);
     expect(await service.exportSession("owner-b", created.id)).toBeNull();
     expect((await sessions.get(created.id))?.title).toBe("私有");
+  });
+
+  it("hides an owner's butler from lists and activity, and refuses what a butler does not take", async () => {
+    const titles: string[] = [];
+    const { service, sessions } = makeService(undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+      undefined, undefined, undefined, { sessionTitler: { title: async prompt => { titles.push(prompt); return "标题"; } } });
+    const butler = createdSession(await service.createSession("owner-a", {}));
+    sessions.records.set(butler.id, { ...sessions.records.get(butler.id)!, kind: "butler" });
+
+    // Only the butler sits in the default project, so the project does not show up either.
+    expect(await service.listSessions("owner-a")).toEqual([]);
+    expect(await service.listSessions("owner-a", DEFAULT_PROJECT_ID)).toEqual([]);
+    expect(await service.listProjects("owner-a")).toEqual([]);
+    expect(await service.activitySubject("owner-a", butler.id)).toBeNull();
+    expect(await service.getSession("owner-a", butler.id)).not.toHaveProperty("kind");
+
+    for (const refused of [
+      () => service.renameSession("owner-a", butler.id, "改名"),
+      () => service.renameSession("owner-a", butler.id, "改名", { onlyIfEmpty: true }),
+      () => service.deleteSession("owner-a", butler.id),
+      () => service.runCommand("owner-a", butler.id, { name: "compact" } as never),
+      () => service.answerCommandPrompt("owner-a", butler.id, {} as never),
+      () => service.steerSubagent("owner-a", butler.id, "run-1", "x"),
+      () => service.sessionProjectCwd("owner-a", butler.id),
+      () => service.submitMessage("owner-a", butler.id, { requestId: "r0", prompt: "看图", images: [{ mediaType: "image/png", base64: "AA==" }] }),
+      () => service.submitMessage("owner-a", butler.id, { requestId: "r0", prompt: "看文件", fileIds: ["f1"] }),
+    ]) await expect(refused()).rejects.toBeInstanceOf(ButlerRestrictedError);
+    expect(await service.getCommandPrompt("owner-a", butler.id)).toBeNull();
+
+    // Plain messages go through, without an automatic title; another owner still sees nothing.
+    expect(await service.submitMessage("owner-a", butler.id, { requestId: "r1", prompt: "今天跑了什么" })).toMatchObject({ found: true });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(titles).toEqual([]);
+    expect(await service.renameSession("owner-b", butler.id, "越权")).toBeNull();
+    expect(await sessions.get(butler.id)).toMatchObject({ title: "", kind: "butler" });
   });
 
   it("onlyIfEmpty 原子更新空标题，保留已有自定义标题并隐藏其他 owner", async () => {

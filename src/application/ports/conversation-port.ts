@@ -30,6 +30,12 @@ export type AgentSessionContext = {
    * 共享或原生会话为 null/缺省，不使用任何人的凭证。
    */
   readonly mcpCredentialOwner?: string | null;
+  /**
+   * An owner's butler (docs/companion-butler.md §12.4): the factory gives it only the butler's tools
+   * and a loader without project resources, MCP or user extensions. `ownerKey` is whose it is.
+   */
+  readonly butler?: { readonly ownerKey: string };
+  /** The tool policy for this session; the coordinator picks the butler's whitelist for a butler. */
   readonly agentToolConfig: {
     readonly tools?: readonly string[];
     readonly noTools?: "all" | "builtin";

@@ -71,6 +71,16 @@ describe("useRunNotifications", () => {
     expect(FakeNotification.shown[0]!.close).toHaveBeenCalled();
   });
 
+  it("says a plain-http address cannot notify, without asking the browser", async () => {
+    vi.stubGlobal("isSecureContext", false);
+    FakeNotification.requestPermission.mockClear();
+    const { result } = setup();
+    expect(result.current.permission).toBe("insecure");
+    await act(() => result.current.toggle(true));
+    expect(FakeNotification.requestPermission).not.toHaveBeenCalled();
+    expect(result.current.enabled).toBe(false);
+  });
+
   it("stays off when the browser refuses", async () => {
     FakeNotification.permission = "denied";
     const { result } = setup();

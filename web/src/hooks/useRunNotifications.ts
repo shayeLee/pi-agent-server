@@ -7,10 +7,14 @@ import { zhCN } from "../i18n/zh-CN.js";
 export const NOTIFY_SESSION_GAP_MS = 10_000;
 const STORAGE_KEY = "pi:companion-notify";
 
-export type NotifyPermission = "unsupported" | "default" | "granted" | "denied";
+/** `insecure`: a plain-http address such as a LAN IP, where browsers refuse notifications. */
+export type NotifyPermission = "unsupported" | "insecure" | "default" | "granted" | "denied";
 
 function permission(): NotifyPermission {
-  try { return typeof Notification === "undefined" ? "unsupported" : Notification.permission; } catch { return "unsupported"; }
+  try {
+    if (window.isSecureContext === false) return "insecure";
+    return typeof Notification === "undefined" ? "unsupported" : Notification.permission;
+  } catch { return "unsupported"; }
 }
 
 function readEnabled(): boolean {

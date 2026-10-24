@@ -663,7 +663,7 @@ export const projectMcpServerIdentitySchemaManifest = defineSchema([
  * `user:<id>`; login methods, browser sessions and personal tokens belong to an account and go with it.
  * Secrets are never stored in clear: passwords as scrypt strings, cookies and tokens as SHA-256.
  */
-export const schemaManifest = defineSchema([
+export const accountsSchemaManifest = defineSchema([
   ...projectMcpServerIdentitySchemaManifest.tables,
   {
     name: "accounts",
@@ -734,5 +734,34 @@ export const schemaManifest = defineSchema([
       { name: "idx_api_tokens_token", columns: [{ name: "token_hash" }], unique: true },
       { name: "idx_api_tokens_account", columns: [{ name: "account_id" }] },
     ],
+  },
+]);
+
+/**
+ * v8: the butler (docs/companion-butler.md §5, §12). A session is a plain chat or an owner's
+ * hidden butler; `butlers` keeps at most one current butler per owner. A reset points the row
+ * at a new session and keeps the old one (still a hidden butler, still counted in usage).
+ */
+const v7Tables = accountsSchemaManifest.tables;
+export const schemaManifest = defineSchema([
+  v7Tables[0],
+  {
+    ...v7Tables[1],
+    columns: [
+      ...v7Tables[1].columns,
+      { name: "kind", type: "text", nullable: false, default: "chat" },
+    ],
+  },
+  ...v7Tables.slice(2),
+  {
+    name: "butlers",
+    columns: [
+      { name: "owner_key", type: "text", nullable: false },
+      { name: "session_id", type: "uuid", nullable: false },
+      { name: "created_at", type: "integer", nullable: false },
+    ],
+    primaryKey: { columns: ["owner_key"] },
+    foreignKeys: [{ constraintName: "butlers_session_id_fk", columns: ["session_id"], targetTable: "sessions", targetColumns: ["id"], onDelete: "cascade" }],
+    indexes: [],
   },
 ]);

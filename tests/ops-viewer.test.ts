@@ -77,6 +77,21 @@ describe("read-only cross-owner ops viewer", () => {
     } finally { data.close(); }
   });
 
+  it("leaves owners' butlers out once sessions has a kind column", async () => {
+    const { root, dbPath } = fixture();
+    const db = new DatabaseSync(dbPath);
+    db.exec("ALTER TABLE sessions ADD COLUMN kind TEXT NOT NULL DEFAULT 'chat'");
+    const butler = "00000000-0000-0000-0000-0000000000b1";
+    db.prepare("INSERT INTO sessions VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, 'pi', 'pi-jsonl-v3', 'butler')").run(butler, "ip:192.168.6.23", project, "管家", 10, 90);
+    db.close();
+    const data = createViewerData(dbPath, root);
+    try {
+      expect(data.listOwners().find(owner => owner.owner === "ip:192.168.6.23")?.count).toBe(1);
+      expect(data.listSessions("ip:192.168.6.23", 0)).toMatchObject({ total: 1, sessions: [{ id }] });
+      expect(await data.getSession(butler)).toBeNull();
+    } finally { data.close(); }
+  });
+
   it("does not interpret an incomplete envelope as control data", () => {
     expect(presentationText("[ONEV_CONTEXT_V1]unclosed 用户文字")).toBe("[ONEV_CONTEXT_V1]unclosed 用户文字");
   });

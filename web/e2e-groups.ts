@@ -47,6 +47,7 @@ export const specialGroups: E2EGroup[] = [
   group("tool-streaming", "playwright.tool-streaming.config.ts", "tool-streaming-readable"),
   group("message-cursor", "playwright.message-cursor.config.ts", "message-cursor"),
   group("accounts", "playwright.accounts.config.ts", "accounts-login"),
+  group("butler", "playwright.butler.config.ts", "butler"),
 ];
 
 /**
