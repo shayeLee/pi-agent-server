@@ -43,10 +43,26 @@ export class ApiError extends Error {
   constructor(
     readonly status: number,
     message: string,
+    /** The body's `code` field, when the server sent one (e.g. `invalid_credentials`). */
+    readonly code?: string,
+    /** Seconds from a `Retry-After` header, when present. */
+    readonly retryAfter?: number,
   ) {
     super(message);
     this.name = "ApiError";
   }
+}
+
+async function errorFrom(res: Response): Promise<ApiError> {
+  const text = await res.text().catch(() => "");
+  let code: string | undefined;
+  try {
+    const body: unknown = JSON.parse(text);
+    if (body && typeof body === "object" && typeof (body as { code?: unknown }).code === "string") code = (body as { code: string }).code;
+  } catch { /* not JSON */ }
+  const retryHeader = res.headers?.get?.("retry-after");
+  const retryAfter = retryHeader && /^\d+$/.test(retryHeader) ? Number(retryHeader) : undefined;
+  return new ApiError(res.status, `HTTP ${res.status}${text ? `: ${text}` : ""}`, code, retryAfter);
 }
 
 export class ApiClient {
@@ -87,12 +103,32 @@ export class ApiClient {
       headers,
       body: body !== undefined ? JSON.stringify(body) : undefined,
     });
-    if (!res.ok) {
-      const text = await res.text().catch(() => "");
-      throw new ApiError(res.status, `HTTP ${res.status}${text ? `: ${text}` : ""}`);
-    }
+    if (!res.ok) throw await errorFrom(res);
     if (res.status === 204 || response === "void") return undefined as T;
     return (await res.json()) as T;
+  }
+
+  /** Public: whether this server uses account login. */
+  getAuthState(): Promise<import("../shared/auth.js").AuthState> {
+    return this.request("GET", "/v1/auth/state");
+  }
+
+  /** Public: sets the session cookie. A wrong name or password is 401 `invalid_credentials`. */
+  login(name: string, password: string): Promise<{ account: import("../shared/auth.js").AuthAccount }> {
+    return this.request("POST", "/v1/auth/login", { name, password });
+  }
+
+  logout(): Promise<void> {
+    return this.request("POST", "/v1/auth/logout", undefined, "void");
+  }
+
+  getAuthMe(): Promise<import("../shared/auth.js").AuthMe> {
+    return this.request("GET", "/v1/auth/me");
+  }
+
+  /** Cookie login only. Ends every other login of this account and issues this browser a new one. */
+  changePassword(current: string, next: string): Promise<void> {
+    return this.request("PUT", "/v1/auth/password", { current, next }, "void");
   }
 
   createSession(title?: string, projectId?: string, createRequestId?: string): Promise<SessionRecord> {
@@ -121,10 +157,7 @@ export class ApiClient {
     const response = await (this.options.fetch ?? defaultFetch)(url, {
       method: "POST", headers, body: new Blob([new Uint8Array(input.bytes)]),
     });
-    if (!response.ok) {
-      const message = await response.text().catch(() => "");
-      throw new ApiError(response.status, `HTTP ${response.status}${message ? `: ${message}` : ""}`);
-    }
+    if (!response.ok) throw await errorFrom(response);
     return (await response.json()) as UploadedFile;
   }
 

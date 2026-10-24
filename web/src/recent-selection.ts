@@ -1,9 +1,11 @@
+import { accountScopedKey } from "./auth/storage-scope.js";
+
 /** Navigation hints only; never credentials, drafts, or cached private content. */
 export type RecentSelection = { version: 1; projectId: string; sessionId: string | null };
 // The Web API uses the current origin (baseUrl=""). No owner identity is exposed;
 // every restored ID must therefore be validated against freshly authorized API lists.
 export function recentSelectionKey(): string {
-  return `pi.recent-selection.v1:${new URL("/", window.location.href).origin}`;
+  return accountScopedKey(`pi.recent-selection.v1:${new URL("/", window.location.href).origin}`);
 }
 export function clearRecentSelection(): void {
   try { window.localStorage.removeItem(recentSelectionKey()); } catch { /* Storage may be denied. */ }

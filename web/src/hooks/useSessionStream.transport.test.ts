@@ -89,3 +89,29 @@ it("treats the server's 204 as no live stream, not as a dropped connection", asy
     expect(states).not.toContain("reconnecting");
   } finally { hook.unmount(); }
 });
+
+it("reports an ended login once and stops, then reconnects when the same account signs back in", async () => {
+  let authorized = false;
+  const fetcher = vi.fn(async (url: string) => {
+    if (!authorized) return new Response(JSON.stringify({ code: "auth_required" }), { status: 401 });
+    if (!url.endsWith("/events")) return new Response(JSON.stringify({ messages: [], lastEventId: 0 }));
+    return new Response(new ReadableStream<Uint8Array>({ start() {} }));
+  });
+  vi.stubGlobal("fetch", fetcher);
+  const onAuthExpired = vi.fn();
+  const states: unknown[] = [];
+  const options = { ...streamOptions(value => states.push(value)), onAuthExpired, authGeneration: 0 };
+  const hook = renderHook(useSessionStream, { initialProps: options });
+  try {
+    await waitFor(() => expect(onAuthExpired).toHaveBeenCalledOnce());
+    expect(states.at(-1)).toBe("reconnecting");
+    // No retry loop against a server that has said the login is over.
+    await new Promise(resolve => setTimeout(resolve, 50));
+    expect(fetcher).toHaveBeenCalledTimes(1);
+
+    authorized = true;
+    act(() => hook.rerender({ ...options, authGeneration: 1 }));
+    await waitFor(() => expect(states.at(-1)).toBe("open"));
+    expect(onAuthExpired).toHaveBeenCalledOnce();
+  } finally { hook.unmount(); }
+});

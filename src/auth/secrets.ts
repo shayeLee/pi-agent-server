@@ -4,6 +4,7 @@
 // bytes; only their SHA-256 is stored.
 
 import { createHash, randomBytes, scrypt, timingSafeEqual } from "node:crypto";
+import { PASSWORD_MAX_LENGTH, PASSWORD_MIN_LENGTH } from "../shared/auth.js";
 
 const SCRYPT_N = 2 ** 15;
 const SCRYPT_R = 8;
@@ -13,8 +14,7 @@ const SCRYPT_SALT_BYTES = 16;
 const SCRYPT_MAXMEM = 64 * 1024 * 1024;
 const SCRYPT_PREFIX = "scrypt";
 
-export const PASSWORD_MIN_LENGTH = 12;
-export const PASSWORD_MAX_LENGTH = 256;
+export { PASSWORD_MAX_LENGTH, PASSWORD_MIN_LENGTH };
 export const API_TOKEN_PREFIX = "pi_";
 
 /** Length is counted in Unicode code points, so a password of emoji is not penalised. */

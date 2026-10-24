@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { ApiClient } from "pi-agent-server/client";
+import { ApiClient, ApiError } from "pi-agent-server/client";
 
 function jsonResponse(data: unknown, status = 200): Response {
   return new Response(JSON.stringify(data), {
@@ -85,5 +85,42 @@ describe("ApiClient", () => {
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toBe("/v1/access");
     expect(init.method).toBe("GET");
+  });
+  it("auth 接口：路径、方法与 body", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ mode: "accounts", publicOrigin: "http://h:5180" }))
+      .mockResolvedValueOnce(jsonResponse({ account: { id: "a1", name: "mz", role: "admin" } }))
+      .mockResolvedValueOnce(jsonResponse({ account: { id: "a1", name: "mz", role: "admin" }, via: "cookie" }))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }))
+      .mockResolvedValueOnce(new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const api = new ApiClient({ baseUrl: "" });
+
+    await expect(api.getAuthState()).resolves.toEqual({ mode: "accounts", publicOrigin: "http://h:5180" });
+    await expect(api.login("mz", "pw")).resolves.toEqual({ account: { id: "a1", name: "mz", role: "admin" } });
+    await expect(api.getAuthMe()).resolves.toMatchObject({ via: "cookie" });
+    await api.changePassword("old", "new");
+    await api.logout();
+
+    const calls = fetchMock.mock.calls.map(([url, init]) => [url, (init as RequestInit).method, (init as RequestInit).body]);
+    expect(calls).toEqual([
+      ["/v1/auth/state", "GET", undefined],
+      ["/v1/auth/login", "POST", JSON.stringify({ name: "mz", password: "pw" })],
+      ["/v1/auth/me", "GET", undefined],
+      ["/v1/auth/password", "PUT", JSON.stringify({ current: "old", next: "new" })],
+      ["/v1/auth/logout", "POST", undefined],
+    ]);
+  });
+
+  it("错误带上服务端的 code 与 Retry-After", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({ code: "login_backoff" }), {
+      status: 429, headers: { "content-type": "application/json", "retry-after": "8" },
+    })));
+    const error = await new ApiClient({ baseUrl: "" }).login("mz", "pw").catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(ApiError);
+    expect(error).toMatchObject({ status: 429, code: "login_backoff", retryAfter: 8 });
+
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("plain", { status: 500 })));
+    expect(await new ApiClient({ baseUrl: "" }).getAuthMe().catch((caught: unknown) => caught)).toMatchObject({ status: 500, code: undefined, retryAfter: undefined });
   });
 });

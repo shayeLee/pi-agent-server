@@ -14,6 +14,8 @@ export type {
   ProviderAuthEntry, ProviderAuthList, ProviderAuthMethod, ProviderLogin, ProviderLoginAnswer, ProviderLoginPrompt, ProviderLoginStart, ProviderLoginStep,
 } from "../shared/provider-auth.js";
 export { DEFAULT_PROJECT_ID } from "../shared/project-identity.js";
+export type { AuthAccount, AuthMe, AuthRole, AuthState } from "../shared/auth.js";
+export { PASSWORD_MAX_LENGTH, PASSWORD_MIN_LENGTH } from "../shared/auth.js";
 export * from "./api.js";
 export * from "./session-title.js";
 export * from "./chat-state.js";

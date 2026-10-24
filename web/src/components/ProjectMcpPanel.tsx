@@ -3,6 +3,7 @@ import { formatDateTime } from "../i18n/format.js";
 import { useCallback, useEffect, useId, useState, type ReactNode } from "react";
 import type { ApiClient, McpConnection, McpExposure, ProjectMcpServer, ProjectMcpSettings } from "pi-agent-server/client";
 import { Modal } from "./Modal.js";
+import { useAuth } from "../auth/auth-context.js";
 import { SelectMenu } from "./SelectMenu.js";
 import { SharedMcpPanel } from "./SharedMcpPanel.js";
 import { clearMcpOAuthReturn, peekMcpOAuthReturn, rememberMcpOAuthReturnPath, type McpOAuthReturn } from "../mcp-oauth-return.js";
@@ -139,7 +140,13 @@ function ConnectionLine({ api, projectId, server, connections, onChanged }: {
   const [state, setState] = useState<{ kind: "idle" | "connecting" | "disconnecting" } | { kind: "error"; message: string }>({ kind: "idle" });
   const connection = connections?.find(row => row.name === server.name);
   const label = server.oauthLabel;
+  const auth = useAuth();
   async function connect() {
+    // The callback carries only the login cookie of PI_PUBLIC_URL's host (docs/login-design.md §9.1).
+    if (auth.mode === "accounts" && auth.publicOrigin && window.location.origin !== auth.publicOrigin) {
+      setState({ kind: "error", message: zhCN.projectMcp.wrongOrigin(auth.publicOrigin) });
+      return;
+    }
     setState({ kind: "connecting" });
     try {
       const { authorizationUrl } = await api.startMcpOAuth(server.name, projectId);

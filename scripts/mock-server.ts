@@ -24,6 +24,9 @@ import { DEFAULT_PROJECT_ID } from "../src/application/ports/project-store-port.
 import type { ConversationDescriptor } from "../src/application/ports/conversation-port.js";
 import { MockAgentAdapter } from "../src/agent/mock-agent-adapter.js";
 import type { AgentSdkEvent } from "../src/agent/events.js";
+import { resolveAuthConfig } from "../src/auth/auth-config.js";
+import { AuthService } from "../src/auth/auth-service.js";
+import { KyselyAccountRepository } from "../src/storage/kysely-account-repository.js";
 
 const PORT = Number(process.env.PORT ?? 8081);
 const MOCK_CWD = "/tmp/mock-project";
@@ -71,6 +74,17 @@ try {
   const sessions = new KyselySessionRepository(kysely, sqliteConstraintErrorMapper, fileOperationOptions);
   const idempotencyRepo = new KyselyIdempotencyRepository(kysely);
 
+  // MOCK_AUTH_MODE=accounts: login E2E. Accounts come from MOCK_ACCOUNTS (`name:role:password,…`,
+  // test values from web/e2e/accounts.fixture.ts); MOCK_PUBLIC_URL is the Web page's origin.
+  const authConfig = resolveAuthConfig(process.env.MOCK_AUTH_MODE === "accounts"
+    ? { mode: "accounts", publicUrl: process.env.MOCK_PUBLIC_URL ?? "" }
+    : { mode: "ip" });
+  const accountAuth = authConfig.mode === "accounts" ? new AuthService(new KyselyAccountRepository(kysely, "sqlite")) : undefined;
+  for (const entry of (process.env.MOCK_ACCOUNTS ?? "").split(",").filter(Boolean)) {
+    const [name, role, password] = entry.split(":");
+    await accountAuth?.createAccount(name!, role!, password!);
+  }
+
   app = buildApp({
     sessions,
     projects,
@@ -84,6 +98,9 @@ try {
     // SSE 连接配额可从环境变量覆盖，便于 e2e 用小值验证配额/断线清理。
     maxSsePerUser: Number(process.env.MAX_SSE_PER_USER ?? 10),
     maxSseGlobal: Number(process.env.MAX_SSE_GLOBAL ?? 100),
+    authConfig,
+    ...(accountAuth ? { accountAuth } : {}),
+    ...(process.env.MOCK_AUTH_RECHECK_MS ? { authRecheckIntervalMs: Number(process.env.MOCK_AUTH_RECHECK_MS) } : {}),
     createAdapter: async () => {
       const standardEvents: AgentSdkEvent[] = [
         { type: "agent_start" },

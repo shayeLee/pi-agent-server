@@ -1,7 +1,8 @@
-// Endpoints for optional features (MCP, model sign-in, Agent settings, project trust, composer
-// commands/files, companion). The Web UI hides their entry points when the
-// server answers 404, so route fixtures that do not exercise them return 404.
+// Endpoints for optional features (login state, MCP, model sign-in, Agent settings, project trust,
+// composer commands/files, companion). The Web UI hides their entry points when the server answers
+// 404 (for /v1/auth/state: ip mode, no login page), so route fixtures that do not exercise them return 404.
 const optional = [
+  /^\/v1\/auth\/state$/,
   /^\/v1\/mcp(\/|$)/,
   /^\/v1\/provider-auth(\/|$)/,
   /^\/v1\/settings$/,

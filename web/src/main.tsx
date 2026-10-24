@@ -2,6 +2,7 @@ import { zhCN } from "./i18n/zh-CN.js";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App.js";
+import { AuthGate } from "./auth/AuthGate.js";
 import { captureMcpOAuthReturn } from "./mcp-oauth-return.js";
 import "./styles/fonts.css";
 import "./styles.css";
@@ -15,6 +16,8 @@ if (!root) throw new Error(zhCN.toolParameters.missingRoot);
 
 createRoot(root).render(
   <StrictMode>
-    <App />
+    <AuthGate>
+      <App />
+    </AuthGate>
   </StrictMode>,
 );

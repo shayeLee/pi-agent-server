@@ -14,6 +14,10 @@ type SessionStreamOptions = {
   api: ApiClient;
   activeSessionId: string | null;
   navigationGeneration: number;
+  /** Changes when the same account signs back in after its login ended, to reconnect. */
+  authGeneration?: number;
+  /** The stream ended because the login did (accounts mode); it does not reconnect by itself. */
+  onAuthExpired?: () => void;
   isCurrent: () => boolean;
   chatStore: ChatStore;
   newlyCreatedIdsRef: RefObject<Set<string>>;
@@ -38,7 +42,7 @@ type SessionStreamOptions = {
  * editor renders must not reconnect the stream or replace its ownership snapshot.
  */
 export function useSessionStream({
-  api, activeSessionId, navigationGeneration, isCurrent, chatStore, newlyCreatedIdsRef, historyReadySessionIdsRef,
+  api, activeSessionId, navigationGeneration, authGeneration, onAuthExpired, isCurrent, chatStore, newlyCreatedIdsRef, historyReadySessionIdsRef,
   emptyHistoryIdsRef, eventCursorsRef, usageRevisionRef, setHistoryReadySessionIds,
   setUsageSnapshots, setInvalidContexts, onInvalidSession, setConnection,
   onLoad, onOpen, onEpochReset, rememberFirstPrompt, onEvent,
@@ -147,6 +151,14 @@ export function useSessionStream({
           store.markDisconnected();
           setConnection("reconnecting");
         },
+        ...(onAuthExpired ? {
+          onAuthExpired: () => {
+            if (!ownsStream()) return;
+            store.markDisconnected();
+            setConnection("reconnecting");
+            onAuthExpired();
+          },
+        } : {}),
         onNoLiveStream: () => {
           if (!ownsStream()) return;
           store.markDisconnected();
@@ -167,5 +179,5 @@ export function useSessionStream({
       store.markDisconnected();
       setConnection("idle");
     };
-  }, [api, activeSessionId, chatStore, navigationGeneration]);
+  }, [api, activeSessionId, chatStore, navigationGeneration, authGeneration]);
 }

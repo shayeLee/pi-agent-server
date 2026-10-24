@@ -4,6 +4,7 @@ import { ApiError, SHARED_MCP_MASK, type McpConnection, type ProjectMcpServer, t
 import { zhCN } from "../i18n/zh-CN.js";
 import { useProjectMcp } from "./ProjectMcpPanel.js";
 import { captureMcpOAuthReturn, clearMcpOAuthReturn } from "../mcp-oauth-return.js";
+import { AuthContext, IP_AUTH_SESSION, type AuthSession } from "../auth/auth-context.js";
 
 const docs: ProjectMcpServer = { name: "docs", status: "available", description: "Docs search", transport: "http", enabled: false,
   exposure: "codemode", defaultExposure: "codemode", maxExposure: "codemode", hiddenTools: [], adminOnly: false, canEnable: true, updatedAt: null };
@@ -14,7 +15,8 @@ const linear: ProjectMcpServer = { ...docs, name: "linear", description: "Linear
 const notAdmin: SharedMcpList = { canEdit: false, servers: [] };
 
 function setup(settings: ProjectMcpSettings, save = vi.fn(), connections: () => Promise<{ servers: McpConnection[] }> = async () => ({ servers: [] }),
-  shared: { list?: SharedMcpList; save?: (name: string, input: unknown) => Promise<SharedMcpList>; remove?: (name: string, hash: string) => Promise<SharedMcpList> } = {}) {
+  shared: { list?: SharedMcpList; save?: (name: string, input: unknown) => Promise<SharedMcpList>; remove?: (name: string, hash: string) => Promise<SharedMcpList> } = {},
+  auth: AuthSession = IP_AUTH_SESSION) {
   const api = {
     getSharedMcp: vi.fn(async () => shared.list ?? notAdmin),
     saveSharedMcpServer: vi.fn(shared.save ?? (async () => notAdmin)),
@@ -24,7 +26,7 @@ function setup(settings: ProjectMcpSettings, save = vi.fn(), connections: () => 
     startMcpOAuth: vi.fn(async () => ({ authorizationUrl: "https://auth.example.test/authorize?state=s" })),
     disconnectMcp: vi.fn(async () => {}),
   };
-  render(<Entry api={api} />);
+  render(<AuthContext.Provider value={auth}><Entry api={api} /></AuthContext.Provider>);
   return { api, save };
 }
 
@@ -130,6 +132,19 @@ describe("useProjectMcp", () => {
     await waitFor(() => expect(assign).toHaveBeenCalledWith("https://auth.example.test/authorize?state=s"));
     expect(api.startMcpOAuth).toHaveBeenCalledWith("linear", "p1");
     expect(window.sessionStorage.getItem("pi.mcpOAuthReturnPath")).toBe("/p/p1/s/s1");
+  });
+
+  it("in accounts mode, only connects from the public address the authorization returns to", async () => {
+    const assign = vi.fn();
+    vi.stubGlobal("location", { ...window.location, assign, origin: "http://127.0.0.1:5180" });
+    const auth: AuthSession = { ...IP_AUTH_SESSION, mode: "accounts", publicOrigin: "http://192.168.5.137:5180", account: { id: "a1", name: "mz", role: "admin" } };
+    const { api } = setup({ configured: true, canEdit: true, servers: [linear] }, vi.fn(), undefined, {}, auth);
+    fireEvent.click(await screen.findByTestId("project-mcp-open"));
+    const row = within(screen.getByTestId("project-mcp-connection"));
+    fireEvent.click(await row.findByRole("button", { name: "连接 Linear" }));
+    expect(await row.findByRole("alert")).toHaveTextContent(zhCN.projectMcp.wrongOrigin("http://192.168.5.137:5180"));
+    expect(api.startMcpOAuth).not.toHaveBeenCalled();
+    expect(assign).not.toHaveBeenCalled();
   });
 
   it("shows the connected account and disconnects", async () => {

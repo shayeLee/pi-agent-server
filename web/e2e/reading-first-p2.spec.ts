@@ -100,6 +100,8 @@ async function installFixture(page: Page, submissions?: { creates: unknown[]; me
 
 async function openFixtureSession(page: Page): Promise<void> {
   const sidebarMenu = page.getByRole("button", { name: "打开工作区导航" });
+  // isVisible() does not wait: let the app render first (it follows the login-state check).
+  await expect(page.getByTestId("app")).toBeVisible();
   const usedMobileMenu = await sidebarMenu.isVisible();
   if (usedMobileMenu) await sidebarMenu.click();
   const sessionButton = page.getByTestId(`session-${sessionId}`);
@@ -123,6 +125,7 @@ for (const viewport of SHORT_SCREEN_CASES) test(`短屏长草稿与附件 ${view
   await installFixture(page, submissions);
   await page.goto("/");
   const navigation = page.getByRole("button", { name: "打开工作区导航" });
+  await expect(page.getByTestId("app")).toBeVisible();
   const usedDrawer = await navigation.isVisible();
   if (usedDrawer) await navigation.click();
   await expect(page.getByTestId("new-session")).toBeVisible();

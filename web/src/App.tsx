@@ -21,6 +21,8 @@ import { zhCN } from "./i18n/zh-CN.js";
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator } from "./components/ui/dropdown-menu.js";
 import { CommandPalette, ShortcutHelp, type Command } from "./components/CommandPalette.js";
 import { useGlobalShortcuts } from "./hooks/useGlobalShortcuts.js";
+import { useAccountMenu } from "./auth/AccountMenu.js";
+import { accountScopedKey } from "./auth/storage-scope.js";
 
 const SIDEBAR_DEFAULT = 272;
 /**
@@ -126,11 +128,11 @@ export default function App() {
   }, [activeSession?.id, sessionPending]);
   const [childSelection, setChildSelection] = useState<{ sessionId: string; runId: string } | null>(() => {
     try {
-      const saved = JSON.parse(sessionStorage.getItem("pi:selected-subagent") ?? "null");
+      const saved = JSON.parse(sessionStorage.getItem(accountScopedKey("pi:selected-subagent")) ?? "null");
       return saved && typeof saved.sessionId === "string" && typeof saved.runId === "string" ? saved : null;
     } catch { return null; }
   });
-  useEffect(() => { try { sessionStorage.setItem("pi:selected-subagent", JSON.stringify(childSelection)); } catch { /* Storage is optional. */ } }, [childSelection]);
+  useEffect(() => { try { sessionStorage.setItem(accountScopedKey("pi:selected-subagent"), JSON.stringify(childSelection)); } catch { /* Storage is optional. */ } }, [childSelection]);
   const selectedChild = childSelection?.sessionId === activeSession?.id ? childSelection?.runId ?? null : null;
   // A live parent request may start children, so the list keeps polling until it settles.
   const subagents = useSubagents(controller.api, activeSession?.id ?? null, { runId: selectedChild,
@@ -232,6 +234,7 @@ export default function App() {
     onChanged: () => { projectMcp.refresh(); void controller.refreshModels(); } });
   const agentSettings = useAgentSettings({ api: controller.api, models: controller.models, projectId: controller.activeProjectId, onSaved: () => void controller.refreshModels() });
   const usage = useUsagePanel({ api: controller.api });
+  const accountMenu = useAccountMenu();
   const themeLabels: Record<ThemeMode, string> = { light: zhCN.sidebar.lightMode, dark: zhCN.sidebar.darkMode, system: zhCN.sidebar.followSystem };
   const commands: Command[] = [
     ...(canCreateSession ? [{ id: "new", group: zhCN.palette.groupActions, label: zhCN.sidebar.newSession, hint: "N", run: newSession }] : []),
@@ -357,8 +360,10 @@ export default function App() {
             {projectMcp.available && <DropdownMenuItem data-testid="project-mcp-open" onSelect={projectMcp.openPanel}>{zhCN.projectMcp.open}</DropdownMenuItem>}
             {projectTrust.available && <DropdownMenuItem data-testid="project-trust-open" onSelect={projectTrust.openPanel}>{zhCN.projectTrust.open}</DropdownMenuItem>}
             {providerAuth.available && <DropdownMenuItem data-testid="provider-auth-open" onSelect={providerAuth.openPanel}>{zhCN.providerAuth.open}</DropdownMenuItem>}
+            {accountMenu.items}
           </DropdownMenuContent>
         </DropdownMenu>
+        {accountMenu.dialog}
         {projectMcp.dialog}
         {projectTrust.dialog}
         {providerAuth.dialog}

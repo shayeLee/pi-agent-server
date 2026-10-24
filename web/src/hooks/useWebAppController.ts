@@ -14,6 +14,7 @@ import type { EventLogEntry } from "../types.js";
 import { EMPTY_MESSAGE, type SubmissionState, type SubmitOutcome, type SubmitSnapshot, type UnsentMessage } from "../attachment-state.js";
 
 import { useSessionStream, type SessionConnection } from "./useSessionStream.js";
+import { useAuth } from "../auth/auth-context.js";
 import { useSessionControls } from "./useSessionControls.js";
 import { createDraftAttachmentActions } from "./draft-attachments.js";
 import { createDraftStore } from "../draft-store.js";
@@ -190,7 +191,8 @@ export function useWebAppController() {
   const eventSeqRef = useRef(0);
   // 快速切换项目时，旧会话请求的响应/错误不得覆盖当前项目状态。
   const sessionsRequestSeqRef = useRef(0);
-  const api = useMemo(() => new ApiClient({ baseUrl: "" }), []);
+  const auth = useAuth();
+  const api = useMemo(() => new ApiClient({ baseUrl: "", fetch: auth.fetch }), [auth.fetch]);
   const { addUnsentFile, retryUnsentAttachment, removeUnsentAttachment } = createDraftAttachmentActions({
     api, draftStore, currentScope,
     getProjectId: () => {
@@ -474,6 +476,7 @@ export function useWebAppController() {
   const streamNavigationGeneration = navigationGeneration;
   useSessionStream({
     api, activeSessionId, navigationGeneration,
+    authGeneration: auth.generation, onAuthExpired: auth.onAuthExpired,
     isCurrent: () => streamNavigationGeneration === navigationGenerationRef.current && activeSessionIdRef.current === activeSessionId,
     chatStore, newlyCreatedIdsRef, historyReadySessionIdsRef,
     emptyHistoryIdsRef, eventCursorsRef, usageRevisionRef, setHistoryReadySessionIds,

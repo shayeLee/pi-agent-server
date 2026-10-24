@@ -1,5 +1,6 @@
 import { zhCN } from "../../i18n/zh-CN.js";
 import type { CompanionMood } from "./companion-mood.js";
+import { accountScopedKey } from "../../auth/storage-scope.js";
 
 export type CompanionStyle = "concise" | "lively" | "formal";
 export type CompanionPersona = { name: string; style: CompanionStyle; docked: boolean };
@@ -11,7 +12,7 @@ const MAX_NAME = 12;
 /** This browser's copy of the persona: the server's when it has one, otherwise what was set here; `null` when nothing was. */
 export function readStoredPersona(): CompanionPersona | null {
   try {
-    const raw = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "null") as Partial<CompanionPersona> | null;
+    const raw = JSON.parse(localStorage.getItem(accountScopedKey(STORAGE_KEY)) ?? "null") as Partial<CompanionPersona> | null;
     if (!raw || typeof raw !== "object") return null;
     const name = typeof raw.name === "string" && raw.name.trim() ? raw.name.trim().slice(0, MAX_NAME) : DEFAULT_PERSONA.name;
     const style = raw.style === "concise" || raw.style === "formal" || raw.style === "lively" ? raw.style : DEFAULT_PERSONA.style;
@@ -25,7 +26,7 @@ export function readPersona(): CompanionPersona {
 }
 
 export function writePersona(persona: CompanionPersona): void {
-  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(persona)); } catch { /* storage unavailable */ }
+  try { localStorage.setItem(accountScopedKey(STORAGE_KEY), JSON.stringify(persona)); } catch { /* storage unavailable */ }
 }
 
 export function normalizeName(name: string): string {
