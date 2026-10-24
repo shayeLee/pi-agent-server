@@ -1,6 +1,7 @@
 // Immutable, descriptor-driven migration registry. v0 is the released baseline and
 // is frozen; v1 adds uploaded files and idempotency fingerprints, v2 native sessions, v3 companion personas,
-// v4 project MCP settings, v5 per-user MCP OAuth, v6 the server identity of project MCP settings.
+// v4 project MCP settings, v5 per-user MCP OAuth, v6 the server identity of project MCP settings,
+// v7 accounts and their login methods, browser sessions and personal tokens.
 // Published migrations contain data, not executable up callbacks: the exact canonical
 // operations are checksummed and are the only operations the runner executes.
 
@@ -15,6 +16,7 @@ import {
   companionPersonasSchemaManifest,
   projectMcpServersSchemaManifest,
   userMcpOAuthSchemaManifest,
+  projectMcpServerIdentitySchemaManifest,
   schemaManifest,
   type LogicalColumnType,
   type SchemaManifest,
@@ -179,6 +181,7 @@ export const MIGRATION_V3_GOLDEN_CHECKSUM = "dabba2c967e59f73c2c99667b8a62163283
 export const MIGRATION_V4_GOLDEN_CHECKSUM = "966bdc145ef441bdaca544f74670b67a4e9e20de695fb6071eb5f7e0857cfb8c";
 export const MIGRATION_V5_GOLDEN_CHECKSUM = "8e12170bf914c359ec271b3cf27ff764efcc3f41152d4cec73de492e0d18719a";
 export const MIGRATION_V6_GOLDEN_CHECKSUM = "0d53f17389e8e5f2ad4264dc38daaf4e2d41086154388cd43e166104a9a644e5";
+export const MIGRATION_V7_GOLDEN_CHECKSUM = "da0f2432426b96cab1ec93e6ed3f9ebc470a9499e72ea457805bb84350dd34d1";
 
 export const initialSchemaMigration: MigrationDefinition = deepFreeze({
   version: 0,
@@ -261,11 +264,22 @@ const userMcpOAuthMigration: MigrationDefinition = deepFreeze({
 const projectMcpServerIdentityMigration: MigrationDefinition = deepFreeze({
   version: 6,
   name: "project-mcp-server-identity",
-  manifest: schemaManifest,
+  manifest: projectMcpServerIdentitySchemaManifest,
   physicalTypeMaps: BASELINE_PHYSICAL_TYPE_MAPS,
   operations: Object.fromEntries((["SQLite", "PostgreSQL"] as const).map(dialect => [dialect, [
     { kind: "ddl", dialect, sql: 'ALTER TABLE "project_mcp_servers" ADD COLUMN "server_identity" TEXT' },
   ]])) as unknown as MigrationDefinition["operations"],
+  dataTransform: { kind: "none", format: "pi-agent-server.data-transform.v1" },
+});
+
+const accountsMigration: MigrationDefinition = deepFreeze({
+  version: 7,
+  name: "accounts",
+  manifest: schemaManifest,
+  physicalTypeMaps: BASELINE_PHYSICAL_TYPE_MAPS,
+  operations: Object.fromEntries((["SQLite", "PostgreSQL"] as const).map(dialect => [dialect,
+    renderMigrationOperations({ tables: schemaManifest.tables.slice(10) }, dialect, BASELINE_PHYSICAL_TYPE_MAPS[dialect]),
+  ])) as unknown as MigrationDefinition["operations"],
   dataTransform: { kind: "none", format: "pi-agent-server.data-transform.v1" },
 });
 
@@ -277,6 +291,7 @@ export const migrationDefinitions: readonly MigrationDefinition[] = deepFreeze([
   projectMcpServersMigration,
   userMcpOAuthMigration,
   projectMcpServerIdentityMigration,
+  accountsMigration,
 ]);
 export const migrationHeadManifest: SchemaManifest = schemaManifest;
 
@@ -333,6 +348,7 @@ export function validateMigrationDefinitions(migrations: readonly MigrationDefin
     if (migrationChecksum(migrations[4]!) !== MIGRATION_V4_GOLDEN_CHECKSUM) throw new Error("migration manifest: registry version 4 checksum changed");
     if (migrationChecksum(migrations[5]!) !== MIGRATION_V5_GOLDEN_CHECKSUM) throw new Error("migration manifest: registry version 5 checksum changed");
     if (migrationChecksum(migrations[6]!) !== MIGRATION_V6_GOLDEN_CHECKSUM) throw new Error("migration manifest: registry version 6 checksum changed");
+    if (migrationChecksum(migrations[7]!) !== MIGRATION_V7_GOLDEN_CHECKSUM) throw new Error("migration manifest: registry version 7 checksum changed");
     if (migrations.at(-1)!.manifest !== migrationHeadManifest) throw new Error("migration manifest: registry head does not match schemaManifest");
   }
 }

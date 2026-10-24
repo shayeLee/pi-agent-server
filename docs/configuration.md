@@ -34,6 +34,8 @@ export PI_ALLOWED_CLIENT_CIDRS=127.0.0.0/8,10.0.0.0/8
 | `PI_DATABASE_URL` | 未设置 | PostgreSQL 必填 |
 | `PI_ALLOWED_CLIENT_CIDRS` | `127.0.0.0/8,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16` | 允许访问服务的来源 IP 网段，例如 `127.0.0.0/8` |
 | `PI_IP_ACCESS_POLICY_FILE` | 未设置 | 可选策略文件的绝对路径，用于为指定 IP 设置角色、禁用状态和 token 要求 |
+| `PI_AUTH_MODE` | `ip` | 身份来源。`ip`（默认）保持按客户端 IP 识别；`accounts` 改为账号登录（Cookie 会话或 `Authorization: Bearer pi_…` token），owner 键为 `user:<账号 id>`，CIDR 准入照旧。`accounts` 需要 `PI_PUBLIC_URL`，策略文件只能用来禁用 IP（不能写其他角色或 token 要求），账号用 `pnpm accounts -- create --name <名字> --role admin` 等命令维护。其他值拒绝启动。见 [登录设计](login-design.md) |
+| `PI_TRUSTED_ORIGINS` | `PI_PUBLIC_URL` 的 origin | 仅 `accounts` 模式：允许发起登录和写请求的网页 origin，逗号分隔，必须包含 `PI_PUBLIC_URL` 的 origin，否则拒绝启动 |
 | `PI_AUTH_PATH` | `~/.pi/agent/auth.json` | 非开发环境应使用服务专用文件 |
 | `PI_MODEL_PROVIDER` / `PI_MODEL_API_KEY` | 未设置 | 默认 provider 运行时凭证注入 |
 | `PI_DEFAULT_MODEL` | 未设置 | `provider/modelId` |

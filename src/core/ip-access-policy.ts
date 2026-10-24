@@ -270,6 +270,24 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 }
 
 /**
+ * 账号模式（PI_AUTH_MODE=accounts）下策略文件只做准入：在**原始 JSON** 上检查每条策略都没有写
+ * role、tokenRequired、tokens（parseIpAccessPolicy 会补出默认值，解析后就分不清是写了还是补的）。
+ * 先调用 parseIpAccessPolicy 保证文件本身合法，再调用本函数。
+ */
+export function assertIpAccessPolicyAdmissionOnly(jsonText: string): void {
+  const raw = parsePolicyJson(jsonText);
+  const ips = isPlainObject(raw) && Array.isArray(raw.ips) ? raw.ips : [];
+  ips.forEach((entry, index) => {
+    if (!isPlainObject(entry)) return;
+    for (const key of ["role", "tokenRequired", "tokens"]) {
+      if (Object.hasOwn(entry, key)) {
+        throw new Error(`PI_AUTH_MODE=accounts 时 IP access policy 只做准入：ips[${index}] 不能设置 ${key}（角色与 token 改由账号管理）`);
+      }
+    }
+  });
+}
+
+/**
  * 解析策略文件 JSON 文本（version 1）。JSON 语法由受限解析器完整校验（任意对象层级
  * 重复 key 拒绝，不用 JSON.parse 的覆盖语义）；所有规则异常与类型错误一律抛错（failfast），
  * 错误消息不含 token 哈希值或任何输入内容（脱敏）。

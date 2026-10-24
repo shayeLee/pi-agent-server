@@ -366,9 +366,10 @@ describe("public host API v1 contract", () => {
         .filter(([, operation]) => operation.requestBody !== undefined)
         .map(([method, operation]) => [`${method.toUpperCase()} ${path}`, operation] as const),
     );
-    // Abort is hand-validated; raw octet-stream upload uses a bounded buffer parser, not JSON AJV.
-    const ajvBodyOperations = bodyOperations.filter(([label]) =>
-      label !== "POST /v1/sessions/{id}/abort" && label !== "POST /v1/files");
+    // Abort and the login/password routes are hand-validated; raw octet-stream upload uses a bounded
+    // buffer parser, not JSON AJV.
+    const handValidated = ["POST /v1/sessions/{id}/abort", "POST /v1/files", "POST /v1/auth/login", "PUT /v1/auth/password"];
+    const ajvBodyOperations = bodyOperations.filter(([label]) => !handValidated.includes(label));
     expect(ajvBodyOperations.map(([label]) => label).sort()).toEqual([
       "DELETE /v1/sessions/{id}/control-queue/{controlId}",
       "PATCH /v1/sessions/{id}",

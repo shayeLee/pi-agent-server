@@ -83,6 +83,7 @@
     "backup:compiled": "node dist-backup/scripts/backup.js",
     "restore:compiled": "node dist-backup/scripts/restore.js",
     "owner-transfer": "tsx scripts/owner-transfer.ts",
+    "accounts": "tsx scripts/accounts.ts",
     "owner-transfer:compiled": "node dist-owner-transfer/scripts/owner-transfer.js",
     "drill": "tsx scripts/drill.ts",
     "drill:compiled": "node dist-drill/scripts/drill.js",

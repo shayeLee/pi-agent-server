@@ -170,7 +170,7 @@ describe("bootstrapSchemaFromManifest（spy Kysely，PG 类型映射）", () => 
     const { kysely, tables, indexes } = createSpyKysely();
     await bootstrapSchemaFromManifest(kysely, POSTGRES_LOGICAL_TYPE);
 
-    expect(tables.map((t) => t.name)).toEqual(["projects", "sessions", "idempotency", "file_operations", "uploaded_files", "native_session_sources", "companion_personas", "project_mcp_servers", "mcp_oauth_clients", "user_mcp_credentials"]);
+    expect(tables.map((t) => t.name)).toEqual(["projects", "sessions", "idempotency", "file_operations", "uploaded_files", "native_session_sources", "companion_personas", "project_mcp_servers", "mcp_oauth_clients", "user_mcp_credentials", "accounts", "login_methods", "auth_sessions", "api_tokens"]);
 
     const projects = tables[0]!;
     expect(projects.columns).toEqual([
@@ -234,7 +234,6 @@ describe("bootstrapSchemaFromManifest（spy Kysely，PG 类型映射）", () => 
     ]);
     expect(tables[4]!.fks).toEqual([]);
 
-    // 8 indexes: existing indexes plus the unique owner/project/upload key.
 
     expect(indexes.map((i) => [i.name, i.table, i.columns, i.unique])).toEqual([
       ["idx_projects_owner", "projects", ["owner_key"], false],
@@ -247,6 +246,13 @@ describe("bootstrapSchemaFromManifest（spy Kysely，PG 类型映射）", () => 
       ["idx_uploaded_files_upload_key", "uploaded_files", ["owner_key", "project_id", "upload_key"], true],
       ["idx_native_source_id", "native_session_sources", ["source_id"], true],
       ["idx_native_session_id", "native_session_sources", ["session_id"], true],
+      ["idx_accounts_name", "accounts", ["name"], true],
+      ["idx_login_methods_identity", "login_methods", ["kind", "issuer", "subject"], true],
+      ["idx_login_methods_account", "login_methods", ["account_id"], false],
+      ["idx_auth_sessions_token", "auth_sessions", ["token_hash"], true],
+      ["idx_auth_sessions_account", "auth_sessions", ["account_id"], false],
+      ["idx_api_tokens_token", "api_tokens", ["token_hash"], true],
+      ["idx_api_tokens_account", "api_tokens", ["account_id"], false],
     ]);
   });
 
@@ -298,8 +304,8 @@ describe("createTableFromManifest 防御性 PK notNull（schema-builder 方言�
 
   it("Manifest 声明仍是唯一来源：schemaManifest 表/索引数量与 DDL builder 消费的完全一致", () => {
     const manifest = schemaManifest.tables;
-    expect(manifest).toHaveLength(10);
+    expect(manifest).toHaveLength(14);
     const indexCount = manifest.reduce((n, t) => n + (t.indexes?.length ?? 0), 0);
-    expect(indexCount).toBe(10);
+    expect(indexCount).toBe(17);
   });
 });

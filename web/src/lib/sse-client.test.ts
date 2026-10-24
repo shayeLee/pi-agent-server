@@ -120,10 +120,15 @@ describe("consumeSse", () => {
   });
 
   it("HTTP 非 200 抛错", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(sseResponse([], 401)));
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(sseResponse([], 500)));
     await expect(
       consumeSse({ url: "http://x/events", onEvent: () => {} }),
-    ).rejects.toThrow(/401/);
+    ).rejects.toThrow(/500/);
+  });
+
+  it("HTTP 401 返回 auth-expired，不抛错", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(sseResponse([], 401)));
+    await expect(consumeSse({ url: "http://x/events", onEvent: () => {} })).resolves.toBe("auth-expired");
   });
 });
 

@@ -31,7 +31,12 @@ export type ConsumeSseOptions = {
   signal?: AbortSignal;
 };
 
-export type ConsumeSseResult = "no-live-stream" | void;
+/**
+ * - "no-live-stream": HTTP 204, the session has no live stream now.
+ * - "auth-expired": HTTP 401, or the server sent `auth_expired` before closing (accounts mode,
+ *   docs/login-design.md §4). Signing in again is needed; reconnecting would not help.
+ */
+export type ConsumeSseResult = "no-live-stream" | "auth-expired" | void;
 
 /** Consume one SSE connection until it ends or is interrupted. */
 export async function consumeSse(options: ConsumeSseOptions): Promise<ConsumeSseResult> {
@@ -55,6 +60,7 @@ export async function consumeSse(options: ConsumeSseOptions): Promise<ConsumeSse
   if (isAborted()) return;
   // 204 means this session has no live stream currently; it is a normal terminal result.
   if (res.status === 204) return "no-live-stream";
+  if (res.status === 401) return "auth-expired";
   if (!res.ok || !res.body) {
     throw new Error(`SSE 连接失败：HTTP ${res.status}`);
   }
@@ -64,15 +70,20 @@ export async function consumeSse(options: ConsumeSseOptions): Promise<ConsumeSse
   const cancelReader = () => {
     void reader.cancel().catch(() => {});
   };
+  let authExpired = false;
   const dispatchFrames = (chunk: string) => {
     for (const frame of parser.push(chunk)) {
-      if (isAborted()) break;
+      if (isAborted() || authExpired) break;
       if (frame.id !== null) {
         const id = Number(frame.id);
         if (Number.isFinite(id)) lastEventId = id;
       }
       try {
         const event = JSON.parse(frame.data) as SseEvent;
+        if ((event as { type?: unknown }).type === "auth_expired") {
+          authExpired = true;
+          break;
+        }
         if (!isAborted()) options.onEvent(event, lastEventId);
       } catch {
         if (!isAborted()) options.onError?.(new Error(`无法解析 SSE data：${frame.data}`));
@@ -97,8 +108,13 @@ export async function consumeSse(options: ConsumeSseOptions): Promise<ConsumeSse
       const { done, value } = await reader.read();
       if (isAborted() || done) break;
       dispatchFrames(decoder.decode(value, { stream: true }));
+      if (authExpired) break;
     }
-    if (!isAborted()) dispatchFrames(decoder.decode());
+    if (!isAborted() && !authExpired) dispatchFrames(decoder.decode());
+    if (authExpired) {
+      cancelReader();
+      return "auth-expired";
+    }
   } finally {
     options.signal?.removeEventListener("abort", cancelReader);
     reader.releaseLock();
@@ -130,6 +146,8 @@ export type SseConnectionOptions = {
   maxReconnectDelay?: number;
   /** Called for HTTP 204; no automatic reconnect is attempted. */
   onNoLiveStream?: () => void;
+  /** Called when the sign-in ended (HTTP 401 or `auth_expired`); no automatic reconnect is attempted. */
+  onAuthExpired?: () => void;
 };
 
 /** Establish an auto-reconnecting SSE connection; returns an idempotent close function. */
@@ -173,6 +191,12 @@ export function createSseConnection(options: SseConnectionOptions): { close: () 
         if (closed) break;
         if (result === "no-live-stream") {
           options.onNoLiveStream?.();
+          break;
+        }
+        if (result === "auth-expired") {
+          // Without a handler, report it like a failure so the stop is not silent.
+          if (options.onAuthExpired) options.onAuthExpired();
+          else options.onError?.(new Error("SSE 认证失效：需要重新登录"));
           break;
         }
       } catch (error) {

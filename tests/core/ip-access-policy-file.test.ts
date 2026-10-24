@@ -140,3 +140,24 @@ describe("loadIpAccessPolicy：环境配置组装", () => {
     expect(() => loadIpAccessPolicy(envWith(file))).toThrow("不是合法 JSON");
   });
 });
+describe("loadIpAccessPolicy：账号模式只做准入", () => {
+  it("rejects role, tokenRequired or tokens written in the file, even when they equal the defaults", () => {
+    const dir = makeDir();
+    const entries = [
+      { ip: "203.0.113.7", role: "user" },
+      { ip: "203.0.113.7", tokenRequired: false },
+      { ip: "203.0.113.7", tokenRequired: true, tokens: [`sha256:${"a".repeat(64)}`] },
+    ];
+    entries.forEach((entry, index) => {
+      const file = writePolicy(dir, `p${index}.json`, JSON.stringify({ version: 1, ips: [entry] }));
+      expect(() => loadIpAccessPolicy(envWith(file), { admissionOnly: true }), JSON.stringify(entry)).toThrow(/PI_AUTH_MODE=accounts/);
+      expect(loadIpAccessPolicy(envWith(file))).not.toBeNull();
+    });
+  });
+
+  it("keeps CIDR coverage and disabled entries", () => {
+    const dir = makeDir();
+    const file = writePolicy(dir, "ok.json", JSON.stringify({ version: 1, ips: [{ ip: "203.0.113.7", disabled: true }, { ip: "203.0.113.8" }] }));
+    expect(loadIpAccessPolicy(envWith(file), { admissionOnly: true })!.byIp.get("203.0.113.7")?.disabled).toBe(true);
+  });
+});

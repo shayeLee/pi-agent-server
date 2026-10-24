@@ -11,6 +11,7 @@ import { startServer, type DataMode, type StorageDialect } from "./server/start.
 import { parseIpAccessEnv } from "./core/ip-access-config.js";
 import { parsePublicUrl } from "./mcp/oauth-connections.js";
 import { loadIpAccessPolicy } from "./core/ip-access-policy-file.js";
+import { parseAuthMode } from "./auth/auth-config.js";
 import {
   DEPRECATED_EXTENSION_PATHS_ENV_WARNING,
   resolveExtensionPathsFromEnv,
@@ -18,7 +19,9 @@ import {
 
 // WP5D-2：严格解析准入环境变量 + 可选策略文件安全加载（任何缺失/非法配置 fail-fast）。
 const ipAccessEnv = parseIpAccessEnv(process.env);
-const ipAccessPolicy = loadIpAccessPolicy(ipAccessEnv);
+// 账号模式（docs/login-design.md §2）：IP 策略只做准入，role/tokenRequired/tokens 在读文件时就拒绝。
+const authMode = parseAuthMode(process.env.PI_AUTH_MODE);
+const ipAccessPolicy = loadIpAccessPolicy(ipAccessEnv, { admissionOnly: authMode === "accounts" });
 
 const port = Number(process.env.PORT ?? 8080);
 const host = process.env.HOST ?? "127.0.0.1";
@@ -132,6 +135,8 @@ const app = await startServer({
   // MCP 接入（docs/mcp-integration.md §14.2）：共享 MCP 读 agentDir 下 Pi 的全局 mcp.json。
   mcpTokenKeyFile: process.env.PI_MCP_TOKEN_KEY_FILE || undefined,
   publicUrl: process.env.PI_PUBLIC_URL || undefined,
+  authMode,
+  trustedOrigins: process.env.PI_TRUSTED_ORIGINS || undefined,
   mcpOAuthClientName: process.env.PI_MCP_OAUTH_CLIENT_NAME?.trim() || undefined,
   mcpMaxStdioProcesses: parsePositiveInteger("PI_MCP_MAX_STDIO_PROCESSES", process.env.PI_MCP_MAX_STDIO_PROCESSES),
   codemodeTimeoutMs: parsePositiveInteger("PI_CODEMODE_TIMEOUT_MS", process.env.PI_CODEMODE_TIMEOUT_MS),

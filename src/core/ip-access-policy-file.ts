@@ -19,7 +19,7 @@ import {
   readSync,
 } from "node:fs";
 import { isAbsolute } from "node:path";
-import { assertPolicyCovered, parseIpAccessPolicy, type IpAccessPolicy } from "./ip-access-policy.js";
+import { assertIpAccessPolicyAdmissionOnly, assertPolicyCovered, parseIpAccessPolicy, type IpAccessPolicy } from "./ip-access-policy.js";
 import type { IpAccessEnvConfig } from "./ip-access-config.js";
 
 export const IP_POLICY_FILE_MAX_BYTES = 1024 * 1024;
@@ -106,12 +106,14 @@ export function readIpAccessPolicyFile(file: string): string {
 
 /**
  * 按环境配置加载策略：未配置 PI_IP_ACCESS_POLICY_FILE → null；
- * 配置了则做安全读取 → 严格 JSON v1 解析 → 与允许 CIDR 的一致性校验（failfast）。
+ * 配置了则做安全读取 → 严格 JSON v1 解析 →（账号模式）只做准入检查 → 与允许 CIDR 的一致性校验（failfast）。
  */
-export function loadIpAccessPolicy(env: IpAccessEnvConfig): IpAccessPolicy | null {
+export function loadIpAccessPolicy(env: IpAccessEnvConfig, options: { admissionOnly?: boolean } = {}): IpAccessPolicy | null {
   if (!env.policyFile) return null;
   const text = readIpAccessPolicyFile(env.policyFile);
   const policy = parseIpAccessPolicy(text);
+  // 账号模式：策略只做准入，role/tokenRequired/tokens 在原始 JSON 层拒绝（docs/login-design.md §2）。
+  if (options.admissionOnly) assertIpAccessPolicyAdmissionOnly(text);
   assertPolicyCovered(policy, env.allowedClientCidrs);
   return policy;
 }

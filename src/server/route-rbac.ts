@@ -84,7 +84,10 @@ export type RoutePermission =
   | "capability:read"
   | "capability:write"
   | "capability:admin"
-  | "access:read";
+  | "access:read"
+  | "auth:state"
+  | "auth:login"
+  | "auth:self";
 
 /** 中央权限定义：permission → 允许角色集合（default-deny：不在集合内 → 403）。 */
 export const ROUTE_PERMISSIONS: Record<RoutePermission, readonly IpRole[]> = Object.freeze({
@@ -129,7 +132,19 @@ export const ROUTE_PERMISSIONS: Record<RoutePermission, readonly IpRole[]> = Obj
   "sessions:send-message": frozenRoles("admin", "user"),
   "files:upload": frozenRoles("admin", "user"),
   "sessions:control": frozenRoles("admin", "user"), // steer / follow-up / abort
+  // 登录（docs/login-design.md §4）：state/login 是公共权限（见 PUBLIC_PERMISSIONS），这里列出全部角色只为
+  // 已登录请求同样放行；其余 /v1/auth/* 给所有已登录角色。
+  "auth:state": frozenRoles("admin", "user", "viewer", "operator"),
+  "auth:login": frozenRoles("admin", "user", "viewer", "operator"),
+  "auth:self": frozenRoles("admin", "user", "viewer", "operator"),
 });
+
+/**
+ * 公共权限：账号模式下未登录的请求没有角色，只有这些权限点放行（docs/login-design.md §4）。
+ * 路由本身也必须在 account-auth.ts 的精确公共路由表里，否则认证层先回 401。
+ * `/metrics` 不在其中，仍只给 admin/operator。
+ */
+const PUBLIC_PERMISSIONS: ReadonlySet<RoutePermission> = new Set<RoutePermission>(["probe:health", "probe:readyz", "auth:state", "auth:login"]);
 
 /**
  * P7b 宿主访问能力投影（`GET /v1/access` 的最小固定响应体）：`{canRead, canWrite}`。
@@ -196,11 +211,13 @@ export type RouteAuthorizationVerdict =
 /**
  * 纯决策函数（default-deny）：
  * - permission 未声明/未知 → denied(undeclared)；
+ * - 没有角色（账号模式未登录）只放行公共权限；
  * - role 缺失/未知/伪造 → denied(role-forbidden)（failclosed）；
  * - 已知 permission + 已知 role 但不在允许集合 → denied(role-forbidden)。
  */
 export function evaluateRouteAuthorization(permission: unknown, role: unknown): RouteAuthorizationVerdict {
   if (!isRoutePermission(permission)) return { verdict: "denied", reason: "undeclared" };
+  if (role === undefined && PUBLIC_PERMISSIONS.has(permission)) return { verdict: "allowed" };
   if (typeof role !== "string" || !KNOWN_ROLES.has(role)) {
     return { verdict: "denied", reason: "role-forbidden" };
   }

@@ -16,6 +16,10 @@
     {
       "IpAdmission": [],
       "BearerAuth": []
+    },
+    {
+      "IpAdmission": [],
+      "SessionCookie": []
     }
   ],
   "paths": {
@@ -178,6 +182,10 @@
           {
             "IpAdmission": [],
             "BearerAuth": []
+          },
+          {
+            "IpAdmission": [],
+            "SessionCookie": []
           }
         ],
         "x-pi-rbac": {
@@ -199,7 +207,7 @@
             }
           },
           "401": {
-            "description": "Bearer token required for this admitted IP profile.",
+            "description": "Bearer token required for this admitted IP profile, or (accounts mode) sign-in required: code auth_required.",
             "content": {
               "application/json": {
                 "schema": {
@@ -241,6 +249,10 @@
           {
             "IpAdmission": [],
             "BearerAuth": []
+          },
+          {
+            "IpAdmission": [],
+            "SessionCookie": []
           }
         ],
         "x-pi-rbac": {
@@ -272,7 +284,7 @@
             }
           },
           "401": {
-            "description": "Bearer token required for this admitted IP profile.",
+            "description": "Bearer token required for this admitted IP profile, or (accounts mode) sign-in required: code auth_required.",
             "content": {
               "application/json": {
                 "schema": {
@@ -302,6 +314,10 @@
           {
             "IpAdmission": [],
             "BearerAuth": []
+          },
+          {
+            "IpAdmission": [],
+            "SessionCookie": []
           }
         ],
         "x-pi-rbac": {
@@ -380,6 +396,380 @@
         }
       }
     },
+    "/v1/auth/state": {
+      "get": {
+        "operationId": "getAuthState",
+        "security": [
+          {
+            "IpAdmission": []
+          }
+        ],
+        "x-pi-rbac": {
+          "permission": "auth:state",
+          "roles": [
+            "admin",
+            "user",
+            "viewer",
+            "operator"
+          ]
+        },
+        "responses": {
+          "200": {
+            "description": "Authentication mode. Public in accounts mode.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthState"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "IP admission or RBAC denied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/auth/login": {
+      "post": {
+        "operationId": "login",
+        "security": [
+          {
+            "IpAdmission": []
+          }
+        ],
+        "x-pi-rbac": {
+          "permission": "auth:login",
+          "roles": [
+            "admin",
+            "user",
+            "viewer",
+            "operator"
+          ]
+        },
+        "responses": {
+          "200": {
+            "description": "Signed in; sets the session cookie (HttpOnly, SameSite=Lax, Path=/, Secure on https, 30 days).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "account"
+                  ],
+                  "properties": {
+                    "account": {
+                      "$ref": "#/components/schemas/AuthAccount"
+                    }
+                  },
+                  "additionalProperties": false
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "name or password missing.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "invalid_credentials: unknown account, disabled account or wrong password, indistinguishable.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "IP admission or RBAC denied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "auth_not_enabled: ip mode.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Body over 4 KiB.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "login_backoff after failures, or login_busy when two password checks are running; both send Retry-After.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Login"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/auth/logout": {
+      "post": {
+        "operationId": "logout",
+        "security": [
+          {
+            "IpAdmission": []
+          },
+          {
+            "IpAdmission": [],
+            "BearerAuth": []
+          },
+          {
+            "IpAdmission": [],
+            "SessionCookie": []
+          }
+        ],
+        "x-pi-rbac": {
+          "permission": "auth:self",
+          "roles": [
+            "admin",
+            "user",
+            "viewer",
+            "operator"
+          ]
+        },
+        "responses": {
+          "204": {
+            "description": "Completed without a response body."
+          },
+          "401": {
+            "description": "Bearer token required for this admitted IP profile, or (accounts mode) sign-in required: code auth_required.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "IP admission or RBAC denied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "auth_not_enabled: ip mode.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/auth/me": {
+      "get": {
+        "operationId": "getAuthMe",
+        "security": [
+          {
+            "IpAdmission": []
+          },
+          {
+            "IpAdmission": [],
+            "BearerAuth": []
+          },
+          {
+            "IpAdmission": [],
+            "SessionCookie": []
+          }
+        ],
+        "x-pi-rbac": {
+          "permission": "auth:self",
+          "roles": [
+            "admin",
+            "user",
+            "viewer",
+            "operator"
+          ]
+        },
+        "responses": {
+          "200": {
+            "description": "The signed-in account.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuthMe"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer token required for this admitted IP profile, or (accounts mode) sign-in required: code auth_required.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "IP admission or RBAC denied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "auth_not_enabled: ip mode.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/v1/auth/password": {
+      "put": {
+        "operationId": "changePassword",
+        "security": [
+          {
+            "IpAdmission": []
+          },
+          {
+            "IpAdmission": [],
+            "BearerAuth": []
+          },
+          {
+            "IpAdmission": [],
+            "SessionCookie": []
+          }
+        ],
+        "x-pi-rbac": {
+          "permission": "auth:self",
+          "roles": [
+            "admin",
+            "user",
+            "viewer",
+            "operator"
+          ]
+        },
+        "responses": {
+          "204": {
+            "description": "Changed. Every browser of the account is signed out; this one gets a new cookie."
+          },
+          "400": {
+            "description": "invalid_current_password or password_too_weak.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Bearer token required for this admitted IP profile, or (accounts mode) sign-in required: code auth_required.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "cookie_required: only a browser session can change the password; or IP admission, RBAC or CSRF denied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "auth_not_enabled: ip mode.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Backoff after a wrong current password, or busy; sends Retry-After.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PasswordChange"
+              }
+            }
+          }
+        }
+      }
+    },
     "/v1/models": {
       "get": {
         "operationId": "listModels",
@@ -390,6 +780,10 @@
           {
             "IpAdmission": [],
             "BearerAuth": []
+          },
+          {
+            "IpAdmission": [],
+            "SessionCookie": []
           }
         ],
         "x-pi-rbac": {
@@ -412,7 +806,7 @@
             }
           },
           "401": {
-            "description": "Bearer token required for this admitted IP profile.",
+            "description": "Bearer token required for this admitted IP profile, or (accounts mode) sign-in required: code auth_required.",
             "content": {
               "application/json": {
                 "schema": {
@@ -465,6 +859,10 @@
           {
             "IpAdmission": [],
             "BearerAuth": []
+          },
+          {
+            "IpAdmission": [],
+            "SessionCookie": []
           }
         ],
         "x-pi-rbac": {
@@ -553,6 +951,10 @@
           {
             "IpAdmission": [],
             "BearerAuth": []
+          },
+          {
+            "IpAdmission": [],
+            "SessionCookie": []
           }
         ],
         "x-pi-rbac": {
@@ -585,7 +987,7 @@
             }
           },
           "401": {
-            "description": "Bearer token required for this admitted IP profile.",
+            "description": "Bearer token required for this admitted IP profile, or (accounts mode) sign-in required: code auth_required.",
             "content": {
               "application/json": {
                 "schema": {
@@ -665,6 +1067,10 @@
           {
             "IpAdmission": [],
             "BearerAuth": []
+          },
+          {
+            "IpAdmission": [],
+            "SessionCookie": []
           }
         ],
         "x-pi-rbac": {
@@ -690,7 +1096,7 @@
             }
           },
           "401": {
-            "description": "Bearer token required for this admitted IP profile.",
+            "description": "Bearer token required for this admitted IP profile, or (accounts mode) sign-in required: code auth_required.",
             "content": {
               "application/json": {
                 "schema": {
@@ -720,6 +1126,10 @@
           {
             "IpAdmission": [],
             "BearerAuth": []
+          },
+          {
+            "IpAdmission": [],
+            "SessionCookie": []
           }
         ],
         "x-pi-rbac": {
@@ -806,6 +1216,10 @@
           {
             "IpAdmission": [],
             "BearerAuth": []
+          },
+          {
+            "IpAdmission": [],
+            "SessionCookie": []
           }
         ],
         "x-pi-rbac": {
@@ -837,7 +1251,7 @@
             }
           },
           "401": {
-            "description": "Bearer token required for this admitted IP profile.",
+            "description": "Bearer token required for this admitted IP profile, or (accounts mode) sign-in required: code auth_required.",
             "content": {
               "application/json": {
                 "schema": {
@@ -894,6 +1308,10 @@
           {
             "IpAdmission": [],
             "BearerAuth": []
+          },
+          {
+            "IpAdmission": [],
+            "SessionCookie": []
           }
         ],
         "x-pi-rbac": {
@@ -918,7 +1336,7 @@
             }
           },
           "401": {
-            "description": "Bearer token required for this admitted IP profile.",
+            "description": "Bearer token required for this admitted IP profile, or (accounts mode) sign-in required: code auth_required.",
             "content": {
               "application/json": {
                 "schema": {
@@ -970,6 +1388,10 @@
           {
             "IpAdmission": [],
             "BearerAuth": []
+          },
+          {
+            "IpAdmission": [],
+            "SessionCookie": []
           }
         ],
         "x-pi-rbac": {
@@ -1001,7 +1423,7 @@
             }
           },
           "401": {
-            "description": "Bearer token required for this admitted IP profile.",
+            "description": "Bearer token required for this admitted IP profile, or (accounts mode) sign-in required: code auth_required.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1063,6 +1485,10 @@
           {
             "IpAdmission": [],
             "BearerAuth": []
+          },
+          {
+            "IpAdmission": [],
+            "SessionCookie": []
           }
         ],
         "x-pi-rbac": {
@@ -1084,7 +1510,7 @@
             }
           },
           "401": {
-            "description": "Bearer token required for this admitted IP profile.",
+            "description": "Bearer token required for this admitted IP profile, or (accounts mode) sign-in required: code auth_required.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1136,6 +1562,10 @@
           {
             "IpAdmission": [],
             "BearerAuth": []
+          },
+          {
+            "IpAdmission": [],
+            "SessionCookie": []
           }
         ],
         "x-pi-rbac": {
@@ -1167,7 +1597,7 @@
             }
           },
           "401": {
-            "description": "Bearer token required for this admitted IP profile.",
+            "description": "Bearer token required for this admitted IP profile, or (accounts mode) sign-in required: code auth_required.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1244,6 +1674,10 @@
           {
             "IpAdmission": [],
             "BearerAuth": []
+          },
+          {
+            "IpAdmission": [],
+            "SessionCookie": []
           }
         ],
         "x-pi-rbac": {
@@ -1289,7 +1723,7 @@
             }
           },
           "401": {
-            "description": "Bearer token required for this admitted IP profile.",
+            "description": "Bearer token required for this admitted IP profile, or (accounts mode) sign-in required: code auth_required.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1341,6 +1775,10 @@
           {
             "IpAdmission": [],
             "BearerAuth": []
+          },
+          {
+            "IpAdmission": [],
+            "SessionCookie": []
           }
         ],
         "x-pi-rbac": {
@@ -1363,7 +1801,7 @@
             }
           },
           "401": {
-            "description": "Bearer token required for this admitted IP profile.",
+            "description": "Bearer token required for this admitted IP profile, or (accounts mode) sign-in required: code auth_required.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1413,6 +1851,10 @@
           {
             "IpAdmission": [],
             "BearerAuth": []
+          },
+          {
+            "IpAdmission": [],
+            "SessionCookie": []
           }
         ],
         "x-pi-rbac": {
@@ -1433,7 +1875,7 @@
             }
           },
           "401": {
-            "description": "Bearer token required for this admitted IP profile.",
+            "description": "Bearer token required for this admitted IP profile, or (accounts mode) sign-in required: code auth_required.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1510,6 +1952,10 @@
           {
             "IpAdmission": [],
             "BearerAuth": []
+          },
+          {
+            "IpAdmission": [],
+            "SessionCookie": []
           }
         ],
         "x-pi-rbac": {
@@ -1550,7 +1996,7 @@
             }
           },
           "401": {
-            "description": "Bearer token required for this admitted IP profile.",
+            "description": "Bearer token required for this admitted IP profile, or (accounts mode) sign-in required: code auth_required.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1625,6 +2071,10 @@
           {
             "IpAdmission": [],
             "BearerAuth": []
+          },
+          {
+            "IpAdmission": [],
+            "SessionCookie": []
           }
         ],
         "x-pi-rbac": {
@@ -1647,7 +2097,7 @@
             }
           },
           "401": {
-            "description": "Bearer token required for this admitted IP profile.",
+            "description": "Bearer token required for this admitted IP profile, or (accounts mode) sign-in required: code auth_required.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1679,6 +2129,10 @@
           {
             "IpAdmission": [],
             "BearerAuth": []
+          },
+          {
+            "IpAdmission": [],
+            "SessionCookie": []
           }
         ],
         "x-pi-rbac": {
@@ -1701,7 +2155,7 @@
             }
           },
           "401": {
-            "description": "Bearer token required for this admitted IP profile.",
+            "description": "Bearer token required for this admitted IP profile, or (accounts mode) sign-in required: code auth_required.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1754,6 +2208,10 @@
           {
             "IpAdmission": [],
             "BearerAuth": []
+          },
+          {
+            "IpAdmission": [],
+            "SessionCookie": []
           }
         ],
         "x-pi-rbac": {
@@ -1784,7 +2242,7 @@
             }
           },
           "401": {
-            "description": "Bearer token required for this admitted IP profile.",
+            "description": "Bearer token required for this admitted IP profile, or (accounts mode) sign-in required: code auth_required.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1851,6 +2309,10 @@
           {
             "IpAdmission": [],
             "BearerAuth": []
+          },
+          {
+            "IpAdmission": [],
+            "SessionCookie": []
           }
         ],
         "x-pi-rbac": {
@@ -1881,7 +2343,7 @@
             }
           },
           "401": {
-            "description": "Bearer token required for this admitted IP profile.",
+            "description": "Bearer token required for this admitted IP profile, or (accounts mode) sign-in required: code auth_required.",
             "content": {
               "application/json": {
                 "schema": {
@@ -1946,6 +2408,10 @@
           {
             "IpAdmission": [],
             "BearerAuth": []
+          },
+          {
+            "IpAdmission": [],
+            "SessionCookie": []
           }
         ],
         "x-pi-rbac": {
@@ -1976,7 +2442,7 @@
             }
           },
           "401": {
-            "description": "Bearer token required for this admitted IP profile.",
+            "description": "Bearer token required for this admitted IP profile, or (accounts mode) sign-in required: code auth_required.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2046,6 +2512,10 @@
           {
             "IpAdmission": [],
             "BearerAuth": []
+          },
+          {
+            "IpAdmission": [],
+            "SessionCookie": []
           }
         ],
         "x-pi-rbac": {
@@ -2079,7 +2549,7 @@
             }
           },
           "401": {
-            "description": "Bearer token required for this admitted IP profile.",
+            "description": "Bearer token required for this admitted IP profile, or (accounts mode) sign-in required: code auth_required.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2134,6 +2604,10 @@
           {
             "IpAdmission": [],
             "BearerAuth": []
+          },
+          {
+            "IpAdmission": [],
+            "SessionCookie": []
           }
         ],
         "x-pi-rbac": {
@@ -2165,7 +2639,7 @@
             }
           },
           "401": {
-            "description": "Bearer token required for this admitted IP profile.",
+            "description": "Bearer token required for this admitted IP profile, or (accounts mode) sign-in required: code auth_required.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2314,6 +2788,10 @@
           {
             "IpAdmission": [],
             "BearerAuth": []
+          },
+          {
+            "IpAdmission": [],
+            "SessionCookie": []
           }
         ],
         "x-pi-rbac": {
@@ -2328,7 +2806,7 @@
             "description": "Disconnected. The tokens are revoked at the authorization server when it supports revocation; failures there do not block the removal."
           },
           "401": {
-            "description": "Bearer token required for this admitted IP profile.",
+            "description": "Bearer token required for this admitted IP profile, or (accounts mode) sign-in required: code auth_required.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2391,6 +2869,10 @@
           {
             "IpAdmission": [],
             "BearerAuth": []
+          },
+          {
+            "IpAdmission": [],
+            "SessionCookie": []
           }
         ],
         "x-pi-rbac": {
@@ -2411,7 +2893,7 @@
             }
           },
           "401": {
-            "description": "Bearer token required for this admitted IP profile.",
+            "description": "Bearer token required for this admitted IP profile, or (accounts mode) sign-in required: code auth_required.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2453,6 +2935,10 @@
           {
             "IpAdmission": [],
             "BearerAuth": []
+          },
+          {
+            "IpAdmission": [],
+            "SessionCookie": []
           }
         ],
         "x-pi-rbac": {
@@ -2483,7 +2969,7 @@
             }
           },
           "401": {
-            "description": "Bearer token required for this admitted IP profile.",
+            "description": "Bearer token required for this admitted IP profile, or (accounts mode) sign-in required: code auth_required.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2540,6 +3026,10 @@
           {
             "IpAdmission": [],
             "BearerAuth": []
+          },
+          {
+            "IpAdmission": [],
+            "SessionCookie": []
           }
         ],
         "x-pi-rbac": {
@@ -2560,7 +3050,7 @@
             }
           },
           "401": {
-            "description": "Bearer token required for this admitted IP profile.",
+            "description": "Bearer token required for this admitted IP profile, or (accounts mode) sign-in required: code auth_required.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2610,6 +3100,10 @@
           {
             "IpAdmission": [],
             "BearerAuth": []
+          },
+          {
+            "IpAdmission": [],
+            "SessionCookie": []
           }
         ],
         "x-pi-rbac": {
@@ -2630,7 +3124,7 @@
             }
           },
           "401": {
-            "description": "Bearer token required for this admitted IP profile.",
+            "description": "Bearer token required for this admitted IP profile, or (accounts mode) sign-in required: code auth_required.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2682,6 +3176,10 @@
           {
             "IpAdmission": [],
             "BearerAuth": []
+          },
+          {
+            "IpAdmission": [],
+            "SessionCookie": []
           }
         ],
         "x-pi-rbac": {
@@ -2712,7 +3210,7 @@
             }
           },
           "401": {
-            "description": "Bearer token required for this admitted IP profile.",
+            "description": "Bearer token required for this admitted IP profile, or (accounts mode) sign-in required: code auth_required.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2789,6 +3287,10 @@
           {
             "IpAdmission": [],
             "BearerAuth": []
+          },
+          {
+            "IpAdmission": [],
+            "SessionCookie": []
           }
         ],
         "x-pi-rbac": {
@@ -2809,7 +3311,7 @@
             }
           },
           "401": {
-            "description": "Bearer token required for this admitted IP profile.",
+            "description": "Bearer token required for this admitted IP profile, or (accounts mode) sign-in required: code auth_required.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2861,6 +3363,10 @@
           {
             "IpAdmission": [],
             "BearerAuth": []
+          },
+          {
+            "IpAdmission": [],
+            "SessionCookie": []
           }
         ],
         "x-pi-rbac": {
@@ -2898,7 +3404,7 @@
             }
           },
           "401": {
-            "description": "Bearer token required for this admitted IP profile.",
+            "description": "Bearer token required for this admitted IP profile, or (accounts mode) sign-in required: code auth_required.",
             "content": {
               "application/json": {
                 "schema": {
@@ -2928,6 +3434,10 @@
           {
             "IpAdmission": [],
             "BearerAuth": []
+          },
+          {
+            "IpAdmission": [],
+            "SessionCookie": []
           }
         ],
         "x-pi-rbac": {
@@ -2968,7 +3478,7 @@
             }
           },
           "401": {
-            "description": "Bearer token required for this admitted IP profile.",
+            "description": "Bearer token required for this admitted IP profile, or (accounts mode) sign-in required: code auth_required.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3025,6 +3535,10 @@
           {
             "IpAdmission": [],
             "BearerAuth": []
+          },
+          {
+            "IpAdmission": [],
+            "SessionCookie": []
           }
         ],
         "x-pi-rbac": {
@@ -3056,7 +3570,7 @@
             }
           },
           "401": {
-            "description": "Bearer token required for this admitted IP profile.",
+            "description": "Bearer token required for this admitted IP profile, or (accounts mode) sign-in required: code auth_required.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3201,6 +3715,10 @@
           {
             "IpAdmission": [],
             "BearerAuth": []
+          },
+          {
+            "IpAdmission": [],
+            "SessionCookie": []
           }
         ],
         "x-pi-rbac": {
@@ -3235,7 +3753,7 @@
             }
           },
           "401": {
-            "description": "Bearer token required for this admitted IP profile.",
+            "description": "Bearer token required for this admitted IP profile, or (accounts mode) sign-in required: code auth_required.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3274,6 +3792,10 @@
           {
             "IpAdmission": [],
             "BearerAuth": []
+          },
+          {
+            "IpAdmission": [],
+            "SessionCookie": []
           }
         ],
         "x-pi-rbac": {
@@ -3376,6 +3898,10 @@
           {
             "IpAdmission": [],
             "BearerAuth": []
+          },
+          {
+            "IpAdmission": [],
+            "SessionCookie": []
           }
         ],
         "x-pi-rbac": {
@@ -3417,7 +3943,7 @@
             }
           },
           "401": {
-            "description": "Bearer token required for this admitted IP profile.",
+            "description": "Bearer token required for this admitted IP profile, or (accounts mode) sign-in required: code auth_required.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3494,6 +4020,10 @@
           {
             "IpAdmission": [],
             "BearerAuth": []
+          },
+          {
+            "IpAdmission": [],
+            "SessionCookie": []
           }
         ],
         "x-pi-rbac": {
@@ -3508,7 +4038,7 @@
             "description": "Completed without a response body."
           },
           "401": {
-            "description": "Bearer token required for this admitted IP profile.",
+            "description": "Bearer token required for this admitted IP profile, or (accounts mode) sign-in required: code auth_required.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3558,6 +4088,10 @@
           {
             "IpAdmission": [],
             "BearerAuth": []
+          },
+          {
+            "IpAdmission": [],
+            "SessionCookie": []
           }
         ],
         "x-pi-rbac": {
@@ -3579,7 +4113,7 @@
             }
           },
           "401": {
-            "description": "Bearer token required for this admitted IP profile.",
+            "description": "Bearer token required for this admitted IP profile, or (accounts mode) sign-in required: code auth_required.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3646,6 +4180,10 @@
           {
             "IpAdmission": [],
             "BearerAuth": []
+          },
+          {
+            "IpAdmission": [],
+            "SessionCookie": []
           }
         ],
         "x-pi-rbac": {
@@ -3677,7 +4215,7 @@
             }
           },
           "401": {
-            "description": "Bearer token required for this admitted IP profile.",
+            "description": "Bearer token required for this admitted IP profile, or (accounts mode) sign-in required: code auth_required.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3754,6 +4292,10 @@
           {
             "IpAdmission": [],
             "BearerAuth": []
+          },
+          {
+            "IpAdmission": [],
+            "SessionCookie": []
           }
         ],
         "x-pi-rbac": {
@@ -3793,7 +4335,7 @@
             }
           },
           "401": {
-            "description": "Bearer token required for this admitted IP profile.",
+            "description": "Bearer token required for this admitted IP profile, or (accounts mode) sign-in required: code auth_required.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3890,6 +4432,10 @@
           {
             "IpAdmission": [],
             "BearerAuth": []
+          },
+          {
+            "IpAdmission": [],
+            "SessionCookie": []
           }
         ],
         "x-pi-rbac": {
@@ -3912,7 +4458,7 @@
             }
           },
           "401": {
-            "description": "Bearer token required for this admitted IP profile.",
+            "description": "Bearer token required for this admitted IP profile, or (accounts mode) sign-in required: code auth_required.",
             "content": {
               "application/json": {
                 "schema": {
@@ -3972,6 +4518,10 @@
           {
             "IpAdmission": [],
             "BearerAuth": []
+          },
+          {
+            "IpAdmission": [],
+            "SessionCookie": []
           }
         ],
         "x-pi-rbac": {
@@ -4108,6 +4658,10 @@
           {
             "IpAdmission": [],
             "BearerAuth": []
+          },
+          {
+            "IpAdmission": [],
+            "SessionCookie": []
           }
         ],
         "x-pi-rbac": {
@@ -4130,7 +4684,7 @@
             }
           },
           "401": {
-            "description": "Bearer token required for this admitted IP profile.",
+            "description": "Bearer token required for this admitted IP profile, or (accounts mode) sign-in required: code auth_required.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4189,6 +4743,10 @@
           {
             "IpAdmission": [],
             "BearerAuth": []
+          },
+          {
+            "IpAdmission": [],
+            "SessionCookie": []
           }
         ],
         "x-pi-rbac": {
@@ -4306,6 +4864,10 @@
           {
             "IpAdmission": [],
             "BearerAuth": []
+          },
+          {
+            "IpAdmission": [],
+            "SessionCookie": []
           }
         ],
         "x-pi-rbac": {
@@ -4330,7 +4892,7 @@
             }
           },
           "401": {
-            "description": "Bearer token required for this admitted IP profile.",
+            "description": "Bearer token required for this admitted IP profile, or (accounts mode) sign-in required: code auth_required.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4454,6 +5016,10 @@
           {
             "IpAdmission": [],
             "BearerAuth": []
+          },
+          {
+            "IpAdmission": [],
+            "SessionCookie": []
           }
         ],
         "x-pi-rbac": {
@@ -4476,7 +5042,7 @@
             }
           },
           "401": {
-            "description": "Bearer token required for this admitted IP profile.",
+            "description": "Bearer token required for this admitted IP profile, or (accounts mode) sign-in required: code auth_required.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4526,6 +5092,10 @@
           {
             "IpAdmission": [],
             "BearerAuth": []
+          },
+          {
+            "IpAdmission": [],
+            "SessionCookie": []
           }
         ],
         "x-pi-rbac": {
@@ -4643,6 +5213,10 @@
           {
             "IpAdmission": [],
             "BearerAuth": []
+          },
+          {
+            "IpAdmission": [],
+            "SessionCookie": []
           }
         ],
         "x-pi-rbac": {
@@ -4665,7 +5239,7 @@
             }
           },
           "401": {
-            "description": "Bearer token required for this admitted IP profile.",
+            "description": "Bearer token required for this admitted IP profile, or (accounts mode) sign-in required: code auth_required.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4715,6 +5289,10 @@
           {
             "IpAdmission": [],
             "BearerAuth": []
+          },
+          {
+            "IpAdmission": [],
+            "SessionCookie": []
           }
         ],
         "x-pi-rbac": {
@@ -4832,6 +5410,10 @@
           {
             "IpAdmission": [],
             "BearerAuth": []
+          },
+          {
+            "IpAdmission": [],
+            "SessionCookie": []
           }
         ],
         "x-pi-rbac": {
@@ -4864,7 +5446,7 @@
             }
           },
           "401": {
-            "description": "Bearer token required for this admitted IP profile.",
+            "description": "Bearer token required for this admitted IP profile, or (accounts mode) sign-in required: code auth_required.",
             "content": {
               "application/json": {
                 "schema": {
@@ -4936,6 +5518,10 @@
           {
             "IpAdmission": [],
             "BearerAuth": []
+          },
+          {
+            "IpAdmission": [],
+            "SessionCookie": []
           }
         ],
         "x-pi-rbac": {
@@ -4968,7 +5554,7 @@
             }
           },
           "401": {
-            "description": "Bearer token required for this admitted IP profile.",
+            "description": "Bearer token required for this admitted IP profile, or (accounts mode) sign-in required: code auth_required.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5030,6 +5616,10 @@
           {
             "IpAdmission": [],
             "BearerAuth": []
+          },
+          {
+            "IpAdmission": [],
+            "SessionCookie": []
           }
         ],
         "x-pi-rbac": {
@@ -5052,7 +5642,7 @@
             }
           },
           "401": {
-            "description": "Bearer token required for this admitted IP profile.",
+            "description": "Bearer token required for this admitted IP profile, or (accounts mode) sign-in required: code auth_required.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5102,6 +5692,10 @@
           {
             "IpAdmission": [],
             "BearerAuth": []
+          },
+          {
+            "IpAdmission": [],
+            "SessionCookie": []
           }
         ],
         "x-pi-rbac": {
@@ -5133,7 +5727,7 @@
             }
           },
           "401": {
-            "description": "Bearer token required for this admitted IP profile.",
+            "description": "Bearer token required for this admitted IP profile, or (accounts mode) sign-in required: code auth_required.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5230,6 +5824,10 @@
           {
             "IpAdmission": [],
             "BearerAuth": []
+          },
+          {
+            "IpAdmission": [],
+            "SessionCookie": []
           }
         ],
         "x-pi-rbac": {
@@ -5268,7 +5866,7 @@
             }
           },
           "401": {
-            "description": "Bearer token required for this admitted IP profile.",
+            "description": "Bearer token required for this admitted IP profile, or (accounts mode) sign-in required: code auth_required.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5318,6 +5916,10 @@
           {
             "IpAdmission": [],
             "BearerAuth": []
+          },
+          {
+            "IpAdmission": [],
+            "SessionCookie": []
           }
         ],
         "x-pi-rbac": {
@@ -5342,7 +5944,7 @@
             }
           },
           "401": {
-            "description": "Bearer token required for this admitted IP profile.",
+            "description": "Bearer token required for this admitted IP profile, or (accounts mode) sign-in required: code auth_required.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5419,6 +6021,10 @@
           {
             "IpAdmission": [],
             "BearerAuth": []
+          },
+          {
+            "IpAdmission": [],
+            "SessionCookie": []
           }
         ],
         "x-pi-rbac": {
@@ -5441,7 +6047,7 @@
             }
           },
           "401": {
-            "description": "Bearer token required for this admitted IP profile.",
+            "description": "Bearer token required for this admitted IP profile, or (accounts mode) sign-in required: code auth_required.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5491,6 +6097,10 @@
           {
             "IpAdmission": [],
             "BearerAuth": []
+          },
+          {
+            "IpAdmission": [],
+            "SessionCookie": []
           }
         ],
         "x-pi-rbac": {
@@ -5608,6 +6218,10 @@
           {
             "IpAdmission": [],
             "BearerAuth": []
+          },
+          {
+            "IpAdmission": [],
+            "SessionCookie": []
           }
         ],
         "x-pi-rbac": {
@@ -5639,7 +6253,7 @@
             }
           },
           "401": {
-            "description": "Bearer token required for this admitted IP profile.",
+            "description": "Bearer token required for this admitted IP profile, or (accounts mode) sign-in required: code auth_required.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5726,6 +6340,10 @@
           {
             "IpAdmission": [],
             "BearerAuth": []
+          },
+          {
+            "IpAdmission": [],
+            "SessionCookie": []
           }
         ],
         "x-pi-rbac": {
@@ -5757,7 +6375,7 @@
             }
           },
           "401": {
-            "description": "Bearer token required for this admitted IP profile.",
+            "description": "Bearer token required for this admitted IP profile, or (accounts mode) sign-in required: code auth_required.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5844,6 +6462,10 @@
           {
             "IpAdmission": [],
             "BearerAuth": []
+          },
+          {
+            "IpAdmission": [],
+            "SessionCookie": []
           }
         ],
         "x-pi-rbac": {
@@ -5871,7 +6493,7 @@
             }
           },
           "401": {
-            "description": "Bearer token required for this admitted IP profile.",
+            "description": "Bearer token required for this admitted IP profile, or (accounts mode) sign-in required: code auth_required.",
             "content": {
               "application/json": {
                 "schema": {
@@ -5948,6 +6570,10 @@
           {
             "IpAdmission": [],
             "BearerAuth": []
+          },
+          {
+            "IpAdmission": [],
+            "SessionCookie": []
           }
         ],
         "x-pi-rbac": {
@@ -5975,7 +6601,7 @@
             }
           },
           "401": {
-            "description": "Bearer token required for this admitted IP profile.",
+            "description": "Bearer token required for this admitted IP profile, or (accounts mode) sign-in required: code auth_required.",
             "content": {
               "application/json": {
                 "schema": {
@@ -6052,6 +6678,10 @@
           {
             "IpAdmission": [],
             "BearerAuth": []
+          },
+          {
+            "IpAdmission": [],
+            "SessionCookie": []
           }
         ],
         "x-pi-rbac": {
@@ -6076,7 +6706,7 @@
             }
           },
           "401": {
-            "description": "Bearer token required for this admitted IP profile.",
+            "description": "Bearer token required for this admitted IP profile, or (accounts mode) sign-in required: code auth_required.",
             "content": {
               "application/json": {
                 "schema": {
@@ -6178,6 +6808,10 @@
           {
             "IpAdmission": [],
             "BearerAuth": []
+          },
+          {
+            "IpAdmission": [],
+            "SessionCookie": []
           }
         ],
         "x-pi-rbac": {
@@ -6230,7 +6864,7 @@
             "description": "Viewer may receive this when the owned session has no live runtime; no stream is created."
           },
           "401": {
-            "description": "Bearer token required for this admitted IP profile.",
+            "description": "Bearer token required for this admitted IP profile, or (accounts mode) sign-in required: code auth_required.",
             "content": {
               "application/json": {
                 "schema": {
@@ -6329,7 +6963,13 @@
         "type": "http",
         "scheme": "bearer",
         "bearerFormat": "opaque",
-        "description": "Required only when the admitted IP profile has tokenRequired=true."
+        "description": "ip mode: required only when the admitted IP profile has tokenRequired=true. accounts mode: a personal token (pi_…) issued by `pnpm accounts -- issue-token`."
+      },
+      "SessionCookie": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "pi_session_<port>",
+        "description": "accounts mode only: set by POST /v1/auth/login; the name ends with the effective port of PI_PUBLIC_URL. Cookie-authenticated POST/PUT/PATCH/DELETE need a trusted Origin (PI_TRUSTED_ORIGINS), or Sec-Fetch-Site: same-origin when no Origin is sent; otherwise 403 csrf_rejected."
       }
     },
     "schemas": {
@@ -6469,6 +7109,120 @@
           },
           "canWrite": {
             "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      },
+      "AuthState": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "mode"
+            ],
+            "properties": {
+              "mode": {
+                "type": "string",
+                "const": "ip"
+              }
+            },
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "required": [
+              "mode",
+              "publicOrigin"
+            ],
+            "properties": {
+              "mode": {
+                "type": "string",
+                "const": "accounts"
+              },
+              "publicOrigin": {
+                "type": "string",
+                "description": "Origin of PI_PUBLIC_URL; the address every device should use."
+              }
+            },
+            "additionalProperties": false
+          }
+        ]
+      },
+      "AuthAccount": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "role"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "admin",
+              "user",
+              "viewer",
+              "operator"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "AuthMe": {
+        "type": "object",
+        "required": [
+          "account",
+          "via"
+        ],
+        "properties": {
+          "account": {
+            "$ref": "#/components/schemas/AuthAccount"
+          },
+          "via": {
+            "type": "string",
+            "enum": [
+              "cookie",
+              "token"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "Login": {
+        "type": "object",
+        "required": [
+          "name",
+          "password"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "password": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "PasswordChange": {
+        "type": "object",
+        "required": [
+          "current",
+          "next"
+        ],
+        "properties": {
+          "current": {
+            "type": "string"
+          },
+          "next": {
+            "type": "string",
+            "description": "12–256 characters."
           }
         },
         "additionalProperties": false

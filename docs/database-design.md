@@ -4,7 +4,7 @@
 
 ## 1. Schema 与 migration
 
-当前 head 是 **v6**，不是单独的 v0 baseline、v1、v2、v3、v4 或 v5：
+当前 head 是 **v7**，不是单独的 v0 baseline、v1、v2、v3、v4、v5 或 v6：
 
 | 版本 | 不可变快照 | 增量内容 |
 | --- | --- | --- |
@@ -14,11 +14,12 @@
 | v3 `companion-personas` | `companionPersonasSchemaManifest` | companion_personas |
 | v4 `project-mcp-servers` | `projectMcpServersSchemaManifest` | project_mcp_servers |
 | v5 `user-mcp-oauth` | `userMcpOAuthSchemaManifest` | mcp_oauth_clients、user_mcp_credentials |
-| v6 `project-mcp-server-identity` | `schemaManifest` | project_mcp_servers 加 `server_identity` 列 |
+| v6 `project-mcp-server-identity` | `projectMcpServerIdentitySchemaManifest` | project_mcp_servers 加 `server_identity` 列 |
+| v7 `accounts` | `schemaManifest` | accounts、login_methods、auth_sessions、api_tokens（[登录设计](login-design.md)） |
 
 `src/storage/migration-manifest.ts` 固化每个版本的 schema、两方言 canonical operations、物理类型映射与 dataTransform，checksum 对这些 descriptor 内容作稳定序列化后取 SHA-256，不只是 DDL 文本 hash。v0–v4 不随当前 head 改写；`binding.private` 是可选 JSON 标记，不新增 migration 或改变 v2 checksum。
 
-完全空库以 `--bootstrap-baseline --bootstrap-confirm CONFIRMED` 建立完整 v0→v1→v2→v3→v4→v5→v6 head；已有已认证前缀以 pre-backup → `--apply` → `--verify` 升级。无 ledger、未知版本或 checksum 不匹配均拒绝采用；服务启动只 verify，不自动迁移。restore 校验包所携历史前缀，不自动升级到 head。命令见 [Operations](operations.md) 与 [Backup and restore](backup-restore.md#5-migration-建立与前置备份)。
+完全空库以 `--bootstrap-baseline --bootstrap-confirm CONFIRMED` 建立完整 v0→v1→v2→v3→v4→v5→v6→v7 head；已有已认证前缀以 pre-backup → `--apply` → `--verify` 升级。无 ledger、未知版本或 checksum 不匹配均拒绝采用；服务启动只 verify，不自动迁移。restore 校验包所携历史前缀，不自动升级到 head。命令见 [Operations](operations.md) 与 [Backup and restore](backup-restore.md#5-migration-建立与前置备份)。
 
 Manifest 对 PK/FK/索引列引用作编译期检查，运行期复查唯一性、类型、声明顺序等并深冻结。逻辑类型映射：
 
@@ -46,6 +47,10 @@ Manifest 对 PK/FK/索引列引用作编译期检查，运行期复查唯一性�
 | project_mcp_servers | 项目对共享 MCP server（Pi 全局 `mcp.json` 里的一项）的启用状态、exposure 覆盖、隐藏的工具（JSON 数组）、最后修改者，以及保存时 server 的身份 `server_identity`（v6：HTTP 地址或 stdio 命令、参数、cwd 的 SHA-256） | `(project_id, server_name)` 主键；project_id → projects CASCADE，随项目删除；owner 转移不改 project_id，设置随项目走；读到未知 exposure 视为未设置；`server_identity` 与当前同名 server 不一致时设置不生效（连默认启用也不算），owner 重新保存后恢复；v6 之前的行为 NULL，视为一致 |
 | mcp_oauth_clients | 向 MCP 授权服务器动态注册的客户端，属于部署：注册时的 server 地址、回调地址、客户端信息（密文）、注册时间 | server_name 主键；无 FK；server 地址或回调地址变化后不再使用，下次授权重新注册 |
 | user_mcp_credentials | 用户对 MCP server 的 OAuth 授权：server 地址、client_id、显示用账号名、token（密文 JSON）、过期时间、scope、发现结果缓存（JSON）、连接与更新时间 | `(owner_key, server_name)` 主键；无 FK；server 地址变化后不再使用；密文附加数据绑定主键，挪到别的行解不开 |
+| accounts | 登录账号：账号名、角色、禁用状态、创建与更新时间（v7） | id 主键；name 唯一；读到未知角色视为禁用；`PI_AUTH_MODE=accounts` 时 owner 键为 `user:<id>` |
+| login_methods | 账号的登录方式；当前只有 `password`，存 scrypt 参数、盐与哈希及最后使用时间 | id 主键；`(kind, issuer, subject)` 唯一；account_id → accounts CASCADE |
+| auth_sessions | 浏览器登录会话：token 的 SHA-256、创建/最后活跃/过期时间、User-Agent | id 主键；token_hash 唯一；account_id → accounts CASCADE；禁用账号或改密码时删除 |
+| api_tokens | 账号的 API token：SHA-256、前缀、标签、创建/最后使用/撤销时间 | id 主键；token_hash 唯一；account_id → accounts CASCADE；禁用账号时撤销 |
 
 sessions 的模型、thinking、system_prompt、capability_versions 与 conversation_ref 可空；visibility/origin 非空且默认 private/managed。owner/updated_at 与 owner/project 索引支持列表，排序为 updated_at DESC、id DESC。
 

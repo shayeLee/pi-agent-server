@@ -1,4 +1,4 @@
-// 运行时 Schema Manifest —— projects / sessions / idempotency / file_operations / uploaded_files / native_session_sources / companion_personas / project_mcp_servers / mcp_oauth_clients / user_mcp_credentials 表、列、逻辑类型、
+// 运行时 Schema Manifest —— projects / sessions / idempotency / file_operations / uploaded_files / native_session_sources / companion_personas / project_mcp_servers / mcp_oauth_clients / user_mcp_credentials / accounts / login_methods / auth_sessions / api_tokens 表、列、逻辑类型、
 // nullable、default、主键、外键、索引的**唯一手工声明来源**。
 //
 // 设计要点：
@@ -645,7 +645,7 @@ export const userMcpOAuthSchemaManifest = defineSchema([
  * applying until the project owner confirms it again. Rows written before v6 have no identity.
  */
 const v5Tables = userMcpOAuthSchemaManifest.tables;
-export const schemaManifest = defineSchema([
+export const projectMcpServerIdentitySchemaManifest = defineSchema([
   v5Tables[0], v5Tables[1], v5Tables[2], v5Tables[3], v5Tables[4], v5Tables[5], v5Tables[6],
   {
     ...v5Tables[7],
@@ -656,4 +656,83 @@ export const schemaManifest = defineSchema([
   },
   v5Tables[8],
   v5Tables[9],
+]);
+
+/**
+ * v7: accounts and how they sign in (docs/login-design.md §3). An account owns resources as
+ * `user:<id>`; login methods, browser sessions and personal tokens belong to an account and go with it.
+ * Secrets are never stored in clear: passwords as scrypt strings, cookies and tokens as SHA-256.
+ */
+export const schemaManifest = defineSchema([
+  ...projectMcpServerIdentitySchemaManifest.tables,
+  {
+    name: "accounts",
+    columns: [
+      { name: "id", type: "uuid", nullable: false },
+      { name: "name", type: "text", nullable: false },
+      { name: "role", type: "text", nullable: false },
+      { name: "disabled", type: "integer", nullable: false, default: 0 },
+      { name: "created_at", type: "integer", nullable: false },
+      { name: "updated_at", type: "integer", nullable: false },
+    ],
+    primaryKey: { columns: ["id"] },
+    foreignKeys: [],
+    indexes: [{ name: "idx_accounts_name", columns: [{ name: "name" }], unique: true }],
+  },
+  {
+    name: "login_methods",
+    columns: [
+      { name: "id", type: "uuid", nullable: false },
+      { name: "account_id", type: "uuid", nullable: false },
+      { name: "kind", type: "text", nullable: false },
+      { name: "issuer", type: "text", nullable: false },
+      { name: "subject", type: "text", nullable: false },
+      { name: "secret", type: "text", nullable: true },
+      { name: "created_at", type: "integer", nullable: false },
+      { name: "last_used_at", type: "integer", nullable: true },
+    ],
+    primaryKey: { columns: ["id"] },
+    foreignKeys: [{ constraintName: "login_methods_account_id_fk", columns: ["account_id"], targetTable: "accounts", targetColumns: ["id"], onDelete: "cascade" }],
+    indexes: [
+      { name: "idx_login_methods_identity", columns: [{ name: "kind" }, { name: "issuer" }, { name: "subject" }], unique: true },
+      { name: "idx_login_methods_account", columns: [{ name: "account_id" }] },
+    ],
+  },
+  {
+    name: "auth_sessions",
+    columns: [
+      { name: "id", type: "uuid", nullable: false },
+      { name: "token_hash", type: "text", nullable: false },
+      { name: "account_id", type: "uuid", nullable: false },
+      { name: "created_at", type: "integer", nullable: false },
+      { name: "last_seen_at", type: "integer", nullable: false },
+      { name: "expires_at", type: "integer", nullable: false },
+      { name: "label", type: "text", nullable: true },
+    ],
+    primaryKey: { columns: ["id"] },
+    foreignKeys: [{ constraintName: "auth_sessions_account_id_fk", columns: ["account_id"], targetTable: "accounts", targetColumns: ["id"], onDelete: "cascade" }],
+    indexes: [
+      { name: "idx_auth_sessions_token", columns: [{ name: "token_hash" }], unique: true },
+      { name: "idx_auth_sessions_account", columns: [{ name: "account_id" }] },
+    ],
+  },
+  {
+    name: "api_tokens",
+    columns: [
+      { name: "id", type: "uuid", nullable: false },
+      { name: "account_id", type: "uuid", nullable: false },
+      { name: "name", type: "text", nullable: false },
+      { name: "token_hash", type: "text", nullable: false },
+      { name: "prefix", type: "text", nullable: false },
+      { name: "created_at", type: "integer", nullable: false },
+      { name: "last_used_at", type: "integer", nullable: true },
+      { name: "revoked_at", type: "integer", nullable: true },
+    ],
+    primaryKey: { columns: ["id"] },
+    foreignKeys: [{ constraintName: "api_tokens_account_id_fk", columns: ["account_id"], targetTable: "accounts", targetColumns: ["id"], onDelete: "cascade" }],
+    indexes: [
+      { name: "idx_api_tokens_token", columns: [{ name: "token_hash" }], unique: true },
+      { name: "idx_api_tokens_account", columns: [{ name: "account_id" }] },
+    ],
+  },
 ]);

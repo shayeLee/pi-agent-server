@@ -40,6 +40,9 @@ import {
   requireIpAccessRuntimeConfig,
   type AdmissionResult,
 } from "./network-admission.js";
+import { authenticateAccountRequest, registerAuthRoutes } from "./account-auth.js";
+import type { AuthConfig } from "../auth/auth-config.js";
+import type { AuthService } from "../auth/auth-service.js";
 import {
   createOperationStatus,
   readyzBody,
@@ -134,6 +137,15 @@ export type ServerDeps = {
    * （allowed/401/403 三类结果都不含 raw IP/url/token）。
    */
   requestLogStream?: Writable;
+  /**
+   * 认证模式（docs/login-design.md §2）；缺省为 ip 模式。accounts 模式必须同时提供 accountAuth，
+   * IP 策略只做准入（不得带 role/tokenRequired）。
+   */
+  authConfig?: AuthConfig;
+  accountAuth?: AuthService;
+  /** 账号认证的 SSE 连接多久复核一次凭证（默认 30 秒）与单次复核上限（默认 5 秒）；测试可调小。 */
+  authRecheckIntervalMs?: number;
+  authRecheckTimeoutMs?: number;
   /** SSE 每用户连接上限（默认 10）。 */
   maxSsePerUser?: number;
   /** SSE 全局连接上限（默认 100）。 */
@@ -439,6 +451,19 @@ function withEnableCapability(views: readonly ProjectMcpServerView[], canEdit: b
   return views.map(view => ({ ...view, canEnable: canEdit && view.status === "available" && (!view.adminOnly || isAdmin) }));
 }
 
+/** Runs one auth recheck; a failure, a rejection or running past the limit all count as no longer valid. */
+async function recheckWithin(recheck: () => Promise<boolean>, timeoutMs: number): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      recheck().catch(() => false),
+      new Promise<boolean>((resolve) => { timer = setTimeout(() => resolve(false), timeoutMs); }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 function hashIdentity(identity: UserIdentity): string {
   return createHash("sha256").update(identityKey(identity)).digest("hex").slice(0, 16);
 }
@@ -472,6 +497,15 @@ export function buildApp(deps: ServerDeps): FastifyInstance {
   // JS/typed bypass 与 startServer 同语义。
   const ipAccess = requireIpAccessRuntimeConfig(deps.ipAccess);
   const admission = createAdmission(ipAccess);
+  const authConfig: AuthConfig = deps.authConfig ?? { mode: "ip" };
+  if (authConfig.mode === "accounts") {
+    if (!deps.accountAuth) throw new Error("PI_AUTH_MODE=accounts 需要账号认证服务");
+    // 账号模式下 IP 策略只做准入：角色与 token 来自账号（原始 JSON 层的检查在 main 读文件时已做）。
+    if (ipAccess.policy?.entries.some(entry => entry.role !== "user" || entry.tokenRequired)) {
+      throw new Error("PI_AUTH_MODE=accounts 时 IP access policy 只做准入，不能设置 role、tokenRequired 或 tokens");
+    }
+  }
+  const accountAuth = authConfig.mode === "accounts" ? deps.accountAuth : undefined;
   const app = Fastify({
     bodyLimit: Number(process.env.BODY_LIMIT_BYTES ?? 10 * 1024 * 1024),
     // WP5D-2 请求日志红线：Fastify 内置按请求日志（incoming request / request completed /
@@ -600,9 +634,28 @@ export function buildApp(deps: ServerDeps): FastifyInstance {
       }
       return reply.code(403).send(FORBIDDEN_BODY);
     }
-    request.user = result.user;
-    request.access = result.access;
-    request.subjectHash = hashIdentity(result.user);
+    request.clientIp = result.access.ip;
+    if (authConfig.mode === "accounts") {
+      // 账号模式（docs/login-design.md §4）：IP 只做准入；身份与角色来自 Bearer 个人 token 或登录 cookie。
+      const outcome = await authenticateAccountRequest(request, authConfig, accountAuth!);
+      if (outcome.kind === "denied") {
+        request.log.info({ admission: "denied", reason: "account-auth", statusCode: outcome.statusCode }, "request denied by account authentication");
+        return reply.code(outcome.statusCode).send(outcome.body);
+      }
+      if (outcome.kind === "public") {
+        // 合法 CORS 预检与精确公共路由：不伪造账号、不设角色，由 RBAC 的公共权限放行。
+        request.log.info({ admission: "allowed", auth: "public" }, "request admitted without account");
+        return;
+      }
+      const { account, via, sessionId } = outcome.authenticated;
+      request.user = { kind: "account", accountId: account.id };
+      request.access = { ip: result.access.ip, role: account.role, tokenRequired: false, registered: true };
+      request.authContext = { account, via, ...(sessionId ? { sessionId } : {}), recheck: outcome.recheck };
+    } else {
+      request.user = result.user;
+      request.access = result.access;
+    }
+    request.subjectHash = hashIdentity(request.user);
     const subjectChild = { subjectHash: request.subjectHash };
     request.log = request.log.child(subjectChild);
     reply.log = reply.log.child(subjectChild);
@@ -625,6 +678,7 @@ export function buildApp(deps: ServerDeps): FastifyInstance {
   // - 403 固定 FORBIDDEN_BODY（不泄 role/IP/path），拒绝日志只带固定枚举（subjectHash
   //   已由 admission 后置日志携带）。
   app.addHook("onRequest", routeRbacOnRequest);
+  registerAuthRoutes(app, { config: authConfig, ...(accountAuth ? { auth: accountAuth } : {}) });
   app.get("/health", { ...requirePermission("probe:health") }, async () => ({ status: "ok" }));
   // WP5A 运维探针（读进程状态纯函数，零 I/O、零定时器、不触碰存储）：
   // route-level strict GET-only（exposeHeadRoute:false，HEAD 404）；/health 与 /v1 既有路由
@@ -1431,10 +1485,12 @@ export function buildApp(deps: ServerDeps): FastifyInstance {
       let unsubscribe: () => void = () => {};
       let unregisterClose: () => void = () => {};
       let heartbeat: ReturnType<typeof setInterval> | undefined;
+      let authRecheck: ReturnType<typeof setInterval> | undefined;
       function cleanup(): void {
         if (cleaned) return;
         cleaned = true;
         if (heartbeat) clearInterval(heartbeat);
+        if (authRecheck) clearInterval(authRecheck);
         unsubscribe();
         unregisterClose();
         releaseSlot(); // 成功连接：清理时释放占位恰一次（幂等）
@@ -1504,6 +1560,22 @@ export function buildApp(deps: ServerDeps): FastifyInstance {
         if (shouldClose && !cleaned) safeClose();
       }
       heartbeat = setInterval(() => { writeRaw(": ping\n\n"); maybeClose(); }, 15000);
+      // 账号认证的连接定时复核（docs/login-design.md §4）：与新请求同样的检查，不重叠，单次有上限；
+      // 失效时尽力发 auth_expired 再关闭这条连接，**不中止** Agent 任务（不走 outputAllowed 的 abort 分支）。
+      const authContext = request.authContext;
+      if (authContext) {
+        let checking = false;
+        authRecheck = setInterval(() => {
+          if (checking || cleaned) return;
+          checking = true;
+          void recheckWithin(authContext.recheck, deps.authRecheckTimeoutMs ?? 5_000).then((ok) => {
+            checking = false;
+            if (ok || cleaned) return;
+            try { socket.write(`data: ${JSON.stringify({ type: "auth_expired" })}\n\n`); } catch { /* 尽力而为 */ }
+            safeClose();
+          });
+        }, deps.authRecheckIntervalMs ?? 30_000);
+      }
       let subscribed = false;
       unsubscribe = events.subscribe(({ id, event }) => {
         if (shouldClose || cleaned) return;

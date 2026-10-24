@@ -92,6 +92,9 @@ import { PluginLoader } from "../application/plugins/loader.js";
 import { registerPlugins, type PluginHost } from "./plugin-host.js";
 import type { LoadedPlugin, PluginSource } from "../plugin/index.js";
 import { SessionService } from "../application/session-service.js";
+import { parseAuthMode, resolveAuthConfig } from "../auth/auth-config.js";
+import { AuthService } from "../auth/auth-service.js";
+import { KyselyAccountRepository } from "../storage/kysely-account-repository.js";
 import { ProviderAdapterRegistry } from "../provider-adapters/registry.js";
 import {
   getProviderExtensionEventBus,
@@ -198,9 +201,14 @@ export type StartConfig = {
   migrationGate?: "off" | "verify";
   /**
    * 用户在浏览器里访问本服务的地址（PI_PUBLIC_URL），用来拼 MCP OAuth 回调地址；
-   * 目录里有 oauth server 时必填（docs/mcp-integration.md §13.6）。
+   * 目录里有 oauth server 时必填（docs/mcp-integration.md §13.6）。账号模式下必填：cookie 名、
+   * Secure 与默认可信 origin 都由它决定（docs/login-design.md §2）。
    */
   publicUrl?: string;
+  /** 认证模式（PI_AUTH_MODE）：ip（默认）或 accounts。 */
+  authMode?: "ip" | "accounts";
+  /** 账号模式下 CSRF 接受的 origin（PI_TRUSTED_ORIGINS，逗号分隔）；缺省只有 PI_PUBLIC_URL 的 origin。 */
+  trustedOrigins?: string;
   /** 动态注册 MCP OAuth 客户端时的 client_name（PI_MCP_OAUTH_CLIENT_NAME，默认 pi-agent-server）。 */
   mcpOAuthClientName?: string;
   /** 用户 MCP OAuth 凭证的加密密钥文件（PI_MCP_TOKEN_KEY_FILE，绝对路径，权限 0600）。 */
@@ -356,6 +364,12 @@ export async function startServer(config: StartConfig) {
   // WP5D-2：网络准入配置在任何资源创建/网络访问之前严格校验（failfast）。
   // 缺失/非法/伪造即拒绝（JS/typed bypass 同样 fail），错误消息不回显值。
   const ipAccess = requireIpAccessRuntimeConfig(config.ipAccess);
+  // 认证模式在任何资源创建前解析：账号模式缺 PI_PUBLIC_URL、可信 origin 不含公共 origin 都拒绝启动。
+  const authConfig = resolveAuthConfig({
+    mode: parseAuthMode(config.authMode),
+    ...(config.publicUrl ? { publicUrl: config.publicUrl } : {}),
+    ...(config.trustedOrigins ? { trustedOrigins: config.trustedOrigins } : {}),
+  });
   // 只接受精确 "verify"（undefined/null 归一化为 "verify"）；任何 off/未知值
   // （含大小写/空白变体）一律拒绝启动，且不回显原始值。
   const migrationGate = validateMigrationGate(config.migrationGate);
@@ -895,6 +909,8 @@ export async function startServer(config: StartConfig) {
     modelCatalog: new PiModelRuntimeCatalog(modelRuntime),
     // WP5D-2：准入配置已在函数入口严格校验（requireIpAccessRuntimeConfig），此处直接注入。
     ipAccess,
+    authConfig,
+    ...(authConfig.mode === "accounts" ? { accountAuth: new AuthService(new KyselyAccountRepository(kysely, storage.dialect)) } : {}),
     // 未实例化会话的只读导出由通用 registry 分派到 Pi JSONL storage。
     conversationStorage,
     nativeSessions,

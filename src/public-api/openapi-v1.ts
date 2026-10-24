@@ -27,6 +27,11 @@ export const PUBLIC_API_OPERATIONS = [
   ["/readyz", "get", "probe:readyz"],
   ["/metrics", "get", "probe:metrics"],
   ["/v1/access", "get", "access:read"],
+  ["/v1/auth/state", "get", "auth:state"],
+  ["/v1/auth/login", "post", "auth:login"],
+  ["/v1/auth/logout", "post", "auth:self"],
+  ["/v1/auth/me", "get", "auth:self"],
+  ["/v1/auth/password", "put", "auth:self"],
   ["/v1/models", "get", "models:list"],
   ["/v1/projects", "get", "projects:list"],
   ["/v1/projects", "post", "projects:create"],
@@ -136,16 +141,21 @@ const oauthProjectQuery = { name: "projectId", in: "query", required: false, sch
 const projectQuery = { name: "projectId", in: "query", required: false, schema: { type: "string", minLength: 1, maxLength: 128 }, description: "A project the caller can see: values then include that project's .pi/settings.json when the project is trusted. Unknown or hidden projects return 404." };
 const request = (schema: object, required = true) => ({ required, content: { "application/json": { schema } } });
 
-// IP admission is always mandatory. Bearer is conditionally mandatory only when
+// IP admission is always mandatory. In ip mode Bearer is conditionally mandatory only when
 // the admitted IP profile has tokenRequired=true; OpenAPI's alternatives express
-// this conditional extension without claiming every caller needs a token.
+// this conditional extension without claiming every caller needs a token. In accounts mode
+// (PI_AUTH_MODE=accounts) every non-public operation needs a personal token or the login cookie.
 const ipOnlySecurity = [{ IpAdmission: [] }];
-const conditionalBearerSecurity = [{ IpAdmission: [] }, { IpAdmission: [], BearerAuth: [] }];
+const conditionalBearerSecurity = [{ IpAdmission: [] }, { IpAdmission: [], BearerAuth: [] }, { IpAdmission: [], SessionCookie: [] }];
+const PUBLIC_PERMISSIONS: readonly Permission[] = ["probe:health", "probe:readyz", "auth:state", "auth:login"];
 const roles: Record<Permission, readonly string[]> = {
   "probe:health": ["admin", "user", "viewer", "operator"],
   "probe:readyz": ["admin", "user", "viewer", "operator"],
   "probe:metrics": ["admin", "operator"],
   "access:read": ["admin", "user", "viewer"],
+  "auth:state": ["admin", "user", "viewer", "operator"],
+  "auth:login": ["admin", "user", "viewer", "operator"],
+  "auth:self": ["admin", "user", "viewer", "operator"],
   "models:list": ["admin", "user", "viewer"],
   "projects:list": ["admin", "user", "viewer"],
   "projects:create": ["admin", "user"],
@@ -177,12 +187,12 @@ function operation(
   responses: Record<string, object>,
   extra: Record<string, unknown> = {},
 ): Record<string, unknown> {
-  const isProbe = permission === "probe:health" || permission === "probe:readyz";
+  const isProbe = PUBLIC_PERMISSIONS.includes(permission);
   return {
     operationId,
     security: isProbe ? ipOnlySecurity : conditionalBearerSecurity,
     "x-pi-rbac": { permission, roles: roles[permission] },
-    responses: { ...(isProbe ? {} : { "401": error(401, "Bearer token required for this admitted IP profile.") }), "403": error(403, "IP admission or RBAC denied."), ...responses },
+    responses: { ...(isProbe ? {} : { "401": error(401, "Bearer token required for this admitted IP profile, or (accounts mode) sign-in required: code auth_required.") }), "403": error(403, "IP admission or RBAC denied."), ...responses },
     ...extra,
   };
 }
@@ -266,6 +276,34 @@ export const openapiV1 = {
         },
       }),
       head: automaticHeadOperation("getAccessHead", "access:read", { "200": headJson("Access projection; the GET response body is suppressed.") }),
+    },
+    "/v1/auth/state": {
+      get: operation("getAuthState", "auth:state", { "200": { description: "Authentication mode. Public in accounts mode.", ...json(ref("AuthState")) } }),
+    },
+    "/v1/auth/login": {
+      post: operation("login", "auth:login", {
+        "200": { description: "Signed in; sets the session cookie (HttpOnly, SameSite=Lax, Path=/, Secure on https, 30 days).", ...json({ type: "object", required: ["account"], properties: { account: ref("AuthAccount") }, additionalProperties: false }) },
+        "400": error(400, "name or password missing."),
+        "401": error(401, "invalid_credentials: unknown account, disabled account or wrong password, indistinguishable."),
+        "404": error(404, "auth_not_enabled: ip mode."),
+        "413": error(413, "Body over 4 KiB."),
+        "429": error(429, "login_backoff after failures, or login_busy when two password checks are running; both send Retry-After."),
+      }, { requestBody: request(ref("Login")) }),
+    },
+    "/v1/auth/logout": {
+      post: operation("logout", "auth:self", { "204": noContent, "404": error(404, "auth_not_enabled: ip mode.") }),
+    },
+    "/v1/auth/me": {
+      get: operation("getAuthMe", "auth:self", { "200": { description: "The signed-in account.", ...json(ref("AuthMe")) }, "404": error(404, "auth_not_enabled: ip mode.") }),
+    },
+    "/v1/auth/password": {
+      put: operation("changePassword", "auth:self", {
+        "204": { description: "Changed. Every browser of the account is signed out; this one gets a new cookie." },
+        "400": error(400, "invalid_current_password or password_too_weak."),
+        "403": error(403, "cookie_required: only a browser session can change the password; or IP admission, RBAC or CSRF denied."),
+        "404": error(404, "auth_not_enabled: ip mode."),
+        "429": error(429, "Backoff after a wrong current password, or busy; sends Retry-After."),
+      }, { requestBody: request(ref("PasswordChange")) }),
     },
     "/v1/models": {
       get: operation("listModels", "models:list", { "200": { description: "Available models. With projectId, modelThinkingLevels is what that project's new sessions use.", ...json(ref("ModelList")) }, "404": error(404, "projectId names a project the caller cannot see.") }, { parameters: [projectQuery] }),
@@ -640,7 +678,8 @@ export const openapiV1 = {
   components: {
     securitySchemes: {
       IpAdmission: { type: "http", scheme: "ip-admission", description: "Mandatory direct-peer CIDR/IP admission. This is evaluated by the host, not supplied by a client.", "x-pi-ip-admission": true },
-      BearerAuth: { type: "http", scheme: "bearer", bearerFormat: "opaque", description: "Required only when the admitted IP profile has tokenRequired=true." },
+      BearerAuth: { type: "http", scheme: "bearer", bearerFormat: "opaque", description: "ip mode: required only when the admitted IP profile has tokenRequired=true. accounts mode: a personal token (pi_…) issued by `pnpm accounts -- issue-token`." },
+      SessionCookie: { type: "apiKey", in: "cookie", name: "pi_session_<port>", description: "accounts mode only: set by POST /v1/auth/login; the name ends with the effective port of PI_PUBLIC_URL. Cookie-authenticated POST/PUT/PATCH/DELETE need a trusted Origin (PI_TRUSTED_ORIGINS), or Sec-Fetch-Site: same-origin when no Origin is sent; otherwise 403 csrf_rejected." },
     },
     schemas: {
       ApiError: { type: "object", required: ["statusCode", "error", "message"], properties: { statusCode: { type: "integer" }, code: { type: "string", description: "Fastify validation error code when applicable." }, error: { type: "string" }, message: { type: "string" } }, additionalProperties: false },
@@ -651,6 +690,14 @@ export const openapiV1 = {
         complete: { type: "boolean" },
       }, additionalProperties: false },
       Access: { type: "object", required: ["canRead", "canWrite"], properties: { canRead: { type: "boolean" }, canWrite: { type: "boolean" } }, additionalProperties: false },
+      AuthState: { oneOf: [
+        { type: "object", required: ["mode"], properties: { mode: { type: "string", const: "ip" } }, additionalProperties: false },
+        { type: "object", required: ["mode", "publicOrigin"], properties: { mode: { type: "string", const: "accounts" }, publicOrigin: { type: "string", description: "Origin of PI_PUBLIC_URL; the address every device should use." } }, additionalProperties: false },
+      ] },
+      AuthAccount: { type: "object", required: ["id", "name", "role"], properties: { id: { type: "string" }, name: { type: "string" }, role: { type: "string", enum: ["admin", "user", "viewer", "operator"] } }, additionalProperties: false },
+      AuthMe: { type: "object", required: ["account", "via"], properties: { account: ref("AuthAccount"), via: { type: "string", enum: ["cookie", "token"] } }, additionalProperties: false },
+      Login: { type: "object", required: ["name", "password"], properties: { name: { type: "string" }, password: { type: "string" } }, additionalProperties: false },
+      PasswordChange: { type: "object", required: ["current", "next"], properties: { current: { type: "string" }, next: { type: "string", description: "12–256 characters." } }, additionalProperties: false },
       Model: { type: "object", required: ["provider", "id", "name"], properties: { provider: { type: "string" }, id: { type: "string" }, name: { type: "string" } }, additionalProperties: false },
       ModelList: { type: "object", required: ["models", "thinkingLevels", "defaultModel", "defaultThinkingLevel", "modelThinkingLevels"], properties: { models: { type: "array", items: ref("Model") }, thinkingLevels: { type: "array", items: { type: "string" } }, defaultModel: { anyOf: [ref("Model"), { type: "null" }] }, defaultThinkingLevel: { type: "string" }, modelThinkingLevels: { type: "object", additionalProperties: { type: "string" }, description: "Default thinking level per model from the Agent settings, keyed by provider/modelId. A new session without a chosen level uses its model's entry before defaultThinkingLevel." } }, additionalProperties: false },
       Project: { type: "object", required: ["id", "name", "cwd", "isDefault"], properties: { id: { type: "string" }, name: { type: "string" }, cwd: { type: "string" }, isDefault: { type: "boolean" }, canDelete: { type: "boolean", description: "Current actor owns this non-default project; shared automatic projects are system-administered." }, canCreateSession: { type: "boolean", description: "Current route RBAC and project access allow creating an actor-owned private session; does not grant project mutation or access to other actors' private resources." } }, additionalProperties: false },
